@@ -236,3 +236,188 @@ Behaviour changes without an API change:
   - A packet reported lost that later arrives and is played.
   - EVS NB / WB values (none published).
   - Time-stretching, which stays the decoder's job.
+
+## Update (2026-11-23): missing packets at the playout deadline, frame sizes, Opus's band from SDP, late packets that play
+
+### Context
+
+Four of the items above were left. EVS NB / WB (no published values) and time-stretching (the
+decoder's) stay out.
+
+1. With the playout buffer on, the frame assembler still gave a missing packet up by count
+   (`set_reordering_size`, 30 video packets). At three packets a frame that is ten frames: the
+   picture stood still for about 330 ms at each loss without repair, and at high bitrates the
+   count ran out before a retransmission could come.
+2. The target covered keyframes only by the delay measured on the two latest ones of the last
+   10 s. A keyframe after a longer gap, or the first one after start, came late and stalled the
+   frames behind it.
+3. `for_codec_rate("opus", ..)` always rated fullband. The band an Opus stream is coded in
+   shows in its SDP, not in the encoding name.
+4. A packet reported lost that arrived later and was played stayed counted as lost.
+
+### Decision
+
+#### 1. A missing packet is given up at the deadline of the frame behind it
+
+akio-rtp, additive:
+
+- `FrameAssembler::blocked()`: when `pop` returns `None` because a packet is missing and a
+  later frame is buffered behind it, the extended timestamp of the frame that giving the packet
+  up would release next. `None` while the head frame is still arriving.
+- `FrameAssembler::give_up_hole()`: gives that packet up as the count would (the frame it
+  belongs to is dropped, the next is `contiguous = false`).
+- `FrameAssembler::accepts(seq)`: whether `push` would buffer a sequence number.
+- `VideoPlayout::hole_deadline(ts, now)` and `hole_given_up()`, counted in
+  `VideoPlayoutStats::holes_given_up`.
+
+The deadline is the later of:
+
+- **the playout instant of the frame waiting behind the hole** (its timestamp plus the
+  offset, not before the previous frame's). The frame with the hole is not the measure: late
+  frames are not discarded (above), so it may still be repaired and shown late. Once the next
+  frame is due, waiting stalls the picture.
+- **the start of the wait plus the longest of: the round trip, the target delay and 10 ms.**
+  The round trip (lines with NACK) leaves room for one retransmission. The target delay and the
+  10 ms floor keep a packet reordered behind frames that are already late (a delay spike) from
+  being given up at once. The wait starts at the first `hole_deadline` call for that frame.
+
+Before the first frame, and after the clock started over, only the second rule applies.
+
+akio-webrtc:
+
+- With `set_video_playout_buffer` on, each received video stream asks after every batch of
+  frames. The deadline goes into the peer's timeout; when it comes, the packet is given up and
+  the frames behind it go into the buffer flagged repaired.
+- The assembler's video count is raised to at least 1024 packets (`VIDEO_HOLE_PACKETS`). It
+  only bounds the wait and the memory; the deadline normally comes first.
+- A retransmission that comes after the packet was given up is ignored, as with the count.
+- A given-up packet does not send a PLI. The frame after it is `contiguous = false`, and the
+  application decides (as before for count give-ups).
+
+#### 2. Frame-size-aware delay estimation
+
+The target's percentile part now adds the share of the frame size, from a Kalman filter in the
+manner of libwebrtc's jitter estimator (`modules/video_coding/timing/jitter_estimator.cc`):
+
+- State: the delay per byte (the bottleneck's serialisation) and an offset. Each unrepaired
+  frame after an unrepaired, contiguous one gives a measurement: its delay variation (completion
+  interval minus media interval) against its size change.
+- libwebrtc's constants: start at 512 kbit/s, covariance `diag(1e4, 1e2)`, process noise
+  `diag(2.5e-10, 1e-10)`, measurement noise `(300 e^(-|Δsize| / max size) + 1) σ`, outliers
+  beyond 15 σ (taken anyway when the frame is 3 σ above the average size), size decreases below
+  a quarter of the largest left out, the slope at least that of 1 Gbit/s. Average size by 0.97
+  per frame, only from frames not 2 σ above it (keyframes do not move it); the largest size
+  decays by 0.9999 per frame.
+- **Size delay** = slope × (largest recent size − average size), 0 for the first 5 frames.
+  The target is `max(percentile + size delay, latest keyframes' delay)`, plus the round trip
+  while repairs happen, within the bounds.
+- Differences from libwebrtc:
+  - The delay sample is not clamped to 3.5 σ. On a steady stream the keyframes' samples are
+    the ones that tell the slope, and they lie far above the noise.
+  - The noise estimate is used only to weigh samples. The noise part of the target stays the
+    95th percentile (libwebrtc's is 2.33 σ − 30 ms).
+  - The noise filter is not scaled by the frame rate.
+- `VideoPlayoutStats::size_delay` reports it.
+- The latest keyframes' measured delay stays: it covers what the slope cannot, such as a
+  sender that paces keyframes more slowly.
+
+#### 3. Opus's band from the SDP
+
+- Each media line takes the band of the Opus stream it receives from the remote's
+  `sprop-maxcapturerate` (RFC 7587 §6.1, the rate it captures at; 48000 when absent):
+  - up to 12000 (narrowband, and mediumband, which the E-model has no scale for) →
+    `OpusBand::Narrowband`;
+  - up to 24000 (wideband, and super-wideband, rated on the wideband scale since no Opus SWB
+    values are used) → `Wideband`;
+  - above → `Fullband`.
+- The VoIP metrics then rate the received Opus with `EModel::opus(band, measured bitrate)`
+  (the highest rate's values when no packet came in the interval). A model the application
+  gives (`Peer::set_voip_quality`) still wins.
+- **`maxplaybackrate`** is what a receiver asks of the remote's encoder. The remote's concerns
+  the stream akio sends, so it does not rate what akio receives. akio declares none of its own
+  (the application has no way to set Opus parameters).
+- **Answers no longer echo `sprop-maxcapturerate` / `maxplaybackrate`.** akio's answer carried
+  the offer's format parameters back. For these two that told the offerer that akio captured,
+  or could play, only what the offerer had declared, and it would have made an offerer rate
+  akio's audio by its own capture rate. Other parameters are still echoed.
+
+#### 4. A packet reported lost that arrives later and plays
+
+- Each received audio stream remembers the sequence numbers its VoIP metrics reported lost
+  (ADR-092, at most 1024). One of them arriving later, behind the highest one, is noted with
+  whether it plays:
+  - with the jitter buffer, when the buffer takes it (`JitterPush::Buffered`);
+  - without it, when the frame assembler still would (`FrameAssembler::accepts`).
+- The next report takes each back with `BurstLossModel::on_late_arrival()`. It lowers the loss
+  count, so the loss rate and the loss fraction the E-model uses drop. The burst and gap
+  densities keep it: the model cannot take a packet back out of the run it was counted in.
+- One that does not play becomes a discard (`on_late_discard`, as above). That now includes a
+  packet the frame assembler had already moved past (no jitter buffer), which used to stay lost.
+- In RTP mode the application plays the packets, so a late one stays lost.
+
+### API
+
+Additive:
+
+- akio-rtp:
+  - `FrameAssembler::{blocked, give_up_hole, accepts}`;
+  - `VideoPlayout::{hole_deadline, hole_given_up}`;
+  - `VideoPlayoutStats::{size_delay, holes_given_up}` (the struct is `#[non_exhaustive]`);
+  - `BurstLossModel::on_late_arrival`.
+- akio-webrtc: none.
+
+Behaviour changes in akio-webrtc:
+
+- With the video playout buffer, packets are given up at the deadline, and the video
+  reordering count is at least 1024.
+- Received Opus is rated in its SDP band.
+- Answers drop the two Opus band parameters.
+- Late reported-lost packets count as played or discarded.
+
+### Consequences
+
+- **Tests, akio-rtp.**
+  - `tests_video_holes.rs`:
+    - The assembler's `blocked` / `give_up_hole` / `accepts` on a frame with a hole, a whole
+      frame lost and a frame still arriving.
+    - 1800 frames at 1 % loss without repair, count of 30 against the deadline (count 1000).
+      A loss pauses the picture for about 360 ms by count (423 ms at most) and for its frame
+      and a little jitter by deadline (103 ms at most, where two frames were lost; under 80 ms
+      for one). Late frames go from 459 to 37, and the deadline keeps more frames (1742 against
+      1733: by count a second loss before the count ran out cost the frames between).
+    - At 1 % loss with 60 ms RTT and NACK: at most 2 packets given up, every other loss
+      repaired in time.
+    - A packet reordered by 5 ms behind frames 200 ms late is waited for.
+    - 40-packet keyframes every 15 s (past the 10 s keyframe memory): the size delay stays
+      25..50 ms between keyframes, and each keyframe after the first two pauses the picture by
+      at most the jitter.
+  - `size.rs`: a 2 Mbit/s channel's slope (4 µs/byte) learnt within 15 % under ±3 ms noise;
+    equal frames add nothing.
+- **Tests, akio-webrtc `tests_mux.rs`:**
+  - Two peers with VP8 at 2 % loss and no NACK (removed from the offer): 40 packets given up at
+    the deadline. Longest pause 106 ms and 99th percentile 73 ms, against 422 / 389 ms with
+    the old count on the same network.
+  - A reported-lost packet arriving 100 ms later, inside a 400 ms buffer: the next report has
+    loss 0 and discard 0. At 600 ms it is a discard. Without the buffer it plays 5 packets late
+    and is a discard 30 packets late.
+  - `sprop-maxcapturerate=16000` in the offer: the answerer rates wideband, the answer does not
+    echo it, and the offerer stays fullband. The band mapping at 8000 / 12000 / 16000 / 24000 /
+    48000 / junk, and the three bands rate differently.
+- **Fuzzing.**
+  - `rtp_codec` gives holes up as a deadline would on every other packet (one bit of the
+    selector).
+  - `rtp_rtcp` asks hole deadlines: stable while a frame waits, at least 10 ms on after a
+    give-up.
+- **Interop.** The pion suite (`tools/interop/webrtc/run.sh`) passes plain, which covers the
+  answer without the echoed Opus parameters. It also passes with `AKIO_INTEROP_PLAYOUT=1`,
+  akio's peers receiving through both playout buffers.
+- **Costs** (BENCHMARKS, "Video playout buffer, second pass (ADR-092 update, same-run A/B)",
+  gpu51): no measurable change end to end, buffers off or on (VP8 `media` 0.999; `video-jb` CPU
+  per frame 10.01 against 10.03 µs; `audio-jb` 9.74 against 9.76 µs). The buffer alone takes
+  60.3 against 43.9 ns per frame: 16 ns for the Kalman update, half a microsecond a second for
+  a 30 frames/s stream.
+- **Not done**:
+  - EVS NB / WB values (none published).
+  - Time-stretching (the decoder's).
+  - Opus super-wideband values (rated as wideband).
+  - A PLI when a packet is given up (the application sees `contiguous = false`).

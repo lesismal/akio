@@ -24,7 +24,13 @@ use akio_rtp::{
 #[derive(Debug)]
 pub(super) struct VideoJitter {
     pub(super) buf: VideoPlayout<(u8, u64, Instant, Arc<[u8]>)>,
+    /// When to give up the missing packet a frame waits behind in the assembler.
+    pub(super) hole_at: Option<Instant>,
 }
+
+/// The frame assembler's packet count with the video playout buffer on: a bound, missing
+/// packets are given up at the deadline of the frame behind them first.
+pub(super) const VIDEO_HOLE_PACKETS: usize = 1024;
 
 /// Hands out the video frames of `r` due by `now` (all of them with `drain`).
 fn release_video(
@@ -140,13 +146,9 @@ impl Rtc {
         payload: &[u8],
         clock: u32,
         bounds: PlayoutDelay,
-    ) {
-        let Some(l) = self.media.get(line) else {
-            return;
-        };
-        let Some(r) = self.recv.get_mut(&ssrc) else {
-            return;
-        };
+    ) -> Option<JitterPush> {
+        let l = self.media.get(line)?;
+        let r = self.recv.get_mut(&ssrc)?;
         if r.jitter.as_ref().is_some_and(|j| j.buf.clock() != clock) {
             release(r, l, now, true, &mut self.events);
             r.jitter = None;
@@ -161,10 +163,11 @@ impl Rtc {
         let data: Arc<[u8]> = Arc::from(payload);
         // Duplicates, late and overflowing frames are counted (and the discards reported)
         // by the buffer.
-        let _: JitterPush = j
+        let pushed = j
             .buf
             .push(ext_seq, p.ts, p.marker, now, (p.pt, data), payload.len());
         release(r, l, now, false, &mut self.events);
+        Some(pushed)
     }
 
     /// The frames of every jitter buffer due by `now`.
@@ -217,27 +220,43 @@ impl Rtc {
         let v = video.get_or_insert_with(|| {
             Box::new(VideoJitter {
                 buf: VideoPlayout::new(clock, bounds),
+                hole_at: None,
             })
         });
         v.buf.set_round_trip(rtt);
         let mut repaired = rtx;
-        while let Some(f) = asm.pop() {
-            let mut flags = VideoFrameFlags::NONE;
-            if f.keyframe {
-                flags |= VideoFrameFlags::KEYFRAME;
+        loop {
+            while let Some(f) = asm.pop() {
+                let mut flags = VideoFrameFlags::NONE;
+                if f.keyframe {
+                    flags |= VideoFrameFlags::KEYFRAME;
+                }
+                // A frame with a packet rebuilt in part may be corrupt.
+                if !f.contiguous || f.partial {
+                    flags |= VideoFrameFlags::DISCONTINUOUS;
+                }
+                // Frames after a gap waited for it to be given up.
+                repaired |= !f.contiguous;
+                if repaired {
+                    flags |= VideoFrameFlags::REPAIRED;
+                }
+                let n = f.data.len();
+                let data = (*pt, f.timestamp, f.first_arrival, Arc::from(f.data));
+                v.buf.push(f.timestamp as u32, now, flags, data, n);
             }
-            // A frame with a packet rebuilt in part may be corrupt.
-            if !f.contiguous || f.partial {
-                flags |= VideoFrameFlags::DISCONTINUOUS;
+            // A frame waiting behind a missing packet: give the packet up when that frame is
+            // due (ADR-092 update).
+            v.hole_at = None;
+            let Some(ts) = asm.blocked() else { break };
+            let at = v.buf.hole_deadline(ts as u32, now);
+            if at > now {
+                v.hole_at = Some(at);
+                break;
             }
-            // Frames after a gap waited for it to be given up.
-            repaired |= !f.contiguous;
-            if repaired {
-                flags |= VideoFrameFlags::REPAIRED;
+            if !asm.give_up_hole() {
+                break;
             }
-            let n = f.data.len();
-            let data = (*pt, f.timestamp, f.first_arrival, Arc::from(f.data));
-            v.buf.push(f.timestamp as u32, now, flags, data, n);
+            v.buf.hole_given_up();
         }
         let keyframe = v.buf.take_keyframe_request();
         release_video(r, l, now, false, &mut self.events);
@@ -254,8 +273,22 @@ impl Rtc {
         }
     }
 
-    /// The frames of every video playout buffer due by `now`.
+    /// The frames of every video playout buffer due by `now`, after giving up the missing
+    /// packets whose deadline came.
     pub(super) fn video_release(&mut self, now: Instant) {
+        let due: Vec<(usize, u32)> = self
+            .recv
+            .iter()
+            .filter(|(_, r)| {
+                r.video
+                    .as_ref()
+                    .is_some_and(|v| v.hole_at.is_some_and(|t| t <= now))
+            })
+            .map(|(s, r)| (r.line, *s))
+            .collect();
+        for (line, ssrc) in due {
+            self.video_push(now, line, ssrc, false);
+        }
         for r in self.recv.values_mut() {
             if r.video.is_none() {
                 continue;

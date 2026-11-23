@@ -37,6 +37,32 @@ ADR-078 的第三次更新（2026-11-23），只有新增：
   源的查询，仍发往所有链路、在所有链路上得到应答。
 - `tools/interop/webrtc/mdns4.sh`：容器中的两条 IPv4 链路，avahi 位于非默认的那条。
 
+### 新增：在播放截止时间放弃缺失的视频包，考虑帧大小的时延，从 SDP 取 Opus 频带，晚到并被播放的包（akio-rtp、akio-webrtc）
+
+ADR-092 更新（2026-11-23），API 仅新增：
+
+- `FrameAssembler::blocked()`（在缺失包之后等待的帧）、`give_up_hole()` 与 `accepts(seq)`。
+- `VideoPlayout::hole_deadline(ts, now)`：何时放弃该包。取等待帧的播放时刻，但不早于开始等待后
+  一个往返、目标时延或 10 ms。`VideoPlayout::hole_given_up()` 为其计数。
+- `VideoPlayout` 的目标加上帧大小一项：对每帧的时延变化与大小变化做卡尔曼滤波（libwebrtc 的
+  抖动估计器），得到每字节时延，乘以近期最大帧与平均帧之差。无论上一个关键帧隔了多久，关键帧
+  都有余地。
+- `VideoPlayoutStats::{size_delay, holes_given_up}`。
+- `BurstLossModel::on_late_arrival()`：记为丢失、之后到达并被播放的包。
+
+akio-webrtc 中的行为变化：
+
+- 打开 `set_video_playout_buffer` 时，缺失的视频包由 peer 的定时器在该截止时间放弃。此时视频
+  重排包数至少为 1024 个包（只作上限）。在丢包又无修复的线路上，画面不再在每次丢包时停住约
+  400 ms。
+- 接收的 Opus 在 VoIP 指标中按远端 `sprop-maxcapturerate` 的频带评分（≤ 12000 为窄带，
+  ≤ 24000 为宽带，否则全带）。
+- 应答不再回显提议中 Opus 的 `sprop-maxcapturerate` / `maxplaybackrate`。
+- VoIP 指标报为丢失、之后到达并被播放的包从丢失计数中收回。不被播放的变为丢弃，现在也包括
+  帧组装器（无抖动缓冲时）已经越过的包。
+- `webrtc-interop`：`AKIO_INTEROP_PLAYOUT=1` 经两个播放缓冲接收。
+- gpu51 上同轮 A/B（BENCHMARKS，"视频播放缓冲第二轮"）：端到端没有可测出的变化（VP8 `media` 0.999；`video-jb` 每帧 CPU 10.01 对 10.03 µs）。缓冲本身每帧多 16 ns（60.3 对 43.9 ns），即卡尔曼更新。
+
 ### 新增：视频播放缓冲，E-model 时延等级与房间噪声，VoIP 包长与迟到丢弃（akio-rtp、akio-webrtc）
 
 ADR-092（docs/adr/092-video-playout-emodel-classes.zh-CN.md）完成 ADR-087 的遗留项，仅新增：

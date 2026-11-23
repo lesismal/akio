@@ -1177,3 +1177,196 @@ fn voip_delay_sensitivity_class_rates_delay_lower() {
     );
     assert!(very_low > low && low > d, "{d} {low} {very_low}");
 }
+
+/// The description without NACK (and so without RTX repair or PLI).
+fn no_nack(sdp: &str) -> String {
+    sdp.split("\r\n")
+        .filter(|l| !(l.starts_with("a=rtcp-fb:") && l.contains(" nack")))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+#[test]
+fn video_playout_gives_up_missing_packets_at_the_deadline() {
+    use akio_rtp::PlayoutDelay;
+    let (mut a, mut b, mids, _, _, now) = negotiate(
+        ConfigInner::default(),
+        ConfigInner {
+            video_playout: Some(PlayoutDelay::default()),
+            ..ConfigInner::default()
+        },
+        &[MediaKind::Video],
+        no_nack,
+        same,
+    );
+    let mut net = Net::new(17);
+    let now = connect(&mut a, &mut b, &mut net, now);
+    // 10..20 ms one way, 2 % loss and no repair: each loss costs a frame. Frames of three
+    // packets: the old count of 30 packets held the picture for about 400 ms at each loss.
+    net.spread = 10;
+    net.loss = 2;
+    let (frames, _) = video_run(&mut a, &mut b, &mut net, mids[0], 600, 90, now);
+    let s = b.rtc.video_playout_stats(mids[0]).unwrap()[0].1;
+    assert!(s.holes_given_up > 10, "{s:?}");
+    assert!(frames.len() > 500 && frames.len() < 600, "{}", frames.len());
+    for w in frames.windows(2) {
+        assert!(w[1].1.time.ticks() > w[0].1.time.ticks());
+    }
+    // A loss pauses the picture for its frame and a little jitter, not 300 ms.
+    let pauses: Vec<f64> = frames[150..]
+        .windows(2)
+        .map(|w| {
+            let (p0, p1) = (w[0].1.playout_time.unwrap(), w[1].1.playout_time.unwrap());
+            (p1 - p0).as_secs_f64() * 1e3
+        })
+        .collect();
+    let longest = pauses.iter().copied().fold(0.0, f64::max);
+    assert!(longest < 200.0, "{longest}");
+    let mut sorted = pauses;
+    sorted.sort_by(f64::total_cmp);
+    let p99 = sorted[sorted.len() * 99 / 100];
+    assert!(p99 < 110.0, "{p99}");
+}
+
+#[test]
+fn voip_metrics_late_arrival_that_plays_is_not_lost() {
+    use akio_rtp::PlayoutDelay;
+    // `jitter`: the audio jitter buffer (fixed 400 ms) or the frame assembler (15 packets).
+    let run = |jitter: Option<PlayoutDelay>, late_by: u16| {
+        let (mut a, mut b, mids, _, _, now) = negotiate(
+            xr_cfg(XrBlocks::VOIP_METRICS),
+            ConfigInner {
+                jitter,
+                ..xr_cfg(XrBlocks::VOIP_METRICS)
+            },
+            &[MediaKind::Audio],
+            same,
+            same,
+        );
+        let mut net = Net::new(5);
+        let mut now = connect(&mut a, &mut b, &mut net, now);
+        let pt = u8::from(b.rtc.payload_type(mids[0], Codec::Opus).unwrap());
+        let ssrc = 0x1234_5678;
+        let send = |b: &mut Side, seq: u16, now: Instant| {
+            let p = Pkt {
+                ssrc,
+                seq,
+                pt,
+                ts: u32::from(seq) * 960,
+                marker: false,
+                rid: None,
+                rtx: false,
+            };
+            b.rtc.deliver(now, 0, &p, &[0xfc; 40], false);
+            b.rtc.jitter_release(now);
+        };
+        // Interval 1: 1..=20 + late_by but 20, which is reported lost.
+        for seq in (1..=20 + late_by).filter(|&s| s != 20) {
+            send(&mut b, seq, now);
+            now += Duration::from_millis(20);
+        }
+        let m1 = voip_report(&mut b, ssrc);
+        assert!(m1.loss_rate > 0, "{m1:?}");
+        // 20 arrives now, then the rest.
+        send(&mut b, 20, now);
+        for seq in 21 + late_by..=100 {
+            send(&mut b, seq, now);
+            now += Duration::from_millis(20);
+        }
+        let m2 = voip_report(&mut b, ssrc);
+        // The buffer's own view: (given up as lost, discarded as late).
+        let jb = b
+            .rtc
+            .jitter_buffer_stats(mids[0])
+            .unwrap()
+            .first()
+            .map(|x| (x.1.lost, x.1.late));
+        (m2.loss_rate, m2.discard_rate, jb)
+    };
+    // In time for the buffer (100 ms late against 400 ms): played, so no loss is left.
+    let fixed = Some(PlayoutDelay::fixed(Duration::from_millis(400)));
+    assert_eq!(run(fixed, 5), (0, 0, Some((0, 0))));
+    // Too late for it (600 ms): discarded, so the loss becomes a discard.
+    let (loss, discard, jb) = run(fixed, 30);
+    assert_eq!((loss, jb), (0, Some((1, 1))));
+    assert!(discard > 0);
+    // Without the buffer: the assembler still waits for it after 5 packets (it plays), not
+    // after 30 (it moved on: a discard).
+    assert_eq!(run(None, 5), (0, 0, None));
+    let (loss, discard, _) = run(None, 30);
+    assert_eq!(loss, 0);
+    assert!(discard > 0);
+}
+
+#[test]
+fn opus_band_from_sdp_rates_received_audio() {
+    use akio_rtp::OpusBand;
+    let narrow = |sdp: &str| {
+        sdp.replace(
+            "useinbandfec=1",
+            "useinbandfec=1;sprop-maxcapturerate=16000",
+        )
+    };
+    let (a, b, _, offer, answer, _) = negotiate(
+        ConfigInner::default(),
+        ConfigInner::default(),
+        &[MediaKind::Audio],
+        narrow,
+        same,
+    );
+    assert!(offer.contains("sprop-maxcapturerate=16000"));
+    // b receives a's wideband capture; the answer does not echo a's declaration, so a
+    // still takes b's audio as fullband.
+    assert!(!answer.contains("sprop-maxcapturerate"), "{answer}");
+    assert_eq!(b.rtc.media[0].opus_band, OpusBand::Wideband);
+    assert_eq!(a.rtc.media[0].opus_band, OpusBand::Fullband);
+    // The band picks the model.
+    let codec = b.rtc.media[0]
+        .codecs
+        .iter()
+        .find(|c| c.codec == Codec::Opus)
+        .cloned()
+        .unwrap();
+    let m = akio_rtp::BurstLossModel::default();
+    let rate = |band| {
+        receipts::voip_quality(
+            VoipQuality::default(),
+            None,
+            akio_rtp::DelaySensitivity::Default,
+            Some(&codec),
+            Some(12_000),
+            Some(Duration::from_millis(40)),
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            None,
+            &m,
+            band,
+        )
+    };
+    let (nb, wb, fb) = (
+        rate(OpusBand::Narrowband),
+        rate(OpusBand::Wideband),
+        rate(OpusBand::Fullband),
+    );
+    // Each band its own values (on scales normalized to the narrowband one): at 12 kbit/s
+    // fullband Opus rates lowest of the three.
+    assert!(nb.r_factor.is_some() && wb.r_factor.is_some() && fb.r_factor.is_some());
+    assert!(
+        nb.r_factor != wb.r_factor && wb.r_factor > fb.r_factor,
+        "{nb:?} {wb:?} {fb:?}"
+    );
+    for (sprop, band) in [
+        ("8000", OpusBand::Narrowband),
+        ("12000", OpusBand::Narrowband),
+        ("16000", OpusBand::Wideband),
+        ("24000", OpusBand::Wideband),
+        ("48000", OpusBand::Fullband),
+        ("junk", OpusBand::Fullband),
+    ] {
+        let c = CodecParams {
+            fmtp: format!("minptime=10;sprop-maxcapturerate={sprop}"),
+            ..codec.clone()
+        };
+        assert_eq!(receipts::opus_band(&[c]), band, "{sprop}");
+    }
+}

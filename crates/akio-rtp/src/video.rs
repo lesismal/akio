@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::delay::{DelayEstimator, us};
 use crate::jitter::PlayoutDelay;
+use crate::size::FrameSizeEstimator;
 
 /// Most frames a [`VideoPlayout`] holds.
 pub const VIDEO_PLAYOUT_MAX_FRAMES: usize = 256;
@@ -23,6 +24,9 @@ const MEMORY_US: i64 = 10_000_000;
 /// Media time and arrival time apart by more than this (µs) between two frames: the clock
 /// starts over.
 const RESYNC_US: i64 = 10_000_000;
+/// The shortest wait (µs) for a missing packet once a frame waits behind it: a packet
+/// reordered by a few milliseconds is not given up, however late the frames are.
+const HOLE_WAIT_US: i64 = 10_000;
 
 /// What the frame assembler knows of a frame given to [`VideoPlayout::push`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -79,8 +83,14 @@ pub struct VideoPlayoutStats {
     pub resyncs: u64,
     /// The current playout delay beyond the fastest frame's transit.
     pub delay: Duration,
-    /// The delay the measured jitter, keyframes and repairs ask for.
+    /// The delay the measured jitter, keyframes, frame sizes and repairs ask for.
     pub target: Duration,
+    /// The extra delay a frame as large as the largest recent one takes over an average
+    /// frame, as the frame-size estimator sees it (part of `target`).
+    pub size_delay: Duration,
+    /// Missing packets given up at the playout deadline of the frame waiting behind them
+    /// ([`VideoPlayout::hole_given_up`]).
+    pub holes_given_up: u64,
 }
 
 /// A frame handed out by [`VideoPlayout::pop`].
@@ -125,7 +135,11 @@ struct Entry<T> {
 /// - **Target delay.** The largest of:
 ///   - the 95th percentile of each frame's delay beyond that smallest transit, from a
 ///     histogram of 2 ms buckets forgetting by 0.997 per frame (about 11 s at 30 frames/s),
-///     recomputed every 8 frames and at once for a frame later than it;
+///     recomputed every 8 frames and at once for a frame later than it, **plus the frame
+///     size's share**: a Kalman filter of each frame's delay variation against its size
+///     change (as libwebrtc's jitter estimator) gives the delay per byte, times the largest
+///     recent frame size (decaying by 0.9999 per frame) minus the average one, so a
+///     keyframe has room before it comes, however long ago the last one was;
 ///   - **keyframes**: the delay of either of the two latest keyframes of the last 10 s.
 ///     Keyframes are many times larger than the frames between them, so they take longer to
 ///     arrive, yet are too few to move the percentile, and a late keyframe stalls every frame
@@ -148,6 +162,12 @@ struct Entry<T> {
 ///   dropped (the keyframe does not need them); with no such keyframe the oldest frame is
 ///   dropped and [`take_keyframe_request`](Self::take_keyframe_request) says a keyframe is
 ///   needed. The frame after a drop has `contiguous = false`.
+/// - **Missing packets.** A frame waiting in the frame assembler behind a missing packet
+///   ([`FrameAssembler::blocked`](crate::codec::FrameAssembler::blocked)) has a deadline,
+///   [`hole_deadline`](Self::hole_deadline): its playout instant, but at least a round trip
+///   or the target delay (at least 10 ms) after the wait began. Then the packet is given up
+///   ([`FrameAssembler::give_up_hole`](crate::codec::FrameAssembler::give_up_hole)), so the
+///   picture stalls at most until the next frame is due, not until enough packets came.
 /// - **Clock jumps.** Media time and completion time more than 10 s apart from one frame to
 ///   the next (a restarted sender, a new source behind the same SSRC): the frames buffered go
 ///   out at once and the playout clock starts over.
@@ -183,6 +203,11 @@ pub struct VideoPlayout<T> {
     last_out_us: Option<i64>,
     gap: bool,
     keyframe_needed: bool,
+    size: FrameSizeEstimator,
+    /// `(media µs, completion µs)` of the previous frame of an unrepaired chain.
+    size_prev: Option<(i64, i64)>,
+    /// The frame waiting behind a missing packet: `(its RTP timestamp, when first seen µs)`.
+    hole: Option<(u32, i64)>,
     stats: VideoPlayoutStats,
 }
 
@@ -212,6 +237,9 @@ impl<T> VideoPlayout<T> {
             last_out_us: None,
             gap: false,
             keyframe_needed: false,
+            size: FrameSizeEstimator::default(),
+            size_prev: None,
+            hole: None,
             stats: VideoPlayoutStats::default(),
         }
     }
@@ -336,7 +364,21 @@ impl<T> VideoPlayout<T> {
         if flags.contains(VideoFrameFlags::REPAIRED) {
             self.stats.repaired += 1;
             self.last_repair_us = Some(now_us);
+            // Its size counts, its delay (the repair's) does not; the chain starts over.
+            self.size.break_chain();
+            self.size.update(0, bytes);
+            self.size.break_chain();
+            self.size_prev = None;
         } else {
+            if flags.contains(VideoFrameFlags::DISCONTINUOUS) {
+                self.size.break_chain();
+                self.size_prev = None;
+            }
+            let dv = self
+                .size_prev
+                .map_or(0, |(m, c)| (now_us - c) - (ts_us - m));
+            self.size.update(dv, bytes);
+            self.size_prev = Some((ts_us, now_us));
             let (d, _) = self.est.sample(now_us, now_us - ts_us);
             if keyframe {
                 self.keys.rotate_right(1);
@@ -376,7 +418,8 @@ impl<T> VideoPlayout<T> {
             (Some(rtt), Some(t)) if recent(t) => rtt,
             _ => 0,
         };
-        self.target_us = (self.est.quantile_us().max(key) + repair)
+        let jitter = self.est.quantile_us() + self.size.size_delay_us();
+        self.target_us = (jitter.max(key).saturating_add(repair))
             .clamp(us(self.bounds.min()), us(self.bounds.max()));
     }
 
@@ -441,7 +484,63 @@ impl<T> VideoPlayout<T> {
         self.est.reset_min(now_us);
         self.offset_us = None;
         self.keys = [None; KEYFRAME_DELAYS];
+        self.size.break_chain();
+        self.size_prev = None;
+        self.hole = None;
         self.stats.resyncs += 1;
+    }
+
+    /// The media time (µs) of RTP timestamp `ts` near the latest frame pushed, without
+    /// taking it as a frame.
+    fn peek_media_us(&self, ts: u32) -> Option<i64> {
+        let r = self.last_ts?;
+        let v = r as i64 + i64::from(ts.wrapping_sub(r as u32) as i32);
+        (v >= 0).then(|| self.media_us(v as u64))
+    }
+
+    /// When to give up the missing packet a frame of RTP timestamp `ts` waits behind
+    /// ([`FrameAssembler::blocked`](crate::codec::FrameAssembler::blocked)), asked at `now`:
+    /// that frame's playout instant, but no sooner than a round trip
+    /// ([`set_round_trip`](Self::set_round_trip), room for a retransmission) or the target
+    /// delay (the jitter allowed for) or 10 ms, whichever is longest, after the wait was
+    /// first asked about (a packet reordered behind frames that are already late still gets
+    /// that long).
+    /// Before the
+    /// first frame, and after the clock started over, only that wait applies. Call it again
+    /// while the frame waits (the first call for a new `ts` starts the wait); give the packet
+    /// up ([`FrameAssembler::give_up_hole`](crate::codec::FrameAssembler::give_up_hole)) when
+    /// the instant comes and count it with [`hole_given_up`](Self::hole_given_up).
+    pub fn hole_deadline(&mut self, ts: u32, now: Instant) -> Instant {
+        self.epoch.get_or_insert(now);
+        let now_us = self.since_epoch(now);
+        let seen = match self.hole {
+            Some((t, s)) if t == ts => s,
+            _ => {
+                self.hole = Some((ts, now_us));
+                now_us
+            }
+        };
+        let grace = self
+            .rtt_us
+            .unwrap_or(0)
+            .max(self.target_us)
+            .max(HOLE_WAIT_US)
+            .min(us(self.bounds.max()).max(HOLE_WAIT_US));
+        let mut d = seen + grace;
+        if let (Some(off), Some(t)) = (self.offset_us, self.peek_media_us(ts)) {
+            let due = t
+                .saturating_add(off)
+                .max(self.shortened_us)
+                .max(self.last_out_us.unwrap_or(i64::MIN));
+            d = d.max(due);
+        }
+        self.at(d)
+    }
+
+    /// A missing packet was given up at its [`hole_deadline`](Self::hole_deadline).
+    pub fn hole_given_up(&mut self) {
+        self.hole = None;
+        self.stats.holes_given_up += 1;
     }
 
     /// Whether frames were dropped with no keyframe to resume from since the previous call:
@@ -507,6 +606,7 @@ impl<T> VideoPlayout<T> {
         VideoPlayoutStats {
             delay: self.delay(),
             target: Duration::from_micros(self.target_us.max(0) as u64),
+            size_delay: Duration::from_micros(self.size.size_delay_us().max(0) as u64),
             ..self.stats
         }
     }

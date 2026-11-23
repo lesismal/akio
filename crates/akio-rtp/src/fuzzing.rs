@@ -300,6 +300,19 @@ fn video_playout(data: &[u8], t0: Instant) {
                 flags |= f;
             }
         }
+        // A frame waiting behind a missing packet: its deadline stays put while it waits; once
+        // the packet is given up a new wait starts, no sooner than 10 ms on.
+        if c[2] & 8 != 0 {
+            let next = ts.wrapping_add(540);
+            let d = pb.hole_deadline(next, at);
+            assert_eq!(pb.hole_deadline(next, at), d);
+            if c[2] & 16 != 0 {
+                let before = pb.stats().holes_given_up;
+                pb.hole_given_up();
+                assert_eq!(pb.stats().holes_given_up, before + 1);
+                assert!(pb.hole_deadline(next, at) >= at + Duration::from_millis(10));
+            }
+        }
         // Up to 8 MiB a frame: two fill the buffer's bytes.
         pb.push(ts, at, flags, n as u32, usize::from(c[3]) << 15);
         assert!(pb.len() <= VIDEO_PLAYOUT_MAX_FRAMES);

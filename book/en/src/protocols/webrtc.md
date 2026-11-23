@@ -424,8 +424,9 @@ let cfg = akio_webrtc::rtc_config()
   bitrate (`EModel::for_codec_rate`: PCMU, PCMA, G.722, G.729, G.723.1, AMR-WB, EVS, and Opus,
   which has no ITU-T value: rated fullband by bitrate with P.863-derived values) and its
   concealment in the receiver configuration. The burst and gap durations and the bitrate use the
-  stream's measured packet length (ADR-092), and a packet reported lost that arrives later and is
-  discarded by the jitter buffer counts as discarded. The delay is rated in G.107's default
+  stream's measured packet length (ADR-092). A packet reported lost that arrives later counts as
+  played if it plays, else as discarded. Received Opus is rated in the band of the remote's
+  `sprop-maxcapturerate` (narrowband up to 12000, wideband up to 24000, else fullband). The delay is rated in G.107's default
   delay sensitivity class unless `set_voip_delay_sensitivity(DelaySensitivity::Low)` (or
   `VeryLow`) says the users are known to mind delay less; G.107 asks that such a choice be
   stated with the results. What only the application knows, since it decodes and plays the audio, it
@@ -480,15 +481,18 @@ let cfg = akio_webrtc::rtc_config()
   holds the complete frames of each received video stream until their playout instants, so
   frames that arrive unevenly are shown evenly.
   - Frames reach `on_media_data` in decoding order, each at `d.playout_time`.
-  - The delay follows the 95th percentile of the frames' delay. It also covers the latest
-    keyframes, which take longer to arrive. On a line with NACK, while frames needed
-    retransmission in the last 10 s, it adds a round trip.
+  - The delay follows the 95th percentile of the frames' delay, plus what the largest recent
+    frame takes over an average one (estimated from frame sizes, as libwebrtc does). It also
+    covers the latest keyframes, which take longer to arrive. On a line with NACK, while frames
+    needed retransmission in the last 10 s, it adds a round trip.
   - Late frames go out at once rather than being dropped: later frames are predicted from them.
   - It is bounded (256 frames, 16 MiB). When full, it drops up to a buffered keyframe, or drops
     the oldest frame and asks for a keyframe with a PLI.
   - `Peer::video_playout_stats(mid)` gives its counters. `akio_rtp::VideoPlayout` is the same
     buffer for use without a peer.
-  - A missing packet is still given up by `set_reordering_size`'s count, not by time.
+  - A missing packet is given up when the frame waiting behind it is due, but no sooner than a
+    round trip, the delay or 10 ms after the wait began. The frame after it comes with
+    `contiguous = false`.
 
   ```rust,ignore
   let cfg = rtc_config().set_video_playout_buffer(Some(PlayoutDelay::adaptive(

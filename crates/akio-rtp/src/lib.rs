@@ -86,6 +86,7 @@ mod packet;
 mod probe;
 mod rtcp;
 mod sdes;
+mod size;
 mod stream;
 mod tmmbr;
 mod twcc;
@@ -110,6 +111,8 @@ mod tests_levels;
 mod tests_probe;
 #[cfg(test)]
 mod tests_video;
+#[cfg(test)]
+mod tests_video_holes;
 #[cfg(test)]
 mod tests_voip;
 

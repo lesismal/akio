@@ -592,6 +592,19 @@ impl BurstLossModel {
         true
     }
 
+    /// A packet recorded as lost (in an earlier report) arrived after all and was played:
+    /// one loss less, so the loss rate and [`loss_fraction`](Self::loss_fraction) drop. The
+    /// burst and gap state does not change (the model cannot take a packet back out of the
+    /// run it was counted in), so the burst and gap densities keep it. `false` when no loss
+    /// is left to take back.
+    pub fn on_late_arrival(&mut self) -> bool {
+        if self.loss_count == 0 {
+            return false;
+        }
+        self.loss_count -= 1;
+        true
+    }
+
     /// The fraction of the packets recorded that were lost or discarded.
     #[must_use]
     pub fn loss_fraction(&self) -> f64 {

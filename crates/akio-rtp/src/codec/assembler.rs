@@ -91,7 +91,10 @@ struct Scan {
 /// emitted or given up; it never waits on time. A gap is given up when more than
 /// `max_packets` packets have arrived after it: the assembler skips to the next frame start
 /// and marks the next frame `contiguous = false`. Frames over [`MAX_FRAME_SIZE`] and frames
-/// that fail to depacketize are dropped the same way.
+/// that fail to depacketize are dropped the same way. A caller that keeps time gives a gap up
+/// sooner: [`blocked`](Self::blocked) names the frame waiting behind it,
+/// [`give_up_hole`](Self::give_up_hole) gives it up (a playout buffer does so at that frame's
+/// playout deadline, [`VideoPlayout::hole_deadline`](crate::VideoPlayout::hole_deadline)).
 #[derive(Debug)]
 pub struct FrameAssembler {
     kind: CodecKind,
@@ -367,8 +370,69 @@ impl FrameAssembler {
         self.bytes -= dropped.values().map(|p| p.payload.len()).sum::<usize>();
     }
 
-    /// Gives up the hole at `m` (`head <= m`): skips to the next frame start after it.
-    fn give_up(&mut self, head: u64, m: u64) {
+    /// Whether [`push`](Self::push) would buffer `ext_seq`: it is not a duplicate, nor older
+    /// than what was already emitted or given up.
+    #[must_use]
+    pub fn accepts(&self, ext_seq: u64) -> bool {
+        !(self.next.is_some_and(|n| ext_seq < n)
+            || ext_seq > u64::MAX / 2
+            || self.buf.contains_key(&ext_seq))
+    }
+
+    /// The first missing sequence number the head waits on, with `head`, while packets of a
+    /// later frame are buffered behind it: `None` when nothing waits behind a hole (the head
+    /// frame is still arriving, or nothing is buffered).
+    fn hole(&self) -> Option<(u64, u64)> {
+        let (&first, fp) = self.buf.first_key_value()?;
+        let (_, lp) = self.buf.last_key_value()?;
+        let head = self.next.unwrap_or(first);
+        let Some(p) = self.buf.get(&head) else {
+            return Some((head, head));
+        };
+        if fp.ts == lp.ts && p.start {
+            // One frame, still arriving.
+            return None;
+        }
+        if !(p.start && self.prev.allows(p.ts)) {
+            return Some((head, head));
+        }
+        let mut m = head;
+        while self.buf.contains_key(&m) || self.skipped.contains(&m) {
+            m += 1;
+        }
+        Some((head, m))
+    }
+
+    /// When [`pop`](Self::pop) returns `None` because a packet is missing and a later frame
+    /// is buffered behind it: the extended RTP timestamp of the frame that giving the packet
+    /// up would release next. `None` when no frame waits behind a hole. A playout buffer
+    /// gives the packet up ([`give_up_hole`](Self::give_up_hole)) when that frame is due
+    /// ([`VideoPlayout::hole_deadline`](crate::VideoPlayout::hole_deadline)).
+    #[must_use]
+    pub fn blocked(&self) -> Option<u64> {
+        let (head, m) = self.hole()?;
+        let (found, _) = self.resume_point(head, m);
+        found.and_then(|s| self.buf.get(&s)).map(|p| p.ts)
+    }
+
+    /// Gives up the packet [`blocked`](Self::blocked) says the next frame waits on, as the
+    /// packet count would: the frame it belongs to is dropped and the next one is marked
+    /// `contiguous = false`. `false` when nothing waits behind a hole. Call
+    /// [`pop`](Self::pop) afterwards.
+    pub fn give_up_hole(&mut self) -> bool {
+        if self.blocked().is_none() {
+            return false;
+        }
+        let Some((head, m)) = self.hole() else {
+            return false;
+        };
+        self.give_up(head, m);
+        true
+    }
+
+    /// Where giving up the hole at `m` (`head <= m`) resumes: the next frame start after it
+    /// (`None`: none buffered), and what is known of the packet before that one.
+    fn resume_point(&self, head: u64, m: u64) -> (Option<u64>, Prev) {
         let mut st = if self.kind.is_single_packet() {
             Prev::Aligned
         } else if m > head {
@@ -379,14 +443,18 @@ impl FrameAssembler {
                 (p, _) => p,
             }
         };
-        let mut found = None;
         for (&seq, q) in self.buf.range(m + 1..) {
             if q.start && st.allows(q.ts) {
-                found = Some(seq);
-                break;
+                return (Some(seq), st);
             }
             st = self.after(q);
         }
+        (None, st)
+    }
+
+    /// Gives up the hole at `m` (`head <= m`): skips to the next frame start after it.
+    fn give_up(&mut self, head: u64, m: u64) {
+        let (found, st) = self.resume_point(head, m);
         let to = match found {
             Some(s) => s,
             None => self.buf.last_key_value().map_or(m + 1, |(&s, _)| s + 1),
