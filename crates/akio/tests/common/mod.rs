@@ -16,6 +16,12 @@ pub(crate) fn backend() -> Backend {
     }
 }
 
+/// Listeners default to rounds scheduling (`AKIO_DEFAULT_SCHEDULING=rounds`, ADR-104): tests
+/// of what only per-thread loops do (thread resizing, one metrics row per I/O thread) skip.
+pub(crate) fn rounds() -> bool {
+    std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds")
+}
+
 /// `read` that retries `EINTR`: with an io_uring ring in the same process, a blocking std read
 /// can be interrupted (`read_exact` already retries; a single `read` does not).
 pub(crate) fn read_retry(s: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {

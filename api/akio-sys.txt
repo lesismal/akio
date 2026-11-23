@@ -89,6 +89,7 @@ impl<'s, 'd> core::marker::Unpin for akio_sys::Batch<'s, 'd>
 impl<'s, 'd> core::panic::unwind_safe::RefUnwindSafe for akio_sys::Batch<'s, 'd>
 impl<'s, 'd> !core::panic::unwind_safe::UnwindSafe for akio_sys::Batch<'s, 'd>
 pub struct akio_sys::Event
+pub akio_sys::Event::hup: bool
 pub akio_sys::Event::readable: bool
 pub akio_sys::Event::token: u64
 pub akio_sys::Event::writable: bool
@@ -248,6 +249,8 @@ pub fn akio_sys::Poller::delete(&self, std::os::fd::raw::RawFd)
 pub fn akio_sys::Poller::modify(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
 pub fn akio_sys::Poller::new() -> core::io::error::Result<akio_sys::Poller>
 pub fn akio_sys::Poller::wait(&mut self, &mut alloc::vec::Vec<akio_sys::Event>, core::option::Option<core::time::Duration>) -> core::io::error::Result<()>
+impl akio_sys::Poller
+pub fn akio_sys::Poller::registry(&self) -> akio_sys::Registry
 impl core::fmt::Debug for akio_sys::Poller
 pub fn akio_sys::Poller::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_sys::Poller
@@ -296,6 +299,20 @@ impl core::marker::Sync for akio_sys::RecvInfo
 impl core::marker::Unpin for akio_sys::RecvInfo
 impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::RecvInfo
 impl core::panic::unwind_safe::UnwindSafe for akio_sys::RecvInfo
+pub struct akio_sys::Registry
+impl akio_sys::Registry
+pub fn akio_sys::Registry::add(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
+pub fn akio_sys::Registry::add_edge(&self, std::os::fd::raw::RawFd, u64) -> core::io::error::Result<()>
+pub fn akio_sys::Registry::delete(&self, std::os::fd::raw::RawFd)
+impl core::clone::Clone for akio_sys::Registry
+pub fn akio_sys::Registry::clone(&self) -> Self
+impl core::fmt::Debug for akio_sys::Registry
+pub fn akio_sys::Registry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_sys::Registry
+impl core::marker::Sync for akio_sys::Registry
+impl core::marker::Unpin for akio_sys::Registry
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::Registry
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::Registry
 pub struct akio_sys::SendBatch
 impl akio_sys::SendBatch
 pub fn akio_sys::SendBatch::batch<'d>(&mut self) -> akio_sys::Batch<'_, 'd>

@@ -98,3 +98,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-100: Accept-time balancing of connections over a listener's threads](100-accept-time-balancing.md) (accepted 2026-11-23; updates ADR-001)
 - [ADR-099: Timers on the I/O loop](099-loop-timers.md) (accepted 2026-11-23)
 - [ADR-102: Remembered QUIC routes per UDP peer, and the QPACK dynamic table on by default for HTTP/3 servers](102-quic-peer-routes-qpack-server-default.md) (accepted 2026-11-24)
+- [ADR-104: Two scheduling modes for TCP listeners: per-thread loops and rounds on a worker pool](104-rounds-scheduling.md) (proposed 2026-11-23)

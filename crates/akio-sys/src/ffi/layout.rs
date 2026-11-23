@@ -356,6 +356,7 @@ fn linux_constants() {
         EPOLLERR,
         EPOLLHUP,
         EPOLLRDHUP,
+        EPOLLET,
         EPOLL_CTL_ADD,
         EPOLL_CTL_DEL,
         EPOLL_CTL_MOD,

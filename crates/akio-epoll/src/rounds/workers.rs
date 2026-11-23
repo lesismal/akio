@@ -1,0 +1,443 @@
+//! The worker pool of rounds scheduling (ADR-104): a fixed set of threads, each with its own
+//! queue of connections whose round is due.
+//!
+//! Who waits for readiness depends on the mode:
+//!
+//! * **Dedicated pollers**: poller threads of their own wait in `epoll_wait` and spread the
+//!   connections over the workers' queues in turn.
+//! * **Driver mode** (as Tokio's multi-thread runtime): there are no poller threads. Each poller
+//!   is a *driver* behind a lock; a worker with nothing to run takes a free driver and waits in
+//!   its `epoll_wait`, and the connections it finds go to its own queue (the others steal). A
+//!   busy worker polls the drivers without blocking every [`POLL_INTERVAL`] rounds, so under
+//!   load events are picked up without any thread waking another.
+//!
+//! A worker that runs dry steals half of another's queue, spins a little, and parks. A poster
+//! wakes a parked worker when the queue it pushed to belongs to one, or when no worker is
+//! spinning (so some idle worker comes to steal the job instead of it waiting behind a busy one);
+//! in driver mode, a worker blocked in a driver's `epoll_wait` is woken through the driver's
+//! eventfd when no parked worker is left to wake.
+
+use std::{
+    cell::Cell,
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::{JoinHandle, Thread},
+    time::Duration,
+};
+
+use akio_core::{Config, LoopMeta, LoopStats};
+
+use super::conn::RConn;
+use super::poller::{PollerShared, RLoop};
+
+/// Empty passes over every queue before a worker parks.
+const SPIN: usize = 64;
+/// Driver mode: rounds a busy worker runs between two non-blocking polls of the drivers
+/// (Tokio's `event_interval`).
+const POLL_INTERVAL: u32 = 61;
+
+/// `SPIN`, or `AKIO_ROUNDS_SPIN` (diagnostic knob).
+fn spin_limit() -> usize {
+    std::env::var("AKIO_ROUNDS_SPIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SPIN)
+}
+
+/// `POLL_INTERVAL`, or `AKIO_ROUNDS_POLL_INTERVAL` (diagnostic knob).
+fn poll_interval() -> u32 {
+    std::env::var("AKIO_ROUNDS_POLL_INTERVAL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &u32| n > 0)
+        .unwrap_or(POLL_INTERVAL)
+}
+
+static NEXT_POOL_UID: AtomicUsize = AtomicUsize::new(1);
+
+thread_local! {
+    /// `(pool uid, worker index)` of the worker running on this thread (uid 0: not a worker).
+    static CURRENT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+struct Shard {
+    q: Mutex<VecDeque<Arc<RConn>>>,
+    /// `q.len()`, readable without the lock (emptiness checks of stealers and parkers).
+    len: AtomicUsize,
+    /// The worker is parked (or about to): a poster that swaps it to false unparks it.
+    parked: AtomicBool,
+    thread: OnceLock<Thread>,
+}
+
+impl Shard {
+    fn push(&self, c: Arc<RConn>) {
+        let mut q = self.q.lock().unwrap_or_else(|p| p.into_inner());
+        q.push_back(c);
+        self.len.store(q.len(), Ordering::SeqCst);
+    }
+
+    fn pop(&self) -> Option<Arc<RConn>> {
+        if self.len.load(Ordering::SeqCst) == 0 {
+            return None;
+        }
+        let mut q = self.q.lock().unwrap_or_else(|p| p.into_inner());
+        let c = q.pop_front();
+        self.len.store(q.len(), Ordering::SeqCst);
+        c
+    }
+
+    /// Takes half of the queue (at least one): the first to run now, the rest into `into`.
+    fn steal_half(&self, into: &Shard) -> Option<Arc<RConn>> {
+        if self.len.load(Ordering::SeqCst) == 0 {
+            return None;
+        }
+        let mut taken = {
+            let mut q = self.q.lock().unwrap_or_else(|p| p.into_inner());
+            let n = q.len().div_ceil(2);
+            let taken: VecDeque<Arc<RConn>> = q.drain(..n).collect();
+            self.len.store(q.len(), Ordering::SeqCst);
+            taken
+        };
+        let first = taken.pop_front();
+        if !taken.is_empty() {
+            let mut q = into.q.lock().unwrap_or_else(|p| p.into_inner());
+            q.extend(taken);
+            into.len.store(q.len(), Ordering::SeqCst);
+        }
+        first
+    }
+
+    fn wake(&self) -> bool {
+        if self.parked.swap(false, Ordering::SeqCst) {
+            if let Some(t) = self.thread.get() {
+                t.unpark();
+            }
+            return true;
+        }
+        false
+    }
+}
+
+/// A poller driven by the workers (driver mode).
+pub(crate) struct Driver {
+    pub(crate) lp: Mutex<RLoop>,
+    pub(crate) shared: Arc<PollerShared>,
+    /// Its loop finished (shut down and drained): nobody polls it any more.
+    pub(crate) done: AtomicBool,
+}
+
+/// The pool. Built by the group, started with [`Workers::start`].
+pub(crate) struct Workers {
+    uid: usize,
+    shards: Box<[Shard]>,
+    rr: AtomicUsize,
+    spinning: AtomicUsize,
+    sleeping: AtomicUsize,
+    /// Workers blocked in a driver's `epoll_wait`.
+    in_poll: AtomicUsize,
+    stop: AtomicBool,
+    handles: Mutex<Vec<JoinHandle<()>>>,
+    stats: Vec<Arc<LoopStats>>,
+    spin: usize,
+    interval: u32,
+    /// Driver mode: the pollers the workers drive (empty with dedicated pollers). Set once
+    /// before the workers start, cleared when they stop (it holds `Arc`s back to this pool).
+    drivers: Mutex<Vec<Arc<Driver>>>,
+    driven: OnceLock<Vec<Arc<Driver>>>,
+}
+
+impl std::fmt::Debug for Workers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Workers")
+            .field("n", &self.shards.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a round needs from the worker running it.
+pub(crate) struct WorkerCtx {
+    pub(crate) scratch: Vec<u8>,
+    pub(crate) stats: Arc<LoopStats>,
+    pub(crate) workers: Arc<Workers>,
+}
+
+impl Workers {
+    /// `n` workers (at least 1), counted in `cfg`'s telemetry as threads of `listener`.
+    pub(crate) fn new(
+        n: usize,
+        cfg: &Config,
+        listener: Option<std::net::SocketAddr>,
+    ) -> Arc<Workers> {
+        let n = n.max(1);
+        let stats: Vec<Arc<LoopStats>> = (0..n)
+            .map(|i| {
+                let st = Arc::new(LoopStats::new(LoopMeta::new(super::BACKEND, listener, i)));
+                // Workers own no connections: telemetry commands (connection table, reload)
+                // are answered by the pollers, so a worker drops them (answering "nothing").
+                cfg.telemetry.register_loop(st.clone(), Box::new(drop));
+                st
+            })
+            .collect();
+        Arc::new(Workers {
+            uid: NEXT_POOL_UID.fetch_add(1, Ordering::Relaxed),
+            shards: (0..n)
+                .map(|_| Shard {
+                    q: Mutex::new(VecDeque::new()),
+                    len: AtomicUsize::new(0),
+                    parked: AtomicBool::new(false),
+                    thread: OnceLock::new(),
+                })
+                .collect(),
+            rr: AtomicUsize::new(0),
+            spinning: AtomicUsize::new(0),
+            sleeping: AtomicUsize::new(0),
+            in_poll: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            handles: Mutex::new(Vec::new()),
+            stats,
+            spin: {
+                let _ = super::trace::on();
+                spin_limit()
+            },
+            interval: poll_interval(),
+            drivers: Mutex::new(Vec::new()),
+            driven: OnceLock::new(),
+        })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// Driver mode: the workers poll `drivers` themselves. Call before [`start`](Self::start).
+    pub(crate) fn set_drivers(&self, drivers: Vec<Arc<Driver>>) {
+        *self.drivers.lock().unwrap_or_else(|p| p.into_inner()) = drivers.clone();
+        let _ = self.driven.set(drivers);
+    }
+
+    fn drivers(&self) -> &[Arc<Driver>] {
+        self.driven.get().map_or(&[], Vec::as_slice)
+    }
+
+    /// Driver mode: every driver finished.
+    pub(crate) fn drivers_done(&self) -> bool {
+        self.drivers()
+            .iter()
+            .all(|d| d.done.load(Ordering::Acquire))
+    }
+
+    /// Spawns the threads (idempotent).
+    pub(crate) fn start(self: &Arc<Self>, cfg: &Arc<Config>) -> std::io::Result<()> {
+        let mut hs = self.handles.lock().unwrap_or_else(|p| p.into_inner());
+        if !hs.is_empty() {
+            return Ok(());
+        }
+        for i in 0..self.shards.len() {
+            let me = self.clone();
+            let cfg = cfg.clone();
+            self.stats[i].set_running(true);
+            let h = std::thread::Builder::new()
+                .name(format!("akio-io-w{i}"))
+                .spawn(move || me.run(i, &cfg))?;
+            hs.push(h);
+        }
+        Ok(())
+    }
+
+    /// Stops the threads once their queues are empty and joins them.
+    pub(crate) fn stop_and_join(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        for s in &self.shards {
+            s.wake();
+        }
+        for d in self.drivers() {
+            d.shared.wake();
+        }
+        let hs = std::mem::take(&mut *self.handles.lock().unwrap_or_else(|p| p.into_inner()));
+        for h in hs {
+            let _ = h.join();
+        }
+        for st in &self.stats {
+            st.set_running(false);
+        }
+        // Break the cycle drivers -> loops -> this pool.
+        self.drivers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
+
+    /// Queues `c` for a round: on the calling worker's own queue, else on the next in turn.
+    pub(crate) fn submit(&self, c: Arc<RConn>) {
+        c.queued_ns.store(super::trace::now_ns(), Ordering::Relaxed);
+        let (uid, me) = CURRENT.with(Cell::get);
+        let own = uid == self.uid;
+        let i = if own {
+            me
+        } else {
+            self.rr.fetch_add(1, Ordering::Relaxed) % self.shards.len()
+        };
+        let shard = &self.shards[i];
+        shard.push(c);
+        if !own && shard.wake() {
+            return;
+        }
+        // The queue's owner is busy (or is us): get an idle worker to steal, unless one is
+        // already spinning and will find it.
+        if self.spinning.load(Ordering::SeqCst) == 0 {
+            if self.sleeping.load(Ordering::SeqCst) > 0 && self.wake_one(i) {
+                return;
+            }
+            if !own && self.in_poll.load(Ordering::SeqCst) > 0 {
+                // Driver mode with every idle worker in `epoll_wait`: interrupt one.
+                if let Some(d) = self.drivers().first() {
+                    d.shared.wake();
+                }
+            }
+        }
+    }
+
+    /// Wakes one parked worker, starting the search after `from`.
+    fn wake_one(&self, from: usize) -> bool {
+        let n = self.shards.len();
+        for k in 1..=n {
+            if self.shards[(from + k) % n].wake() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn find(&self, me: usize) -> Option<Arc<RConn>> {
+        if let Some(c) = self.shards[me].pop() {
+            return Some(c);
+        }
+        let n = self.shards.len();
+        for k in 1..n {
+            if let Some(c) = self.shards[(me + k) % n].steal_half(&self.shards[me]) {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn any_queued(&self) -> bool {
+        self.shards
+            .iter()
+            .any(|s| s.len.load(Ordering::SeqCst) != 0)
+    }
+
+    /// Driver mode: polls a free driver. `block`: wait for events (an idle worker), else just
+    /// collect what is ready. True if a driver was polled.
+    fn poll_drivers(&self, block: bool) -> bool {
+        for d in self.drivers() {
+            if d.done.load(Ordering::Acquire) {
+                continue;
+            }
+            let Ok(mut lp) = d.lp.try_lock() else {
+                continue;
+            };
+            let timeout = if block {
+                lp.next_timeout()
+            } else {
+                Some(Duration::ZERO)
+            };
+            if block {
+                self.in_poll.fetch_add(1, Ordering::SeqCst);
+            }
+            let finished = lp.poll_once(timeout);
+            if block {
+                self.in_poll.fetch_sub(1, Ordering::SeqCst);
+            }
+            if finished {
+                d.done.store(true, Ordering::Release);
+                d.shared.stats.set_running(false);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn run(self: Arc<Self>, me: usize, cfg: &Arc<Config>) {
+        CURRENT.with(|c| c.set((self.uid, me)));
+        let shard = &self.shards[me];
+        let _ = shard.thread.set(std::thread::current());
+        let mut ctx = WorkerCtx {
+            scratch: vec![0; cfg.telemetry.live().read_buffer()],
+            stats: self.stats[me].clone(),
+            workers: self.clone(),
+        };
+        let driving = !self.drivers().is_empty();
+        let mut since_poll = 0u32;
+        loop {
+            if let Some(c) = self.find(me) {
+                ctx.stats.iterations.add_local(1);
+                c.run_round(&mut ctx);
+                if driving {
+                    since_poll += 1;
+                    if since_poll >= self.interval {
+                        since_poll = 0;
+                        self.poll_drivers(false);
+                    }
+                }
+                continue;
+            }
+            since_poll = 0;
+            if driving
+                && self.poll_drivers(false)
+                && self.shards[me].len.load(Ordering::SeqCst) != 0
+            {
+                continue;
+            }
+            // Spin a little: under load, more work arrives within microseconds, and a park /
+            // unpark pair costs more than that.
+            self.spinning.fetch_add(1, Ordering::SeqCst);
+            let mut found = None;
+            for _ in 0..self.spin {
+                if let Some(c) = self.find(me) {
+                    found = Some(c);
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            self.spinning.fetch_sub(1, Ordering::SeqCst);
+            if let Some(c) = found {
+                ctx.stats.iterations.add_local(1);
+                c.run_round(&mut ctx);
+                continue;
+            }
+            // Nothing to run: wait for events in a free driver, if there is one.
+            if driving && !self.drivers_done() && self.poll_drivers(true) {
+                continue;
+            }
+            if self.stop.load(Ordering::SeqCst) {
+                break;
+            }
+            // Park. Announce it first, then look once more: a poster either sees `parked` (and
+            // wakes us) or pushed before our last look (and we see the job).
+            self.sleeping.fetch_add(1, Ordering::SeqCst);
+            shard.parked.store(true, Ordering::SeqCst);
+            if self.any_queued() || self.stop.load(Ordering::SeqCst) {
+                shard.parked.store(false, Ordering::SeqCst);
+            }
+            if driving {
+                // Rounds that find events wake parked workers, and an idle worker takes a free
+                // driver before it parks, so a driver is not normally left unpolled; the timeout
+                // bounds the case where its last poller went into a long handler meanwhile.
+                if shard.parked.load(Ordering::SeqCst) {
+                    std::thread::park_timeout(Duration::from_millis(10));
+                    shard.parked.store(false, Ordering::SeqCst);
+                }
+            } else {
+                while shard.parked.load(Ordering::SeqCst) {
+                    std::thread::park();
+                }
+            }
+            self.sleeping.fetch_sub(1, Ordering::SeqCst);
+        }
+        CURRENT.with(|c| c.set((0, 0)));
+    }
+}
