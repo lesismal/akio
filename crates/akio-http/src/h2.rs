@@ -802,6 +802,8 @@ impl Core {
                         st.sent_end = true;
                         self.conn_send -= n as i64;
                         frame(&mut self.out, ty::DATA, flag::END_STREAM, sid, &resp.body);
+                        // Copied out: the buffer is the thread's spare body buffer.
+                        crate::message::recycle_body(resp.body);
                         self.finish_if_done(sid);
                         self.flush();
                         return;

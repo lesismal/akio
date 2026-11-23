@@ -51,6 +51,11 @@ impl<'a> Reader<'a> {
         self.pos
     }
 
+    /// The bytes read since position `start`.
+    pub fn since(&self, start: usize) -> &'a [u8] {
+        &self.buf[start..self.pos]
+    }
+
     pub fn remaining(&self) -> usize {
         self.buf.len() - self.pos
     }

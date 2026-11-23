@@ -6,8 +6,10 @@
 //!   (bounded), which is fine for the producer/consumer split of send queues.
 //! * [`SharedBuf`] is a cheaply clonable, immutable buffer for broadcast (`send_shared`).
 //! * `slab` (`#[doc(hidden)]`, backend-facing): receive slabs viewed through disjoint owned
-//!   handles, so a received datagram reaches a protocol layer without a copy (ADR-024). The
-//!   crate's only `unsafe` lives there.
+//!   handles, so a received datagram reaches a protocol layer without a copy (ADR-024).
+//! * `text` (`#[doc(hidden)]`, for akio-http): recognises a `&str` passed as
+//!   `impl Into<String>`, so akio-http can copy it into a buffer it reuses instead of making a
+//!   new `String` (ADR-081). `slab` and `text` hold the crate's only `unsafe`.
 //!
 //! Guide: [Architecture: memory and buffers](https://lesismal.github.io/akio/en/architecture.html#5-memory-and-buffers)
 //! (中文: [架构：内存与缓冲区](https://lesismal.github.io/akio/zh-CN/architecture.html)).
@@ -17,6 +19,8 @@ use std::{cell::RefCell, ops::Deref, sync::Arc};
 
 #[doc(hidden)]
 pub mod slab;
+#[doc(hidden)]
+pub mod text;
 
 /// Capacities handed out by the pool, ascending.
 pub const CLASSES: [usize; 5] = [512, 4 << 10, 16 << 10, 64 << 10, 256 << 10];

@@ -29,6 +29,15 @@ fn setup(cfg: H3Config) -> (Arc<Engine>, H3Client) {
         })
         .get("/h/:n", echo_fields)
         .get("/hd/:n", echo_fields)
+        .get("/s/:len", |ctx: &mut Context| {
+            let len: usize = ctx.param("len").unwrap().parse().unwrap();
+            ctx.text(200, text_of(len));
+        })
+        .get("/sd/:len", |ctx: &mut Context| {
+            let len: usize = ctx.param("len").unwrap().parse().unwrap();
+            let d = ctx.detach().unwrap();
+            std::thread::spawn(move || d.respond(akio_http::Response::text(200, text_of(len))));
+        })
         .get("/user/:id", |ctx: &mut Context| {
             let id = ctx.param("id").unwrap_or("?").to_owned();
             let v = format!("{:?}", ctx.req().version);
@@ -182,6 +191,76 @@ fn heads_reuse_header_storage_and_stay_exact() {
                 assert_eq!(got, (i < n).then_some(v.as_str()), "{p}");
             }
             assert_eq!(r.headers.get_all("content-type").count(), 1, "{p}");
+        }
+    }
+}
+
+/// A `&'static str` of `len` bytes (a repeating pattern, so a byte out of place shows).
+fn text_of(len: usize) -> &'static str {
+    static S: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    &S.get_or_init(|| {
+        (0..400_000)
+            .map(|i| char::from(b'a' + (i % 23) as u8))
+            .collect()
+    })[..len]
+}
+
+/// Body lengths around the pool's size classes, for `text(200, &str)` bodies (ADR-081).
+const TEXT_LENS: [usize; 9] = [13, 0, 511, 512, 513, 5000, 300_000, 1, 16384];
+
+/// `text(200, &str)` bodies in pool buffers (ADR-081): every size, sent here or from another
+/// thread, arrives exactly, one request after another on a connection.
+#[test]
+fn text_bodies_reuse_pool_buffers_and_stay_exact() {
+    let (_e, c) = setup(H3Config::default());
+    for round in 0..3 {
+        for len in TEXT_LENS {
+            let p = format!("/{}/{len}", if round == 1 { "sd" } else { "s" });
+            let r = c
+                .request_blocking(Method::Get, &p, &Headers::new(), Vec::new(), T)
+                .unwrap();
+            assert_eq!(r.status, 200, "{p}");
+            assert!(r.body == text_of(len).as_bytes(), "{p}: body differs");
+        }
+    }
+}
+
+/// The client builds a response's headers in the storage of a response dropped on its thread
+/// before (ADR-081): responses checked and dropped in the callback (on the client's thread),
+/// one after another with heads of every size, each carry exactly their own fields.
+#[test]
+fn client_response_heads_reuse_storage_and_stay_exact() {
+    let (_e, c) = setup(H3Config::default());
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    for _ in 0..3 {
+        for (p, fs) in field_cases() {
+            let mut h = Headers::new();
+            for (n, v) in &fs {
+                h.append(n, v);
+            }
+            let (body, n) = expected(&p, &fs);
+            let tx = tx.clone();
+            let path = p.clone();
+            c.request(Method::Get, &path, &h, Vec::new(), move |r| {
+                let check = || -> Result<(), String> {
+                    let r = r.map_err(|e| format!("{p}: {e:?}"))?;
+                    if r.body != body.as_bytes() {
+                        return Err(format!("{p}: body"));
+                    }
+                    for i in 0..8 {
+                        let v = format!("v{i}");
+                        if r.headers.get(&format!("r-{i}")) != (i < n).then_some(v.as_str()) {
+                            return Err(format!("{p}: r-{i}"));
+                        }
+                    }
+                    if r.headers.get_all("content-type").count() != 1 {
+                        return Err(format!("{p}: content-type"));
+                    }
+                    Ok(())
+                };
+                let _ = tx.send(check());
+            });
+            rx.recv_timeout(T).unwrap().unwrap();
         }
     }
 }

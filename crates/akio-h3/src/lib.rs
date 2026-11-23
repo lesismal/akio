@@ -1811,6 +1811,7 @@ impl Sink<'_> {
                 self.put_trailers(out, trailers.as_ref());
             });
             akio_http::transport::recycle_response_headers(resp.headers);
+            akio_http::transport::recycle_response_body(resp.body);
             self.send_and_finish(out);
             return;
         }
@@ -1840,6 +1841,7 @@ impl Sink<'_> {
                 if !resp.body.is_empty() {
                     frame::put_frame(&mut out, frame::DATA, &resp.body);
                 }
+                akio_http::transport::recycle_response_body(std::mem::take(&mut resp.body));
             } else {
                 // A large body in memory: the head with the DATA frame header, then the body
                 // as it is; whatever the send buffer refuses waits for room.

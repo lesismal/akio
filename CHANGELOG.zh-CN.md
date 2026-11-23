@@ -120,6 +120,28 @@ ADR-091，只有新增：
   交还。与 main 的中继 A/B：没有可测出的变化；带 DSCP 的数据报与带 ECN 标记的开销相同
   （docs/BENCHMARKS.zh-CN.md）。
 
+### 变更：服务端每个 HTTP 请求不再分配，HTTP/3 客户端和 QUIC 热路径分配更少（akio-http、akio-h3、akio-quic、akio-core、akio-epoll、akio-buf；ADR-081 更新）
+
+docs/adr/081-per-thread-head-storage.zh-CN.md，2026-11-23 的更新。无公开 API 变化，快照不变。
+
+- **`text` 响应体按线程复用缓冲区。** `Response::text` / `Context::text` 传入 `&str` 时，把它复制进
+  本线程的备用响应体缓冲区，而不是生成 `String`（其他类型照旧转换；`String` 被移动）。HTTP/1.1、
+  HTTP/2 和 HTTP/3 把响应体复制进输出后交回缓冲区（不超过 4 KiB）。
+- **HTTP/3 客户端在复用的存储里构建响应头。** 被丢弃的 `Headers` 存储会填充本线程空着的响应备用，所以
+  在客户端回调里读完并丢弃的响应把存储借给下一个响应。响应体仍是调用方的 `Vec<u8>`。
+- **QUIC：** 数据报缓冲区取自 akio-buf 的池；ACK 帧原地读取，不用向量；每个连接保留一个确认列表；备用
+  帧列表最多保留到在途包数。
+- **UDP flush（akio-core、akio-epoll）：** `sendmmsg` 映射和 GSO 分片不用堆向量，单连接 flush 不构建
+  列表，epoll 循环保留连接列表。
+- 隐藏的新增：`akio_buf::text::as_str`、`akio_http::transport::{response_headers,
+  recycle_response_body}`；akio-core 隐藏的 `ConnInner::flush_datagram_peers` 对连接句柄泛型化。
+- 分配器调用（bpftrace，gpu51）：HTTP/1.1、pipeline 和 h2c 每请求 1.0 → 0（epoll 和 io_uring）；
+  `quic-bench h3` 两端 6.0 → 2.03（客户端的响应体和基准程序的请求回调）；QUIC bulk 每 MB 482 → 21.5。
+- gpu51 上 `quiet.sh` 下的同轮 A/B（7 轮，取中位数）：服务端每请求用户态周期 HTTP/1.1 0.975 倍、
+  pipeline 1.004 倍（噪声）、h2c 0.989 倍；req/s 1.003 / 1.000 / 1.008 倍；HTTP/3 req/s 1.005 倍
+  （指令 0.980 倍）；QUIC bulk 1.025 倍。第一版从 akio-buf 的池取响应体，使 pipeline HTTP/1.1 的周期
+  多了 3.3%，已替换。
+
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
 ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：

@@ -116,6 +116,11 @@ pub(crate) enum SentFrame {
     PathChallenge,
 }
 
+/// Spare frame lists kept however few packets are in flight (see `recycle_frames`).
+const SPARE_FRAMES_MIN: usize = 64;
+/// The largest acknowledgment list kept for the next acknowledgment, in packets.
+const ACKED_SCRATCH_MAX: usize = 1024;
+
 #[derive(Clone, Debug)]
 pub(crate) struct Sent {
     time: Instant,
@@ -567,6 +572,8 @@ pub struct Connection {
     compat: Option<Box<Compat>>,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
+    /// The list an acknowledgment collects its packets in, kept for the next one.
+    acked_scratch: Vec<(u64, Sent)>,
     /// 0-RTT packet protection: the client's write keys, the server's read keys.
     zero_rtt: Option<DirKeys>,
     /// The server's transport parameters remembered with the ticket (client, 0-RTT).
@@ -714,6 +721,7 @@ impl Connection {
             orig_initial: None,
             compat: None,
             spare_frames: Vec::new(),
+            acked_scratch: Vec::new(),
             zero_rtt: None,
             remembered: None,
             zero_rtt_last_pn: None,

@@ -158,12 +158,28 @@ pub fn request_headers(fields: usize, bytes: usize) -> Headers {
     Headers::spare(Spare::Req, fields, bytes)
 }
 
+/// Storage for the headers of a response a client parsed, as [`request_headers`] for requests:
+/// the thread's response spare, which a response dropped on this thread (by the caller it was
+/// handed to) refills (ADR-081).
+#[inline]
+pub fn response_headers(fields: usize, bytes: usize) -> Headers {
+    Headers::spare(Spare::Resp, fields, bytes)
+}
+
 /// Hands the headers of a response the transport has finished encoding back to this thread,
 /// for the next response built with [`Response::with_body`] (or [`Response::text`]) here, as
 /// HTTP/1.1 and HTTP/2 do after writing a response head.
 #[inline]
 pub fn recycle_response_headers(headers: Headers) {
     headers.recycle(Spare::Resp);
+}
+
+/// Hands the body of a response the transport has copied into its output back to this thread,
+/// as HTTP/1.1 and HTTP/2 do: its buffer (up to 4 KiB) becomes the spare that the next
+/// [`Response::text`] given a `&str` here copies into (ADR-081).
+#[inline]
+pub fn recycle_response_body(body: Vec<u8>) {
+    crate::message::recycle_body(body);
 }
 
 #[inline]

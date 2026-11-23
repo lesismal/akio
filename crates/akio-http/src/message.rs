@@ -69,8 +69,55 @@ impl Method {
 /// many fields it holds (a parsed request head used to cost two per field).
 #[derive(Clone, Default)]
 pub struct Headers {
+    s: Store,
+}
+
+/// What [`Headers`] holds. Dropping storage worth keeping refills this thread's empty response
+/// spare (see [`Headers::spare`]), so a response a client hands its caller, who drops it, lends
+/// its storage to the next response parsed on the thread (ADR-081). A private type, so the
+/// `Drop` is not part of `Headers`' API.
+#[derive(Clone, Default)]
+struct Store {
     buf: String,
     fields: Spans,
+}
+
+impl Drop for Store {
+    #[inline]
+    fn drop(&mut self) {
+        // The usual case on servers: the storage was already handed back (`mem::take`).
+        if self.buf.capacity() != 0 {
+            self.keep();
+        }
+    }
+}
+
+impl Store {
+    /// Moves the storage into this thread's response spare if that is empty and the storage
+    /// not too large (an occupied spare stays: no cascade of drops).
+    fn keep(&mut self) {
+        if self.buf.capacity() > SPARE_HEADERS_MAX || self.fields.heap_capacity() > SPARE_FIELDS_MAX
+        {
+            return;
+        }
+        // `try_with`: not during the thread's TLS teardown (the spare's own drop lands here).
+        let _ = SPARE_RESP.try_with(|c| {
+            let cur = c.take();
+            if cur.s.buf.capacity() != 0 {
+                c.set(cur);
+                return;
+            }
+            let mut h = Headers {
+                s: Store {
+                    buf: std::mem::take(&mut self.buf),
+                    fields: std::mem::take(&mut self.fields),
+                },
+            };
+            h.s.buf.clear();
+            h.s.fields.clear();
+            c.set(h);
+        });
+    }
 }
 
 /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
@@ -217,6 +264,38 @@ thread_local! {
     /// The storage of the last response head this thread encoded, for the next response built
     /// with [`Response::with_body`] (and [`Response::text`]) on this thread.
     static SPARE_RESP: std::cell::Cell<Headers> = const { std::cell::Cell::new(Headers::EMPTY) };
+    /// The buffer of the last response body this thread copied out, emptied, for the next
+    /// [`Response::text`] given a `&str` here.
+    static SPARE_BODY: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// A spare body buffer larger than this is not kept.
+const SPARE_BODY_MAX: usize = 4096;
+
+/// The bytes of a [`Response::text`] body: a `&str` copied into this thread's spare body
+/// buffer (allocating only when there is none or it is too small), anything else through
+/// `Into<String>` as before.
+#[inline]
+fn text_body<T: Into<String>>(v: T) -> Vec<u8> {
+    match akio_buf::text::as_str(&v) {
+        Some("") => Vec::new(),
+        Some(s) => {
+            let mut b = SPARE_BODY.with(std::cell::Cell::take);
+            b.extend_from_slice(s.as_bytes());
+            b
+        }
+        None => v.into().into_bytes(),
+    }
+}
+
+/// Keeps `body`, which the transport has copied out, as this thread's spare body buffer
+/// (replacing the one there), unless it is empty or larger than worth keeping.
+#[inline]
+pub(crate) fn recycle_body(mut body: Vec<u8>) {
+    if body.capacity() != 0 && body.capacity() <= SPARE_BODY_MAX {
+        body.clear();
+        SPARE_BODY.with(|c| c.set(body));
+    }
 }
 
 /// Which spare a [`Headers`] storage comes from and goes back to.
@@ -240,8 +319,10 @@ impl Spare {
 
 impl Headers {
     const EMPTY: Headers = Headers {
-        buf: String::new(),
-        fields: Spans::Inline(0, [[0; 3]; INLINE]),
+        s: Store {
+            buf: String::new(),
+            fields: Spans::Inline(0, [[0; 3]; INLINE]),
+        },
     };
 
     /// An empty set.
@@ -255,8 +336,8 @@ impl Headers {
     #[inline]
     pub(crate) fn spare(from: Spare, fields: usize, bytes: usize) -> Headers {
         let mut h = from.with(std::cell::Cell::take);
-        h.buf.reserve(bytes);
-        h.fields.reserve(fields);
+        h.s.buf.reserve(bytes);
+        h.s.fields.reserve(fields);
         h
     }
 
@@ -264,28 +345,30 @@ impl Headers {
     /// thread, unless it is larger than worth keeping.
     #[inline]
     pub(crate) fn recycle(mut self, to: Spare) {
-        if self.buf.capacity() == 0
-            || self.buf.capacity() > SPARE_HEADERS_MAX
-            || self.fields.heap_capacity() > SPARE_FIELDS_MAX
+        if self.s.buf.capacity() == 0
+            || self.s.buf.capacity() > SPARE_HEADERS_MAX
+            || self.s.fields.heap_capacity() > SPARE_FIELDS_MAX
         {
             return;
         }
-        self.buf.clear();
-        self.fields.clear();
+        self.s.buf.clear();
+        self.s.fields.clear();
         to.with(|c| c.set(self));
     }
 
     /// An empty set with room for `fields` fields totalling `bytes` bytes of names and values.
     pub fn with_capacity(fields: usize, bytes: usize) -> Headers {
         Headers {
-            buf: String::with_capacity(bytes),
-            fields: Spans::with_capacity(fields),
+            s: Store {
+                buf: String::with_capacity(bytes),
+                fields: Spans::with_capacity(fields),
+            },
         }
     }
 
     #[inline]
     fn field(&self, f: &Span) -> (&str, &str) {
-        (&self.buf[f.0..f.1], &self.buf[f.1..f.2])
+        (&self.s.buf[f.0..f.1], &self.s.buf[f.1..f.2])
     }
 
     /// The first value of `name`.
@@ -310,11 +393,11 @@ impl Headers {
 
     /// Adds a field after the existing ones.
     pub fn append(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
-        let a = self.buf.len();
-        self.buf.push_str(name.as_ref());
-        let b = self.buf.len();
-        self.buf.push_str(value.as_ref());
-        self.fields.push((a, b, self.buf.len()));
+        let a = self.s.buf.len();
+        self.s.buf.push_str(name.as_ref());
+        let b = self.s.buf.len();
+        self.s.buf.push_str(value.as_ref());
+        self.s.fields.push((a, b, self.s.buf.len()));
     }
 
     /// Replaces every field called `name` with one.
@@ -326,17 +409,18 @@ impl Headers {
 
     /// Removes every field called `name`.
     pub fn remove(&mut self, name: &str) {
-        let before = self.fields.len();
-        let buf = &self.buf;
-        self.fields
+        let before = self.s.fields.len();
+        let buf = &self.s.buf;
+        self.s
+            .fields
             .retain(|f| !buf[f.0..f.1].eq_ignore_ascii_case(name));
-        if self.fields.len() == before {
+        if self.s.fields.len() == before {
             return;
         }
         // Reclaim the removed bytes once they are most of the buffer.
-        let live: usize = self.fields.iter().map(|f| f.2 - f.0).sum();
-        if self.buf.len() > 2 * live + 256 {
-            let mut c = Headers::with_capacity(self.fields.len(), live);
+        let live: usize = self.s.fields.iter().map(|f| f.2 - f.0).sum();
+        if self.s.buf.len() > 2 * live + 256 {
+            let mut c = Headers::with_capacity(self.s.fields.len(), live);
             for (n, v) in self.iter() {
                 c.append(n, v);
             }
@@ -346,17 +430,17 @@ impl Headers {
 
     /// All fields in order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.fields.iter().map(|f| self.field(&f))
+        self.s.fields.iter().map(|f| self.field(&f))
     }
 
     /// Number of fields.
     pub fn len(&self) -> usize {
-        self.fields.len()
+        self.s.fields.len()
     }
 
     /// Whether there are no fields.
     pub fn is_empty(&self) -> bool {
-        self.fields.len() == 0
+        self.s.fields.len() == 0
     }
 }
 
@@ -518,11 +602,9 @@ impl Response {
 
     /// A `text/plain; charset=utf-8` response.
     pub fn text(status: u16, body: impl Into<String>) -> Response {
-        Response::with_body(
-            status,
-            "text/plain; charset=utf-8",
-            body.into().into_bytes(),
-        )
+        // A `&str` is copied into this thread's spare body buffer instead of a new `String`;
+        // the transport gives the buffer back once the body is in its output (ADR-081).
+        Response::with_body(status, "text/plain; charset=utf-8", text_body(body))
     }
 
     /// A response with the given content type and body.
@@ -721,31 +803,105 @@ mod tests {
         for i in 0..5 {
             h.append(format!("n{i}"), "v");
         }
-        let (cap, ptr) = (h.buf.capacity(), h.buf.as_ptr());
-        assert!(matches!(h.fields, Spans::Heap(_)));
+        let (cap, ptr) = (h.s.buf.capacity(), h.s.buf.as_ptr());
+        assert!(matches!(h.s.fields, Spans::Heap(_)));
         h.recycle(Spare::Req);
         let mut h = Headers::spare(Spare::Req, 1, 10);
-        assert!(h.is_empty() && h.buf.is_empty());
-        assert_eq!((h.buf.capacity(), h.buf.as_ptr()), (cap, ptr));
+        assert!(h.is_empty() && h.s.buf.is_empty());
+        assert_eq!((h.s.buf.capacity(), h.s.buf.as_ptr()), (cap, ptr));
         h.append("a", "1");
         assert_eq!(h.iter().collect::<Vec<_>>(), [("a", "1")]);
         h.recycle(Spare::Req);
         // The response spare is a different one.
         let r = Headers::spare(Spare::Resp, 1, 10);
-        assert_ne!(r.buf.as_ptr(), ptr);
+        assert_ne!(r.s.buf.as_ptr(), ptr);
         r.recycle(Spare::Resp);
         // Too large: dropped, and the next head allocates afresh.
         let big = Headers::spare(Spare::Req, 1, SPARE_HEADERS_MAX + 1);
         big.recycle(Spare::Req);
         let h = Headers::spare(Spare::Req, 3, 10);
-        assert_eq!(h.buf.capacity(), 10);
-        assert!(matches!(h.fields, Spans::Heap(ref v) if v.capacity() >= 3));
+        assert_eq!(h.s.buf.capacity(), 10);
+        assert!(matches!(h.s.fields, Spans::Heap(ref v) if v.capacity() >= 3));
         // A response built on this thread starts in the spare.
         let r = Response::text(200, "x");
         assert_eq!(
             r.headers.iter().collect::<Vec<_>>(),
             [("Content-Type", "text/plain; charset=utf-8")]
         );
+    }
+
+    /// Dropping a head refills this thread's empty response spare, and leaves an occupied one
+    /// as it is (ADR-081).
+    #[test]
+    fn dropped_headers_refill_the_response_spare() {
+        // Empty the spare first.
+        let mut e = Headers::spare(Spare::Resp, 0, 0);
+        drop(std::mem::take(&mut e.s.buf));
+        drop(e);
+        let mut h = Headers::with_capacity(3, 64);
+        for i in 0..3 {
+            h.append(format!("n{i}"), "v");
+        }
+        let ptr = h.s.buf.as_ptr();
+        drop(h);
+        let mut r = Headers::spare(Spare::Resp, 3, 10);
+        assert!(r.is_empty() && r.s.buf.capacity() >= 64);
+        assert_eq!(r.s.buf.as_ptr(), ptr);
+        assert!(matches!(r.s.fields, Spans::Heap(ref v) if v.capacity() >= 3));
+        r.append("a", "1");
+        // An occupied spare is kept; the dropped storage is freed.
+        let kept = Headers::with_capacity(1, 32);
+        let kept_ptr = kept.s.buf.as_ptr();
+        kept.recycle(Spare::Resp);
+        drop(r);
+        let s = Headers::spare(Spare::Resp, 1, 1);
+        assert_eq!(s.s.buf.as_ptr(), kept_ptr);
+        // Too large: not kept.
+        drop(Headers::with_capacity(1, SPARE_HEADERS_MAX + 1));
+        assert_eq!(Headers::spare(Spare::Resp, 0, 0).s.buf.capacity(), 0);
+        drop(s);
+    }
+
+    /// A `&str` text body is copied into the thread's spare body buffer, which the transport
+    /// gives back once the body is out; other bodies convert as before (ADR-081).
+    #[test]
+    fn text_bodies_use_the_spare_body_buffer() {
+        let r = Response::text(200, "Hello, World!");
+        assert_eq!(r.body, b"Hello, World!");
+        let p = r.body.as_ptr();
+        recycle_body(r.body);
+        let local = String::from("x");
+        let r = Response::text(200, local.as_str());
+        assert_eq!(
+            (r.body.as_ptr(), &r.body[..]),
+            (p, &b"x"[..]),
+            "the buffer was reused"
+        );
+        // An owned `String` is moved, not copied.
+        let s = String::with_capacity(64) + "owned";
+        let sp = s.as_ptr();
+        let o = Response::text(200, s);
+        assert_eq!((o.body.as_ptr(), &o.body[..]), (sp, &b"owned"[..]));
+        assert_eq!(Response::text(200, 'c').body, b"c");
+        assert!(Response::text(200, "").body.capacity() == 0);
+        // Too large to keep: not kept, and a body that grew past the limit is not either.
+        let spare_cap = || {
+            SPARE_BODY.with(|c| {
+                let v = c.take();
+                let n = v.capacity();
+                c.set(v);
+                n
+            })
+        };
+        assert_eq!(spare_cap(), 0, "the spare was taken");
+        recycle_body(Vec::with_capacity(SPARE_BODY_MAX + 1));
+        assert_eq!(spare_cap(), 0);
+        recycle_body(r.body);
+        assert!(spare_cap() > 0);
+        let big = Response::text(200, &*"b".repeat(SPARE_BODY_MAX + 1));
+        assert_eq!(spare_cap(), 0, "the big body took the spare");
+        recycle_body(big.body);
+        assert_eq!(spare_cap(), 0);
     }
 
     #[test]
@@ -776,7 +932,7 @@ mod tests {
         h.append("Accept", "*/*");
         assert_eq!(h.get("x-count"), Some("199"));
         assert_eq!(h.len(), 2);
-        assert!(h.buf.len() < 1024, "{}", h.buf.len());
+        assert!(h.s.buf.len() < 1024, "{}", h.s.buf.len());
         let mut g = Headers::new();
         g.append("x-count", "199");
         assert_ne!(h, g);
