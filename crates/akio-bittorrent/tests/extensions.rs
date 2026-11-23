@@ -291,7 +291,12 @@ fn seed_limits_pause() {
     let c = Client::new(cfg()).unwrap();
     let (o, _) = leech_opts(&mi, vec![s.listen_addr()]);
     let t = c.add_torrent(mi.clone(), o).unwrap();
-    assert!(t.wait_complete(Duration::from_secs(30)));
+    assert!(
+        t.wait_complete(Duration::from_secs(30)),
+        "leech {:?}\nseed {:?}",
+        t.stats(),
+        st.stats()
+    );
     let deadline = Instant::now() + Duration::from_secs(5);
     while st.stats().status != TorrentStatus::Paused && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
