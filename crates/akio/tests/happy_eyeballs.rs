@@ -159,13 +159,23 @@ fn a_refused_address_moves_on_at_once() {
 
 #[test]
 fn many_races_at_once() {
-    let good = TcpListener::bind("127.0.0.1:0").unwrap();
-    let good_addr = good.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for s in good.incoming() {
-            drop(s);
-        }
-    });
+    // The races are spread over several listeners, each taking fewer connections than an
+    // accept queue holds (macOS caps it at `kern.ipc.somaxconn`, 128): with all of them on one,
+    // a burst could overflow its queue while the accepting thread is slow (a loaded host), and
+    // BSD resets a connection it completed but cannot queue, which fails that race correctly.
+    const LISTENERS: usize = 4;
+    let goods: Vec<SocketAddr> = (0..LISTENERS)
+        .map(|_| {
+            let good = TcpListener::bind("127.0.0.1:0").unwrap();
+            let at = good.local_addr().unwrap();
+            std::thread::spawn(move || {
+                for s in good.incoming() {
+                    drop(s);
+                }
+            });
+            at
+        })
+        .collect();
     let closed = {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap()
@@ -173,13 +183,20 @@ fn many_races_at_once() {
     let e = engine();
     // More than the racer takes at once: the rest are dialed in turn by the engine.
     let n = akio::dns::MAX_RACES + 64;
+    assert!(n / LISTENERS < 128);
     let rxs: Vec<_> = (0..n)
-        .map(|_| race(&e, HappyEyeballs::default(), vec![closed, good_addr]).0)
+        .map(|i| {
+            let good = goods[i % LISTENERS];
+            (
+                race(&e, HappyEyeballs::default(), vec![closed, good]).0,
+                good,
+            )
+        })
         .collect();
-    for rx in rxs {
+    for (rx, good) in rxs {
         assert_eq!(
             rx.recv_timeout(Duration::from_secs(20)).unwrap().unwrap(),
-            good_addr
+            good
         );
     }
 }
