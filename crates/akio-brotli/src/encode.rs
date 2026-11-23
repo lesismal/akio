@@ -2309,9 +2309,14 @@ fn split_layout(mb: &MetaBlock<'_>, mode: u8, iters: usize) -> Layout {
 
 /// `n * log2(n)`, from a table for small `n`.
 fn nlog2n(n: u32) -> f64 {
-    static TABLE: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
-    let t = TABLE.get_or_init(|| {
-        (0..4096u32)
+    nlog2n_in(nlog2n_table(), n)
+}
+
+/// `n log2 n` for `n` below 4096.
+fn nlog2n_table() -> &'static [f64; 4096] {
+    static TABLE: std::sync::OnceLock<Box<[f64; 4096]>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let t: Vec<f64> = (0..4096u32)
             .map(|n| {
                 if n == 0 {
                     0.0
@@ -2319,36 +2324,56 @@ fn nlog2n(n: u32) -> f64 {
                     f64::from(n) * f64::from(n).log2()
                 }
             })
-            .collect()
-    });
+            .collect();
+        t.into_boxed_slice()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!())
+    })
+}
+
+/// [`nlog2n`] with the table at hand (fetched once per clustering, not per count).
+#[inline(always)]
+fn nlog2n_in(t: &[f64; 4096], n: u32) -> f64 {
     match t.get(n as usize) {
         Some(&v) => v,
         None => f64::from(n) * f64::from(n).log2(),
     }
 }
 
-/// A literal histogram and its used symbols.
+/// A literal histogram and its used symbols (in the order they were first counted).
 #[derive(Clone)]
 struct Hist {
     h: [u32; 256],
-    used: Vec<u8>,
+    used: [u8; 256],
+    nused: usize,
     total: u32,
 }
 
 impl Hist {
     fn new(h: &[u32; 256]) -> Self {
-        let used: Vec<u8> = (0..=255u8).filter(|&s| h[usize::from(s)] != 0).collect();
+        let mut used = [0u8; 256];
+        let mut nused = 0;
+        for (s, &c) in h.iter().enumerate() {
+            used[nused] = s as u8;
+            nused += usize::from(c != 0);
+        }
         Hist {
             h: *h,
-            total: h.iter().sum(),
             used,
+            nused,
+            total: h.iter().sum(),
         }
     }
 
+    fn used(&self) -> &[u8] {
+        &self.used[..self.nused]
+    }
+
     fn add(&mut self, o: &Hist) {
-        for &s in &o.used {
+        for &s in o.used() {
             if self.h[usize::from(s)] == 0 {
-                self.used.push(s);
+                self.used[self.nused] = s;
+                self.nused += 1;
             }
             self.h[usize::from(s)] += o.h[usize::from(s)];
         }
@@ -2358,7 +2383,7 @@ impl Hist {
 
 /// Estimated bits to code `total` symbols with `used` distinct ones whose counts' `n log n`
 /// sum to `sum`, with their own prefix code (the code description included).
-fn code_cost(total: u32, sum: f64, used: usize) -> f64 {
+fn code_cost(t: &[f64; 4096], total: u32, sum: f64, used: usize) -> f64 {
     if total == 0 {
         return 0.0;
     }
@@ -2367,28 +2392,32 @@ fn code_cost(total: u32, sum: f64, used: usize) -> f64 {
     } else {
         40.0 + 5.0 * used as f64
     };
-    nlog2n(total) - sum + header
+    nlog2n_in(t, total) - sum + header
 }
 
-fn hist_cost(h: &Hist) -> f64 {
-    let sum: f64 = h.used.iter().map(|&s| nlog2n(h.h[usize::from(s)])).sum();
-    code_cost(h.total, sum, h.used.len())
+fn hist_cost(t: &[f64; 4096], h: &Hist) -> f64 {
+    let sum: f64 = h
+        .used()
+        .iter()
+        .map(|&s| nlog2n_in(t, h.h[usize::from(s)]))
+        .sum();
+    code_cost(t, h.total, sum, h.nused)
 }
 
 /// The cost of `a` and `b` merged.
-fn merged_cost(a: &Hist, b: &Hist) -> f64 {
+fn merged_cost(t: &[f64; 4096], a: &Hist, b: &Hist) -> f64 {
     let mut sum = 0.0;
-    let mut used = a.used.len();
-    for &s in &a.used {
-        sum += nlog2n(a.h[usize::from(s)] + b.h[usize::from(s)]);
+    let mut used = a.nused;
+    for &s in a.used() {
+        sum += nlog2n_in(t, a.h[usize::from(s)] + b.h[usize::from(s)]);
     }
-    for &s in &b.used {
+    for &s in b.used() {
         if a.h[usize::from(s)] == 0 {
-            sum += nlog2n(b.h[usize::from(s)]);
+            sum += nlog2n_in(t, b.h[usize::from(s)]);
             used += 1;
         }
     }
-    code_cost(a.total + b.total, sum, used)
+    code_cost(t, a.total + b.total, sum, used)
 }
 
 /// Chooses the context mode and clusters the 64 literal contexts of the commands' literals.
@@ -2441,6 +2470,7 @@ fn cluster(hist: &[[u32; 256]]) -> ([u8; 64], usize, f64) {
         cost: 0.0,
         members: Vec::new(),
     };
+    let t = nlog2n_table();
     let mut cl: Vec<C> = Vec::new();
     for (i, h) in hist.iter().enumerate() {
         let total: u32 = h.iter().sum();
@@ -2453,14 +2483,14 @@ fn cluster(hist: &[[u32; 256]]) -> ([u8; 64], usize, f64) {
             rare.members.push(i);
         } else {
             cl.push(C {
-                cost: hist_cost(&h),
+                cost: hist_cost(t, &h),
                 h,
                 members: vec![i],
             });
         }
     }
     if !rare.members.is_empty() {
-        rare.cost = hist_cost(&rare.h);
+        rare.cost = hist_cost(t, &rare.h);
         cl.push(rare);
     }
     // Each extra tree also costs context map bits.
@@ -2469,7 +2499,7 @@ fn cluster(hist: &[[u32; 256]]) -> ([u8; 64], usize, f64) {
     let mut delta = vec![f64::INFINITY; n * n];
     for a in 0..n {
         for b in a + 1..n {
-            delta[a * n + b] = merged_cost(&cl[a].h, &cl[b].h) - cl[a].cost - cl[b].cost;
+            delta[a * n + b] = merged_cost(t, &cl[a].h, &cl[b].h) - cl[a].cost - cl[b].cost;
         }
     }
     let mut alive: Vec<bool> = vec![true; n];
@@ -2500,12 +2530,12 @@ fn cluster(hist: &[[u32; 256]]) -> ([u8; 64], usize, f64) {
         cl[a].h.add(&hb);
         let moved = std::mem::take(&mut cl[b].members);
         cl[a].members.extend(moved);
-        cl[a].cost = hist_cost(&cl[a].h);
+        cl[a].cost = hist_cost(t, &cl[a].h);
         alive[b] = false;
         count -= 1;
         for (o, _) in alive.iter().enumerate().filter(|&(o, &l)| l && o != a) {
             let (x, y) = if o < a { (o, a) } else { (a, o) };
-            delta[x * n + y] = merged_cost(&cl[x].h, &cl[y].h) - cl[x].cost - cl[y].cost;
+            delta[x * n + y] = merged_cost(t, &cl[x].h, &cl[y].h) - cl[x].cost - cl[y].cost;
         }
         for o in 0..n {
             if alive[o] && (o == a || rows[o].1 == a || rows[o].1 == b || o < a) {
