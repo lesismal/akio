@@ -93,7 +93,7 @@ h2load v1.69 通告 4096 字节的 QPACK 表（`qpack_max_dtable_capacity = --he
   - ngtcp2（libcurl-gnutls）与 OpenSSL QUIC（libcurl），两者的 HTTP/3 客户端都是 nghttp3。默认配置的服务端现在会对它们使用编码器。
   - curl 与 `openssl s_client -quic`。
   - libnghttp3 的 QPACK 解码器对我方编码器，5 种配置 x 3 个种子（`tools/interop/quic/docker.sh`）。
-- `cargo test --workspace`：macOS，以及 gpu51 上的 epoll 与 io_uring。
+- `cargo test --workspace` 在 macOS 上通过。gpu51 上的运行中途被停止：epoll 已运行的 37 组测试全部通过，没有失败；io_uring 未运行。两者都有待完成。
 
 ## 测量结果
 

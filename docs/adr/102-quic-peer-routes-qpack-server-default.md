@@ -93,7 +93,7 @@ h2load v1.69 advertises a 4096-byte QPACK table (`qpack_max_dtable_capacity = --
   - ngtcp2 (libcurl-gnutls) and OpenSSL QUIC (libcurl), with nghttp3 as the HTTP/3 client in both cases. The default server now uses its encoder with them.
   - curl and `openssl s_client -quic`.
   - libnghttp3's QPACK decoder against our encoder, 5 configurations x 3 seeds (`tools/interop/quic/docker.sh`).
-- `cargo test --workspace`: macOS, and gpu51 on epoll and io_uring.
+- `cargo test --workspace` passes on macOS. On gpu51 the run was stopped partway: on epoll, the 37 suites that ran passed and none failed; io_uring did not run. Both remain to do.
 
 ## Measured
 
