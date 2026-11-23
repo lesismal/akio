@@ -579,6 +579,19 @@ impl BurstLossModel {
         self.pkt = 0;
     }
 
+    /// A packet recorded as lost (in an earlier report) arrived after all and was discarded
+    /// by the jitter buffer as late: one loss becomes a discard. The burst and gap state does
+    /// not change (both are losses to the model), nor does [`loss_fraction`](Self::loss_fraction);
+    /// the loss and discard rates do. `false` when no loss is left to move.
+    pub fn on_late_discard(&mut self) -> bool {
+        if self.loss_count == 0 {
+            return false;
+        }
+        self.loss_count -= 1;
+        self.discard_count += 1;
+        true
+    }
+
     /// The fraction of the packets recorded that were lost or discarded.
     #[must_use]
     pub fn loss_fraction(&self) -> f64 {

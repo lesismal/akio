@@ -592,6 +592,21 @@ impl Peer {
         st.rtc.jitter_buffer_stats(mid).ok_or(Error::UnknownMedia)
     }
 
+    /// The video playout buffers of the streams received on `mid`
+    /// ([`RtcConfig::set_video_playout_buffer`]): `(SSRC, counters and delays)`, empty when
+    /// it is off or nothing was received yet. [`Error::UnknownMedia`] when there is no such
+    /// line.
+    pub fn video_playout_stats(
+        &self,
+        mid: Mid,
+    ) -> Result<Vec<(u32, akio_rtp::VideoPlayoutStats)>, Error> {
+        let st = lock(&self.0.state);
+        if st.closed {
+            return Err(Error::Closed);
+        }
+        st.rtc.video_playout_stats(mid).ok_or(Error::UnknownMedia)
+    }
+
     /// Changes the bounds of the bandwidth estimate (bits per second; see
     /// [`RtcConfig::set_bwe_bounds`]): a maximum raised above the estimate is probed at once.
     /// Nothing happens without the estimator ([`RtcConfig::enable_bwe`]).

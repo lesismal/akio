@@ -5,9 +5,59 @@
 //! playout instants ([`MediaData::playout_time`]), a frame after a gap marked
 //! `contiguous = false`. Its late and overflow discards feed the discard fields of the RTCP
 //! XR VoIP metrics about the stream and its delay their jitter buffer fields.
+//!
+//! The video playout buffer (ADR-092): with
+//! [`RtcConfig::set_video_playout_buffer`](crate::RtcConfig::set_video_playout_buffer), the
+//! frames of each received video stream go from the frame assembler into an
+//! [`akio_rtp::VideoPlayout`] and come out at their playout instants. Frames completed by a
+//! retransmission (RTX), or released with a frame after a gap, are flagged repaired; the
+//! round-trip time is its room for a retransmission on a line with NACK.
 
 use super::*;
-use akio_rtp::{JitterBuffer, JitterBufferStats, JitterPush, PlayoutDelay};
+use akio_rtp::{
+    JitterBuffer, JitterBufferStats, JitterPush, PlayoutDelay, VideoFrameFlags, VideoPlayout,
+    VideoPlayoutStats,
+};
+
+/// The playout buffer of one received video stream: frames of `(payload type, the
+/// assembler's extended timestamp, first packet's arrival, data)`.
+#[derive(Debug)]
+pub(super) struct VideoJitter {
+    pub(super) buf: VideoPlayout<(u8, u64, Instant, Arc<[u8]>)>,
+}
+
+/// Hands out the video frames of `r` due by `now` (all of them with `drain`).
+fn release_video(
+    r: &mut Recv,
+    l: &MediaLine,
+    now: Instant,
+    drain: bool,
+    events: &mut VecDeque<RtcEvent>,
+) {
+    let Some(v) = r.video.as_mut() else { return };
+    let clock = v.buf.clock();
+    let mut emit = |f: akio_rtp::VideoPlayoutFrame<(u8, u64, Instant, Arc<[u8]>)>| {
+        let (pt, ts, first, data) = f.data;
+        events.push_back(RtcEvent::MediaData(MediaData {
+            mid: l.mid,
+            pt: Pt::from(pt),
+            rid: r.rid.clone(),
+            codec: l.codec(pt).map(|c| c.codec),
+            time: MediaTime::new(ts, Frequency::new(clock).unwrap_or(Frequency::NINETY_KHZ)),
+            network_time: first,
+            contiguous: f.contiguous,
+            playout_time: Some(f.playout),
+            data,
+        }));
+    };
+    if drain {
+        v.buf.drain().into_iter().for_each(&mut emit);
+        return;
+    }
+    while let Some(f) = v.buf.pop(now) {
+        emit(f);
+    }
+}
 
 /// The jitter buffer of one received audio stream.
 #[derive(Debug)]
@@ -127,6 +177,107 @@ impl Rtc {
                 release(r, l, now, false, &mut self.events);
             }
         }
+    }
+
+    /// The frames the assembler of video stream `ssrc` (on `line`) has complete into its
+    /// playout buffer (made on its first frame, made again when the clock rate changes, the
+    /// frames still in the old one handed out first), flagged repaired after a
+    /// retransmission (`rtx`) or a gap; then the frames due go out. Frames dropped without a
+    /// keyframe to resume from ask the sender for one (PLI, when negotiated).
+    pub(super) fn video_push(&mut self, now: Instant, line: usize, ssrc: u32, rtx: bool) {
+        let Some(bounds) = self.cfg.video_playout else {
+            return;
+        };
+        let Some(l) = self.media.get(line) else {
+            return;
+        };
+        let Some(r) = self.recv.get_mut(&ssrc) else {
+            return;
+        };
+        let Some(clock) = r
+            .assembler
+            .as_ref()
+            .and_then(|(pt, _)| l.codec(*pt))
+            .map(|c| c.clock)
+        else {
+            return;
+        };
+        if r.video.as_ref().is_some_and(|v| v.buf.clock() != clock) {
+            release_video(r, l, now, true, &mut self.events);
+            r.video = None;
+        }
+        let nack = l.codecs.iter().any(|c| c.fb.iter().any(|f| f == "nack"));
+        let rtt = nack.then(|| r.stream.rtt()).flatten();
+        let Recv {
+            assembler, video, ..
+        } = r;
+        let Some((pt, asm)) = assembler.as_mut() else {
+            return;
+        };
+        let v = video.get_or_insert_with(|| {
+            Box::new(VideoJitter {
+                buf: VideoPlayout::new(clock, bounds),
+            })
+        });
+        v.buf.set_round_trip(rtt);
+        let mut repaired = rtx;
+        while let Some(f) = asm.pop() {
+            let mut flags = VideoFrameFlags::NONE;
+            if f.keyframe {
+                flags |= VideoFrameFlags::KEYFRAME;
+            }
+            // A frame with a packet rebuilt in part may be corrupt.
+            if !f.contiguous || f.partial {
+                flags |= VideoFrameFlags::DISCONTINUOUS;
+            }
+            // Frames after a gap waited for it to be given up.
+            repaired |= !f.contiguous;
+            if repaired {
+                flags |= VideoFrameFlags::REPAIRED;
+            }
+            let n = f.data.len();
+            let data = (*pt, f.timestamp, f.first_arrival, Arc::from(f.data));
+            v.buf.push(f.timestamp as u32, now, flags, data, n);
+        }
+        let keyframe = v.buf.take_keyframe_request();
+        release_video(r, l, now, false, &mut self.events);
+        let pli = l
+            .codecs
+            .iter()
+            .any(|c| c.fb.iter().any(|f| f == "nack pli"));
+        if keyframe && pli {
+            let pkt = Rtcp::Pli {
+                sender_ssrc: l.send.ssrc(),
+                media_ssrc: ssrc,
+            };
+            self.send_rtcp(&[pkt]);
+        }
+    }
+
+    /// The frames of every video playout buffer due by `now`.
+    pub(super) fn video_release(&mut self, now: Instant) {
+        for r in self.recv.values_mut() {
+            if r.video.is_none() {
+                continue;
+            }
+            if let Some(l) = self.media.get(r.line) {
+                release_video(r, l, now, false, &mut self.events);
+            }
+        }
+    }
+
+    /// The video playout buffers of the streams received on `mid`: `(SSRC, statistics)`;
+    /// `None` when there is no such line.
+    pub(crate) fn video_playout_stats(&self, mid: Mid) -> Option<Vec<(u32, VideoPlayoutStats)>> {
+        let line = self.media.iter().position(|l| l.mid == mid)?;
+        let mut v: Vec<_> = self
+            .recv
+            .iter()
+            .filter(|(_, r)| r.line == line)
+            .filter_map(|(s, r)| r.video.as_ref().map(|v| (*s, v.buf.stats())))
+            .collect();
+        v.sort_by_key(|x| x.0);
+        Some(v)
     }
 
     /// The jitter buffers of the streams received on `mid`: `(SSRC, statistics)`; `None`

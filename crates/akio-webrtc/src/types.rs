@@ -556,8 +556,9 @@ pub struct MediaData {
     pub contiguous: bool,
     /// When to play the sample: set for audio received through the jitter buffer
     /// ([`RtcConfig::set_audio_jitter_buffer`]), which hands samples out at this instant (or
-    /// at once, for one that came after it but before the next sample went out); `None`
-    /// otherwise.
+    /// at once, for one that came after it but before the next sample went out), and for
+    /// video through the playout buffer ([`RtcConfig::set_video_playout_buffer`]: at this
+    /// instant, or at once for a frame complete after it); `None` otherwise.
     pub playout_time: Option<Instant>,
     /// The sample.
     pub data: Arc<[u8]>,
@@ -888,6 +889,10 @@ pub(crate) struct ConfigInner {
     pub(crate) latching: Latching,
     /// The audio jitter buffer (ADR-087): `None` off.
     pub(crate) jitter: Option<akio_rtp::PlayoutDelay>,
+    /// The video playout buffer (ADR-092): `None` off.
+    pub(crate) video_playout: Option<akio_rtp::PlayoutDelay>,
+    /// The E-model's delay sensitivity class for the XR VoIP metrics (ADR-092).
+    pub(crate) delay_sensitivity: akio_rtp::DelaySensitivity,
     /// RFC 6263 keepalives without ICE (ADR-086); zero: none.
     pub(crate) keepalive: Duration,
 }
@@ -940,6 +945,8 @@ impl Default for ConfigInner {
             ecn_init: EcnInitiation::Probe,
             latching: Latching::Off,
             jitter: None,
+            video_playout: None,
+            delay_sensitivity: akio_rtp::DelaySensitivity::Default,
             keepalive: Duration::ZERO,
         }
     }
@@ -976,6 +983,8 @@ impl fmt::Debug for RtcConfig {
             .field("fec_mask", &self.0.fec_mask)
             .field("audio_red", &self.0.audio_red)
             .field("audio_jitter_buffer", &self.0.jitter)
+            .field("video_playout_buffer", &self.0.video_playout)
+            .field("voip_delay_sensitivity", &self.0.delay_sensitivity)
             .finish_non_exhaustive()
     }
 }
@@ -1114,6 +1123,44 @@ impl RtcConfig {
     #[must_use]
     pub fn set_audio_jitter_buffer(mut self, delay: Option<akio_rtp::PlayoutDelay>) -> Self {
         self.0.jitter = delay;
+        self
+    }
+
+    /// A playout buffer for received video (ADR-092; frame mode only, see
+    /// [`set_rtp_mode`](Self::set_rtp_mode)): the complete frames of each received video
+    /// stream are handed out in order at their playout instants ([`MediaData::playout_time`])
+    /// instead of as soon as the frame assembler completes them, so frames that arrive
+    /// unevenly are shown evenly ([`akio_rtp::VideoPlayout`]).
+    ///
+    /// - The delay adapts within `delay`'s bounds ([`akio_rtp::PlayoutDelay::adaptive`], or
+    ///   fixed) to the 95th percentile of the frames' delay, to the latest keyframes' (which
+    ///   take longer to arrive), and, while frames needed retransmission in the last 10 s on
+    ///   a line with NACK, to one round trip more.
+    /// - A frame completed after its playout instant goes out at once, not discarded (later
+    ///   frames are predicted from it).
+    /// - At most [`akio_rtp::VIDEO_PLAYOUT_MAX_FRAMES`] frames and
+    ///   [`akio_rtp::VIDEO_PLAYOUT_MAX_BYTES`] bytes per stream: when full, the frames
+    ///   before a buffered keyframe are dropped, or, with none, the oldest, and a PLI asks for
+    ///   a keyframe (on a line with `nack pli`).
+    ///
+    /// A missing packet is still given up by the frame assembler's count
+    /// ([`set_reordering_size`](Self::set_reordering_size)).
+    /// [`Peer::video_playout_stats`](crate::Peer::video_playout_stats) reads its counters.
+    /// `None` (the default): off, frames go out as soon as they are complete.
+    #[must_use]
+    pub fn set_video_playout_buffer(mut self, delay: Option<akio_rtp::PlayoutDelay>) -> Self {
+        self.0.video_playout = delay;
+        self
+    }
+
+    /// The delay sensitivity class (ITU-T G.107 / G.107.2 Table 1) of the E-model that rates
+    /// received audio for the RTCP XR VoIP metrics ([`akio_rtp::DelaySensitivity`]; the
+    /// default class, as those Recommendations require for telephony and for unknown
+    /// users). A model the application gives
+    /// ([`Peer::set_voip_quality`](crate::Peer::set_voip_quality)) keeps its own class.
+    #[must_use]
+    pub fn set_voip_delay_sensitivity(mut self, class: akio_rtp::DelaySensitivity) -> Self {
+        self.0.delay_sensitivity = class;
         self
     }
 

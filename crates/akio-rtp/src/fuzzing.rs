@@ -6,10 +6,11 @@ use std::time::{Duration, Instant};
 
 use crate::fec::{FecDecoder, FecEncoder, FecHeader, FecScheme, UlpLevelSpec, red};
 use crate::{
-    BurstLossModel, CcfbSender, EModel, EcnFeedback, EcnReceiver, EcnSummary, Extension,
-    ExtensionMap, ReceiptLog, RecvStream, RleReport, RrtrResponder, Rtcp, RtpHeader, SdesItem,
-    TmmbrHandler, TwccSender, VoipQuality, XrBlock, bounded_bitrate, bounding_set, parse_compound,
-    write_compound,
+    BurstLossModel, CcfbSender, DelaySensitivity, EModel, EcnFeedback, EcnReceiver, EcnSummary,
+    Extension, ExtensionMap, OpusBand, PlayoutDelay, ReceiptLog, RecvStream, RleReport,
+    RrtrResponder, Rtcp, RtpHeader, SdesItem, TmmbrHandler, TwccSender, VIDEO_PLAYOUT_MAX_FRAMES,
+    VideoFrameFlags, VideoPlayout, VoipQuality, XrBlock, bounded_bitrate, bounding_set,
+    parse_compound, write_compound,
 };
 
 fn full_map() -> ExtensionMap {
@@ -32,10 +33,12 @@ fn full_map() -> ExtensionMap {
 /// typed items and back stably; RLE chunks decode, re-encode and decode to the same trace;
 /// VoIP metrics built from the input stay in range. RFC 6679 ECN feedback messages and XR
 /// ECN summaries convert and write back to themselves, and the feedback of an `EcnReceiver`
-/// fed the RTP header's numbers does too. Never panics.
+/// fed the RTP header's numbers does too. The bytes also drive a video playout buffer
+/// (`video_playout`). Never panics.
 pub fn rtp_rtcp(data: &[u8]) {
     let map = full_map();
     let now = Instant::now();
+    video_playout(data, now);
     if let Some(h) = RtpHeader::parse(data, &map) {
         let payload = h.payload(data).to_vec();
         let out = h.write(&map, &payload);
@@ -173,8 +176,32 @@ pub fn rtp_rtcp(data: &[u8]) {
                                     ("evs", rate),
                                     ("AMR-WB", rate),
                                 ] {
-                                    let e = EModel::for_codec_rate(codec, got.plc, rate)
-                                        .unwrap_or_default();
+                                    let class = match v.gmin % 3 {
+                                        0 => DelaySensitivity::Default,
+                                        1 => DelaySensitivity::Low,
+                                        _ => DelaySensitivity::VeryLow,
+                                    };
+                                    let mut e = EModel::for_codec_rate(codec, got.plc, rate)
+                                        .unwrap_or_default()
+                                        .with_delay_sensitivity(class);
+                                    if v.noise_level < 100 {
+                                        e = e.with_room_noise(
+                                            f64::from(v.noise_level),
+                                            f64::from(v.signal_level),
+                                        );
+                                    }
+                                    if v.rerl % 2 == 0 {
+                                        e = EModel::for_codec_monotic(codec, got.plc, rate)
+                                            .unwrap_or(e);
+                                    }
+                                    if codec == "opus" && v.rerl % 3 == 0 {
+                                        let band = [
+                                            OpusBand::Narrowband,
+                                            OpusBand::Wideband,
+                                            OpusBand::Fullband,
+                                        ][usize::from(v.mos_cq % 3)];
+                                        e = EModel::opus(band, rate.unwrap_or(0));
+                                    }
                                     let s = e.estimate_report(
                                         &m,
                                         &got,
@@ -232,6 +259,58 @@ pub fn rtp_rtcp(data: &[u8]) {
             }
         }
     }
+}
+
+/// Frames from `data` (four bytes each: timestamp step, completion step, flags, size) into a
+/// video playout buffer, taken when due: in order, never before they are complete nor
+/// before the previous one, never held past the upper bound, within the buffer's bounds.
+fn video_playout(data: &[u8], t0: Instant) {
+    let max = Duration::from_millis(u64::from(data.first().copied().unwrap_or(0)) * 8)
+        .min(crate::MAX_PLAYOUT_DELAY);
+    let mut pb = VideoPlayout::new(90_000, PlayoutDelay::adaptive(Duration::ZERO, max));
+    pb.set_round_trip(Some(Duration::from_millis(60)));
+    let (mut ts, mut at) = (0u32, t0);
+    let mut last: Option<(u32, Instant)> = None;
+    let mut check = |f: crate::VideoPlayoutFrame<u32>| {
+        assert!(f.playout >= f.completed);
+        assert!(f.playout <= f.completed + max);
+        if let Some((n, p)) = last {
+            assert!(f.data > n && f.playout >= p);
+        }
+        last = Some((f.data, f.playout));
+    };
+    for (n, c) in data.chunks_exact(4).enumerate() {
+        // Up to 153 ms of media a frame; 0xff jumps half the timestamp space.
+        ts = ts.wrapping_add(if c[0] == 0xff {
+            0x8000_0000
+        } else {
+            u32::from(c[0]) * 540
+        });
+        at += Duration::from_micros(u64::from(c[1]) * 500);
+        while let Some(due) = pb.poll_timeout().filter(|d| *d <= at) {
+            check(pb.pop(due).expect("due"));
+        }
+        let mut flags = VideoFrameFlags::NONE;
+        for (bit, f) in [
+            (1, VideoFrameFlags::KEYFRAME),
+            (2, VideoFrameFlags::DISCONTINUOUS),
+            (4, VideoFrameFlags::REPAIRED),
+        ] {
+            if c[2] & bit != 0 {
+                flags |= f;
+            }
+        }
+        // Up to 8 MiB a frame: two fill the buffer's bytes.
+        pb.push(ts, at, flags, n as u32, usize::from(c[3]) << 15);
+        assert!(pb.len() <= VIDEO_PLAYOUT_MAX_FRAMES);
+        assert!(pb.stats().target <= max);
+        let _ = pb.take_keyframe_request();
+    }
+    let left = pb.len();
+    let out = pb.drain();
+    assert_eq!(out.len(), left);
+    out.into_iter().for_each(check);
+    assert!(pb.is_empty());
 }
 
 /// Packets from `data` (two bytes of sequence number delta, one of arrival delta each) fed

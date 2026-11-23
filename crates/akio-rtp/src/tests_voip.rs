@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::rtcp::{parse_compound, write_compound};
 use crate::{
-    BurstLossModel, EModel, JitterBufferConfig, Plc, Rtcp, VOIP_UNAVAILABLE, VoipQuality, XrBlock,
-    mos_from_r,
+    BurstLossModel, DelaySensitivity, EModel, JitterBufferConfig, OpusBand, Plc, Rtcp,
+    VOIP_UNAVAILABLE, VoipQuality, XrBlock, mos_from_r,
 };
 
 fn ms(v: u64) -> Duration {
@@ -356,4 +356,224 @@ fn emodel_opus_by_bitrate() {
         EModel::for_codec_rate("G723", Plc::Standard, Some(5_300)),
         Some(EModel::codec(19.0, 16.1))
     );
+}
+
+/// G.107 (06/2015) §7.4 Table 1 and G.107.2 (03/2023) §7.4 Table 1: the delay sensitivity
+/// classes' `Idd` (Eqs. 7-27, 7-28; G.107.2 Eq. 7-8b scales it by 1.48). Expected values
+/// computed from the equations independently of the code.
+#[test]
+fn emodel_delay_sensitivity_classes() {
+    use DelaySensitivity::{Default, Low, VeryLow};
+    // Idd alone: the absolute-delay part of the fullband Id,FB, divided by 1.48.
+    let idd = |class, t| {
+        EModel::fullband(0.0, 4.3)
+            .with_delay_sensitivity(class)
+            .scaled_delay_impairment(ms(t))
+            / 1.48
+    };
+    for (class, t, want) in [
+        (Default, 150, 0.163_531),
+        (Default, 300, 14.760_695),
+        (Default, 600, 35.246_848),
+        (Low, 120, 0.0),
+        (Low, 200, 2.253_017),
+        (Low, 300, 10.094_228),
+        (Low, 400, 16.894_546),
+        (VeryLow, 150, 0.0),
+        (VeryLow, 200, 0.949_825),
+        (VeryLow, 300, 6.178_555),
+        (VeryLow, 600, 18.031_092),
+    ] {
+        assert!(
+            (idd(class, t) - want).abs() < 1e-5,
+            "{class:?} {t}: {}",
+            idd(class, t)
+        );
+    }
+    // Narrowband: Id = Idte + Idle + Idd, so the classes differ by Idd alone.
+    let nb = |class| {
+        EModel::default()
+            .with_delay_sensitivity(class)
+            .scaled_delay_impairment(ms(300))
+    };
+    assert!((nb(Default) - nb(Low) - (14.760_695 - 10.094_228)).abs() < 1e-5);
+    assert!((nb(Default) - EModel::delay_impairment(ms(300))).abs() < 1e-12);
+    let r = |class| {
+        EModel::default()
+            .with_delay_sensitivity(class)
+            .score(0.0, 1.0, ms(300))
+            .r_factor
+    };
+    assert!(r(VeryLow) > r(Low) && r(Low) > r(Default));
+    // G.107.1 has no classes: a wideband model keeps the default.
+    let wb = EModel::wideband(5.0, 7.1).with_delay_sensitivity(VeryLow);
+    assert_eq!(wb.delay_sensitivity(), Default);
+    assert_eq!(
+        wb.scaled_delay_impairment(ms(300)),
+        EModel::wideband(5.0, 7.1).scaled_delay_impairment(ms(300))
+    );
+    assert_eq!(EModel::default().delay_sensitivity(), Default);
+}
+
+/// G.107 Table 3's room noise and G.107.2 (03/2023) Eqs. 7-2 to 7-6. Expected values
+/// computed from the equations independently of the code.
+#[test]
+fn emodel_room_noise() {
+    // Narrowband: 35 dB(A) is G.107's default (Ro - Is = 93.355); louder rooms lower it.
+    let nb = |p| EModel::default().with_room_noise(p, p).max_rating();
+    assert!((nb(35.0) - EModel::default().max_rating()).abs() < 1e-12);
+    assert!((nb(35.0) - 93.355_253).abs() < 1e-5, "{}", nb(35.0));
+    assert!((nb(50.0) - 86.491_735).abs() < 1e-5, "{}", nb(50.0));
+    assert!((nb(60.0) - 70.416_448).abs() < 1e-5, "{}", nb(60.0));
+    // Fullband: 148 without room noise given; from the noise with it.
+    let fb = |p: Option<f64>| {
+        let m = EModel::fullband(0.0, 4.3);
+        p.map_or(m, |p| m.with_room_noise(p, p)).max_rating()
+    };
+    assert_eq!(fb(None), 148.0);
+    assert!(
+        (fb(Some(35.0)) - 121.484_910).abs() < 1e-5,
+        "{}",
+        fb(Some(35.0))
+    );
+    assert!(
+        (fb(Some(0.0)) - 147.285_866).abs() < 1e-5,
+        "{}",
+        fb(Some(0.0))
+    );
+    assert!(
+        (fb(Some(50.0)) - 96.294_341).abs() < 1e-5,
+        "{}",
+        fb(Some(50.0))
+    );
+    let s = EModel::fullband(0.0, 4.3)
+        .with_room_noise(35.0, 35.0)
+        .score(0.0, 1.0, Duration::ZERO);
+    assert!((s.r_factor - 121.484_910 / 1.48).abs() < 1e-5, "{s:?}");
+    // Wideband: not used by G.107.1.
+    assert_eq!(
+        EModel::wideband(0.0, 4.3)
+            .with_room_noise(60.0, 60.0)
+            .max_rating(),
+        129.0
+    );
+    // Out of range and non-finite levels.
+    assert_eq!(nb(200.0), nb(85.0));
+    assert_eq!(
+        EModel::default()
+            .with_room_noise(f64::NAN, 35.0)
+            .max_rating(),
+        nb(35.0)
+    );
+}
+
+/// G.113 Table IV.1 (monotic) and the published Opus NB / WB values.
+#[test]
+fn emodel_monotic_and_opus_bands() {
+    let mono = |n, r| EModel::for_codec_monotic(n, Plc::Enhanced, r).expect("table");
+    // G.722 13 / 20 / 31; with Appendix III concealment the diotic Bpl,wb 7.1 at 64.
+    assert_eq!(mono("G722", None), EModel::wideband(13.0, 7.1));
+    assert_eq!(mono("g722", Some(56_000)), EModel::wideband(20.0, 4.3));
+    assert_eq!(mono("g722", Some(48_000)), EModel::wideband(31.0, 4.3));
+    // AMR-WB by mode, Bpl,wb from the diotic Table IV.4.
+    assert_eq!(mono("AMR-WB", None), EModel::wideband(13.0, 4.3));
+    assert_eq!(mono("amr-wb", Some(23_050)), EModel::wideband(1.0, 4.6));
+    assert_eq!(mono("amr-wb", Some(23_850)), EModel::wideband(8.0, 4.9));
+    assert_eq!(mono("amr-wb", Some(19_850)), EModel::wideband(3.0, 4.3));
+    assert_eq!(mono("amr-wb", Some(6_600)), EModel::wideband(41.0, 4.3));
+    // Others as diotic.
+    assert_eq!(
+        mono("PCMU", None),
+        EModel::for_codec("PCMU", Plc::Enhanced).expect("table")
+    );
+    assert!(EModel::for_codec_monotic("vp8", Plc::Enhanced, None).is_none());
+    // Opus: narrowband (Ie, Bpl) 23 / 24.6 at 6 .. 11.7 / 18.9 at 9 kbit/s; wideband 28.4 /
+    // 23.9 at 11 .. 20 / 19.5 at 13; held beyond.
+    assert_eq!(
+        EModel::opus(OpusBand::Narrowband, 6_000),
+        EModel::codec(23.0, 24.6)
+    );
+    assert_eq!(
+        EModel::opus(OpusBand::Narrowband, 8_500),
+        EModel::codec(16.0, 20.2)
+    );
+    assert_eq!(
+        EModel::opus(OpusBand::Narrowband, 32_000),
+        EModel::codec(11.7, 18.9)
+    );
+    assert_eq!(
+        EModel::opus(OpusBand::Wideband, 5_000),
+        EModel::wideband(28.4, 23.9)
+    );
+    assert_eq!(
+        EModel::opus(OpusBand::Wideband, 12_000),
+        EModel::wideband(23.3, 22.2)
+    );
+    assert_eq!(
+        EModel::opus(OpusBand::Fullband, 32_000),
+        EModel::for_codec_rate("opus", Plc::Enhanced, Some(32_000)).expect("table")
+    );
+    // NB Opus at 9 kbit/s, 2 % random loss: Ie,eff = 11.7 + 83.3 x 2 / 20.9 = 19.6713.
+    let nb = EModel::opus(OpusBand::Narrowband, 9_000);
+    assert!((nb.equipment_impairment(0.02, 1.0) - 19.671_29).abs() < 1e-4);
+}
+
+/// The burst and gap durations follow the packet duration given.
+#[test]
+fn voip_durations_follow_packet_duration() {
+    let mut m = BurstLossModel::new(16);
+    // 100 received, a burst of 4 losses among 6 packets, 100 received, a loss, 99 received.
+    for _ in 0..100 {
+        m.on_packet(false, false);
+    }
+    for lost in [true, false, true, true, false, true] {
+        m.on_packet(lost, false);
+    }
+    // The burst is counted when the next loss after a gap comes.
+    for i in 0..200 {
+        m.on_packet(i == 100, false);
+    }
+    let at = |p| m.metrics(1, p);
+    let (m20, m60) = (at(20), at(60));
+    assert!(m20.burst_duration > 0);
+    assert_eq!(
+        u32::from(m60.burst_duration),
+        3 * u32::from(m20.burst_duration)
+    );
+    assert_eq!(u32::from(m60.gap_duration), 3 * u32::from(m20.gap_duration));
+}
+
+/// A packet reported lost that later arrives and is discarded becomes a discard.
+#[test]
+fn voip_late_discard_moves_a_loss() {
+    let mut m = BurstLossModel::new(16);
+    for i in 0..100 {
+        m.on_packet(i == 50, false);
+    }
+    let before = m.metrics(1, 20);
+    assert!(before.loss_rate > 0 && before.discard_rate == 0);
+    let ratio = m.burst_ratio();
+    let loss = m.loss_fraction();
+    assert!(m.on_late_discard());
+    let after = m.metrics(1, 20);
+    assert_eq!((after.loss_rate, after.discard_rate), (0, before.loss_rate));
+    // Both are losses to the burst model and the E-model.
+    assert_eq!(m.burst_ratio(), ratio);
+    assert_eq!(m.loss_fraction(), loss);
+    assert_eq!(
+        (
+            after.burst_density,
+            after.gap_density,
+            after.burst_duration,
+            after.gap_duration
+        ),
+        (
+            before.burst_density,
+            before.gap_density,
+            before.burst_duration,
+            before.gap_duration
+        )
+    );
+    // No loss left to move.
+    assert!(!m.on_late_discard());
 }

@@ -586,9 +586,16 @@ struct Recv {
     burst: Option<akio_rtp::BurstLossModel>,
     /// The audio jitter buffer (ADR-087), in place of the assembler.
     jitter: Option<Box<playout::AudioJitter>>,
+    /// The video playout buffer (ADR-092), after the assembler.
+    video: Option<Box<playout::VideoJitter>>,
     /// Audio payload bytes and packets (of more than 2 bytes: not Opus DTX) since the last
     /// VoIP metrics report: the codec's bitrate for the E-model.
     audio_rate: (u64, u64),
+    /// The media length of an audio packet, measured (ADR-092).
+    audio_ptime: receipts::PacketTime,
+    /// Sequence numbers the VoIP metrics reported lost, for a late discard of one of them
+    /// in a later interval (ADR-092).
+    reported_lost: VecDeque<u16>,
 }
 
 /// How an incoming SSRC maps to a media line.
@@ -2887,6 +2894,9 @@ impl Rtc {
         if self.cfg.jitter.is_some() {
             self.jitter_release(now);
         }
+        if self.cfg.video_playout.is_some() {
+            self.video_release(now);
+        }
         self.cc_flush(now);
         self.pace(now);
         self.send_probes(now);
@@ -3123,6 +3133,7 @@ impl Rtc {
                 ts: h.timestamp.wrapping_sub(u32::from(b.timestamp_offset)),
                 marker: false,
                 rid: None,
+                rtx: false,
             };
             if self.recv.contains_key(&h.ssrc) && self.deliver(now, line, &p, b.data, true) {
                 self.stats.red_recovered += 1;
@@ -3135,6 +3146,7 @@ impl Rtc {
             ts: h.timestamp,
             marker: h.marker,
             rid: h.ext.rid.as_deref(),
+            rtx: false,
         };
         self.deliver(now, line, &p, primary.data, false);
     }
@@ -3210,6 +3222,7 @@ impl Rtc {
                     ts: h.timestamp,
                     marker: h.marker,
                     rid: h.ext.rid.as_deref(),
+                    rtx: false,
                 };
                 self.deliver(now, route.line, &p, payload, false);
                 self.deliver_recovered(now, route.line, rec);
@@ -3223,6 +3236,7 @@ impl Rtc {
             ts: h.timestamp,
             marker: h.marker,
             rid: h.ext.rid.as_deref(),
+            rtx: true,
         };
         self.deliver(now, route.line, &p, payload, false);
     }
@@ -3241,6 +3255,7 @@ impl Rtc {
                 ts: h.timestamp,
                 marker: h.marker,
                 rid: h.ext.rid.as_deref(),
+                rtx: false,
             };
             self.deliver(now, line, &p, h.payload(&r), true);
         }
@@ -3277,7 +3292,7 @@ impl Rtc {
         }
         self.stats.fec_partial += 1;
         asm.push_partial(ext_seq, h.timestamp, h.marker, payload, now);
-        self.pop_frames(line, h.ssrc);
+        self.pop_frames(now, line, h.ssrc, false);
     }
 
     /// A ULPFEC packet took sequence number `seq` of the media stream `ssrc`: it is not
@@ -3294,13 +3309,19 @@ impl Rtc {
                 // The number may have been the last thing the frames after it waited for
                 // (a repaired FEC packet arriving after them): emit them now, not with the
                 // next media packet, which may never come.
-                self.pop_frames(line, ssrc);
+                self.pop_frames(now, line, ssrc, false);
             }
         }
     }
 
-    /// Emits the frames the assembler of the received stream `ssrc` (on `line`) has complete.
-    fn pop_frames(&mut self, line: usize, ssrc: u32) {
+    /// Emits the frames the assembler of the received stream `ssrc` (on `line`) has complete
+    /// (`rtx`: the packet that completed them was a retransmission), or with the video
+    /// playout buffer (ADR-092) puts them into it and emits those due.
+    fn pop_frames(&mut self, now: Instant, line: usize, ssrc: u32, rtx: bool) {
+        if self.cfg.video_playout.is_some() && !self.cfg.rtp_mode {
+            self.video_push(now, line, ssrc, rtx);
+            return;
+        }
         let Some(l) = self.media.get(line) else {
             return;
         };
@@ -3379,6 +3400,7 @@ impl Rtc {
         if audio && payload.len() > 2 {
             recv.audio_rate.0 += payload.len() as u64;
             recv.audio_rate.1 += 1;
+            recv.audio_ptime.on_packet(ext_seq, p.ts);
         }
         let (ssrc, pt) = (p.ssrc, p.pt);
         if rtp_mode {
@@ -3417,7 +3439,7 @@ impl Rtc {
             return false;
         };
         asm.push(ext_seq, p.ts, p.marker, payload, now);
-        self.pop_frames(line_idx, ssrc);
+        self.pop_frames(now, line_idx, ssrc, p.rtx);
         true
     }
 
@@ -4124,6 +4146,9 @@ impl Rtc {
                 if let Some(j) = &r.jitter {
                     min(j.buf.poll_timeout());
                 }
+                if let Some(v) = &r.video {
+                    min(v.buf.poll_timeout());
+                }
             }
             if self.ccfb && !self.recv.is_empty() {
                 min(Some(now + akio_rtp::CCFB_FEEDBACK_INTERVAL));
@@ -4198,6 +4223,8 @@ struct Pkt<'a> {
     ts: u32,
     marker: bool,
     rid: Option<&'a str>,
+    /// A retransmission (RTX).
+    rtx: bool,
 }
 
 /// The receive stream of `ssrc` on `line`, made on first use (`None`: too many streams).
@@ -4227,7 +4254,10 @@ fn recv_entry<'a>(
         rid: None,
         burst: None,
         jitter: None,
+        video: None,
         audio_rate: (0, 0),
+        audio_ptime: receipts::PacketTime::default(),
+        reported_lost: VecDeque::new(),
     }))
 }
 
