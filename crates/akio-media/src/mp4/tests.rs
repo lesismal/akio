@@ -363,10 +363,10 @@ fn build(tracks: &[Synth], moov_first: bool, large: bool) -> (Vec<u8>, Vec<Vec<u
         for (ti, t) in tracks.iter().enumerate() {
             if let Some(&(first, n)) = chunks[ti].get(k) {
                 at[ti].push(payload.len());
-                for i in first..first + n {
+                for (i, sample) in t.samples.iter().enumerate().skip(first).take(n) {
                     payload.extend(std::iter::repeat_n(
                         sample_byte(ti, i),
-                        t.samples[i].size as usize,
+                        sample.size as usize,
                     ));
                 }
             }
@@ -420,9 +420,9 @@ fn build(tracks: &[Synth], moov_first: bool, large: bool) -> (Vec<u8>, Vec<Vec<u
             let mut v = Vec::new();
             for (k, &(first, n)) in chunks[ti].iter().enumerate() {
                 let mut o = data_at + at[ti][k] as u64;
-                for i in first..first + n {
+                for sample in t.samples.iter().skip(first).take(n) {
                     v.push(o);
-                    o += u64::from(t.samples[i].size);
+                    o += u64::from(sample.size);
                 }
             }
             v
