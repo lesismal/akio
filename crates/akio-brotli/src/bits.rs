@@ -169,13 +169,17 @@ impl BitWriter {
     /// Writes the low `n` bits of `v`, `n` <= 32.
     #[inline(always)]
     pub(crate) fn bits(&mut self, n: u32, v: u64) {
-        debug_assert!(n <= 32 && (n == 32 || v >> n == 0));
-        self.acc |= v << self.n;
-        self.n += n;
-        if self.n >= 32 {
-            self.out.extend_from_slice(&(self.acc as u32).to_le_bytes());
-            self.acc >>= 32;
-            self.n -= 32;
+        debug_assert!(n <= 32 && (n == 32 || v >> n == 0) && self.n < 64);
+        let total = self.n + n;
+        if total < 64 {
+            self.acc |= v << self.n;
+            self.n = total;
+        } else {
+            // Eight bytes at a time; `self.n` >= 32 here, so `v` is split at 32 bits or less.
+            self.out
+                .extend_from_slice(&(self.acc | v << self.n).to_le_bytes());
+            self.acc = v >> (64 - self.n);
+            self.n = total - 64;
         }
     }
 
@@ -246,11 +250,21 @@ impl BitWriter {
         for &b in chunks.remainder() {
             self.bits(8, u64::from(b));
         }
-        self.bits(o.n, o.acc);
+        if o.n > 32 {
+            self.bits(32, o.acc & 0xffff_ffff);
+            self.bits(o.n - 32, o.acc >> 32);
+        } else {
+            self.bits(o.n, o.acc);
+        }
     }
 
     /// Moves the whole bytes written so far to `dst` (the bits of an unfinished byte stay).
     pub(crate) fn drain_into(&mut self, dst: &mut Vec<u8>) {
+        while self.n >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.n -= 8;
+        }
         dst.append(&mut self.out);
     }
 

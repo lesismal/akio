@@ -2079,6 +2079,85 @@ Level 10 on the first 20,000 bytes: words 7,802 → 7,044, transforms 7,729 → 
 transforms, 4-5 ms under brotli's 121 (Apple M-series laptop). Levels 0..9 do not search static
 words and are unchanged.
 
+### Brotli: encoder write cost (same-run A/B, CPU 2, 2026-11-23)
+
+Main at `631d7e27` ("before") against this change ("now"), `tools/codec-bench brotli` and
+akio-brotli's `stream-cost` example built in separate target directories on gpu51 and run
+alternately under `quiet.sh`, pinned to CPU 2: two rounds of `codec-bench` (`BENCH_DEC=0`, the
+encoders only; libbrotli 1.2.1 in the "now" runs) on the HTTP payloads and the whole Silesia tar
+(212 MB, downloaded from a mirror of the corpus's files), best cell of the two; three rounds of
+`stream-cost`, medians. **Output is bit-identical at every level**: every size below is the
+same before and now, and FNV hashes of one-shot, dictionary and streamed output (windows 16, 18
+and 22, flushes after 1 to 70,000 bytes) at levels 0..=11 over the HTTP payloads and a 2.4 MB mix
+of the Silesia files match main's. Every cell's output is decoded by libbrotli (an assertion of
+`codec-bench`).
+
+Compression MB/s, before → now (× faster) / libbrotli; sizes unchanged:
+
+| Corpus | Level 1 | Level 4 | Level 5 | Level 6 |
+|---|---|---|---|---|
+| Silesia (212 MB) | 111.3 → 143.1 (1.29) / 361.9 | 66.8 → 83.2 (1.25) / 133.0 | 40.7 → 50.2 (1.23) / 87.7 | 31.2 → 37.6 (1.21) / 75.8 |
+| JSON (673 KB) | 372.4 → 450.6 (1.21) / 1,066 | 209.6 → 248.6 (1.19) / 330.0 | 157.5 → 183.2 (1.16) / 206.4 | 130.2 → 165.6 (1.27) / 186.4 |
+| HTML (45 KB) | 245.7 → 311.7 (1.27) / 809.9 | 149.8 → 216.6 (1.45) / 271.8 | 74.3 → 89.5 (1.20) / 145.1 | 68.7 → 82.7 (1.20) / 130.8 |
+| JS (92 KB) | 135.2 → 159.6 (1.18) / 555.6 | 90.3 → 107.6 (1.19) / 133.9 | 55.4 → 64.5 (1.16) / 91.5 | 50.4 → 58.5 (1.16) / 82.1 |
+| cert chain (2.7 KB) | 63.2 → 76.6 (1.21) / 247.4 | 59.6 → 71.9 (1.21) / 85.5 | 57.7 → 70.4 (1.22) / 73.4 | 53.9 → 65.6 (1.22) / 71.0 |
+| cert chain (4.1 KB) | 78.3 → 95.1 (1.21) / 293.3 | 73.8 → 89.3 (1.21) / 102.6 | 74.0 → 89.7 (1.21) / 92.0 | 69.9 → 85.2 (1.22) / 88.6 |
+
+libbrotli's time over ours is now 1.15–1.33× at level 4 on the HTTP payloads (was 1.39–1.82×),
+1.03–1.62× at 5 and 6 (was 1.24–1.95×), and 1.60× / 1.75× / 2.02× at levels 4 / 5 / 6 on Silesia
+(was 1.99× / 2.15× / 2.43×). Level 1 is still 2.4–3.5× libbrotli's time: Google's level 1 is a
+different, one-pass compressor (and 7–10% larger). Level 9 (hash chains, not touched) is within
+−3…+6% (noise and code alignment; e.g. HTML 81.9 → 79.2, the 2.7 KB chain 62.9 → 66.0).
+
+Streams (`stream-cost`, window 18; medians of three rounds, before → now):
+
+| Quality | event | setup | 16 events | 16 × 16 KiB | HTML MB/s |
+|---|---|---|---|---|---|
+| 4 (default) | 1.062 → 1.011 us | 5.65 → 5.24 us | 34.65 → 33.73 us | 1,499.9 → 1,237.8 us | 176.3 → 203.0 |
+| 1 | 1.076 → 1.022 us | 5.60 → 5.21 us | 31.45 → 29.59 us | 915.0 → 771.2 us | 289.7 → 326.6 |
+| 5 | 1.181 → 1.201 us | 6.07 → 5.55 us | 36.61 → 34.99 us | 2,201.4 → 1,914.2 us | 117.2 → 117.8 |
+
+What changed (all inside akio-brotli's encoder, no API change, still `#![forbid(unsafe_code)]`):
+
+- Levels 0..=6 parse with a loop specialized per bucket size (1, 2, 4, 16, 32 entries; 4- or
+  5-byte hashes as constants) that hashes a searched position once: the search enters the
+  position into its bucket after looking at the bucket (as Google's `H5` / `H54`), instead of
+  hashing it again when the next search enters the positions before it. Positions whose hash
+  could still change (a stream's last bytes) are entered later, as before, so streams stay
+  identical too. The tables, counters and limits live in locals for the whole parse.
+- Bucket counters are bytes counting modulo 256 (64 KiB instead of 256 KiB at level 4); a slot
+  never filled holds a sentinel position that ends the search, so no count of filled entries
+  is kept.
+- Match lengths within eight bytes take one comparison; the four ring distances are prefiltered
+  by their first two bytes without a branch per distance.
+- Insert and copy length codes in closed form (Google's formulas) and a direct short-distance
+  check instead of a 16-entry search (verified against the tables for every length below 100,000
+  and 200,000 random rings).
+- The bit writer flushes eight bytes per 64 bits instead of four per 32.
+- Literal context clustering (levels 5..=9) fetches its `n log n` table once per clustering, keeps
+  histograms' used symbols inline instead of in a `Vec` each, and adds the costs of symbols of one
+  histogram only without a branch (adding 0.0 keeps the sums exact).
+
+Per flushed event the gain is small (5%): a few dozen positions of an event match the previous
+events at every candidate, and the three prefix codes of the meta-block remain. Against akio-zstd
+in the same run (levels 1 and 3, the middleware's stream default being zstd 1 and brotli 4),
+brotli 4 still takes 2.3–3.7× zstd 1's time one-shot (HTML 216.6 vs 492.4 MB/s, JSON 248.6 vs
+652.2, JavaScript 107.6 vs 393.6, Silesia 83.2 vs 301.5) and about 3.7× per flushed event (1.01
+against 0.27 us, ADR-074's measurement): brotli's parse does more (lazy matching over four
+ring distances and bucket candidates) for 11–16% smaller output.
+
+Tried and not kept: an 8-bit tag per bucket entry from the first four bytes (as Google's
+`H58` / `H68`, exact here because a tag mismatch cannot reach four bytes): 62–78% of candidates
+pass it on these corpora and the tags' extra cache line per insert made level 5 16% slower.
+Output-changing options measured: checking only the last two ring distances at levels 0..=4
+(Google's quick hashers check one) is 4–7% faster for 0.0–0.3% larger output (JSON level 1
++0.29%), one distance 8–27% faster for up to +1.6%; entering only the last four periods of
+run-like matches (Google's guard) made no difference in speed on these corpora. All left out to
+keep the output bit-identical.
+
+Fuzzing: `brotli_roundtrip` (52,213 runs) and `brotli_stream_roundtrip` (23,561 runs), 16 minutes
+each with ASan and debug assertions on gpu51, seeded from `fuzz/corpus`: no finding.
+
 ### Codec micro benchmarks (`tools/codec-bench`, CPU 2, ns per operation)
 
 A separate workspace, so httparse, loona-hpack, regex and the C libraries (brotlic-sys, zstd) stay

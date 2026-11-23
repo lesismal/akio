@@ -9,7 +9,9 @@
 //! minimum time per round (default 300). Levels at or above `BENCH_SLOW` (brotli 10, zstd 16)
 //! compress once per run. `BENCH_ENC=0` skips the compression timings (for profiling decoders),
 //! `BENCH_C=0` the C library's (for a second run against another version of the crates).
-//! `BENCH_OWN=0` skips decoding each library's own output.
+//! `BENCH_OWN=0` skips decoding each library's own output, `BENCH_DEC=0` every decoding timing
+//! (for profiling encoders), `BENCH_AKIO=0` akio-brotli's compression timing (for profiling
+//! libbrotli's).
 //! `BENCH_DUMP=DIR` writes the zstd frames there (`FILE.LEVEL.zst` from the C library,
 //! `FILE.LEVEL.akio.zst` from akio-zstd), for inspecting what the decoders are timed on.
 //! `BENCH_BR_LIMIT=N` decodes brotli with an output limit of `N` bytes instead of the exact
@@ -161,25 +163,27 @@ pub fn brotli(files: &[String]) {
             assert_eq!(out, data);
             let ems = if env_u("BENCH_ENC", 1) == 0 { 0 } else { ms };
             let cms = if env_u("BENCH_C", 1) == 0 { 0 } else { ms };
+            let ams = if env_u("BENCH_AKIO", 1) == 0 { 0 } else { ems };
             let enc = (
-                mbps(data.len(), ems, once, || {
+                mbps(data.len(), ams, once, || {
                     black_box(akio_brotli::compress(lv, black_box(&data)));
                 }),
                 mbps(data.len(), ems.min(cms), once, || {
                     black_box(c_brotli_compress(level, black_box(&data)));
                 }),
             );
+            let dms = if env_u("BENCH_DEC", 1) == 0 { 0 } else { ms };
             let dec = (
-                mbps(data.len(), ms, false, || {
+                mbps(data.len(), dms, false, || {
                     black_box(akio_brotli::decompress(black_box(&theirs), limit).unwrap());
                 }),
-                mbps(data.len(), cms, false, || {
+                mbps(data.len(), cms.min(dms), false, || {
                     // The C one-shot API writes into a caller buffer: one reused buffer (its best
                     // case; ours allocates its output every time).
                     black_box(c_brotli_decompress(black_box(&theirs), &mut out));
                 }),
             );
-            let own = mbps(data.len(), ms, false, || {
+            let own = mbps(data.len(), dms, false, || {
                 black_box(akio_brotli::decompress(black_box(&ours), limit).unwrap());
             });
             print(&Row {

@@ -49,6 +49,14 @@ ADR-091 的更新（2026-11-23），了结它留下的各项：
   `TURN_BENCH_COPY_TTL=0`，新 fuzz 目标 `sys_icmp_error`。与 main 的中继 A/B：没有可测出的变化；
   复制 TTL 比不复制约多 5%，在波动之内（docs/BENCHMARKS.zh-CN.md）。
 
+### 变更：更快的 brotli 压缩，输出不变（akio-brotli）
+
+akio-brotli 编码器在级别 0..=6 上每个被搜索的位置只哈希一次，按桶大小特化的循环配合字节计数维护桶表，
+命令编码、位写入与字面量上下文聚类的工作更少。各级别输出逐位相同（一次性、带字典与流式）。gpu51 上
+同批 A/B：Silesia 在级别 1、4、5、6 快 1.21–1.29 倍，HTTP 负载快 1.16–1.45 倍；`compress` 中间件的流
+（质量 4）写 16 KiB 分块快 1.21 倍，小事件快 5%。API 不变；见 docs/BENCHMARKS.md（“Brotli：编码器写入
+开销”）。`tools/codec-bench` 新增 `BENCH_DEC=0` 与 `BENCH_AKIO=0`。
+
 ### 修复：端口为 0 的 BitTorrent 客户端与其他套接字争用端口（akio-bittorrent）
 
 `listen` 端口为 0 时，`Client::new` 先探测 TCP 与 UDP 都空闲的端口号，再让引擎绑定；两步之间其他套接字可能占用
