@@ -67,7 +67,11 @@ pub struct ClientRequest {
     pub method: Method,
     /// An absolute `http://` or `https://` URL.
     pub url: String,
-    /// Extra header fields (`Host`, `Content-Length` and `Connection` are added).
+    /// Extra header fields. `Content-Length` is the body's own, whatever a field here says.
+    /// `Host` is taken from the URL unless a `Host` field here gives another (a reverse proxy
+    /// passing its client's on): the URL still says where to connect, and which name TLS asks
+    /// for. A `User-Agent` of `akio-http` is added when there is none; an empty `User-Agent`
+    /// field sends none at all, as Go's client takes it.
     pub headers: Headers,
     /// Request body.
     pub body: Vec<u8>,
@@ -423,8 +427,9 @@ const BODY_HEADERS: &[&str] = &[
     "transfer-encoding",
 ];
 
-/// Header fields that carry credentials, dropped on a redirect to another origin.
-const CREDENTIAL_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
+/// Header fields dropped on a redirect to another origin: those that carry credentials, and a
+/// `Host` the request set itself, which names the first origin.
+const CROSS_ORIGIN_DROPPED: &[&str] = &["authorization", "cookie", "proxy-authorization", "host"];
 
 /// The request a redirect leads to: `Ok(None)` when `resp` is not one to follow (it is then the
 /// answer), an error when the policy's limit is passed or the target is unusable.
@@ -468,7 +473,7 @@ fn redirect(
         && from.key.host.eq_ignore_ascii_case(&to.key.host)
         && from.key.port == to.key.port;
     if !same_origin {
-        for h in CREDENTIAL_HEADERS {
+        for h in CROSS_ORIGIN_DROPPED {
             next.headers.remove(h);
         }
     }
@@ -726,12 +731,18 @@ impl Client {
             Some(_) => format!("http://{}", pu.host_header),
             None => String::new(),
         };
+        // The request's own `Host`, when it has one (A11), else the URL's.
+        let host = req
+            .headers
+            .get("host")
+            .map(|h| h.trim())
+            .filter(|h| !h.is_empty())
+            .map_or_else(|| pu.host_header.clone(), |h| h.replace(['\r', '\n'], ""));
         bytes.extend_from_slice(
             format!(
-                "{} {scheme_host}{} HTTP/1.1\r\nHost: {}\r\n",
+                "{} {scheme_host}{} HTTP/1.1\r\nHost: {host}\r\n",
                 req.method.as_str(),
                 pu.target,
-                pu.host_header
             )
             .as_bytes(),
         );
@@ -747,7 +758,10 @@ impl Client {
                     cookie.push_str("; ");
                 }
                 cookie.push_str(v);
-            } else if !n.eq_ignore_ascii_case("host") && !n.eq_ignore_ascii_case("content-length") {
+            } else if !n.eq_ignore_ascii_case("host")
+                && !n.eq_ignore_ascii_case("content-length")
+                && !(v.is_empty() && n.eq_ignore_ascii_case("user-agent"))
+            {
                 bytes.extend_from_slice(
                     format!("{n}: {}\r\n", v.replace(['\r', '\n'], "")).as_bytes(),
                 );

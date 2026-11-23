@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/1 客户端请求自带的 `Host` 与 `User-Agent`（akio-http）
+
+应 akit 的请求（A11），供反向代理把客户端的字段转发出去。均为新增：
+
+- `ClientRequest::headers` 中的 `Host` 字段代替从 URL 取得的 `Host` 发出；连接的地址与 TLS 请求的
+  名称仍由 URL 决定。重定向到同源时保留，重定向到别的源时与凭据一样被去掉。此前该字段会被丢弃。
+- 值为空的 `User-Agent` 字段表示不发送 `User-Agent`，也不再补上 `User-Agent: akio-http`，与 Go 的
+  客户端一致。此前空字段会原样发出。
+
 ### 新增：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭（akio-core、akio-http、akio-h3、akio-grpc、akio-arpc、akio-quic）
 
 ADR-094，均为新增：
