@@ -53,7 +53,7 @@ pub use akio_core::{
     DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,
     LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, Replies, ResponseSlot,
     ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
-    UdpBinding, UdpStats, fn_acceptor, metrics, telemetry,
+    UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
 };
 use akio_core::{DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr};
 #[doc(hidden)]

@@ -640,6 +640,38 @@ impl Context {
         })
     }
 
+    /// Answers later: [detaches](Self::detach) the request and calls `f` with it once `delay`
+    /// has passed, **on this I/O thread** (a loop timer, ADR-093): no lock, no other thread, no
+    /// wakeup, and the response is written by the thread that owns the connection. `f` never
+    /// runs early. `false` (and `f` is dropped) if a response was already sent.
+    ///
+    /// Called off an I/O thread, `f` runs on the crate's shared timer thread instead. If the
+    /// loop already holds `akio_core::timer::MAX_TIMERS_PER_LOOP` timers, `f` is dropped and,
+    /// with it, the request: the connection closes.
+    ///
+    /// ```no_run
+    /// # use std::time::Duration;
+    /// # use akio_http::{Context, message::Response};
+    /// fn delayed(ctx: &mut Context) {
+    ///     ctx.after(Duration::from_millis(10), |d| d.respond(Response::text(200, "late")));
+    /// }
+    /// ```
+    pub fn after(
+        &mut self,
+        delay: std::time::Duration,
+        f: impl FnOnce(Detached) + Send + 'static,
+    ) -> bool {
+        let Some(d) = self.detach() else {
+            return false;
+        };
+        if akio_core::timer::on_loop() {
+            let _ = akio_core::timer::after(delay, move || f(d));
+        } else {
+            crate::timer::after(delay, move || f(d));
+        }
+        true
+    }
+
     /// Starts a response whose body is produced piece by piece (server-sent events, large
     /// generated downloads). `headers` are sent with the head; the framing is `chunked` on
     /// keep-alive HTTP/1.1 and close-delimited otherwise. Response filters see the head

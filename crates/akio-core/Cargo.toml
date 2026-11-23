@@ -16,6 +16,7 @@ categories = ["network-programming"]
 akio-buf = { workspace = true }
 akio-pool = { workspace = true }
 akio-log = { workspace = true }
+akio-timer = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 akio-sys = { workspace = true }

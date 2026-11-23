@@ -217,6 +217,12 @@ impl Loop {
 
     pub(crate) fn run(&mut self) {
         self.port.on_thread_start();
+        akio_core::timer::install();
+        self.run_inner();
+        akio_core::timer::uninstall();
+    }
+
+    fn run_inner(&mut self) {
         let mut idle: u32 = 0;
         loop {
             let mut busy = false;
@@ -267,6 +273,10 @@ impl Loop {
                 self.flush_dirty();
                 self.iface.poll(now, &mut self.port);
             }
+            // Loop timers (ADR-093); what they send is flushed on the next iteration.
+            if akio_core::timer::fire() > 0 {
+                busy = true;
+            }
             self.port.flush();
             self.housekeeping();
             for rt in self.groups.values() {
@@ -283,6 +293,7 @@ impl Loop {
                     .iface
                     .next_deadline()
                     .map_or(MAX_SLEEP, |t| t.saturating_duration_since(now))
+                    .min(akio_core::timer::next_wait().unwrap_or(MAX_SLEEP))
                     .min(MAX_SLEEP);
                 if !delay.is_zero() && !self.shared.has_cmds() && !self.iface.has_dirty() {
                     self.port.wait(delay);

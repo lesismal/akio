@@ -948,7 +948,9 @@ impl Loop {
     }
 
     pub(crate) fn run(&mut self) {
+        akio_core::timer::install();
         self.run_inner();
+        akio_core::timer::uninstall();
         self.drain_inflight();
         self.shared.stats.set_running(false);
         self.shared.stats.set_retiring(false);
@@ -1005,6 +1007,7 @@ impl Loop {
                 let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
                 timeout = Some(timeout.map_or(left, |x| x.min(left)));
             }
+            let timeout = akio_core::timer::poll_timeout(timeout);
             let res = match timeout {
                 Some(t) => self.ring.submit_with_timeout(1, t),
                 None => self.ring.submit_and_wait(1),
@@ -1028,6 +1031,8 @@ impl Loop {
                 self.on_cqe(data, res, flags);
             }
             self.cqes = cqes;
+            // Loop timers (ADR-093) before the commands: what they send posts wakes here.
+            akio_core::timer::fire();
             self.drain_cmds();
             self.fire_timers();
             if self.retiring && self.draining.is_none() && self.retire_step() {
