@@ -57,14 +57,30 @@ both, RFC 6455 and Autobahn require them).
    the mutex. Compressed connections, clients (which mask with keys from `Tx`) and transports
    other than TCP (HTTP/2, HTTP/3) keep the locked path unchanged.
 
-`send_parts` and `send_then_close` are on the `#[doc(hidden)]` `ConnInner`, outside the semver
+5. **One send per read.** While a plain session's `on_data` runs, what its handler sends goes
+   to a per-thread batch with no lock (frame header and payload appended), and the batch goes to
+   the connection in one send when the read is processed, earlier when it reaches 64 KiB or the
+   room the connection's queue had when the read began (`ConnInner::send_room`; a larger
+   message is sent on its own). Sends from other threads meanwhile go to a small "late" queue
+   (at most 4 MiB, then `Overloaded`) sent right after the batch, and a close from another
+   thread is queued there too: whatever another thread sends because of a message the handler
+   sent (it learned of it after the handler sent it) reaches the wire after that message, as
+   it did when every send went to the connection at once. A control frame, a fragmented or
+   prepared message, or a close from the handler sends the batch first. A guard closes the
+   batch if the handler unwinds.
+
+`send_parts`, `send_then_close` and `send_room` are on the `#[doc(hidden)]` `ConnInner`, outside the semver
 promise. The public additions (`MessageRef`, `on_message_ref`, `EventRef`, `decode_ref`,
 `EventRef::to_event`) are additive; `on_message` gaining a default is not a breaking change.
 
 ## Consequences
 
-- Per message on the echo path: no allocation, one copy in (unmasking), one copy out (into the
-  queue), one UTF-8 pass, one lock (the connection's). Measurements: see
+- Per message on the echo path: no allocation, no lock, one copy in (unmasking), one copy into
+  the batch, one UTF-8 pass; per read, one send to the connection and a few uncontended locks.
+  On gpu51 echo-ws-pipeline gains 12–13% (15.7 M → 17.8 M at 512 connections; Proa 20.4 M),
+  echo-ws 1% (it is held by system calls), echo-ws-limited and HTTP are unchanged. The rest of
+  the gap to Proa is user-space work Proa skips (UTF-8) and, against aegon, sends submitted
+  through io_uring, which akio's io_uring backend does not do yet. Measurements: see
   docs/BENCHMARKS.md, "WebSocket echo hot path (ADR-101)".
 - Autobahn|Testsuite: server 298 OK + 3 informational, permessage-deflate 216/216, client 514 OK
   + 3 informational and 216/216 without context takeover, as before.

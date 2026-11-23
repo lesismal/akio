@@ -46,13 +46,23 @@ Proa 都不做（它也不校验 UTF-8、不重组分片；akio 必须保留这�
    `Closed`。`closed` 改为无需锁即可读取的原子量。有压缩的连接、客户端（用 `Tx` 中的密钥掩码）以及 TCP 以外的传
    输（HTTP/2、HTTP/3）仍走原来的加锁路径，不变。
 
-`send_parts` 和 `send_then_close` 位于 `#[doc(hidden)]` 的 `ConnInner` 上，不在 semver 承诺范围内。公开新增
+5. **每次读只向连接发送一次。** plain 会话的 `on_data` 执行期间，handler 发送的内容不加锁地追加到每线程的批次中
+   （帧头加载荷），处理完这次读后整批一次交给连接；批次达到 64 KiB 或达到本次读开始时连接队列剩余的容量
+   （`ConnInner::send_room`）时提前发送（更大的消息单独发送）。在此期间其他线程的发送进入一个小的"迟到"队列（至多
+   4 MiB，超出返回 `Overloaded`），紧跟在批次之后发送；其他线程的关闭也排在那里：其他线程因 handler 发出的某条消
+   息而发送的内容（它在 handler 发送之后才得知）在线上一定排在那条消息之后，与每次发送立即进入连接队列时一样。
+   handler 发送控制帧、分片或预编码的消息、关闭时先把批次发出。handler 展开（panic）时由守卫关闭批次。
+
+`send_parts`、`send_then_close` 和 `send_room` 位于 `#[doc(hidden)]` 的 `ConnInner` 上，不在 semver 承诺范围内。公开新增
 （`MessageRef`、`on_message_ref`、`EventRef`、`decode_ref`、`EventRef::to_event`）都是新增；`on_message` 获得
 默认实现不是破坏性变更。
 
 ## 后果
 
-- 回显路径上每条消息：没有分配，一次复制进（去掩码），一次复制出（进队列），一次 UTF-8 校验，一把锁（连接的）。
+- 回显路径上每条消息：没有分配、没有锁，一次复制进（去掩码），一次复制进批次，一次 UTF-8 校验；每次读一次发送到连
+  接，外加几把无竞争的锁。gpu51 上 echo-ws-pipeline 提升 12–13%（512 连接 15.7 M → 17.8 M；Proa 20.4 M），
+  echo-ws 提升 1%（受系统调用限制），echo-ws-limited 和 HTTP 不变。与 Proa 余下的差距是 Proa 省掉的用户态工作
+  （UTF-8），与 aegon 的差距还在于经由 io_uring 提交的发送，akio 的 io_uring 后端还没有这样做。
   测量见 docs/BENCHMARKS.zh-CN.md 的"WebSocket 回显热路径（ADR-101）"。
 - Autobahn|Testsuite：服务端 298 OK + 3 informational，permessage-deflate 216/216，客户端 514 OK + 3
   informational，无上下文接管 216/216，与以前相同。

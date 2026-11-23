@@ -25,6 +25,9 @@ ADR-101, additive:
 - A server sender over TCP without compression sends unfragmented messages without its mutex
   or a scratch copy (header and payload straight into the connection's queue); its close frame
   is queued together with the close, so a racing sender cannot follow it with a data frame.
+- Such a session also sends what its handler sends during one read to the connection in one
+  piece at the end of the read (no lock per message); other threads' sends meanwhile follow
+  that piece, so nothing caused by a message the handler sent overtakes it.
 - The `ws-echo` example (the Autobahn target) uses `on_message_ref`.
 
 ### Added: mDNS on interfaces that appear later; queries from no known subnet (akio-core, akio-webrtc)
