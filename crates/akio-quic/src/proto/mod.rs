@@ -19,6 +19,7 @@ pub(crate) mod stream;
 #[cfg(test)]
 mod sim;
 
+pub(crate) use cid::ConnectionId;
 pub(crate) use conn::{ClientToken, ConnConfig, Connection, EndpointEvent, Event, Transmit};
 pub(crate) use endpoint::{ConnHandle, DatagramEvent, Endpoint, ServerSetup};
 
