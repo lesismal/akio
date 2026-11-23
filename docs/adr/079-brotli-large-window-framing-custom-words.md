@@ -99,6 +99,64 @@ left three parts of RFC 9841 open:
   1,600 words under 13 transforms, 4-5 ms under brotli's 121 (Apple M-series laptop).
 - Containers are only checked against our own writer and hand-made ones; their hash codes mean
   whatever the producer meant. Not done: writing partial chunks, metadata other than names, and
-  repeat metadata chunks (all are read); checking repeat metadata against the chunks it repeats.
+  repeat metadata chunks (all are read); checking repeat metadata against the chunks it repeats
+  (both done: see the update of 2026-11-23).
 - Fuzzing: `brotli_shared` round-trips the words of random dictionaries at levels 10 and 11;
   new target `brotli_container`.
+
+## Update (2026-11-23): the writer's other chunks, repeat metadata checked
+
+The container leftovers of the consequences above are done; the API stays additive.
+
+1. **Writer.** `ContainerWriter::add_resource(&Resource, Option<DictionaryRef>)` writes all a
+   `Resource` holds: a metadata chunk with `id` (also when empty), `mt` and the custom fields
+   (new `Resource::fields`), the hidden flag on the resource's first data chunk and the hash code
+   on its last, a footer metadata chunk with `Resource::footer`. `DictionaryRef::Resource(i)` is an
+   earlier resource as prefix dictionary by pointer, `DictionaryRef::Shared(dict, hash)` a
+   serialized dictionary by hash code. `add_global_metadata(fields)` writes a global metadata chunk
+   where it is called. `part_size(n)` writes data longer than `n` bytes as a first, middle and last
+   partial data chunk of `n` bytes each: one stream cut where the streaming encoder flushed, every
+   chunk after the first "keep decoder" (brotli, or a prefix dictionary); with a serialized
+   dictionary each part is a shared brotli stream of its own with the reference (the streaming
+   encoder has no serialized dictionaries); every part stored when the stream is not smaller than
+   the data. `repeat_metadata(true)` writes, before the central directory (whose pointer is the
+   first of them), one repeat metadata chunk per metadata and footer metadata chunk, whole copies
+   in order: one brotli stream cut into a chunk per copy (keep decoder) when that is smaller,
+   uncompressed otherwise. Metadata chunks are brotli when that is smaller. The `add*` methods of
+   before go the same way (part size and repeat metadata apply to them). Custom field codes must be
+   two upper-case ASCII letters, or the writer panics: the RFC defines no lower-case fields but
+   `id` and `mt`.
+2. **Reader.** `Resource::fields` and `Resource::footer` are the custom fields of the resource's
+   metadata chunk and the fields of its footer metadata chunk; `Container::read(data, limit,
+   lookup)` returns the global metadata's fields besides the resources (`read_container` returns
+   its resources). Repeat metadata is checked against the chunks it repeats (section 8.4.9): none,
+   or one per metadata and footer metadata chunk, in their order, its extra header byte the copied
+   chunk's type; each field equal in code and value to a field of the copied chunk (a field at most
+   as often as there); a code given in any repeat chunk given in every repeat chunk whose copied
+   chunk has it. The series decodes on its own: dictionary references only by hash or to an
+   earlier repeat metadata chunk's content, "keep decoder" only right after a repeat metadata chunk
+   (padding aside). The central directory's repeat metadata pointer must be the first repeat
+   metadata chunk, 0 exactly when there is none (it could be any repeat chunk before).
+3. **Where the RFC is unclear** (adding to 5. above): the order of fields in a repeat chunk is free
+   (the RFC asks fields to match, not to keep their order); repeat chunks need not be contiguous or
+   follow the chunks they copy, and need no central directory; the stream of a repeat chunk may go
+   on in a following chunk of another type (the series still decodes on its own).
+
+### Consequences of the update
+
+- Still nothing to test against: Google's brotli (`c/`, `research/`, Java, JS, Go) has no
+  framing format reader or writer (searched for the signature, "framing" and chunk names), nor
+  does any other implementation we know of. The tests are the writer's round trips (every chunk
+  kind, stored and compressed parts, a container read and written back the same), a container
+  spelled out byte by byte from section 8 (metadata, data, footer metadata, both repeated, a
+  directory pointing at the repeats, the footer) with mutations, and hand-made containers for
+  each repeat metadata rule.
+- Fuzzing: `brotli_container` writes resources with every kind of metadata, hash codes, global
+  metadata, repeat metadata and partial chunks of 1, 64 or 1000 bytes and reads them back equal;
+  a container that reads is written back with `add_resource` and reads back the same. Run on gpu51 for
+  608 s (libFuzzer with AddressSanitizer, built as cargo-fuzz does, 4 forks): 173,550 runs, corpus
+  1,975, no finding (the runs are slow: each writes and reads a container at levels up to 11).
+- Pointer lookups in the reader are binary searches (chunks are in container order), so a
+  container of many references costs n log n, not n².
+- Not done: hash codes stay opaque (no key in the RFC); the writer copies every field into repeat
+  chunks (the reader takes partial copies) and puts the series at the end.

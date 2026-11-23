@@ -10,6 +10,22 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：brotli 容器写入器的其余块，校验重复元数据（akio-brotli）
+
+ADR-079 更新（2026-11-23），只有新增 API：
+
+- `ContainerWriter::add_resource(&Resource, Option<DictionaryRef>)` 写出带全部元数据的资源：名称、修改
+  时间（`mt`）、自定义字段、尾部元数据、隐藏标志和哈希码；`DictionaryRef::{Resource, Shared}` 选择字典。
+  `add_global_metadata(fields)` 写出全局元数据。`part_size(n)` 把长数据写成一串部分数据块（同一个流靠
+  “保留解码器”延续；使用序列化字典时每块一个流）。`repeat_metadata(true)` 在中央目录之前把每个元数据块
+  和尾部元数据块复制到重复元数据块中，更小时作为一个流压缩。元数据在压缩更小时压缩。
+- `Resource::fields`、`Resource::footer` 和 `Container::read`（资源加全局元数据）返回读取器以前跳过的
+  元数据；读出的容器能原样写回。
+- 读取器对照被重复的块校验重复元数据（RFC 9841 第 8.4.9 节）：每个元数据块和尾部元数据块各一个，顺序
+  和类型相同，字段完全复制，某个副本给出的字段在所有原块含有它的副本中都给出，能独立解码；中央目录的
+  重复元数据指针必须指向第一个重复块。以前违反这些规则的容器也会被接受。
+- 模糊测试：`brotli_container` 覆盖写入器能写出的每种块，并把能读取的容器重新写出。
+
 ### 新增：引擎线程的 NUMA 放置，默认关闭（akio、akio-sys、akio-pool）
 
 ADR-088（docs/adr/088-numa-placement.zh-CN.md），只有新增：

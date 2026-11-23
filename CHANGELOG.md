@@ -10,6 +10,28 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the brotli container writer's other chunks, repeat metadata checked (akio-brotli)
+
+ADR-079 update (2026-11-23), additive:
+
+- `ContainerWriter::add_resource(&Resource, Option<DictionaryRef>)` writes a resource with all
+  its metadata: name, modification time (`mt`), custom fields, footer metadata, the hidden flag
+  and a hash code; `DictionaryRef::{Resource, Shared}` picks the dictionary.
+  `add_global_metadata(fields)` writes global metadata. `part_size(n)` writes long data as runs
+  of partial data chunks (one stream continued with "keep decoder"; with a serialized dictionary
+  a stream per part). `repeat_metadata(true)` copies every metadata and footer metadata chunk
+  into repeat metadata chunks before the central directory, compressed as one stream when that
+  is smaller. Metadata is compressed when that is smaller.
+- `Resource::fields`, `Resource::footer` and `Container::read` (resources plus global metadata)
+  return the metadata the reader skipped before; a container read is written back as it was.
+- The reader checks repeat metadata against the chunks it repeats (RFC 9841 section 8.4.9): one
+  per metadata and footer metadata chunk, same order and type, fields copied exactly, a field
+  given in one copy given in all whose chunk has it, decodable on its own; the central
+  directory's repeat pointer must be the first repeat chunk. Containers that broke these rules
+  were accepted before.
+- Fuzzing: `brotli_container` covers every chunk kind the writer makes and rewrites containers
+  that read.
+
 ### Added: NUMA placement of the engine's threads, off by default (akio, akio-sys, akio-pool)
 
 ADR-088 (docs/adr/088-numa-placement.md), additive:
