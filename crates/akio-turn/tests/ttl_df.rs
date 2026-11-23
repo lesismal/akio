@@ -225,3 +225,112 @@ fn dont_fragment_in_send_indications() {
     assert_eq!(turn.stats().to_peer, 5 * peers.len() as u64);
     engine.shutdown();
 }
+
+impl Session {
+    /// The next `ClientEvent::Icmp` within `wait`: peer, type, code, MTU.
+    fn icmp(&mut self, wait: Duration) -> Option<(SocketAddr, u8, u8, u32)> {
+        let end = Instant::now() + wait;
+        while Instant::now() < end {
+            while let Some(e) = self.client.poll_event() {
+                if let ClientEvent::Icmp {
+                    peer,
+                    icmp_type,
+                    code,
+                    mtu,
+                    ..
+                } = e
+                {
+                    return Some((peer, icmp_type, code, mtu));
+                }
+            }
+            self.pump(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// A Send indication to `to` with `len` bytes, with `DONT-FRAGMENT` or not.
+    fn send_ind(&self, to: SocketAddr, len: usize, df: bool) {
+        let data = vec![0x5a; len];
+        let mut b = MessageBuilder::new(Method::SEND, Class::Indication, transaction_id())
+            .xor_addr(attr::XOR_PEER_ADDRESS, to)
+            .attr(attr::DATA, &data);
+        if df {
+            b = b.attr(attr::DONT_FRAGMENT, &[]);
+        }
+        self.sock.send_to(&b.build(), self.server).unwrap();
+    }
+}
+
+/// A client datagram that reaches the server with TTL 1 is dropped, and the client hears of it
+/// as from a router (RFC 8656 section 13.2): ICMP time exceeded (11/0) for the peer, once per
+/// 100 ms however many it sends; with `relay_icmp(false)` it hears nothing.
+#[test]
+fn ttl_1_from_the_client_draws_time_exceeded() {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return;
+    }
+    for relay_icmp in [true, false] {
+        let (turn, engine, server) = start(server_cfg().relay_icmp(relay_icmp));
+        let (p4, p4rx) = bind(&engine, "127.0.0.1:0", 64).unwrap();
+        // Every datagram of the client leaves with TTL 1 and reaches the server with it
+        // (loopback): its requests are answered all the same.
+        let mut s = session(&engine, server, 1);
+        s.allocated();
+        let to = p4.local_addr();
+        assert!(s.client.create_permission(Instant::now(), to));
+        s.pump(Duration::from_millis(100));
+        for _ in 0..5 {
+            s.send_ind(to, 100, false);
+        }
+        let got = s.icmp(Duration::from_millis(400));
+        assert!(p4rx.try_recv().is_err(), "relayed");
+        assert_eq!(turn.stats().ttl_expired, 5);
+        if relay_icmp {
+            assert_eq!(got, Some((to, 11, 0, 0)));
+            assert_eq!(turn.stats().icmp, 1);
+        } else {
+            assert_eq!(got, None);
+            assert_eq!(turn.stats().icmp, 0);
+        }
+        engine.shutdown();
+    }
+}
+
+/// A Send indication with `DONT-FRAGMENT` one byte too large for the path to an IPv4 peer is
+/// refused by the kernel (`EMSGSIZE`), and the client gets "fragmentation needed" (3/4) with
+/// the path MTU, as a router would have told it (RFC 8656 section 14, RFC 1122); the next one
+/// that fits goes through, as does the large one without `DONT-FRAGMENT` (fragmented). It
+/// needs a path MTU small enough to exceed with a datagram every socket can send: loopback
+/// lowered to 1500 bytes or so (Linux in a container with `NET_ADMIN`:
+/// `ip link set lo mtu 1500`); with loopback's usual MTU (Linux 65536, macOS 16384, over
+/// macOS's 9216-byte UDP send limit) it is skipped.
+#[test]
+fn too_big_for_the_path_draws_fragmentation_needed() {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return;
+    }
+    let mtu = akio_sys::path_mtu("127.0.0.1:9".parse().unwrap()).unwrap() as usize;
+    if mtu + 100 > 9000 {
+        eprintln!("loopback MTU {mtu}: skipped (lower it to run this test)");
+        return;
+    }
+    let (turn, engine, server) = start(server_cfg());
+    let (p4, p4rx) = bind(&engine, "127.0.0.1:0", 64).unwrap();
+    let mut s = session(&engine, server, 64);
+    s.allocated();
+    let to = p4.local_addr();
+    assert!(s.client.create_permission(Instant::now(), to));
+    s.pump(Duration::from_millis(100));
+    let fits = mtu - 28;
+    s.send_ind(to, fits + 1, true);
+    assert_eq!(s.icmp(Duration::from_secs(2)), Some((to, 3, 4, mtu as u32)));
+    assert!(p4rx.recv_timeout(Duration::from_millis(100)).is_err());
+    assert_eq!(turn.stats().icmp, 1);
+    for (len, df) in [(fits, true), (fits + 1, false)] {
+        s.send_ind(to, len, df);
+        let (_, d, _) = p4rx.recv_timeout(Duration::from_secs(5)).expect("relayed");
+        assert_eq!(d.len(), len, "df={df}");
+    }
+    assert_eq!(s.icmp(Duration::from_millis(200)), None);
+    engine.shutdown();
+}

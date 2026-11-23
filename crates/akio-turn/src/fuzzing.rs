@@ -221,7 +221,10 @@ pub fn turn_server(data: &[u8]) {
                     continue;
                 };
                 (env.tos, env.ttl) = (tos, ttl);
+                let before = core.stats().icmp;
                 core.handle_client_ip(now, CLIENT, rest, IpFields::new(tos, ttl), &mut env);
+                // At most one "time exceeded" for a datagram dropped at TTL 1, none otherwise.
+                assert!(core.stats().icmp <= before + u64::from(ttl == 1));
             }
             0xff => {
                 now += Duration::from_secs(60);

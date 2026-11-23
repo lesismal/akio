@@ -312,6 +312,8 @@ fn linux_constants() {
         IP_TTL,
         IP_RECVTTL,
         IP_MTU_DISCOVER,
+        IP_MTU,
+        IPV6_MTU,
         IP_PMTUDISC_DONT,
         IP_PMTUDISC_DO,
         IPV6_HOPLIMIT,
@@ -477,12 +479,23 @@ fn macos_layouts() {
         sa_mask,
         sa_flags
     );
+    // `SIOCGIFMTU` is `_IOWR('i', 51, struct ifreq)`: in/out, the size, group 'i', number 51.
+    assert_eq!(size_of::<super::ifreq_mtu>(), size_of::<libc::ifreq>());
+    assert_eq!(align_of::<super::ifreq_mtu>(), align_of::<libc::ifreq>());
+    assert_eq!(size_of::<super::ifreq_mtu>(), 32);
+    let iowr = 0xc000_0000
+        | ((size_of::<libc::ifreq>() as u64 & 0x1fff) << 16)
+        | (u64::from(b'i') << 8)
+        | 51;
+    assert_eq!(super::SIOCGIFMTU, iowr);
+    assert_eq!(super::IFNAMSIZ, libc::IFNAMSIZ);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_constants() {
     same_value!(
+        EMSGSIZE,
         EVFILT_READ,
         EVFILT_WRITE,
         EV_ADD,

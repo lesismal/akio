@@ -234,8 +234,9 @@ fn dual_allocation_reaches_an_ipv6_peer() {
 /// server relays the ICMP port unreachable that the first check through the relayed candidate
 /// draws, and the agent fails that pair at once (RFC 8445 section 7.2.5.2.2): the relay
 /// carries that one check, where without ICMP the check is sent again and again (seven sends
-/// over about six seconds; three within the first two). The host candidate's pair, which no
-/// ICMP reaches, keeps checking either way. Linux and macOS (where the server reads ICMP).
+/// over about six seconds; three within the first two). (The host candidate's pair fails on
+/// the ICMP its own socket hears, `loopback.rs`.) Linux and macOS (where the server reads
+/// ICMP).
 #[test]
 fn icmp_through_the_relay_fails_the_check() {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {

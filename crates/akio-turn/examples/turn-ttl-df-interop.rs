@@ -7,13 +7,16 @@
 //!     akio-turn relaying from <relay-ip>, realm "akio"
 //! turn-ttl-df-interop peer <udp-addr>
 //!     answers every datagram with what it saw ("ttl=<n> len=<n>"), sending with TTL 50
-//! turn-ttl-df-interop client <server> <peer> <user> <pass> [ttl,df]
+//! turn-ttl-df-interop client <server> <peer> <user> <pass> [ttl,df,ptb,ttl1]
 //!     the akio_turn client, sending with TTL 40, allocates, binds a channel to <peer> and
 //!     sends (1) ChannelData, (2) a small Send indication with DONT-FRAGMENT, (3) a 2000-byte
-//!     one without, (4) the same with DONT-FRAGMENT, (5) a small one with it again. It prints the TTL the peer saw and
-//!     the TTL of the answers, and which datagrams arrived; each word of the last argument
-//!     makes it a requirement: the TTL one less both ways (39 and 49), the 2000-byte datagram
-//!     relayed without DONT-FRAGMENT and refused with it.
+//!     one without, (4) the same with DONT-FRAGMENT, (5) a small one with it again, (6) a
+//!     small one with TTL 1. It prints the TTL the peer saw and the TTL of the answers, which
+//!     datagrams arrived and the ICMP Data indications it got; each word of the last argument
+//!     makes it a requirement: `ttl` the TTL one less both ways (39 and 49), `df` the
+//!     2000-byte datagram relayed without DONT-FRAGMENT and refused with it, `ptb` the refusal
+//!     reported as ICMP 3/4 with MTU 1500 (and no other ICMP), `ttl1` the TTL 1 datagram
+//!     dropped and reported as ICMP 11/0.
 //! ```
 
 use std::net::SocketAddr;
@@ -141,6 +144,24 @@ impl Session {
         })
     }
 
+    /// The ICMP Data indications the client got so far: type, code, MTU.
+    fn icmps(&mut self) -> Vec<(u8, u8, u32)> {
+        self.pump(Duration::from_millis(50));
+        let mut out = Vec::new();
+        while let Some(e) = self.c.poll_event() {
+            if let ClientEvent::Icmp {
+                icmp_type,
+                code,
+                mtu,
+                ..
+            } = e
+            {
+                out.push((icmp_type, code, mtu));
+            }
+        }
+        out
+    }
+
     fn send_indication(&self, to: SocketAddr, len: usize, df: bool) {
         let mut b = MessageBuilder::new(Method::SEND, Class::Indication, transaction_id())
             .xor_addr(attr::XOR_PEER_ADDRESS, to)
@@ -189,19 +210,42 @@ fn client(server: &str, to: &str, user: &str, pass: &str, require: &str) {
     println!("  client TTL 40 -> peer saw {seen}; peer TTL 50 -> client saw ttl={back}");
     // (2), (3), (4).
     let mut arrived = Vec::new();
+    let mut icmp = Vec::new();
     for (len, df) in [(100, true), (2000, false), (2000, true), (100, true)] {
         s.send_indication(to, len, df);
         let a = s.answer();
+        let i = s.icmps();
         println!(
-            "  Send indication, {len} bytes{}: {}",
+            "  Send indication, {len} bytes{}: {}{}",
             if df { ", DONT-FRAGMENT" } else { "" },
             a.as_ref().map_or_else(
                 || "not relayed".to_owned(),
                 |(seen, _)| format!("peer saw {seen}")
-            )
+            ),
+            if i.is_empty() {
+                String::new()
+            } else {
+                format!("; client got ICMP {i:?} (type, code, MTU)")
+            }
         );
         arrived.push(a.is_some());
+        icmp.push(i);
     }
+    // (5) TTL 1 from the client: dropped at the server.
+    s.sock
+        .set_unicast_hops(1)
+        .unwrap_or_else(|e| fail(format!("TTL: {e}")));
+    s.send_indication(to, 100, false);
+    let a = s.answer();
+    let ttl1 = s.icmps();
+    println!(
+        "  Send indication, TTL 1: {}; client got ICMP {ttl1:?}",
+        if a.is_some() {
+            "relayed"
+        } else {
+            "not relayed"
+        }
+    );
     for word in require.split(',').filter(|w| !w.is_empty()) {
         match word {
             "ttl" => {
@@ -214,6 +258,20 @@ fn client(server: &str, to: &str, user: &str, pass: &str, require: &str) {
             "df" => {
                 if arrived != [true, true, false, true] {
                     fail(format!("DONT-FRAGMENT not honoured: {arrived:?}"));
+                }
+            }
+            "ptb" => {
+                // RFC 8656 section 14 / RFC 1122: the refused DF datagram draws
+                // "fragmentation needed" with the path MTU (the 1500-byte bridge); nothing
+                // else does.
+                let want = [vec![], vec![], vec![(3, 4, 1500)], vec![]];
+                if icmp != want {
+                    fail(format!("packet too big not reported: {icmp:?}"));
+                }
+            }
+            "ttl1" => {
+                if a.is_some() || ttl1 != [(11, 0, 0)] {
+                    fail(format!("TTL 1: relayed {}, ICMP {ttl1:?}", a.is_some()));
                 }
             }
             w => fail(format!("unknown requirement {w}")),

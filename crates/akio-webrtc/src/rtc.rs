@@ -1193,8 +1193,9 @@ impl Rtc {
         self.ice.add_remote_candidate(c);
     }
 
-    /// An ICMP error about a datagram from local address `local` to `remote` (a TURN server
-    /// relaying it for a relayed candidate): a hard one fails the pairs from `local` to
+    /// An ICMP error about a datagram from local address `local` to `remote` (read on the
+    /// endpoint's own socket for a host candidate, or relayed by a TURN server for a relayed
+    /// one): a hard one fails the pairs from `local` to
     /// `remote` whose check is in flight, in every transport's agent
     /// ([`akio_ice::IceAgent::handle_icmp_error`]). Whether a pair failed.
     pub(crate) fn icmp_error(

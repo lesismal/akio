@@ -316,6 +316,82 @@ pub fn dont_fragment(fd: RawFd) -> io::Result<bool> {
     Ok(v == on)
 }
 
+/// The MTU of the path to `dest` as this host knows it: what a datagram to `dest` with the
+/// "don't fragment" bit set (see [`set_dont_fragment`]) may carry, IP header included, before
+/// the kernel refuses it with `EMSGSIZE`. A UDP socket is connected to `dest` (no packet is
+/// sent) and asked: Linux `IP_MTU` / `IPV6_MTU` (the route's MTU, lowered by what path MTU
+/// discovery learnt); macOS the MTU of the interface holding the socket's local address
+/// (`SIOCGIFMTU`). An error when there is no route to `dest`, or elsewhere. Three or four
+/// system calls and a file descriptor: for error paths, not per datagram.
+pub fn path_mtu(dest: SocketAddr) -> io::Result<u32> {
+    let any: SocketAddr = if dest.is_ipv6() {
+        (Ipv6Addr::UNSPECIFIED, 0).into()
+    } else {
+        (Ipv4Addr::UNSPECIFIED, 0).into()
+    };
+    let s = std::net::UdpSocket::bind(any)?;
+    s.connect(dest)?;
+    path_mtu_of(&s, dest)
+}
+
+#[cfg(target_os = "linux")]
+fn path_mtu_of(s: &std::net::UdpSocket, dest: SocketAddr) -> io::Result<u32> {
+    let (level, name) = if dest.is_ipv6() {
+        (ffi::IPPROTO_IPV6, ffi::IPV6_MTU)
+    } else {
+        (ffi::IPPROTO_IP, ffi::IP_MTU)
+    };
+    let raw = std::os::fd::AsRawFd::as_raw_fd(s);
+    let mut v: ffi::c_int = 0;
+    let mut len = size_of::<ffi::c_int>() as ffi::socklen_t;
+    // SAFETY: `v` is valid for `len` bytes of writes; the kernel writes at most `len`.
+    cvt(unsafe {
+        ffi::getsockopt(
+            raw,
+            level,
+            name,
+            (&raw mut v).cast::<ffi::c_void>(),
+            &raw mut len,
+        )
+    })?;
+    u32::try_from(v).map_err(|_| io::Error::other("negative MTU"))
+}
+
+#[cfg(target_os = "macos")]
+fn path_mtu_of(s: &std::net::UdpSocket, _dest: SocketAddr) -> io::Result<u32> {
+    let local = s.local_addr()?.ip();
+    let ifs = crate::interfaces()?;
+    let name = ifs
+        .iter()
+        .find(|i| i.has_addr(local))
+        .map(|i| i.name.clone())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no interface holds the local address",
+            )
+        })?;
+    let mut req = ffi::ifreq_mtu {
+        ifr_name: [0; ffi::IFNAMSIZ],
+        ifr_mtu: 0,
+        _pad: [0; 12],
+    };
+    if name.len() >= ffi::IFNAMSIZ {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface name too long",
+        ));
+    }
+    for (d, b) in req.ifr_name.iter_mut().zip(name.bytes()) {
+        *d = b as ffi::c_char;
+    }
+    let raw = std::os::fd::AsRawFd::as_raw_fd(s);
+    // SAFETY: `req` is a NUL-terminated `ifreq` of the size `SIOCGIFMTU` encodes (32 bytes,
+    // checked against `libc` in the layout tests); the kernel writes `ifru_mtu` only.
+    cvt(unsafe { ffi::ioctl(raw, ffi::SIOCGIFMTU, (&raw mut req).cast::<ffi::c_void>()) })?;
+    u32::try_from(req.ifr_mtu).map_err(|_| io::Error::other("negative MTU"))
+}
+
 /// The hop limit of the IPv6 unicast datagrams `socket` sends (see [`set_unicast_hops_v6`]);
 /// 0 where the kernel reports the default as unset (macOS: -1).
 pub fn unicast_hops_v6(socket: &std::net::UdpSocket) -> io::Result<u32> {
@@ -431,6 +507,23 @@ pub fn sendfile(out: RawFd, file: RawFd, offset: u64, count: usize) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_mtu_of_loopback() {
+        // Linux: lo's 65536 (lower when a test container lowered it); macOS: lo0's 16384.
+        let v4 = path_mtu("127.0.0.1:9".parse().unwrap()).unwrap();
+        assert!((1280..=65536).contains(&v4), "{v4}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(v4, 16384);
+        }
+        if let Ok(v6) = path_mtu("[::1]:9".parse().unwrap()) {
+            assert!((1280..=65536).contains(&v6), "{v6}");
+        }
+        // macOS refuses to connect to the unspecified address (Linux takes it for loopback).
+        if cfg!(target_os = "macos") {
+            assert!(path_mtu("0.0.0.0:0".parse().unwrap()).is_err());
+        }
+    }
 
     #[test]
     fn multicast_hops_v6_round_trip() {

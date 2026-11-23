@@ -977,7 +977,14 @@ fn ttl_is_decremented_unless_off() {
         core.handle_peer_ip(now, r4, peer4(), b"cd", one, &mut env);
         core.handle_peer_ip(now, r6, peer6(), b"di", one, &mut env);
         if copy {
-            assert_eq!((env.to_peer.len(), env.sent.len()), (np, nc));
+            // The client hears once (ICMP time exceeded, rate limited): nothing else is sent.
+            assert_eq!((env.to_peer.len(), env.sent.len()), (np, nc + 1));
+            assert!(
+                Message::parse(&env.sent[nc].0)
+                    .expect("stun")
+                    .icmp()
+                    .is_some()
+            );
             assert_eq!(core.stats().ttl_expired, 4);
         } else {
             assert_eq!((env.to_peer.len(), env.sent.len()), (np + 2, nc + 2));
@@ -994,6 +1001,83 @@ fn ttl_is_decremented_unless_off() {
         core.handle_peer_tos(now, r4, peer4(), b"cd", 0xb9, &mut env);
         assert_eq!(env.sent.last().map(|s| s.1), Some(IpFields::new(0xb9, 0)));
     }
+}
+
+/// The ICMP fields and peer of the Data indication `data`, if it is one with `ICMP`.
+fn icmp_in(data: &[u8]) -> Option<(SocketAddr, (u8, u8, u32))> {
+    let m = Message::parse(data).ok()?;
+    if (m.method(), m.class()) != (Method::DATA, Class::Indication) || m.has(attr::DATA) {
+        return None;
+    }
+    Some((m.get_xor_addr(attr::XOR_PEER_ADDRESS)?, m.icmp()?))
+}
+
+/// A client's datagram dropped at TTL 1 draws ICMP time exceeded for its peer (RFC 8656
+/// section 13.2, the server as a router), in a Data indication: 11/0 through the IPv4 relay,
+/// 3/0 through the IPv6 one, on ChannelData and Send indications; at most one per allocation
+/// per 100 ms; none without a permission, with `relay_icmp(false)` or with `copy_ttl(false)`
+/// (nothing is dropped then); a peer's datagram at TTL 1 draws nothing (that would take a raw
+/// ICMP message to the peer).
+#[test]
+fn ttl_1_draws_time_exceeded_for_the_client() {
+    let one = IpFields::new(0, 1);
+    let cd = [0x40, 0, 0, 1, b'a'];
+    for (relay_icmp, copy_ttl) in [(true, true), (false, true), (true, false)] {
+        let t0 = Instant::now();
+        let mut core = core_with(
+            cfg(V4)
+                .additional_relay_ip(V6.parse().unwrap())
+                .relay_icmp(relay_icmp)
+                .copy_ttl(copy_ttl),
+            t0,
+        );
+        let mut env = IpEnv::default();
+        let (r4, r6) = dual_with_peers(&mut core, &mut env, t0);
+        let icmps = |env: &IpEnv, from: usize| -> Vec<(SocketAddr, (u8, u8, u32))> {
+            env.sent[from..]
+                .iter()
+                .filter_map(|s| icmp_in(&s.0))
+                .collect()
+        };
+        let n = env.sent.len();
+        core.handle_client_ip(t0, CLIENT, &cd, one, &mut env);
+        // Within 100 ms: not again.
+        let t1 = t0 + Duration::from_millis(50);
+        core.handle_client_ip(t1, CLIENT, &cd, one, &mut env);
+        core.handle_client_ip(t1, CLIENT, &send_ind(peer6(), false), one, &mut env);
+        let t2 = t0 + Duration::from_millis(150);
+        core.handle_client_ip(t2, CLIENT, &send_ind(peer6(), false), one, &mut env);
+        // A peer's TTL 1: nothing to anyone.
+        let t3 = t0 + Duration::from_millis(300);
+        core.handle_peer_ip(t3, r4, peer4(), b"x", one, &mut env);
+        core.handle_peer_ip(t3, r6, peer6(), b"x", one, &mut env);
+        let got = icmps(&env, n);
+        match (relay_icmp, copy_ttl) {
+            (true, true) => {
+                assert_eq!(got, vec![(peer4(), (11, 0, 0)), (peer6(), (3, 0, 0))]);
+                assert_eq!(core.stats().icmp, 2);
+                assert!(env.to_peer.is_empty());
+            }
+            (false, true) => {
+                assert!(got.is_empty());
+                assert_eq!(env.sent.len(), n);
+                assert_eq!(core.stats().icmp, 0);
+            }
+            _ => {
+                assert!(got.is_empty());
+                assert_eq!(env.to_peer.len(), 4);
+            }
+        }
+    }
+    // No permission for the peer: dropped, no indication.
+    let t0 = Instant::now();
+    let mut core = core_with(cfg(V4), t0);
+    let mut env = IpEnv::default();
+    let m = authed(&core, t0, udp());
+    core.handle_client(t0, CLIENT, &m, &mut env);
+    let n = env.sent.len();
+    core.handle_client_ip(t0, CLIENT, &send_ind(peer4(), false), one, &mut env);
+    assert_eq!(env.sent.len(), n);
 }
 
 /// A stream client gets data from peers that came in with TTL 1 (no hop of the datagram's own

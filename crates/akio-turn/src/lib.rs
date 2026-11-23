@@ -13,8 +13,10 @@
 //!   With [`TurnConfig::additional_relay_ip`] it relays both address families, with RFC 8656
 //!   dual allocations (`ADDITIONAL-ADDRESS-FAMILY`); relayed datagrams keep their traffic class
 //!   (DSCP and ECN) both ways over UDP and DTLS (RFC 8656 section 14), and ICMP errors drawn by
-//!   datagrams to peers go back to the client (section 11.5; Linux, through
-//!   [`akio::Engine::bind_udp_icmp`]).
+//!   datagrams to peers go back to the client (section 11.5; Linux and macOS, through
+//!   [`akio::Engine::bind_udp_icmp`]), as do the server's own: time exceeded for a client's
+//!   datagram that arrived with TTL 1, "packet too big" for a `DONT-FRAGMENT` one larger than
+//!   the path MTU.
 //! - [`TurnStream`] ([`TurnServer::stream`]): the same server for TCP listeners, and for TLS
 //!   ones through [`akio::tls::Tls`] (`turns:`, RFC 8656 section 3.1): STUN and ChannelData
 //!   framed on the stream ([`framing`]). An allocation lives as long as its connection. Its
@@ -185,7 +187,15 @@ struct Relay {
     /// The socket sends with the "don't fragment" bit set (it starts clear; a Send indication
     /// with `DONT-FRAGMENT` sets it for its datagram, the next datagram without clears it).
     df: bool,
+    /// When a refused DF datagram was last reported to the client ("packet too big"), to
+    /// report at most one per [`TOO_BIG_GAP`].
+    too_big_at: Option<Instant>,
 }
+
+/// The least time between two "packet too big" reports for one relay: each costs a socket
+/// and three system calls (`akio_sys::path_mtu`), and a client that keeps sending too much
+/// learns nothing more from the second.
+const TOO_BIG_GAP: Duration = Duration::from_millis(100);
 
 struct Inner {
     shared: Arc<Shared>,
@@ -278,8 +288,30 @@ impl Inner {
             prebound,
             incoming: None,
             dials: Vec::new(),
+            too_big: Vec::new(),
         };
         let r = f(core, &mut env);
+        // RFC 8656 sections 13.2 and 14: a DF datagram that does not fit the path to the peer
+        // draws "packet too big" / "fragmentation needed" for its sender, the client, with the
+        // path's MTU (unreduced: the 48 bytes come off only towards a peer, whose datagram
+        // reaches the client in a Data indication).
+        while !env.too_big.is_empty() {
+            let now = Instant::now();
+            for (relay, peer, len) in std::mem::take(&mut env.too_big) {
+                let Ok(mtu) = akio_sys::path_mtu(peer) else {
+                    continue;
+                };
+                // Only a datagram that does not fit the path: `EMSGSIZE` also means larger
+                // than the socket's send buffer (macOS: 9216 bytes by default), which is no
+                // ICMP's business.
+                let headers = if peer.is_ipv6() { 48 } else { 28 };
+                if len + headers <= mtu as usize {
+                    continue;
+                }
+                let (ty, code) = if relay.is_ipv6() { (2, 0) } else { (3, 4) };
+                core.handle_icmp(now, relay, peer, ty, code, mtu, &mut env);
+            }
+        }
         let unused = std::mem::take(&mut env.prebound);
         let dials = std::mem::take(&mut env.dials);
         drop(g);
@@ -319,6 +351,10 @@ struct Env<'a> {
     incoming: Option<Arc<tcp::Pair>>,
     /// Connections to peers to start once the shard is unlocked: relay, peer, id.
     dials: Vec<(SocketAddr, SocketAddr, u32)>,
+    /// DF datagrams the kernel refused with `EMSGSIZE`: relay, peer, payload length. Reported
+    /// to the client once the core's call returns (it cannot be re-entered from a `TurnEnv`
+    /// method).
+    too_big: Vec<(SocketAddr, SocketAddr, usize)>,
 }
 
 impl TurnEnv for Env<'_> {
@@ -396,11 +432,27 @@ impl TurnEnv for Env<'_> {
             r.df = ip.dont_fragment;
         }
         // RFC 8656 section 14: the client's traffic class and TTL (0 from a stream, section 15).
-        let _ = if ip.tos != 0 || ip.ttl != 0 {
+        let sent = if ip.tos != 0 || ip.ttl != 0 {
             r.binding.send_to_ip(data, peer, ip.tos, ip.ttl)
         } else {
             r.binding.send_to(data, peer)
         };
+        if let Err(e) = sent {
+            // Larger than the path MTU the kernel knows, with DF: told to the client after the
+            // core's call (`with_shard`), at most once per `TOO_BIG_GAP` per relay.
+            if ip.dont_fragment
+                && e.raw_os_error() == Some(akio_sys::ffi::EMSGSIZE)
+                && self.inner.shared.config().relay_icmp
+            {
+                let now = Instant::now();
+                if r.too_big_at
+                    .is_none_or(|t| now.duration_since(t) >= TOO_BIG_GAP)
+                {
+                    r.too_big_at = Some(now);
+                    self.too_big.push((relay, peer, data.len()));
+                }
+            }
+        }
     }
 
     fn sets_dont_fragment(&self) -> bool {
@@ -429,6 +481,7 @@ impl TurnEnv for Env<'_> {
                 binding,
                 route,
                 df: false,
+                too_big_at: None,
             },
         );
         Ok(bound)

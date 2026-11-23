@@ -3,7 +3,7 @@
 [English](091-turn-icmp-dscp-family-release.md) | 简体中文
 
 状态：已接受（2026-11-23）；2026-11-23 更新（TTL、`DONT-FRAGMENT`、macOS 上的 ICMP、ICE 处理 ICMP：见末尾的
-更新）
+第一次更新）；2026-11-23 再次更新（host 候选的 ICMP，向客户端报告“包过大”和“超时”：第二次更新）
 
 ## 背景
 
@@ -291,3 +291,80 @@ branch / main 逐轮比值中位数 1.022，平均 1.039（各轮波动约 ±20%
 - macOS 上 `[::]` 双栈 socket 只得知其 IPv6 数据报的 ICMP 错误。
 - 端点自己 host 候选的 ICMP（其未连接的 socket，Linux 上的 `IP_RECVERR`）不交给 ICE：只有中继候选经 TURN
   服务器得到它。
+
+## 更新 2（2026-11-23）：host 候选、“包过大”、“超时”
+
+第一次更新留下三项：端点自己 host 候选的 ICMP、内核拒绝的 DF 数据报向客户端报告、在 TTL 1 处丢弃数据报时的
+ICMP 超时。前两项已完成，第三项完成了无需特权的那个方向。
+
+### 背景，更正
+
+第一次更新的“未做”说 13.2 节建议告知被拒 DF 数据报的发送者，“并从 MTU 中减去 48 字节”。RFC 8656 的原意更精确：
+13.2 节（IPv6 到 IPv6，没有分片头）丢弃大于出向链路 MTU 的数据报，并向入向数据包的发送者发送 ICMPv6
+“包过大”；13.2 与 13.3 节只在该 ICMP 发往 **对端** 时把 MTU 减去 48 字节（为 Data indication 的开销留出空间：
+对端的数据报包在 Data indication 里到达客户端）。发往客户端时，MTU 是到对端那一段的 MTU，那一段承载的是裸载荷；
+18.13 节把 `ICMP` 属性的错误数据定义为“下一跳链路 MTU”。14 节（IPv4 到 IPv4）对放不下的 DF 数据报按 RFC 1122
+处理，发送者由此收到带 MTU 的“需要分片”。
+
+### 决策
+
+**host 候选：在端点的 socket 上读取 ICMP。** `Endpoint::bind`、`bind_rtcp` 与 `bind_transport_socket` 改用
+`Engine::bind_udp_icmp` 绑定（Linux 用 `IP_RECVERR`；macOS 用循环的 ICMP socket），像中继路径一样把每个错误交给
+每个对端的各个 agent：`local` 是该 socket 绑定地址所代表的 host 候选（绑定未指定地址时即 `Endpoint` 通告的地址），
+`remote` 是目的地址，去掉 scope，IPv4 映射地址还原为 IPv4。`IceAgent::handle_icmp_error` 其余不变：硬错误使从该
+base 出发（host 与服务器反射候选共用它）且检查进行中的候选对失败；成功的候选对、软错误和未知地址都被忽略。不设开关：
+开销就是 `bind_udp_icmp` 的开销（Linux 上每个错误读一次错误队列；macOS 上每个 UDP 循环的 ICMP socket，与该循环上的
+TURN 中继等共用，收到主机的每个 ICMP 消息）。公共 API 不变：`Endpoint` 已说明 ICMP 是尽力而为。
+
+**“包过大”：被拒的 DF 数据报报告给客户端。** `TurnServer` 以 DF 发往对端失败并得到 `EMSGSIZE`（内核知道更小的路径
+MTU：Linux 检查路由的路径 MTU，macOS 检查接口的）时，客户端以 RFC 8656 Data indication 的形式收到路由器本会发给它的
+消息：IPv4 中继上为 `ICMP` 类型 3 代码 4（“需要分片”），IPv6 中继上（15 节的流式客户端情形）为 ICMPv6 类型 2
+代码 0，错误数据为路径 MTU，不减（见上），并带对端的地址和端口。
+
+- MTU 来自新增的 `akio_sys::path_mtu(dest)`：一个连接到 `dest` 的 UDP socket，然后取 `IP_MTU` / `IPV6_MTU`
+  （Linux：路由的 MTU，含路径 MTU 发现学到的值），macOS 上取持有该已连接 socket 本地地址的接口的 MTU
+  （`SIOCGIFMTU`）。找不到 MTU，或数据报（含 IP 与 UDP 头）放得下时不报告：`EMSGSIZE` 也表示大于 socket 的发送
+  缓冲区，macOS 上默认为 9216 字节（`net.inet.udp.maxdgram`），与 DF 无关。
+- 每次报告三个系统调用和一个文件描述符，只在错误路径上：每个中继每 100 ms 最多报告一次。报告在分片对核心的调用返回后
+  进行（不能在 `TurnEnv::send_to_peer_ip` 内部重入核心），经由已有的 `TurnCore::handle_icmp`，因此
+  `relay_icmp(false)`、许可、对端策略和 `TurnStats::icmp` 与来自网络的 ICMP 一样适用。
+- `TurnEnv` 与 `TurnCore` 不变：想要同样报告的自定义环境自己用这些类型调用 `handle_icmp`。
+- 对端到客户端：服务器从不对发往客户端的数据设置 DF，那里不会被拒。
+
+**“超时”：在带内告知客户端；不告知对端。** 客户端以 TTL 1 到达的数据报被丢弃（第一次更新）；现在客户端还会就它所发往的
+对端收到一个带 `ICMP` 的 Data indication：IPv4 中继上为类型 11 代码 0（ICMPv4 传输中超时），IPv6 中继上为类型 3
+代码 0（ICMPv6 超时）。这就是 13.2 节建议的路由器行为（“降到零时生成 ICMPv6 错误”），以 TURN 向客户端传递所有 ICMP
+错误的方式送达，无需特权。由 `TurnCore` 完成（`relay_icmp`、许可与对端策略同任何 ICMP，计入 `TurnStats::icmp`），
+每个分配每 100 ms 最多一次：持续发送 TTL 1 数据报的客户端每 100 ms 收到一个 indication，而不是每个数据报一个。
+
+**拒绝：向对端发送超时。** 对端以 TTL 1 到达的数据报仍被静默丢弃。告知对端意味着从中继地址向它发送真正的 ICMP 消息（对端
+不讲 TURN），并引用被丢弃数据报的 IP 头：这需要原始 socket（Linux 上 `CAP_NET_RAW`，macOS 上 root）。无特权的 ICMP
+socket 帮不上忙：Linux 的 ping socket 与 macOS 的数据报 ICMP socket 都只能发送回显请求（实测：其他类型，包括超时和
+目的不可达，都以 `EINVAL` 被拒）。为了回应只有环路或刻意构造的数据报才会碰到的 TTL，让 TURN 服务器获得它本不需要的
+权限，得不偿失。
+
+### 实测
+
+- 互通（`tools/interop/webrtc/turn-ttl-df.sh`，gpu51，1500 字节网桥）：akio-turn 对 2000 字节的 DF Send indication
+  回以带 MTU 1500 的 ICMP 3/4，对 TTL 1 的回以 ICMP 11/0，并中继随后的小 DF 数据报。coturn 4.6 两者都不发，随后的小
+  DF 数据报也未中继。其余各行不变（akio-turn 39 / 49，coturn 39 / 64）。
+- host 候选：对关闭端口的检查约 1 ms 使 ICE 失败，忽略 ICMP 时为 8.2 s（`tests/loopback.rs`，macOS）。
+- 与 `main` `50a82315` 的同轮 A/B（gpu51，`quiet.sh` 下交替 8 轮；docs/BENCHMARKS.zh-CN.md）：数据通道 1.001
+  （0.987–1.008）；中继合计每轮比值中位数 0.967（0.825–1.652），在该基准各轮之间的噪声以内（单一构建到对端的速率就在
+  38k 到 110k 数据报/s 之间）。12 轮纯中继复测在排在其他项目之后时被停止。
+- Fuzz（macOS，每个目标并行 5 分钟；没有解析器变化，因此没有新种子）：`turn_server` 82 万次、`turn_stream` 92 万次、
+  `turn_tcp` 80 万次、`turn_dtls` 78 万次，没有发现问题；`turn_server` 的 TTL 选择字节现在也检查超时 indication。
+
+### 测试
+
+- akio-sys：两个地址族上回环地址的 `path_mtu`（Linux 65536 或调低后的 MTU；macOS 为 lo0 的 16384），连接失败时
+  返回错误（macOS：未指定地址）。
+- akio-turn 核心：客户端在 ChannelData 和 Send indication 上以 TTL 1 发送，针对该对端得到一个超时 indication
+  （IPv4 11/0，IPv6 3/0）；无许可、`relay_icmp(false)` 或距上次不足 100 ms 时没有；对端的 TTL 1 仍然什么都不产生。
+- akio-turn 真实 socket：带 `DONT-FRAGMENT`、比到对端的路径 MTU 大一字节的 Send indication（回环 MTU 被调低时，
+  如带 `NET_ADMIN` 的 Linux Docker 运行；否则跳过，macOS 上也跳过：9216 字节的发送上限低于 lo0 的 16384）使客户端收到带该 MTU 的 ICMP 3/4，下一个放得下的
+  照常中继；不带 `DONT-FRAGMENT` 的同样大小被中继（分片）。
+- akio-webrtc（`tests/loopback.rs`）：唯一远端候选是关闭端口的端点在远少于一秒内 ICE 失败（报告为 `Disconnected`）：
+  约 1 ms，host socket 收到端口不可达使检查失败；忽略 ICMP 时为 8.2 s（实测）。
+- 互通：`tools/interop/webrtc/turn-ttl-df.sh` 针对 akio-turn 检查 2000 字节 DF 数据报使客户端收到带网桥 MTU 的
+  ICMP 3/4，以及 TTL 1 的超时。

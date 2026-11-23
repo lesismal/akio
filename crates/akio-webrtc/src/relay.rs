@@ -701,7 +701,7 @@ impl Relay {
                 }
                 Deferred::Icmp(relayed, peer, icmp_type, code) => {
                     if let Some(h) = self.hub.upgrade() {
-                        h.relay_icmp(relayed, peer, icmp_type, code);
+                        h.icmp_to_peers(relayed, peer, icmp_type, code);
                     }
                 }
                 Deferred::Reallocated(c) => {
