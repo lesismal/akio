@@ -605,7 +605,13 @@ impl WsSender {
                     return Some(r);
                 }
             }
-            b.buf.extend_from_slice(&h[..n]);
+            b.buf.reserve(need);
+            // Constant lengths, so the header is stored inline rather than through memcpy.
+            match n {
+                2 => b.buf.extend_from_slice(&h[..2]),
+                4 => b.buf.extend_from_slice(&h[..4]),
+                _ => b.buf.extend_from_slice(&h[..n]),
+            }
             b.buf.extend_from_slice(payload);
             Some(Ok(()))
         })

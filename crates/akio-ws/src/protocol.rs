@@ -449,11 +449,14 @@ impl Decoder {
         let go = match h.mask {
             None => emit_data(text, payload, f)?,
             Some(m) => {
+                // Unmask while copying, one pass. The buffer keeps its length between
+                // messages, so it is only zero-filled when it grows.
                 let buf = &mut self.mbuf;
-                buf.clear();
-                buf.extend_from_slice(payload);
-                unmask(buf, m, 0);
-                let r = emit_data(text, buf, f);
+                if buf.len() < len {
+                    buf.resize(len, 0);
+                }
+                unmask_copy(payload, &mut buf[..len], m);
+                let r = emit_data(text, &buf[..len], f);
                 if buf.capacity() > KEEP_BUF {
                     *buf = Vec::new();
                 }
@@ -627,6 +630,23 @@ impl Decoder {
         let r = emit_data(p.text, &p.buf, f);
         self.keep(p.buf);
         r
+    }
+}
+
+/// Writes `src` XORed with the mask (from byte 0 of the payload) to `dst`, of the same length.
+#[inline]
+fn unmask_copy(src: &[u8], dst: &mut [u8], mask: [u8; 4]) {
+    let m8 = u64::from_ne_bytes([
+        mask[0], mask[1], mask[2], mask[3], mask[0], mask[1], mask[2], mask[3],
+    ]);
+    let mut s = src.chunks_exact(8);
+    let mut d = dst.chunks_exact_mut(8);
+    for (a, b) in (&mut s).zip(&mut d) {
+        let v = u64::from_ne_bytes(a.try_into().expect("8-byte chunk")) ^ m8;
+        b.copy_from_slice(&v.to_ne_bytes());
+    }
+    for (i, (a, b)) in s.remainder().iter().zip(d.into_remainder()).enumerate() {
+        *b = a ^ mask[i % 4];
     }
 }
 
@@ -1138,6 +1158,19 @@ mod tests {
             true
         })
         .unwrap();
+    }
+
+    #[test]
+    fn unmask_copy_matches_unmask_at_every_length() {
+        let mask = [0x37, 0xfa, 0x21, 0x3d];
+        for len in 0..40 {
+            let src: Vec<u8> = (0..len as u8).map(|i| i.wrapping_mul(31)).collect();
+            let mut want = src.clone();
+            unmask(&mut want, mask, 0);
+            let mut got = vec![0xee; len];
+            unmask_copy(&src, &mut got, mask);
+            assert_eq!(got, want, "len {len}");
+        }
     }
 
     #[test]
