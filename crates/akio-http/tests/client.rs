@@ -283,6 +283,45 @@ fn https_through_only_tls() {
     stop(&e);
 }
 
+/// `with_tls_server_name` (A108): a server reached by its address whose certificate names
+/// another host is verified, and asked in SNI, under that name; without it, or with another
+/// name, the handshake fails; an empty name restores the URL's host.
+#[test]
+fn https_with_a_tls_server_name() {
+    let ck = akio_x509::generate_simple_self_signed(["example.com"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = akio::tls::ServerConfig::builder(
+        vec![akio::tls::Certificate::from_der(cert.clone())],
+        akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    let e = Arc::new(start(Tls::server(scfg, serve(app()))));
+    let mut roots = akio::tls::RootCerts::empty();
+    roots.add(&akio::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = akio::tls::ClientConfig::builder()
+        .roots(roots)
+        .build()
+        .unwrap();
+    let url = format!("https://127.0.0.1:{}/hello", e.local_addrs()[0].port());
+    let plain = Client::new(e.clone()).with_tls(ccfg);
+    let r = plain.send(ClientRequest::get(&url)).wait();
+    assert!(r.is_err(), "{r:?}");
+    let named = plain.clone().with_tls_server_name("example.com");
+    let r = named.send(ClientRequest::get(&url)).wait().unwrap();
+    assert_eq!(r.body, b"hello client");
+    // Reused: the connection is kept by the URL's host and port.
+    let u2 = format!("https://127.0.0.1:{}/port", e.local_addrs()[0].port());
+    let a = named.send(ClientRequest::get(&u2)).wait().unwrap().body;
+    let b = named.send(ClientRequest::get(&u2)).wait().unwrap().body;
+    assert_eq!(a, b);
+    let wrong = plain.with_tls_server_name("other.example");
+    assert!(wrong.send(ClientRequest::get(&url)).wait().is_err());
+    let restored = named.with_tls_server_name("");
+    assert!(restored.send(ClientRequest::get(&url)).wait().is_err());
+    stop(&e);
+}
+
 /// An engine that only hosts client connections, with the default 10 s `shutdown_timeout`.
 fn client_engine() -> Arc<Engine> {
     let e = Engine::builder().client_threads(2).build().unwrap();

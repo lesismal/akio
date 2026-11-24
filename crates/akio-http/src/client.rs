@@ -1246,6 +1246,9 @@ struct Pending {
 #[derive(Clone, Default)]
 struct Settings {
     tls: Option<TlsClientConfig>,
+    /// The name `https://` connections send in SNI and check the certificate against, in place
+    /// of the URL's host ([`Client::with_tls_server_name`]).
+    tls_server_name: Option<String>,
     redirects: RedirectPolicy,
     timeout: Option<Duration>,
     proxy: Proxy,
@@ -1344,6 +1347,16 @@ impl Client {
     #[must_use]
     pub fn with_tls(self, cfg: TlsClientConfig) -> Client {
         self.rebuild(|s| s.tls = Some(cfg))
+    }
+
+    /// Sends `name` in SNI, and checks the server's certificate against it, on every `https://`
+    /// connection, in place of the URL's host: for servers reached by an address whose
+    /// certificate names another host, as a proxy's upstream often is. Connections are still
+    /// kept and reused by the URL's host and port. An empty `name` restores the URL's host.
+    #[must_use]
+    pub fn with_tls_server_name(self, name: impl Into<String>) -> Client {
+        let name = name.into();
+        self.rebuild(|s| s.tls_server_name = (!name.is_empty()).then_some(name))
     }
 
     /// Follows redirects as `policy` says (none by default).
@@ -1914,10 +1927,10 @@ impl Client {
             None => None,
         };
         if key.tls {
-            let a = match self
-                .tls()
-                .and_then(|cfg| Tls::client(cfg, &key.host, acceptor))
-            {
+            let a = match self.tls().and_then(|cfg| {
+                let name = self.inner.settings.tls_server_name.as_deref();
+                Tls::client(cfg, name.unwrap_or(&key.host), acceptor)
+            }) {
                 Ok(a) => a,
                 Err(e) => return fail(e),
             };

@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/1 客户端的 TLS 服务器名；检查客户端证书的私钥（akio-http、akio-tls）
+
+ADR-117，应 akit 请求（A108、A109）：
+
+- `Client::with_tls_server_name(name)`：每个 `https://` 连接都在 SNI 中发送 `name` 并以它校验
+  服务器证书，代替 URL 的主机名；连接仍按主机和端口入池，空名字恢复 URL 的主机名。
+- `ClientConfigBuilder::build` 像服务端构建器一样，检查客户端证书的叶证书可解析且带有私钥的公钥；
+  不匹配时报 `client certificate: private key does not match the certificate`（以前是每次索要证书的
+  握手失败）。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：

@@ -199,6 +199,23 @@ fn bad_keys_and_errors_are_reported() {
         .build()
         .unwrap_err();
     assert!(e.to_string().contains("does not match"), "{e}");
+    // The same for a client certificate (A109), and an empty client chain.
+    let e = ClientConfig::builder()
+        .client_cert(vec![srv.cert.clone()], pki("client").key)
+        .build()
+        .unwrap_err();
+    let msg = e.to_string();
+    assert!(msg.contains("client certificate"), "{e}");
+    assert!(
+        msg.contains("private key does not match the certificate"),
+        "{e}"
+    );
+    assert!(
+        ClientConfig::builder()
+            .client_cert(vec![], srv.key.clone())
+            .build()
+            .is_err()
+    );
     assert!(
         ServerConfig::builder(vec![], srv.key.clone())
             .build()
