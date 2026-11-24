@@ -3,7 +3,15 @@
 //! ```text
 //! skew-bench server <addr> <loops|rounds> [threads|pollers:workers]
 //! skew-bench client <addr> <conns> <depth> <work_us> <heavy_conns> <heavy_work_us> <secs>
+//! skew-bench churn <addr> <conns> <requests_per_conn> <secs>
+//! skew-bench rate <addr> <conns> <requests_per_sec> <secs>
 //! ```
+//!
+//! `churn` keeps `conns` short-lived connections busy: each connects, sends `requests_per_conn`
+//! requests one at a time and closes, then starts over (like HttpArena's `limited-conn` and
+//! `echo-ws-limited`). `rate` sends a fixed total rate of requests spread over `conns` open
+//! connections (like `latency-10k`); measure the server's CPU from outside to get the cost per
+//! request at light load.
 //!
 //! Every request is 16 bytes (`work_us: u32`, `picked_us: u32`, `sent_ns: u64` of the system
 //! clock); the server spins `work_us` microseconds of CPU in `on_data` and echoes the request,
@@ -249,6 +257,132 @@ fn client(args: &[String]) {
     );
 }
 
+/// A zero-work request frame stamped with the system clock.
+fn plain_frame() -> [u8; FRAME] {
+    let mut f = [0u8; FRAME];
+    f[8..].copy_from_slice(&unix_ns().to_le_bytes());
+    f
+}
+
+fn churn(args: &[String]) {
+    let addr: SocketAddr = args[0].parse().expect("addr");
+    let conns: usize = args[1].parse().expect("conns");
+    let reqs: usize = args[2].parse().expect("requests_per_conn");
+    let secs: u64 = args[3].parse().expect("secs");
+    let warm = Instant::now() + Duration::from_secs(1);
+    let stop = Arc::new(AtomicBool::new(false));
+    let hs: Vec<_> = (0..conns)
+        .map(|_| {
+            let stop = stop.clone();
+            thread::spawn(move || {
+                let (mut done, mut opened, mut failed) = (0u64, 0u64, 0u64);
+                let mut lat = Vec::new();
+                let mut f = [0u8; FRAME];
+                'conn: while !stop.load(Ordering::Relaxed) {
+                    let Ok(mut s) = TcpStream::connect(addr) else {
+                        failed += 1;
+                        thread::sleep(Duration::from_millis(1));
+                        continue;
+                    };
+                    s.set_nodelay(true).ok();
+                    let counted = Instant::now() >= warm;
+                    for _ in 0..reqs {
+                        let t0 = Instant::now();
+                        if s.write_all(&plain_frame()).is_err() || s.read_exact(&mut f).is_err() {
+                            failed += 1;
+                            continue 'conn;
+                        }
+                        if counted {
+                            lat.push(t0.elapsed().as_nanos() as u64);
+                            done += 1;
+                        }
+                    }
+                    if counted {
+                        opened += 1;
+                    }
+                }
+                (done, opened, failed, lat)
+            })
+        })
+        .collect();
+    thread::sleep(Duration::from_secs(1 + secs));
+    stop.store(true, Ordering::Relaxed);
+    let (mut done, mut opened, mut failed, mut lat) = (0, 0, 0, Vec::new());
+    for h in hs {
+        let (d, o, f, l) = h.join().expect("join");
+        done += d;
+        opened += o;
+        failed += f;
+        lat.extend(l);
+    }
+    println!(
+        "rps={:.0} conns_per_s={:.0} failed={failed} p50={:.0}us p99={:.0}us",
+        done as f64 / secs as f64,
+        opened as f64 / secs as f64,
+        pct(&mut lat, 0.5),
+        pct(&mut lat, 0.99),
+    );
+}
+
+fn rate(args: &[String]) {
+    let addr: SocketAddr = args[0].parse().expect("addr");
+    let conns: usize = args[1].parse().expect("conns");
+    let rate: f64 = args[2].parse().expect("requests_per_sec");
+    let secs: u64 = args[3].parse().expect("secs");
+    let threads = conns.clamp(1, 16);
+    let interval = Duration::from_secs_f64(threads as f64 / rate);
+    let start = Instant::now() + Duration::from_millis(500);
+    let warm = start + Duration::from_secs(1);
+    let end = warm + Duration::from_secs(secs);
+    let hs: Vec<_> = (0..threads)
+        .map(|t| {
+            let mine = (t..conns).step_by(threads).count();
+            thread::spawn(move || {
+                let mut ss: Vec<TcpStream> = (0..mine)
+                    .map(|_| {
+                        let s = TcpStream::connect(addr).expect("connect");
+                        s.set_nodelay(true).ok();
+                        s
+                    })
+                    .collect();
+                let mut lat = Vec::new();
+                let mut f = [0u8; FRAME];
+                // Threads start staggered so the total rate is even.
+                let mut next = start + interval.mul_f64(t as f64 / threads as f64);
+                let mut i = 0;
+                while next < end {
+                    let now = Instant::now();
+                    if next > now {
+                        thread::sleep(next - now);
+                    }
+                    let s = &mut ss[i % mine];
+                    i += 1;
+                    let t0 = Instant::now();
+                    s.write_all(&plain_frame()).expect("write");
+                    s.read_exact(&mut f).expect("read");
+                    if t0 >= warm {
+                        lat.push(t0.elapsed().as_nanos() as u64);
+                    }
+                    next += interval;
+                }
+                lat
+            })
+        })
+        .collect();
+    let mut lat = Vec::new();
+    for h in hs {
+        lat.extend(h.join().expect("join"));
+    }
+    println!(
+        "done={} rps={:.0} p50={:.0}us p99={:.0}us p999={:.0}us",
+        lat.len(),
+        lat.len() as f64 / secs as f64,
+        pct(&mut lat, 0.5),
+        pct(&mut lat, 0.99),
+        pct(&mut lat, 0.999),
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -258,9 +392,13 @@ fn main() {
             args.get(3).map(String::as_str),
         ),
         Some("client") if args.len() >= 8 => client(&args[1..]),
+        Some("churn") if args.len() >= 5 => churn(&args[1..]),
+        Some("rate") if args.len() >= 5 => rate(&args[1..]),
         _ => eprintln!(
             "usage: skew-bench server <addr> <loops|rounds> [threads|pollers:workers]\n       \
-             skew-bench client <addr> <conns> <depth> <work_us> <heavy_conns> <heavy_work_us> <secs>"
+             skew-bench client <addr> <conns> <depth> <work_us> <heavy_conns> <heavy_work_us> <secs>\n       \
+             skew-bench churn <addr> <conns> <requests_per_conn> <secs>\n       \
+             skew-bench rate <addr> <conns> <requests_per_sec> <secs>"
         ),
     }
 }
