@@ -31,6 +31,10 @@ ADR-108, additive, requested by akit (A36, A37, A38):
   the client's EOF comes mid-body.
 - `Live::set_write_timeout` / `write_timeout`: `Config::write_timeout` is reloadable
   (`Engine::reload` lists it in `applied`), on epoll and io_uring.
+- Fixed: the HTTP deadlines' coarse clock lagged by up to a second when a shorter timeout lowered
+  the sweeper's tick while it slept (a client's 300 ms header timeout armed then fired after
+  about 40 ms). A registration that shortens the tick now updates the clock and wakes the
+  sweeper. Test: `akio-http/tests/deadline_clock.rs`.
 
 ### Added: bcrypt, the client's certificate on each request, and requests suspended and resumed (akio-crypto, akio-tls, akio-quic, akio-http, akio-h3)
 

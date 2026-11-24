@@ -27,6 +27,8 @@ ADR-108，纯新增，应 akit 的需求（A36、A37、A38）：
   客户端的 EOF 于消息体中途到来时关闭连接。
 - `Live::set_write_timeout` / `write_timeout`：`Config::write_timeout` 可热加载（`Engine::reload` 把它列在
   `applied` 中），支持 epoll 与 io_uring。
+- 修复：更短的超时在扫描线程休眠期间调低其 tick 时，HTTP 截止时间的粗粒度时钟会滞后最多一秒（此时设置的客户端 300 ms
+  响应头超时约 40 ms 后就触发）。调短 tick 的注册现在会更新时钟并唤醒扫描线程。测试：`akio-http/tests/deadline_clock.rs`。
 
 ### 新增：bcrypt、每个请求上的客户端证书，以及请求的挂起与恢复（akio-crypto、akio-tls、akio-quic、akio-http、akio-h3）
 

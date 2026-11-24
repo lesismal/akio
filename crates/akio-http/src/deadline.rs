@@ -58,8 +58,17 @@ impl<H: OnDeadline> Watch<H> {
         });
         let reg = registry();
         let ms = u64::try_from(shortest.as_millis()).unwrap_or(u64::MAX);
-        reg.tick
-            .fetch_min((ms / 8).clamp(MIN_TICK_MS, MAX_TICK_MS), Ordering::Relaxed);
+        let tick = (ms / 8).clamp(MIN_TICK_MS, MAX_TICK_MS);
+        if reg.tick.fetch_min(tick, Ordering::Relaxed) > tick {
+            // A shorter tick: the sweeper may be asleep for the longer one, its clock as stale.
+            // Bring the clock up to date now and wake it, so deadlines armed from here on count
+            // from the time they are armed (ADR-108: a client's 300 ms header timeout armed
+            // while the sweeper slept a server's 1 s tick fired about 100 ms after arming).
+            reg.advance();
+            if let Some(t) = reg.sweeper.get() {
+                t.unpark();
+            }
+        }
         reg.shards[(c.id() as usize) % SHARDS]
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -144,6 +153,8 @@ struct Registry {
     tick: AtomicU64,
     epoch: Instant,
     started: AtomicBool,
+    /// The sweeper thread, woken when the tick gets shorter.
+    sweeper: OnceLock<std::thread::Thread>,
 }
 
 fn registry() -> &'static Registry {
@@ -154,6 +165,7 @@ fn registry() -> &'static Registry {
         tick: AtomicU64::new(MAX_TICK_MS),
         epoch: Instant::now(),
         started: AtomicBool::new(false),
+        sweeper: OnceLock::new(),
     })
 }
 
@@ -166,8 +178,13 @@ impl Registry {
         let spawned = std::thread::Builder::new()
             .name("akio-http-deadlines".into())
             .spawn(move || {
+                let _ = self.sweeper.set(std::thread::current());
                 loop {
-                    std::thread::sleep(Duration::from_millis(self.tick.load(Ordering::Relaxed)));
+                    // Woken early when a registration shortens the tick (and spuriously, which
+                    // only makes a pass sooner).
+                    std::thread::park_timeout(Duration::from_millis(
+                        self.tick.load(Ordering::Relaxed),
+                    ));
                     let now = self.advance();
                     for s in &self.shards {
                         // Polling never blocks (a pool submission at most), so holding the
@@ -188,7 +205,7 @@ impl Registry {
         let now = u64::try_from(self.epoch.elapsed().as_millis())
             .unwrap_or(u64::MAX / 2)
             .max(1);
-        self.now.store(now, Ordering::Relaxed);
-        now
+        // Also advanced from registrations: never backwards.
+        self.now.fetch_max(now, Ordering::Relaxed).max(now)
     }
 }
