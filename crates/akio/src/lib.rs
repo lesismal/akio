@@ -116,7 +116,8 @@ pub enum Scheduling {
     /// whichever worker is free, one round of a connection at a time; a worker with nothing to
     /// run waits for readiness in `epoll_wait` itself (as Tokio's runtime does). Spreads load by work rather than by connection, at the cost of a hand-off per
     /// round. epoll/kqueue only (not io_uring or DPDK); TCP only (UDP listeners keep their
-    /// loops); [`Engine::set_threads`] is refused.
+    /// loops); [`Engine::set_threads`] is refused. Listeners added, removed and drained at run
+    /// time and accept filters work as with loops (ADR-099).
     Rounds(RoundsConfig),
 }
 
@@ -479,12 +480,11 @@ fn bind_one(
 ) -> io::Result<(Box<dyn Group>, Kind, Accel, bool)> {
     let explicit_scheduling = l.scheduling.is_some();
     // The environment's default never overrides what the listener asked for explicitly
-    // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s), BPF steering and accept filters
-    // need per-thread loops.
+    // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s) and BPF steering need
+    // per-thread loops. (Rounds runs accept filters too.)
     let env_applies = matches!(l.backend, Backend::Epoll)
         && (l.backend_explicit || env_backend.is_none())
-        && matches!(l.accel, Accel::None)
-        && l.filter.is_none();
+        && matches!(l.accel, Accel::None);
     let scheduling = l
         .scheduling
         .take()

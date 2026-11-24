@@ -386,7 +386,8 @@ impl RConn {
         }
         let q = st.q;
         let _ = self.update_bp(st, q);
-        if self.home.cfg.write_timeout.is_none() {
+        // The live value (ADR-108): a write timeout set by a reload applies to open connections.
+        if self.home.cfg.telemetry.live().write_ms() == 0 {
             return;
         }
         if st.q > 0 && !self.write_armed.swap(true, Ordering::AcqRel) {

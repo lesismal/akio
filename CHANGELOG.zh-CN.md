@@ -61,6 +61,22 @@ ADR-104 第二次修订，API 不变：
   757k~878k）；1024 个连接上 10k 请求/s 时每请求服务端 CPU 16.3 → 11.3 µs（loops 9.1），延迟不变；50k/s 时
   15.6 → 9.9 µs。skew 场景和 64 个连接的 echo 不变，256~1024 个连接的 echo -2.5%。
 
+### 新增：轮次模式的 listener 可在运行时添加、移除和排空，支持 accept 过滤器和运行时修改的写超时（akio、akio-epoll）
+
+ADR-104 第三次修订，API 不变：
+
+- `Engine::remove_listener` 和 `shutdown_listener` 对轮次模式的 listener 与对 loops 的一样工作（ADR-099）：
+  调用返回之前关闭每个 worker 的全部 `SO_REUSEPORT` socket（之后执行的 accept 任务找不到 socket），所以端口
+  可以重新绑定，同地址替换之后紧接着的连接会被服务；已打开的连接继续运行，排空时发送 `on_shutdown` 并在截止
+  时间关闭剩下的连接，最后一个连接关闭后 worker 和 driver 结束（线程还服务 `dial` 的 builder listener 除外），
+  由 engine 回收；仍在服务的已移除 listener 计入 `max_listeners`。
+- accept 过滤器（`Listener::filter`、`set_listener_filter`）在轮次模式的 listener 上执行，所以
+  `AKIO_DEFAULT_SCHEDULING=rounds` 不再让带过滤器的 listener 留在 loops 上。
+- 用 `Engine::reload` / `Live::set_write_timeout` 设置或清除的写超时对已打开的轮次模式连接生效（ADR-108）；
+  之前只读取构建时的 `Config`。
+- 轮次模式的 listener 仍然拒绝 `set_listener_threads`。在 gpu51 上没有测到吞吐变化（rounds 的类 echo、skew
+  和 churn 场景，loops 的 echo）。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：

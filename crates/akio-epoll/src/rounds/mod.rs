@@ -17,12 +17,13 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
+    time::Duration,
 };
 
-use akio_core::{Config, DynAcceptor, Group, LoopMeta, LoopStats, Pool};
+use akio_core::{AcceptFilter, Config, DynAcceptor, FilterCell, Group, LoopMeta, LoopStats, Pool};
 use akio_sys::Poller;
 
-use poller::{PollerShared, RCmd, RLoop};
+use poller::{ListenJob, PollerShared, RCmd, RLoop};
 use workers::{Driver, Workers};
 
 /// Backend name for metrics labels.
@@ -91,6 +92,15 @@ pub struct RoundsGroup {
     rr: AtomicUsize,
     started: AtomicBool,
     pins: Mutex<Vec<Vec<usize>>>,
+    /// Every listening socket of the group (one accept job each, over all pollers); empty for a
+    /// client-only group.
+    jobs: Vec<Arc<ListenJob>>,
+    /// The accept filter every accept job runs (ADR-099).
+    filter: Arc<FilterCell>,
+    /// The listener was removed (`Group::stop_listening`, ADR-099).
+    unlisted: AtomicBool,
+    /// The engine is shutting down (`Group::shutdown`).
+    stopping: AtomicBool,
 }
 
 impl std::fmt::Debug for RoundsGroup {
@@ -178,6 +188,8 @@ impl RoundsGroup {
         let (_, nworkers) = rc.resolved();
         let listener_addr = acceptor.as_ref().map(|_| addr);
         let workers = Workers::new(nworkers, &cfg, listener_addr);
+        let filter = Arc::new(FilterCell::default());
+        let mut jobs = Vec::new();
         let mut slots = Vec::with_capacity(listeners.len());
         for (i, l) in listeners.into_iter().enumerate() {
             let poller = Poller::new()?;
@@ -185,7 +197,15 @@ impl RoundsGroup {
             let meta = LoopMeta::new(BACKEND, listener_addr, nworkers + i);
             let stats = Arc::new(LoopStats::new(meta));
             let sh = PollerShared::new(&poller, pool.clone(), cfg.clone(), stats, nworkers)?;
-            let lp = RLoop::new(poller, sh.clone(), l, acceptor.clone(), workers.clone())?;
+            let lp = RLoop::new(
+                poller,
+                sh.clone(),
+                l,
+                acceptor.clone(),
+                &filter,
+                workers.clone(),
+            )?;
+            jobs.extend(lp.jobs().iter().cloned());
             slots.push(Slot {
                 shared: sh,
                 pending: Some(lp),
@@ -217,6 +237,10 @@ impl RoundsGroup {
             rr: AtomicUsize::new(0),
             started: AtomicBool::new(false),
             pins: Mutex::new(Vec::new()),
+            jobs,
+            filter,
+            unlisted: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
         })
     }
 
@@ -283,7 +307,61 @@ impl Group for RoundsGroup {
         ))
     }
 
+    fn stop_listening(&self, drain: Option<Duration>, exit_when_idle: bool) -> io::Result<()> {
+        if self.jobs.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "not a listener group",
+            ));
+        }
+        if self.stopping.load(Ordering::SeqCst) || self.unlisted.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        // Here, not on the pollers: every socket (one per worker on Linux, all in one
+        // `SO_REUSEPORT` group) is closed when this returns, so a connection made afterwards
+        // cannot land on one, and an accept job queued or run later finds no socket. `close`
+        // waits for an accept job in progress (a short one: it never runs handler code).
+        for j in &self.jobs {
+            j.close();
+        }
+        // The pollers keep the connections: they notify and drain them, and finish once none is
+        // left when they may.
+        for sh in &self.shareds {
+            sh.post(RCmd::StopListening {
+                drain,
+                exit: exit_when_idle,
+            });
+        }
+        Ok(())
+    }
+
+    fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
+        if self.jobs.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "not a listener group",
+            ));
+        }
+        self.filter.set(filter);
+        Ok(())
+    }
+
+    fn finished(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+            && lock(&self.slots).iter().all(|s| {
+                s.pending.is_none() && s.handle.as_ref().is_none_or(JoinHandle::is_finished)
+            })
+            && self.workers.drivers_done()
+    }
+
+    fn loop_stats(&self) -> Vec<Arc<LoopStats>> {
+        let mut v = self.workers.stats().to_vec();
+        v.extend(self.shareds.iter().map(|s| s.stats.clone()));
+        v
+    }
+
     fn shutdown(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
         for sh in &self.shareds {
             sh.post(RCmd::Shutdown);
         }
@@ -301,7 +379,7 @@ impl Group for RoundsGroup {
         if self.started.load(Ordering::Acquire) {
             // Driver mode: the workers drain the pollers; wait until every one has finished.
             while !self.workers.drivers_done() {
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(Duration::from_millis(2));
             }
         }
         if any || self.started.load(Ordering::Acquire) {

@@ -20,7 +20,7 @@ use std::{
 };
 
 use akio_core::{
-    Config, ConnInfo, DynAcceptor, IdMap, LoopStats, Pool,
+    Config, ConnInfo, DynAcceptor, FilterCell, FilterView, IdMap, LoopStats, Pool,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use akio_sys::{Event, Poller, Registry, Waker};
@@ -50,6 +50,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) enum RCmd {
     Shutdown,
     Core(LoopCmd),
+    /// The listener was removed (ADR-099): its sockets are already closed (by the group); the
+    /// connections stay. With `drain` they get `on_shutdown` now and are closed at the deadline;
+    /// with `exit` the poller finishes once none is left.
+    StopListening {
+        drain: Option<Duration>,
+        exit: bool,
+    },
     Dial {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
@@ -127,6 +134,9 @@ pub(crate) struct PollerShared {
     table: ConnTable,
     /// Shutting down: connections opened from now on are told so at once.
     draining: AtomicBool,
+    /// The listener was removed and the poller finishes once its table is empty (ADR-099):
+    /// a connection leaving the table wakes it, as while draining.
+    exit_when_empty: AtomicBool,
     /// The tick a blocking poll in progress waits until (`u64::MAX`: no limit,
     /// [`NOT_WAITING`]: none in progress). A timer due earlier interrupts it.
     wait_until: AtomicU64,
@@ -151,6 +161,7 @@ impl PollerShared {
             epoch: Instant::now(),
             table: ConnTable::new(workers),
             draining: AtomicBool::new(false),
+            exit_when_empty: AtomicBool::new(false),
             wait_until: AtomicU64::new(NOT_WAITING),
         });
         let weak = Arc::downgrade(&sh);
@@ -310,15 +321,21 @@ impl PollerShared {
             }
             removed
         };
-        if removed.is_some() && self.draining.load(Ordering::SeqCst) {
-            // The poller finishes the drain once the table is empty.
+        if removed.is_some()
+            && (self.draining.load(Ordering::SeqCst) || self.exit_when_empty.load(Ordering::SeqCst))
+        {
+            // The poller finishes the drain (or the removed listener) once the table is empty.
             self.wake();
         }
     }
 
     /// Output is queued: arms a write-timeout check.
     pub(crate) fn arm_write(&self, id: u64) {
-        let Some(wt) = self.cfg.write_timeout else {
+        let Some(wt) = self.cfg.telemetry.live().write_timeout() else {
+            // Turned off since the round looked (ADR-108): a later value arms again.
+            if let Some((c, _)) = lock(&self.table.shard(id).inner).conns.get(&id) {
+                c.write_armed.store(false, Ordering::Release);
+            }
             return;
         };
         let now = self.tick();
@@ -453,13 +470,17 @@ impl PollerShared {
     }
 
     fn on_write_timer(&self, g: &mut TableInner, id: u64, now: u64) {
-        let Some(wt) = self.cfg.write_timeout else {
-            return;
-        };
+        let wt = self.cfg.telemetry.live().write_timeout();
         let Some((c, tm)) = g.conns.get_mut(&id) else {
             return;
         };
         tm.write = None;
+        // Turned off at run time (`Live::set_write_timeout`, ADR-108): no more checks until it
+        // is set again and a round that leaves output queued arms one.
+        let Some(wt) = wt else {
+            c.write_armed.store(false, Ordering::Release);
+            return;
+        };
         let (sent, pending, ..) = c.inner.debug_state();
         if pending == 0 {
             c.write_armed.store(false, Ordering::Release);
@@ -510,8 +531,7 @@ impl PollerShared {
 /// A listening socket. Its readiness queues it on the workers like a connection: one worker at a
 /// time accepts from it, opens what it accepted, and registers it with the poller.
 pub(crate) struct ListenJob {
-    /// `None` once the poller shut down (the socket is closed).
-    listener: Mutex<Option<TcpListener>>,
+    listener: Mutex<Accepting>,
     fd: RawFd,
     token: u64,
     acceptor: Arc<dyn DynAcceptor>,
@@ -520,6 +540,14 @@ pub(crate) struct ListenJob {
     scheduled: AtomicBool,
     /// Accepts paused after an error until this tick (0: not paused).
     paused_until: AtomicU64,
+}
+
+/// The part of a [`ListenJob`] an accept job holds while it runs.
+struct Accepting {
+    /// `None` once the listener was removed or the poller shut down (the socket is closed).
+    listener: Option<TcpListener>,
+    /// The listener's accept filter (ADR-099).
+    filter: FilterView,
 }
 
 impl ListenJob {
@@ -537,12 +565,18 @@ impl ListenJob {
         self.pending.store(false, Ordering::SeqCst);
         let mut again = false;
         {
-            let g = lock(&self.listener);
-            if let Some(l) = g.as_ref() {
+            let mut g = lock(&self.listener);
+            let Accepting { listener, filter } = &mut *g;
+            if let Some(l) = listener.as_ref() {
                 again = true;
                 for _ in 0..MAX_ACCEPT_PER_JOB {
                     match l.accept() {
                         Ok((stream, peer)) => {
+                            if !filter.allows(&peer) {
+                                self.home.stats.filtered.add(1);
+                                akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
+                                continue; // dropping the stream closes it
+                            }
                             self.home.open(
                                 stream,
                                 peer,
@@ -589,12 +623,16 @@ impl ListenJob {
         }
     }
 
-    /// Closes the socket (shutdown). Waits for an accept job in progress, so every connection
-    /// it accepted is in the table afterwards.
-    fn close(&self) {
-        let l = lock(&self.listener).take();
-        if let Some(l) = l {
+    /// Closes the socket (shutdown, or the listener removed). Waits for an accept job in
+    /// progress, so every connection it accepted is in the table afterwards; an accept job that
+    /// runs later finds no socket. Idempotent.
+    pub(crate) fn close(&self) {
+        let mut g = lock(&self.listener);
+        // No pause to resume: the poller's wait must not count on it any more.
+        self.paused_until.store(0, Ordering::SeqCst);
+        if let Some(l) = g.listener.take() {
             self.home.registry.delete(l.as_raw_fd());
+            drop(l);
         }
     }
 }
@@ -617,6 +655,12 @@ pub(crate) struct RLoop {
     draining: Option<Instant>,
     /// Remaining connections were told to close (the drain deadline passed).
     killed: bool,
+    /// The listener was removed (`RCmd::StopListening`, ADR-099): with `unlisted_exit` the
+    /// poller finishes once no connection is left, and at `unlisted_kill` (the drain deadline)
+    /// the connections still open are closed.
+    unlisted: bool,
+    unlisted_exit: bool,
+    unlisted_kill: Option<Instant>,
     spare: Vec<RCmd>,
     due: Vec<u64>,
     events: Vec<Event>,
@@ -631,6 +675,7 @@ impl RLoop {
         shared: Arc<PollerShared>,
         listeners: Vec<TcpListener>,
         acceptor: Option<Arc<dyn DynAcceptor>>,
+        filter: &Arc<FilterCell>,
         workers: Arc<Workers>,
     ) -> io::Result<RLoop> {
         let mut jobs = Vec::new();
@@ -641,7 +686,10 @@ impl RLoop {
                 let fd = l.as_raw_fd();
                 shared.registry.add_edge(fd, token)?;
                 jobs.push(Arc::new(ListenJob {
-                    listener: Mutex::new(Some(l)),
+                    listener: Mutex::new(Accepting {
+                        listener: Some(l),
+                        filter: FilterView::new(filter.clone()),
+                    }),
                     fd,
                     token,
                     acceptor: acceptor.clone(),
@@ -663,6 +711,9 @@ impl RLoop {
             backlog,
             draining: None,
             killed: false,
+            unlisted: false,
+            unlisted_exit: false,
+            unlisted_kill: None,
             spare: Vec::new(),
             due: Vec::new(),
             events: Vec::with_capacity(1024),
@@ -673,6 +724,11 @@ impl RLoop {
 
     fn tick(&self) -> u64 {
         self.shared.tick()
+    }
+
+    /// Its listening sockets (one accept job each).
+    pub(crate) fn jobs(&self) -> &[Arc<ListenJob>] {
+        &self.jobs
     }
 
     fn cfg(&self) -> &Arc<Config> {
@@ -697,6 +753,10 @@ impl RLoop {
         if let Some(next) = next {
             let wait = Duration::from_millis(next.saturating_sub(now) + 1);
             timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
+        }
+        if let Some(kill) = self.unlisted_kill {
+            let left = kill.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
+            timeout = Some(timeout.map_or(left, |t| t.min(left)));
         }
         timeout
     }
@@ -782,6 +842,10 @@ impl RLoop {
                 n_events,
             );
         }
+        if self.unlisted && self.draining.is_none() && self.unlisted_step() {
+            self.finished = true;
+            return true;
+        }
         if let Some(deadline) = self.draining {
             if self.connecting.is_empty() && self.shared.table_is_empty() {
                 self.finished = true;
@@ -836,7 +900,7 @@ impl RLoop {
             // set meanwhile is seen here, and the socket is registered exactly when not paused.
             let g = lock(&j.listener);
             let p = j.paused_until.load(Ordering::SeqCst);
-            if g.is_none() || p == 0 || now < p {
+            if g.listener.is_none() || p == 0 || now < p {
                 continue;
             }
             j.paused_until.store(0, Ordering::SeqCst);
@@ -950,6 +1014,7 @@ impl RLoop {
                 reply(infos);
             }
             RCmd::Core(LoopCmd::Reload) => self.on_reload(),
+            RCmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
             RCmd::Dial {
                 stream,
                 acceptor,
@@ -965,7 +1030,7 @@ impl RLoop {
         if backlog != self.backlog {
             self.backlog = backlog;
             for j in &self.jobs {
-                if let Some(l) = lock(&j.listener).as_ref() {
+                if let Some(l) = lock(&j.listener).listener.as_ref() {
                     let _ = akio_sys::set_backlog(l, backlog);
                 }
             }
@@ -994,6 +1059,48 @@ impl RLoop {
                 ));
             }
         }
+    }
+
+    // ---- removing the listener (ADR-099) ------------------------------------------------------
+
+    /// The listener was removed: its sockets are closed (the group closed them before posting
+    /// this); the connections stay (see `RCmd::StopListening`).
+    fn stop_listening(&mut self, drain: Option<Duration>, exit: bool) {
+        if self.draining.is_some() {
+            return; // the engine is shutting down anyway
+        }
+        self.unlisted = true;
+        self.unlisted_exit |= exit;
+        if exit {
+            self.shared.exit_when_empty.store(true, Ordering::SeqCst);
+        }
+        for j in std::mem::take(&mut self.jobs) {
+            j.close();
+        }
+        if let Some(d) = drain {
+            let at = Instant::now() + d;
+            self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
+            self.shared.each(|_, c| c.shutdown_notice());
+        }
+    }
+
+    /// Once per poll after the listener was removed: closes what is left at the drain deadline,
+    /// and finishes the poller (true) once no connection is left, if it may.
+    fn unlisted_step(&mut self) -> bool {
+        if self.unlisted_kill.is_some_and(|t| Instant::now() >= t) {
+            self.unlisted_kill = None;
+            self.shared.each(|_, c| c.close_with(None));
+            for (_, d) in self.connecting.drain() {
+                self.poller.delete(d.stream.as_raw_fd());
+                if let Some(f) = d.on_error {
+                    f(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "listener shut down",
+                    ));
+                }
+            }
+        }
+        self.unlisted_exit && self.connecting.is_empty() && self.shared.table_is_empty()
     }
 
     // ---- timers -----------------------------------------------------------------------------

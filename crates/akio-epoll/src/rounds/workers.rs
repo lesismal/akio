@@ -245,6 +245,11 @@ impl Workers {
         self.shards.len()
     }
 
+    /// The workers' counters (to unregister them from telemetry).
+    pub(crate) fn stats(&self) -> &[Arc<LoopStats>] {
+        &self.stats
+    }
+
     /// Driver mode: the workers poll `drivers` themselves. Call before [`start`](Self::start).
     pub(crate) fn set_drivers(&self, drivers: Vec<Arc<Driver>>) {
         *self.drivers.lock().unwrap_or_else(|p| p.into_inner()) = drivers.clone();

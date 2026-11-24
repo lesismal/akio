@@ -3,7 +3,8 @@
 [English](104-rounds-scheduling.md) | 简体中文
 
 状态：提议中（2026-11-23；2026-11-24 更新：由 worker 驱动 poller，补充测量；2026-11-24 第二次修订：
-accept 与关闭改在 worker 上进行，轻负载时减少唤醒）
+accept 与关闭改在 worker 上进行，轻负载时减少唤醒；2026-11-24 第三次修订：运行时增删 listener、accept 过滤器、
+运行时修改的写超时）
 
 ## 背景
 
@@ -72,9 +73,10 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
    - 阻塞任务仍然应该放到逻辑线程池（`spawn_blocking`、`run_on_pool`）：阻塞的 worker 会推迟排在
      它后面的连接，虽然其它 worker 会把它们偷走。
 3. **保持不变的部分**：`Conn` 与 `ConnInner`（本来就是线程安全的，ADR-002）、cork 与 flush 协议、
-   背压、`hold_reads`、有序响应、`close_after_send`、空闲 / 写 / 握手 / 连接超时、慢回调报告（按
-   worker 统计）、`max_connections`、内核 TLS offload。所有协议 crate 无需修改：它们的线程局部缓存
-   只在单次回调内借用。
+   背压、`hold_reads`、有序响应、`close_after_send`、空闲 / 写 / 握手 / 连接超时（运行时修改的空闲和写
+   超时对已打开的连接生效，ADR-108）、慢回调报告（按 worker 统计）、`max_connections`、内核 TLS
+   offload、运行时添加、移除和排空 listener 以及 accept 过滤器（ADR-099，见下文第三次修订）。所有协议
+   crate 无需修改：它们的线程局部缓存只在单次回调内借用。
 4. **轮次模式不支持的**（原型范围）：UDP listener（继续使用事件循环，并记录一条警告）、io_uring
    （`Backend::IoUring` 加轮次模式会被拒绝）、`set_threads`（返回 `Unsupported`）、BPF 调度（它
    只能把连接分给 poller，没有意义）。每个 listener group 一个 worker 池。
@@ -228,3 +230,41 @@ gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 wo
 - 轻负载时一轮不再唤醒第二个线程：10k req/s 下每请求 CPU 11.3 µs，修复前 16.3 µs（loops 9.1），延迟不变。
   剩下的差距来自自旋前的非阻塞轮询、自旋本身，以及队列锁和连接表的锁。
 - 连接少或不均、类似 h2c 的负载不变；大量连接上的 echo 再慢 2%~3%。
+
+### 第三次修订：运行时的 listener、accept 过滤器、实时的写超时（2026-11-24）
+
+轮次模式的 listener 现在支持 loops listener 在 ADR-099 和 ADR-108 中支持的功能；API 不变。
+
+- **移除 listener**（`Engine::remove_listener` / `shutdown_listener`，即 group 的 `stop_listening`）：
+  group 在调用线程上、返回之前自己关闭全部监听 socket：在 Linux 上是它每个 worker 一个的全部
+  `SO_REUSEPORT` socket，其它平台上是每个克隆。每个 socket 在它的 accept 任务的锁下关闭（会等待正在
+  执行的 accept 任务，它很短：从不执行 handler 代码），任务的 socket 变为 `None`，所以之后入队或执行的
+  accept 任务什么也不会 accept；挂起的 accept 退避也一并清除，driver 的等待不再依赖它。因此
+  `remove_listener` 返回时，该地址的 `SO_REUSEPORT` 组里只剩其它 listener 的 socket（同地址替换之后
+  紧接着的连接会被服务）；如果它是最后一个，端口可以重新绑定。随后 group 向每个 driver 投递
+  `StopListening { drain, exit }`：已打开的连接继续运行；有排空时，每个连接立即收到 `on_shutdown`，到
+  截止时间仍未关闭的被关闭（`Duration::ZERO`：下一次轮询时）；有 `exit` 时（除了线程还服务 `dial` 的
+  builder listener 之外的所有 listener），driver 在连接表变空后结束（连接离开表时唤醒它，与关闭时相同），
+  所有 driver 都结束后 group 即为 `finished`。之后 engine 像回收 loops group 一样回收它：join 各 worker，
+  并把 worker 和 driver 的行从指标中移除。仍有打开连接的已移除 listener 继续占用 `max_listeners` 的名额。
+  服务 `dial` 的 builder listener 保留它的 worker 和 driver 直到关闭。
+- **accept 过滤器**：accept 任务在打开连接之前执行 group 的过滤器（`FilterCell`，通过保存在任务锁下的
+  `FilterView` 读取：每个被 accept 的连接一次原子读取，与 loops 相同）；被拒绝的计入 `filtered`。因此
+  `AKIO_DEFAULT_SCHEDULING=rounds` 也适用于带过滤器的 listener。
+- **运行时修改的写超时**（`Engine::reload`、`Live::set_write_timeout`）：一轮结束时和写超时检查读取实时值，
+  而不是构建时的 `Config`，所以打开的写超时会在已打开连接下一次留下待发数据的写入时生效，关闭的写超时会
+  结束挂起的检查（之后再设置会重新启用）。
+- 轮次模式仍不支持：`set_threads`（以及 `set_listener_threads`）、UDP、io_uring、BPF 调度。
+
+代价：轮次循环没有增加工作。一轮结束时从 `Live` 读取写超时（一次 relaxed 原子读取），而不是从 `Config`；
+driver 的等待多读一个 `Option`；连接离开表时多读一个标志。在 gpu51 上测量（服务端 8 个 CPU，rounds 8 个
+worker 和 1 个 driver，loops 8 个线程；`skew-bench`，两个构建交替各两轮）：
+
+| 场景 | 修改前 | 修改后 |
+|---|---|---|
+| rounds，256 个连接，深度 1，无计算（类似 echo） | 817.7k~820.0k req/s，p99 478~483 µs | 817.5k~819.1k req/s，p99 480~481 µs |
+| rounds，12 个连接，深度 4，50 µs | 152.4k~152.6k req/s，p99 391 µs | 152.5k~152.7k req/s，p99 389~391 µs |
+| rounds，churn 512 个客户端 x 10 个请求（3 s） | 330.2k~330.3k req/s，33.0k 连接/s | 330.2k~330.8k req/s，33.0k~33.1k 连接/s |
+| loops，256 个连接，深度 1，无计算 | 888k~964k req/s | 919k~967k req/s |
+
+均在噪声范围内：两种模式都没有退化。
