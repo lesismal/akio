@@ -124,4 +124,47 @@ Conclusions:
   throughput (the hand-off per round), with equal or shorter tails.
 - So loops stay the default; rounds are the choice for few or uneven connections.
 
-HttpArena profiles (`akio-rounds` against `akio-loops`, same source) follow in the shared batch.
+### HttpArena
+
+gpu51, unified batch, 2026-11-24 09:16-11:43, after the stop and panic fixes. Each profile ran
+twice, best of three runs each, and the two are averaged. Rounds use 8 workers and 1 driver. Two
+pairs: `akio-rounds` against `akio-loops` (the rounds branch alone, same source), and
+`akio-all-rounds` against `akio-all` (every merged optimisation, only the scheduling differs).
+
+| Profile | Loops | Rounds | Change |
+|---|---|---|---|
+| baseline 4096c | 1.083M | 1.038M | -4.1% |
+| pipelined 4096c | 7.15M | 6.95M | -2.8% |
+| limited-conn 4096c | 867k | 814k | -6.2% |
+| json-tls 4096c | 444k | 443k | 0 |
+| baseline-h2c 256c / 1024c / 4096c | 7.07M / 6.91M / 6.27M | 7.08M / 6.88M / 6.27M | 0 |
+| unary-grpc 256c / 1024c | 3.18M / 3.08M | 3.19M / 3.08M | 0 |
+| echo-ws 512c / 4096c / 16384c | 1.25M / 1.22M / 1.00M | 1.11M / 1.16M / 1.03M | -10.6% / -4.4% / +2.4% |
+| echo-ws-pipeline 512c / 4096c / 16384c | 15.6M / 15.3M / 12.9M | 14.1M / 14.7M / 13.0M | -9.8% / -4.0% / +0.6% |
+| async 32000c (`akio-all` pair) | 602k | 673k | **+11.9%** |
+| echo-ws-limited 512c / 4096c (`akio-all` pair) | 858k / 845k | 583k / 812k | **-32.0%** / -4.0% |
+| json-comp 4096c / 16384c (`akio-all` pair) | 228k / 222k | 222k / 216k | -2.7% / -2.5% |
+| static-h2 1024c (`akio-all` pair) | 802k | 774k | -3.5% |
+
+Fixed-rate profiles:
+
+- latency-10k: same p99 (about 0.05 ms), but 17.2 µs of CPU per request against 9.5 µs. The likely cause: an idle
+  worker parks for at most 10 ms and the driver wakes it through the eventfd, so a light load pays
+  for wakeups that loops do not have.
+- latency-1m: p99 7.8-10.4 ms against 3.3-4.4 ms for `akio-all` (loops with the ADR-100 tail
+  fixes), with slightly less CPU per request (7.5 against 7.7 µs). Main without those fixes had
+  0.9-1.1 s.
+- 8gbit: same throughput, 24 µs of CPU per request against 18 µs.
+
+echo-ws-limited at 512 connections used only 5.7 of 8 CPUs under rounds. That profile reconnects
+constantly, and every accept, registration and close goes through the one driver, so the driver
+becomes the bottleneck when connections are short-lived.
+
+So, on real HTTP traffic with evenly spread connections:
+
+- Rounds win where a request holds a thread for long and the load is uneven (async, +12%), and tie
+  on h2c and gRPC.
+- They lose 3-10% on many small requests over many connections, up to 32% when connections are
+  short-lived, and spend more CPU at light load.
+- Loops stay the default. Next for rounds: spread accept and close over more than one driver, and
+  cut the wakeups at light load.

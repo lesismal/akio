@@ -109,4 +109,40 @@ TCP echo（`echo-bench`，8 个客户端线程；`bench-server`）：
 - 如果 loops 已经用均匀分布的连接把所有 CPU 跑满，rounds 每轮的交接让吞吐低约 6%，尾延迟相同或更短。
 - 所以默认仍是 loops；连接少或负载不均时选 rounds。
 
-HttpArena 场景（同一份源码的 `akio-rounds` 对 `akio-loops`）由共享批次补充。
+### HttpArena
+
+gpu51 统一批次，2026-11-24 09:16~11:43，已包含停止和 panic 的修复。每个场景跑 2 轮，每轮取 3 次中最好的，
+再取平均。rounds 用 8 个 worker、1 个 driver。两组对比：`akio-rounds` 对 `akio-loops`（只有 rounds 分支，
+同一份源码），以及 `akio-all-rounds` 对 `akio-all`（合并了全部优化，只换调度模式）。
+
+| 场景 | loops | rounds | 变化 |
+|---|---|---|---|
+| baseline 4096c | 1.083M | 1.038M | -4.1% |
+| pipelined 4096c | 7.15M | 6.95M | -2.8% |
+| limited-conn 4096c | 867k | 814k | -6.2% |
+| json-tls 4096c | 444k | 443k | 0 |
+| baseline-h2c 256c / 1024c / 4096c | 7.07M / 6.91M / 6.27M | 7.08M / 6.88M / 6.27M | 0 |
+| unary-grpc 256c / 1024c | 3.18M / 3.08M | 3.19M / 3.08M | 0 |
+| echo-ws 512c / 4096c / 16384c | 1.25M / 1.22M / 1.00M | 1.11M / 1.16M / 1.03M | -10.6% / -4.4% / +2.4% |
+| echo-ws-pipeline 512c / 4096c / 16384c | 15.6M / 15.3M / 12.9M | 14.1M / 14.7M / 13.0M | -9.8% / -4.0% / +0.6% |
+| async 32000c（`akio-all` 组） | 602k | 673k | **+11.9%** |
+| echo-ws-limited 512c / 4096c（`akio-all` 组） | 858k / 845k | 583k / 812k | **-32.0%** / -4.0% |
+| json-comp 4096c / 16384c（`akio-all` 组） | 228k / 222k | 222k / 216k | -2.7% / -2.5% |
+| static-h2 1024c（`akio-all` 组） | 802k | 774k | -3.5% |
+
+固定速率场景：
+
+- latency-10k：p99 相同（约 0.05 ms），但每请求 CPU 17.2 µs 对 9.5 µs。可能的原因：空闲的 worker 最多 park 10 ms，
+  由 driver 通过 eventfd 唤醒，负载轻时要为 loops 没有的唤醒付出代价。
+- latency-1m：p99 7.8~10.4 ms，`akio-all`（loops，带 ADR-100 尾延迟修复）是 3.3~4.4 ms；每请求 CPU 略少
+  （7.5 对 7.7 µs）。没有这些修复的 main 是 0.9~1.1 s。
+- 8gbit：吞吐相同，每请求 CPU 24 µs 对 18 µs。
+
+echo-ws-limited 512 个连接时，rounds 只用了 8 个 CPU 中的 5.7 个。这个场景不停地重连，每次 accept、注册、
+关闭都经过唯一的 driver，连接寿命短时 driver 就成了瓶颈。
+
+所以，在连接分布均匀的真实 HTTP 流量上：
+
+- 请求占用线程时间长、负载不均时 rounds 占优（async +12%），h2c 和 gRPC 持平。
+- 大量连接上的小请求慢 3%~10%，连接寿命短时最多慢 32%，负载轻时更费 CPU。
+- 默认仍是 loops。rounds 下一步：把 accept 和关闭分散到多个 driver，减少轻负载时的唤醒。
