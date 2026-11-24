@@ -10,6 +10,13 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：证书签名请求（akio-x509）
+
+ADR-107，纯新增：`CsrParams` 为密钥生成 PKCS#10 请求（RFC 2986），subjectAltName、extKeyUsage 和其他扩展放在
+`extensionRequest` 中，即 ACME 客户端完成订单时发送的请求（RFC 8555）；`CertificateRequest` 从 DER 或 PEM 严格
+解析请求并检查签名（`verify_signature`），受 `MAX_REQUEST_LEN` 和 `MAX_ATTRIBUTES` 限制。模糊测试目标
+`x509_csr`；与 rcgen 和 OpenSSL 互通。
+
 ### 新增：带联动背压的流式消息体（akio-http、akio-h3）
 
 ADR-101，均为新增，应 akit 的需求（A19、A20、A21）：

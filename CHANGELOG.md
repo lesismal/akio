@@ -10,6 +10,14 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: certificate signing requests (akio-x509)
+
+ADR-107, additive: `CsrParams` makes a PKCS#10 request (RFC 2986) for a key, with
+subjectAltNames, extKeyUsage and further extensions in an `extensionRequest`, as an ACME client
+sends to finalize an order (RFC 8555); `CertificateRequest` parses one strictly from DER or PEM and
+checks its signature (`verify_signature`), within `MAX_REQUEST_LEN` and `MAX_ATTRIBUTES`. Fuzz
+target `x509_csr`; interop with rcgen and OpenSSL.
+
 ### Added: streamed bodies with linked backpressure (akio-http, akio-h3)
 
 ADR-101, additive, requested by akit (A19, A20, A21):

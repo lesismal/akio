@@ -12,6 +12,8 @@
 //!   server names (DNS with leftmost-label wildcards, IP addresses).
 //! - [`CertificateParams`] and [`generate_simple_self_signed`]: generation with ECDSA
 //!   P-256/P-384, Ed25519 or RSA keys.
+//! - [`CsrParams`] and [`CertificateRequest`]: PKCS#10 certificate signing requests (RFC
+//!   2986), made for a key (as an ACME client finalizes an order) and parsed and checked.
 //! - Revocation, without network access (the application fetches CRLs and OCSP responses;
 //!   [`Certificate::crl_distribution_points`] and [`Certificate::ocsp_urls`] say where):
 //!   [`Crl`] and [`CrlSet`] (RFC 5280 §5: complete and delta CRLs, reason codes,
@@ -53,6 +55,7 @@
 
 mod cert;
 mod crl;
+mod csr;
 mod generate;
 mod name;
 mod ocsp;
@@ -70,6 +73,7 @@ pub use cert::{
     NameConstraints, PolicyConstraints, ext,
 };
 pub use crl::{Crl, CrlParams, CrlSet, IssuingDistributionPoint, RevokedCertificate};
+pub use csr::{CertificateRequest, CsrParams, MAX_ATTRIBUTES, MAX_REQUEST_LEN};
 pub use generate::{CertificateParams, IsCa, generate_simple_self_signed};
 pub use name::{Attribute, GeneralName, Name, attr};
 pub use ocsp::{
