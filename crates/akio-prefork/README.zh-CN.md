@@ -2,6 +2,9 @@
 
 [English](README.md) | 简体中文
 
+> **暂停维护（2026-11-25）。** akio 和 akit 不使用 prefork。本 crate 仍能构建，但不再测试和维护；以后再决定是否删除
+>（docs/DEV-PLAN.zh-CN.md，“未排期的遗留项”）。
+
 用多个 worker 进程服务同一个程序，每个 worker 运行自己的 akio `Engine`，由一个 supervisor 负责：重启崩溃
 的 worker、关闭时让它们排空、重载时用新 worker 替换旧 worker。对应 fib 的 `prefork` 包。
 

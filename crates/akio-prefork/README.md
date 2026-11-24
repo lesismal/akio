@@ -2,6 +2,10 @@
 
 English | [简体中文](README.zh-CN.md)
 
+> **On hold (2026-11-25).** akio and akit do not use prefork. This crate still builds but is no
+> longer tested or maintained; whether it is deleted is decided later (docs/DEV-PLAN.md, "Open,
+> not scheduled").
+
 Serve one program from several worker processes, each running its own `akio` `Engine`, under a
 supervisor that restarts crashed workers, drains them on shutdown and swaps them for new ones on
 reload. The Rust counterpart of fib's `prefork` package.

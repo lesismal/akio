@@ -344,6 +344,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 性能优化各轮以及 2026-11-23 各轮留下、尚无一轮接手的事项。每项都在等一个决定、硬件或一次重新设计；都不阻塞 1.0.0。
 
+- [ ] `akio-prefork` 暂停维护（2026-11-25）：akio 和 akit 不使用 prefork。代码仍留在工作区并继续参与构建（clippy、文档、semver 检查），但不再有任何测试运行覆盖它：CI 的工作区测试步骤和 sanitizer 运行都排除了它，基准主机上的完整测试也排除它（`cargo test --workspace --exclude akio-prefork`，规则 18）。以后再决定是否彻底删除（该 crate、`akio_sys::process`、`Listener::bpf_steering`、继承的监听 socket、它的示例和文档）；在此之前不再为它修 bug 或加功能。
 - [ ] 编解码器中的 BMI2 代码路径（akio-brotli、akio-zstd）：在安全函数上用 `#[target_feature(enable = "bmi2")]` 需要 target_feature 1.1，即 MSRV 1.86（工作区目前为 1.85），调用方还要在运行时检测之后用 `unsafe` 调用。**等待用户决定是否提高 MSRV。** 预期收益在比特读取器的移位（BZHI/SHRX）；采用前用 `tools/codec-bench` 与 libbrotli/libzstd 对比测量。
 - [x] io_uring 环上发送：已完成（ADR-106，2026-11-24）。原记录：io_uring 基于 ring 的发送（`IORING_OP_SEND`，低优先级）：在裸 ring 上 +1–4%，每请求 CPU 少 2–6%（2026-11-16 评估，见上文 M2），但写入可能来自任意线程，需要重新设计共享写路径（发送归 ring 线程所有，其他线程移交缓冲区）。只按通常规则采用（同轮 +3%，无回退）。
 - [ ] 在 TLS 卸载网卡上运行内核 TLS：等待有这类网卡的主机；见上文 M2 中的条目（ADR-067）。
