@@ -257,6 +257,17 @@ fn client(args: &[String]) {
     );
 }
 
+/// Where connection `k` goes: `addr`, or with an unspecified address (`0.0.0.0:port`, the
+/// server listening on all addresses) one of 127.0.0.1-200, so short-lived connections do not
+/// run out of ephemeral ports to one destination.
+fn target(addr: SocketAddr, k: usize) -> SocketAddr {
+    if addr.ip().is_unspecified() {
+        SocketAddr::from(([127, 0, 0, 1 + (k % 200) as u8], addr.port()))
+    } else {
+        addr
+    }
+}
+
 /// A zero-work request frame stamped with the system clock.
 fn plain_frame() -> [u8; FRAME] {
     let mut f = [0u8; FRAME];
@@ -272,14 +283,16 @@ fn churn(args: &[String]) {
     let warm = Instant::now() + Duration::from_secs(1);
     let stop = Arc::new(AtomicBool::new(false));
     let hs: Vec<_> = (0..conns)
-        .map(|_| {
+        .map(|t| {
             let stop = stop.clone();
             thread::spawn(move || {
                 let (mut done, mut opened, mut failed) = (0u64, 0u64, 0u64);
+                let mut k = t;
                 let mut lat = Vec::new();
                 let mut f = [0u8; FRAME];
                 'conn: while !stop.load(Ordering::Relaxed) {
-                    let Ok(mut s) = TcpStream::connect(addr) else {
+                    k += 1;
+                    let Ok(mut s) = TcpStream::connect(target(addr, k)) else {
                         failed += 1;
                         thread::sleep(Duration::from_millis(1));
                         continue;
@@ -339,8 +352,8 @@ fn rate(args: &[String]) {
             let mine = (t..conns).step_by(threads).count();
             thread::spawn(move || {
                 let mut ss: Vec<TcpStream> = (0..mine)
-                    .map(|_| {
-                        let s = TcpStream::connect(addr).expect("connect");
+                    .map(|k| {
+                        let s = TcpStream::connect(target(addr, t + k * threads)).expect("connect");
                         s.set_nodelay(true).ok();
                         s
                     })
