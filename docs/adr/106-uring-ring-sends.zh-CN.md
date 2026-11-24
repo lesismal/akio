@@ -56,7 +56,9 @@ echo-ws-pipeline 9–16%、HTTP/1.1 baseline 11%、pipelined 19%。profile 显�
   保持对自有缓冲区的零拷贝排队。
 - **关闭**：`mark_closed` 不再计入队列，但在有发送读取时保留其中的块；loop 把连接的 `ConnInner`
   和 `msghdr` 留在 `orphans` 里直到完成到达（关闭时的 shutdown 让发送很快结束），然后用
-  `ring_release` 释放。仍在 `unsent` 里等待的发送内核从未见过，立即释放。loop 退出时已有的
+  `ring_release` 释放。仍在 `unsent` 里等待的发送内核从未见过：先把排队的数据直接写到 socket
+  （`ring_write_unsent`，尽力而为，相当于回调结束时那次 `writev`），所以在同一个回调或同一批里先应答
+  再 `close()`，应答仍会在 shutdown 之前到达对端。loop 退出时已有的
   “全部取消并排空”也覆盖发送；超时则像 provided buffer 一样泄漏其内存。
 - **TLS** 不需要新东西：应用发送时记录就被加密进队列，环上发送带的是密文。kernel TLS 下由内核
   加密 `SEND` 交给它的数据；它的控制记录和密钥更新（socket 操作）以及 `sendfile` 按队列顺序在
