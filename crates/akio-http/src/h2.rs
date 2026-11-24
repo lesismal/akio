@@ -195,6 +195,8 @@ struct Stream {
     /// An accepted extended CONNECT (RFC 8441): the stream is a tunnel, half-closed in each
     /// direction on its own (END_STREAM from us does not cancel the peer's half).
     tunnel: bool,
+    /// The request is an extended CONNECT (RFC 8441): a `2xx` answer makes it a tunnel.
+    connect: bool,
     /// The context of a streamed request, or the WebSocket of a tunnel, parked here between
     /// body events.
     parked: Option<Parked>,
@@ -250,6 +252,7 @@ impl Stream {
             received: 0,
             streaming: false,
             tunnel: false,
+            connect: false,
             parked: None,
             out: VecDeque::new(),
             out_bytes: 0,
@@ -982,8 +985,19 @@ impl Core {
             SState::HalfClosedRemote | SState::HalfClosedLocal => self.close_stream(sid),
             SState::Open if st.tunnel => {
                 // A tunnel's halves close separately: the peer may still send (its close frame,
-                // say) until it ends its own half.
+                // say) until it ends its own half. A peer that never ends it does not keep the
+                // stream: it is reset (`CANCEL`) after `TUNNEL_LINGER`.
                 st.state = SState::HalfClosedLocal;
+                let weak = self.me.clone();
+                crate::timer::after(TUNNEL_LINGER, move || {
+                    if let Some(core) = weak.upgrade() {
+                        let mut c = lock(&core);
+                        if c.streams.contains_key(&sid) {
+                            c.rst(sid, err::CANCEL);
+                            c.flush();
+                        }
+                    }
+                });
             }
             SState::Open => {
                 // Answered before the request ended: ask the peer to stop sending.
@@ -1567,6 +1581,7 @@ impl Core {
             // Extended CONNECT (RFC 8441): dispatched now; the stream's DATA follows as the
             // body of a streamed request, or to the WebSocket the handler accepts.
             st.streaming = true;
+            st.connect = true;
             let resp = H2Responder::new(self.me.clone(), sid, false);
             self.insert_stream(sid, st);
             actions.push(Action::Start(sid, Box::new(Context::new_h2(req, resp))));
@@ -1827,6 +1842,11 @@ impl H2Responder {
             c.write_headers(self.sid, Some(resp.status), &resp.headers, true, None, end);
             if let Some(st) = c.streams.get_mut(&self.sid) {
                 st.head_sent = true;
+                // A `2xx` streamed to an extended CONNECT opens the tunnel (RFC 8441 section 5,
+                // ADR-113): the stream's halves close separately from now on.
+                if st.connect && (200..300).contains(&resp.status) {
+                    st.tunnel = true;
+                }
                 if end {
                     st.sent_end = true;
                 }
@@ -2075,8 +2095,9 @@ struct H2WsLink {
     sid: u32,
 }
 
-/// How long a tunnel whose WebSocket ended our half (END_STREAM after its close frame) waits
-/// for the peer to end its own before resetting the stream (`CANCEL`).
+/// How long a tunnel that ended our half (END_STREAM: after its WebSocket's close frame, or its
+/// streamed response finished) waits for the peer to end its own before resetting the stream
+/// (`CANCEL`).
 const TUNNEL_LINGER: Duration = Duration::from_secs(5);
 
 impl WsLink for H2WsLink {
@@ -2119,19 +2140,9 @@ impl WsLink for H2WsLink {
         if std::mem::replace(&mut st.end_pending, !st.sent_end) || st.sent_end {
             return; // already ending
         }
+        // A peer that never ends its half does not keep the stream (`finish_if_done`).
         c.flush_stream(self.sid);
         c.flush();
-        // A peer that never ends its half does not keep the stream.
-        let (weak, sid) = (self.core.clone(), self.sid);
-        crate::timer::after(TUNNEL_LINGER, move || {
-            if let Some(core) = weak.upgrade() {
-                let mut c = lock(&core);
-                if c.streams.contains_key(&sid) {
-                    c.rst(sid, err::CANCEL);
-                    c.flush();
-                }
-            }
-        });
     }
 
     fn close(&self) {

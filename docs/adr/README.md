@@ -107,3 +107,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-110: The HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN](110-h2-client-streams-backpressure-limits.md) (accepted 2026-11-24)
 - [ADR-111: The HTTP/2 client heeds the response header and idle timeouts and `CancelToken`](111-h2-client-header-idle-timeouts-cancel.md) (accepted 2026-11-24)
 - [ADR-112: A stream coding any response filter can set, and compressed copies of cached files](112-stream-coding-for-filters-and-compressed-copies.md) (accepted 2026-11-24)
+- [ADR-113: The HTTP/1 client hands a connection over on `101`, and a streamed `2xx` to an HTTP/2 extended CONNECT is a tunnel](113-client-upgrade-handover-h2-tunnels.md) (accepted 2026-11-24)

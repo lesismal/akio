@@ -140,6 +140,7 @@ pub fn akio_http::client::ClientRequest::response_header_timeout(self, core::tim
 pub fn akio_http::client::ClientRequest::response_idle_timeout(self, core::time::Duration) -> akio_http::client::ClientRequest
 pub fn akio_http::client::ClientRequest::streamed(self, core::option::Option<u64>) -> akio_http::client::ClientRequest
 pub fn akio_http::client::ClientRequest::timeout(self, core::time::Duration) -> akio_http::client::ClientRequest
+pub fn akio_http::client::ClientRequest::upgrade(self, &str) -> akio_http::client::ClientRequest
 impl core::clone::Clone for akio_http::client::ClientRequest
 pub fn akio_http::client::ClientRequest::clone(&self) -> Self
 impl core::fmt::Debug for akio_http::client::ClientRequest
@@ -251,6 +252,7 @@ pub fn akio_http::client::ResponseHandler::on_end(&mut self, &akio_http::message
 pub fn akio_http::client::ResponseHandler::on_error(&mut self, akio_http::client::ClientError)
 pub fn akio_http::client::ResponseHandler::on_head(&mut self, akio_http::client::ResponseHead, akio_http::client::ResponseBody)
 pub fn akio_http::client::ResponseHandler::on_request_body(&mut self, akio_http::client::RequestBody)
+pub fn akio_http::client::ResponseHandler::on_upgrade(&mut self, &akio_http::client::ResponseHead, &akio_http::raw::RawConn) -> core::option::Option<alloc::boxed::Box<dyn akio_http::raw::RawHandler>>
 pub mod akio_http::cookie
 #[non_exhaustive] pub enum akio_http::cookie::SameSite
 pub akio_http::cookie::SameSite::Lax

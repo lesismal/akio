@@ -380,6 +380,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | HTTP/2 客户端：流式请求的重置、超时与尾部字段；按流的背压；服务端的流上限、`GOAWAY`、ALPN | akio-http `h2client`（ADR-110） | 否 | 否 | 要测：在安静主机上对 h2c 请求速率（每个请求一个 `StreamCtl`，每个 DATA 帧一次原子读，每次读一次等待队列检查）以及暂停与控速下的流式上传和下载做 A/B。 |
 | HTTP/2 客户端：响应头与空闲超时、`CancelToken` | akio-http `h2client`、`client`（ADR-111） | 否 | 否 | 要测：设置与不设置两个超时时 h2c 请求速率的 A/B（每个 DATA 帧一次读时钟与一次原子存储，每个请求一个定时任务）。 |
 | 任何响应过滤器可设置的流编码；缓存文件的压缩副本 | akio-http `coding`、`message`、`files`（ADR-112） | 否 | 否 | 待测：普通响应（`Response` 多一个 `None` 字）和设置了 `compress` 但不需要副本时缓存文件命中的 A/B；在磁盘线程池上为 1 MiB 以内的文件做副本（gzip 9、brotli 9、zstd 19）的开销。 |
+| HTTP/1 客户端在 `101` 时交出连接；HTTP/2：对扩展 CONNECT 的流式 `2xx` 应答即隧道 | akio-http `client`、`h2`（ADR-113） | 否 | 否 | 要测：热路径未变（每个请求读一次标志）；由经 akit（I49）的 WebSocket 中继基准覆盖。 |
 | HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s） | 部分（每连接一个截止时间定时器，`95bca264`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
 | 路由与路由正则 | akio-http、akio-regex（ADR-051） | 是（`router-bench`，“编解码微基准”） | 是（每次查找约 28 ns、0 次分配；路由正则快于 `regex`） | – |
 | 日志过滤正则 | akio-regex、akio-log（ADR-047） | 是（“编解码微基准”，`logregex`） | 部分 | 对比 `regex`：无匹配的多选分支 92 对 16 ns，`\b\d+ms\b` 93 对 33 ns；编译更慢。不在热路径上（只用于过滤）。 |

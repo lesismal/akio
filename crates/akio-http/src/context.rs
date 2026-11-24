@@ -759,6 +759,12 @@ impl Context {
     /// middleware compresses the body when [`Compress::stream`](crate::middleware::Compress)
     /// is set, flushing the encoder on every write. `None` if a response was already started. Write from any thread; dropping the stream
     /// without [`BodyStream::finish`] closes the connection.
+    ///
+    /// On HTTP/2 and HTTP/3, a `2xx` streamed to an extended CONNECT (RFC 8441, RFC 9220) that
+    /// the handler did not [`upgrade_websocket`](Self::upgrade_websocket) opens a tunnel
+    /// (ADR-113): the stream's bytes arrive as the streamed request body ([`on_body`](Self::on_body),
+    /// held with [`body_reads`](Self::body_reads)), the stream's halves close separately, and a
+    /// peer that never ends its half after [`BodyStream::finish`] is reset after a few seconds.
     pub fn stream_response(&mut self, status: u16, headers: Headers) -> Option<BodyStream> {
         let out = self.responder.take()?;
         self.detached = true;
