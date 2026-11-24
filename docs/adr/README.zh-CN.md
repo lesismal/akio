@@ -110,3 +110,4 @@
 - [ADR-113：HTTP/1 客户端在 `101` 时交出连接，HTTP/2 扩展 CONNECT 的流式 `2xx` 应答即隧道](113-client-upgrade-handover-h2-tunnels.zh-CN.md)（2026-11-24 采纳）
 - [ADR-115：`akio-regex` 的匹配位置、分组与 Go 的模板](115-regex-matches-groups-expand.zh-CN.md)（2026-11-24 采纳）
 - [ADR-116：消息体旁路、外层响应过滤器与三种格式的 HTTP 日期](116-body-taps-outer-filters-http-dates.zh-CN.md)（2026-11-24 采纳）
+- [ADR-117：HTTP/1 客户端的 TLS 服务器名，以及构建时检查客户端证书的私钥](117-client-tls-server-name-and-client-key-check.zh-CN.md)（2026-11-24 采纳）

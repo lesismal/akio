@@ -33,6 +33,17 @@ ADR-116, requested by akit (A111, A112, A113):
   added first, so an outer middleware sees the response as the inner ones left it.
 - `akio_http::parse_http_date`: an HTTP-date in any of RFC 9110's three formats.
 
+### Added: the HTTP/1 client's TLS server name; a client certificate's key is checked (akio-http, akio-tls)
+
+ADR-117, requested by akit (A108, A109):
+
+- `Client::with_tls_server_name(name)`: every `https://` connection sends `name` in SNI and
+  verifies the server's certificate against it, in place of the URL's host; connections are still
+  pooled by host and port, and an empty name restores the URL's host.
+- `ClientConfigBuilder::build` checks that a client certificate's leaf parses and carries the
+  key's public key, as the server builder does; a mismatch is `client certificate: private key
+  does not match the certificate` (before, every handshake asking for the certificate failed).
+
 ### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
 
 ADR-111, requested by akit (A66):

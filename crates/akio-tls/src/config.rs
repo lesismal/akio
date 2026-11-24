@@ -1357,6 +1357,7 @@ impl ClientConfigBuilder {
     }
 
     /// Presents `chain` (leaf first) and `key` when the server asks for a client certificate.
+    /// [`build`](Self::build) checks that the leaf parses and carries `key`'s public key.
     pub fn client_cert(mut self, chain: Vec<Certificate>, key: PrivateKey) -> Self {
         self.client_cert = Some((chain, key));
         self
@@ -1538,11 +1539,10 @@ impl ClientConfigBuilder {
                 if chain.is_empty() {
                     return Err(Error::new("empty client certificate chain"));
                 }
-                let mut ck = CertKey::new(
-                    chain.iter().map(|c| c.0.clone()).collect(),
-                    key.parse()
-                        .map_err(|e| Error::wrap("client certificate", e))?,
-                );
+                // The leaf must carry the key's public key (A109): a mismatch fails here, as a
+                // server's does, rather than in every handshake that asks for it.
+                let mut ck =
+                    certified_key(chain, key).map_err(|e| Error::wrap("client certificate", e))?;
                 if let Some(r) = &self.client_cert_ocsp {
                     check_ocsp_response(r)?;
                     ck.ocsp = Some(r.clone());

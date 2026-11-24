@@ -77,6 +77,7 @@ pub fn akio_http::client::Client::with_proxy(self, akio_ws::proxy::Proxy) -> aki
 pub fn akio_http::client::Client::with_redirects(self, akio_http::client::RedirectPolicy) -> akio_http::client::Client
 pub fn akio_http::client::Client::with_timeout(self, core::time::Duration) -> akio_http::client::Client
 pub fn akio_http::client::Client::with_tls(self, akio_tls::config::ClientConfig) -> akio_http::client::Client
+pub fn akio_http::client::Client::with_tls_server_name(self, impl core::convert::Into<alloc::string::String>) -> akio_http::client::Client
 impl core::clone::Clone for akio_http::client::Client
 pub fn akio_http::client::Client::clone(&self) -> Self
 impl core::fmt::Debug for akio_http::client::Client
