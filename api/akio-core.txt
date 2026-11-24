@@ -1045,6 +1045,7 @@ impl core::marker::Sync for akio_core::UdpStats
 impl core::marker::Unpin for akio_core::UdpStats
 impl core::panic::unwind_safe::RefUnwindSafe for akio_core::UdpStats
 impl core::panic::unwind_safe::UnwindSafe for akio_core::UdpStats
+pub const akio_core::UNIX_ADDR: core::net::socket_addr::SocketAddr
 pub trait akio_core::Acceptor: core::marker::Send + core::marker::Sync + 'static
 pub type akio_core::Acceptor::Handler: akio_core::Handler
 pub fn akio_core::Acceptor::on_open(&self, &akio_core::Conn<Self::Handler>) -> Self::Handler
