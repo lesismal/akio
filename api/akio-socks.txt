@@ -114,6 +114,8 @@ impl core::marker::Unpin for akio_socks::BlockingUdp
 impl core::panic::unwind_safe::RefUnwindSafe for akio_socks::BlockingUdp
 impl core::panic::unwind_safe::UnwindSafe for akio_socks::BlockingUdp
 #[non_exhaustive] pub struct akio_socks::ProxyConfig
+pub akio_socks::ProxyConfig::connect_timeout: core::option::Option<core::time::Duration>
+pub akio_socks::ProxyConfig::connected: core::option::Option<akio_socks::Connected>
 pub akio_socks::ProxyConfig::destinations: akio_socks::Destinations
 pub akio_socks::ProxyConfig::handshake_timeout: core::option::Option<core::time::Duration>
 pub akio_socks::ProxyConfig::idle_timeout: core::option::Option<core::time::Duration>
@@ -234,3 +236,4 @@ pub fn akio_socks::connect_proxy_with(akio::EngineRef, akio_socks::ProxyConfig) 
 pub fn akio_socks::is_public(core::net::ip_addr::IpAddr) -> bool
 pub type akio_socks::Allow = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&akio_socks::Request<'_>) -> bool + core::marker::Send + core::marker::Sync)>
 pub type akio_socks::Auth = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync)>
+pub type akio_socks::Connected = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&akio_socks::Dest, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync)>

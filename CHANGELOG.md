@@ -21,6 +21,21 @@ ADR-120, requested by akit (A135):
   the URL's host still its `Host` and the key of its idle connections.
 - `akio_sys::connect_unix_nonblocking`, `ffi::AF_UNIX` and `ffi::sockaddr_un`.
 
+### Added: a proxy's tunnel checked once connected, and its connect timeout (akio-socks)
+
+ADR-119, requested by akit (A132, A133):
+
+- `ProxyConfig::connected` (`Connected`): decides each `CONNECT` tunnel's upstream (SOCKS and
+  HTTP) once it opens, before it is used, given the destination as asked (a name or an address),
+  the address connected to and the local one; a refusal is SOCKS5 reply 2, SOCKS4 `0x5b` or HTTP
+  `502`, and no other address is tried.
+- `ProxyConfig::connect_timeout`: the longest time from a `CONNECT` request to its upstream
+  being connected; past it SOCKS5 reply 4, SOCKS4 `0x5b` or HTTP `504 Gateway Timeout`.
+- The access hook's `Request::client` is the client a trusted PROXY header names (akio-mux's
+  `ProxyProtocol` layer in front), as akio-http's requests have it since ADR-118.
+- A SOCKS request whose name resolution the logical pool refuses (full) gets reply 1 before the
+  close.
+
 ### Added: where a regular expression matches, its groups, and Go's templates (akio-regex)
 
 ADR-115, requested by akit (A32):

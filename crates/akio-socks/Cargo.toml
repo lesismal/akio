@@ -16,6 +16,7 @@ categories = ["network-programming"]
 akio = { workspace = true }
 akio-core = { workspace = true }
 akio-http = { workspace = true }
+akio-mux = { workspace = true }
 akio-ws = { workspace = true }
 
 [features]

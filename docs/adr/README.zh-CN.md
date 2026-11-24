@@ -113,3 +113,4 @@
 - [ADR-117：HTTP/1 客户端的 TLS 服务器名，以及构建时检查客户端证书的私钥](117-client-tls-server-name-and-client-key-check.zh-CN.md)（2026-11-24 采纳）
 - [ADR-118：请求的对端是受信任 PROXY 头所指的客户端](118-http-peer-from-proxy-header.zh-CN.md)（2026-11-24 采纳）
 - [ADR-120：拨号 Unix 域套接字，以及在其上的 HTTP 客户端](120-unix-socket-dial.zh-CN.md)（2026-11-24 采纳）
+- [ADR-119：代理隧道在连接建立后检查，以及它的连接超时](119-socks-connected-check-and-connect-timeout.zh-CN.md)（2026-11-24 采纳）

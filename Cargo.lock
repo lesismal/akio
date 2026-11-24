@@ -356,6 +356,7 @@ dependencies = [
  "akio",
  "akio-core",
  "akio-http",
+ "akio-mux",
  "akio-ws",
  "akio-x509",
 ]
