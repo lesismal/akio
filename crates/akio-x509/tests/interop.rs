@@ -113,3 +113,50 @@ fn simple_self_signed_like_rcgen() {
         .unwrap();
     let _ = key;
 }
+
+// Certificate signing requests (PKCS#10).
+
+#[test]
+fn csr_from_rcgen_parses_and_verifies() {
+    for alg in [
+        &rcgen::PKCS_ECDSA_P256_SHA256,
+        &rcgen::PKCS_ECDSA_P384_SHA384,
+        &rcgen::PKCS_ED25519,
+    ] {
+        let key = rcgen::KeyPair::generate_for(alg).unwrap();
+        let params =
+            rcgen::CertificateParams::new(vec!["rcgen.test".to_string(), "10.0.0.1".to_string()])
+                .unwrap();
+        let req = params.serialize_request(&key).unwrap();
+        let csr = akio_x509::CertificateRequest::from_der(req.der().to_vec()).unwrap();
+        csr.verify_signature().unwrap();
+        assert_eq!(
+            csr.subject_alt_names(),
+            &[
+                akio_x509::GeneralName::from_host("rcgen.test"),
+                akio_x509::GeneralName::from_host("10.0.0.1"),
+            ]
+        );
+        assert_eq!(csr.spki_der(), key.public_key_der());
+    }
+}
+
+#[test]
+fn csr_from_openssl_parses_and_verifies() {
+    let rsa = akio_x509::CertificateRequest::from_pem(include_bytes!("data/openssl/req_rsa.pem"))
+        .unwrap();
+    rsa.verify_signature().unwrap();
+    assert_eq!(rsa.subject().common_name().as_deref(), Some("openssl.test"));
+    assert_eq!(rsa.subject_alt_names().len(), 3);
+    assert!(rsa.extensions().iter().any(|e| e.oid == ext::EXT_KEY_USAGE));
+
+    let ed =
+        akio_x509::CertificateRequest::from_pem(include_bytes!("data/openssl/req_ed25519.pem"))
+            .unwrap();
+    ed.verify_signature().unwrap();
+    assert!(ed.extensions().is_empty());
+    // challengePassword (1.2.840.113549.1.9.7), kept unparsed.
+    let (oid, value) = &ed.attributes()[0];
+    assert_eq!(oid, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x07]);
+    assert!(value.windows(8).any(|w| w == b"hunter22"));
+}

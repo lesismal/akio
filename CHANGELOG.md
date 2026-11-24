@@ -23,6 +23,14 @@ calls return once every I/O thread of the listener has handled it (up to a secon
 thread; without waiting when called on an I/O thread). Regression test:
 `tests/runtime_listeners.rs`, a listener replaced at its address 50 times.
 
+### Added: certificate signing requests (akio-x509)
+
+ADR-107, additive: `CsrParams` makes a PKCS#10 request (RFC 2986) for a key, with
+subjectAltNames, extKeyUsage and further extensions in an `extensionRequest`, as an ACME client
+sends to finalize an order (RFC 8555); `CertificateRequest` parses one strictly from DER or PEM and
+checks its signature (`verify_signature`), within `MAX_REQUEST_LEN` and `MAX_ATTRIBUTES`. Fuzz
+target `x509_csr`; interop with rcgen and OpenSSL.
+
 ### Added: streamed bodies with linked backpressure (akio-http, akio-h3)
 
 ADR-101, additive, requested by akit (A19, A20, A21):
