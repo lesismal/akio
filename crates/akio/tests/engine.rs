@@ -1007,3 +1007,173 @@ fn serves_an_inherited_listener_and_keeps_it_listening_after_shutdown() {
     keep.set_nonblocking(false).unwrap();
     assert!(keep.accept().is_ok());
 }
+
+/// Answers every request with a mix of buffer kinds in one callback: on io_uring with ring
+/// sends (ADR-106) they leave as one multi-buffer `SENDMSG`, larger than the socket buffer, so
+/// they also complete in parts.
+struct Mixed(akio::SharedBuf);
+impl Handler for Mixed {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        for _ in data {
+            c.send(b"head:").unwrap();
+            c.send_shared(self.0.clone()).unwrap();
+            c.send(b":mid:").unwrap();
+            c.send_owned(vec![b'o'; 100_000]).unwrap();
+            c.send(b":tail").unwrap();
+        }
+    }
+}
+
+#[test]
+fn mixed_buffers_in_one_callback_arrive_whole_and_in_order() {
+    let body: Vec<u8> = (0..3 << 20).map(|i: usize| (i * 7 % 253) as u8).collect();
+    let shared = akio::SharedBuf::from(body.clone());
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<Mixed>| Mixed(shared.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut s = connect(e.local_addrs()[0]);
+    let mut one = Vec::new();
+    one.extend_from_slice(b"head:");
+    one.extend_from_slice(&body);
+    one.extend_from_slice(b":mid:");
+    one.extend_from_slice(&vec![b'o'; 100_000]);
+    one.extend_from_slice(b":tail");
+    for round in 0..4 {
+        s.write_all(b"ab").unwrap(); // two answers queued back to back
+        let mut got = vec![0u8; 2 * one.len()];
+        s.read_exact(&mut got).unwrap();
+        assert!(
+            got[..one.len()] == one[..],
+            "round {round}: first answer differs"
+        );
+        assert!(
+            got[one.len()..] == one[..],
+            "round {round}: second answer differs"
+        );
+    }
+    stop(&e);
+}
+
+/// Echoes every 8-byte record from the loop and hands it to `Relay`'s thread, which sends it
+/// again from there: output of the loop and of another thread interleaves on one connection.
+struct Relay(std::sync::mpsc::Sender<(Conn<Relay>, Vec<u8>)>);
+impl Handler for Relay {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        for rec in data.chunks(8) {
+            let mut out = rec.to_vec();
+            out[0] = 1; // from the loop
+            c.send(&out).unwrap();
+            let mut other = rec.to_vec();
+            other[0] = 2; // from the relay thread
+            let _ = self.0.send((c.clone(), other));
+        }
+    }
+}
+
+#[test]
+fn loop_and_other_thread_sends_keep_their_order() {
+    let (tx, rx) = std::sync::mpsc::channel::<(Conn<Relay>, Vec<u8>)>();
+    let relay = thread::spawn(move || {
+        for (c, rec) in rx {
+            let _ = c.send(&rec);
+        }
+    });
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<Relay>| Relay(tx.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut w = connect(e.local_addrs()[0]);
+    let mut r = w.try_clone().unwrap();
+    const N: u32 = 20_000;
+    let writer = thread::spawn(move || {
+        for i in 0..N {
+            let mut rec = [0u8; 8];
+            rec[4..].copy_from_slice(&i.to_be_bytes());
+            w.write_all(&rec).unwrap();
+        }
+        w
+    });
+    let mut buf = vec![0u8; 2 * N as usize * 8];
+    r.read_exact(&mut buf).unwrap();
+    let mut next = [0u32; 3];
+    for rec in buf.chunks(8) {
+        let src = rec[0] as usize;
+        let i = u32::from_be_bytes(rec[4..].try_into().unwrap());
+        assert!(src == 1 || src == 2, "unknown source {src}");
+        assert_eq!(i, next[src], "records of source {src} out of order");
+        next[src] += 1;
+    }
+    assert_eq!(next[1..], [N, N]);
+    drop(writer.join().unwrap());
+    stop(&e);
+    drop(e);
+    relay.join().unwrap();
+}
+
+/// Queues far more than the socket takes, then closes from another thread while the output is
+/// still being sent (on io_uring: with a ring send in flight).
+struct Flood;
+impl Handler for Flood {
+    fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
+        let _ = c.send_owned(vec![9u8; 16 << 20]);
+        let c = c.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            c.close();
+        });
+    }
+}
+
+#[test]
+fn close_with_output_in_flight_keeps_the_loop_serving() {
+    let mut cfg = cfg();
+    cfg.max_queued_bytes = 64 << 20;
+    let e = Engine::builder()
+        .config(cfg)
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Flood>| Flood)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    for _ in 0..10 {
+        let mut s = connect(addr);
+        s.write_all(b"go").unwrap();
+        // Read a little (the send makes progress), then stop reading until the close.
+        let mut buf = vec![0u8; 64 << 10];
+        s.read_exact(&mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 9));
+        thread::sleep(Duration::from_millis(60));
+        let mut total = buf.len();
+        loop {
+            match s.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    assert!(buf[..n].iter().all(|&b| b == 9));
+                    total += n;
+                }
+            }
+        }
+        assert!(total <= 16 << 20);
+    }
+    stop(&e);
+}

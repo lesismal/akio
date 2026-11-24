@@ -76,6 +76,8 @@ fn probe_here() -> Result<(), String> {
         ("poll_add", ring::OP_POLL_ADD),
         ("async_cancel", ring::OP_ASYNC_CANCEL),
         ("read", ring::OP_READ),
+        ("send", ring::OP_SEND),
+        ("sendmsg", ring::OP_SENDMSG),
     ] {
         if !probe.is_supported(code) {
             return Err(format!("opcode {name} unsupported"));

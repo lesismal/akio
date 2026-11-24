@@ -105,3 +105,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-103: Timers on the I/O loop](103-loop-timers.md) (accepted 2026-11-23)
 - [ADR-104: Two scheduling modes for TCP listeners: per-thread loops and rounds on a worker pool](104-rounds-scheduling.md) (proposed 2026-11-23)
 - [ADR-105: Accept-time balancing of connections over a listener's threads](105-accept-time-balancing.md) (accepted 2026-11-23; updates ADR-001)
+- [ADR-106: io_uring ring sends: responses leave as SEND entries in the loop's one `io_uring_enter`](106-uring-ring-sends.md) (accepted 2026-11-24)
