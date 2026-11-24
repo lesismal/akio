@@ -108,3 +108,4 @@
 - [ADR-111：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`](111-h2-client-header-idle-timeouts-cancel.zh-CN.md)（2026-11-24 采纳）
 - [ADR-112：任何响应过滤器都能设置的流编码，以及缓存文件的压缩副本](112-stream-coding-for-filters-and-compressed-copies.zh-CN.md)（2026-11-24 采纳）
 - [ADR-113：HTTP/1 客户端在 `101` 时交出连接，HTTP/2 扩展 CONNECT 的流式 `2xx` 应答即隧道](113-client-upgrade-handover-h2-tunnels.zh-CN.md)（2026-11-24 采纳）
+- [ADR-118：请求的对端是受信任 PROXY 头所指的客户端](118-http-peer-from-proxy-header.zh-CN.md)（2026-11-24 采纳）

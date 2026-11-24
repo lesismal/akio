@@ -117,7 +117,7 @@ mux 上限不变。
   再 SNI 规则。模糊测试目标 `mux_tls_hello` 和 `proxy_header` 检查不 panic、前缀一致性，以及编码
   解析出的头部能再解析回同样的值。
 - akio-http 仍以 `peer_addr` 作为远端地址。在那里（以及访问日志中）使用 `proxy::client_addr`
-  留给应用或后续改动。
+  留给应用或后续改动（akio-http 的部分已在 ADR-118 完成）。
 
 ## 未做
 

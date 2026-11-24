@@ -10,6 +10,15 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: a request's peer is the client a trusted PROXY header names (akio-http)
+
+ADR-118, requested by akit (A105):
+
+- `Request::peer` and `Context::peer` are the source of the PROXY header akio-mux's
+  `ProxyProtocol` layer attached to the connection, when it names one, over HTTP/1.1 and HTTP/2;
+  otherwise the socket's peer, as before. `Conn::peer_addr` is unchanged. akio-http now depends on
+  akio-mux.
+
 ### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
 
 ADR-111, requested by akit (A66):

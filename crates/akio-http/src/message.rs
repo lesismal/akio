@@ -488,7 +488,8 @@ pub struct Request {
     pub trailers: Headers,
     /// The body (decoded if it was chunked).
     pub body: Vec<u8>,
-    /// The peer's address.
+    /// The client's address: the source a trusted PROXY header named, when akio-mux's
+    /// `ProxyProtocol` layer read one for the connection, else the socket's peer (ADR-118).
     pub peer: SocketAddr,
     /// The `:protocol` of an extended CONNECT request (RFC 8441 / RFC 9220: `websocket` for
     /// WebSocket over HTTP/3); `None` for every other request.
