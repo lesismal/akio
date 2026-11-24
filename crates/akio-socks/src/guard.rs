@@ -105,9 +105,32 @@ impl Watchdog {
     }
 }
 
+/// The client end of a proxy session: its connection, or the HTTP/2 or HTTP/3 stream of a
+/// `CONNECT` (A134).
+pub(crate) trait Side: Send + Sync {
+    /// Still open.
+    fn is_open(&self) -> bool;
+    /// Closes it now (a stream is reset).
+    fn close(&self);
+    /// Spreads sessions over the watchdog's shards.
+    fn id(&self) -> u64;
+}
+
+impl Side for ConnInner {
+    fn is_open(&self) -> bool {
+        ConnInner::is_open(self)
+    }
+    fn close(&self) {
+        ConnInner::close(self);
+    }
+    fn id(&self) -> u64 {
+        ConnInner::id(self)
+    }
+}
+
 /// The timeouts of one proxy session (client connection plus its upstream).
 pub(crate) struct Watch {
-    client: Arc<ConnInner>,
+    client: Arc<dyn Side>,
     upstream: UpstreamSlot,
     /// The watchdog checking this session (its clock is the one `opened` and `last` use).
     dog: &'static Watchdog,
@@ -148,6 +171,17 @@ impl Watch {
         idle: Option<Duration>,
         connect: Option<Duration>,
     ) -> Option<Arc<Watch>> {
+        Watch::start_side(client.clone(), upstream, handshake, idle, connect)
+    }
+
+    /// [`start`](Self::start) for any client [`Side`].
+    pub(crate) fn start_side(
+        client: Arc<dyn Side>,
+        upstream: &UpstreamSlot,
+        handshake: Option<Duration>,
+        idle: Option<Duration>,
+        connect: Option<Duration>,
+    ) -> Option<Arc<Watch>> {
         let (handshake_ms, idle_ms, connect_ms) = (ms(handshake), ms(idle), ms(connect));
         if handshake_ms == 0 && idle_ms == 0 && connect_ms == 0 {
             return None;
@@ -171,7 +205,7 @@ impl Watch {
     fn start_on(
         w: &'static Watchdog,
         tick: u64,
-        client: &Arc<ConnInner>,
+        client: Arc<dyn Side>,
         upstream: &UpstreamSlot,
         [handshake_ms, idle_ms, connect_ms]: [u64; 3],
     ) -> Arc<Watch> {
@@ -179,7 +213,7 @@ impl Watch {
         let now = w.now();
         let watch = Arc::new(Watch {
             dog: w,
-            client: client.clone(),
+            client,
             upstream: upstream.clone(),
             opened: now,
             last: AtomicU64::new(now),
@@ -195,7 +229,7 @@ impl Watch {
             connect_at: AtomicU64::new(u64::MAX),
             on_connect_timeout: Mutex::new(None),
         });
-        let shard = &w.shards[(client.id() as usize) % SHARDS];
+        let shard = &w.shards[(watch.client.id() as usize) % SHARDS];
         shard
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -371,7 +405,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(950));
         let c = akio_core::fuzzing::conn_inner();
         let t0 = Instant::now();
-        let _w = Watch::start_on(dog, 75, &c, &slot, [300, 0, 0]);
+        let _w = Watch::start_on(dog, 75, c.clone(), &slot, [300, 0, 0]);
         closed_after(&c, Duration::from_secs(3)).expect("closed");
         let t = t0.elapsed();
         assert!(t >= Duration::from_millis(300), "fired after {t:?}");

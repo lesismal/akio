@@ -10,6 +10,37 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down (akio-http, akio-h3, akio-socks, akio-core)
+
+ADR-122, requested by akit (A134):
+
+- akio-http: a `CONNECT` on an HTTP/2 stream with `:method` and `:authority` alone (RFC 9113
+  §8.5) is dispatched at once, its target the authority, its DATA the streamed request body; a
+  streamed `2xx` makes the stream a tunnel whose halves close separately. One with `:scheme` or
+  `:path`, or without `:authority`, is reset (`PROTOCOL_ERROR`); before, every plain CONNECT was.
+  `H2Client` sends a `CONNECT` request that way, its `:authority` the request's `Host` field.
+- akio-h3: a `CONNECT` (RFC 9114 §4.4) is dispatched at its head rather than when its stream
+  ends.
+- akio-socks: `connect_proxy` relays a `CONNECT` on an HTTP/2 or HTTP/3 stream (it returned
+  without answering before), with the HTTP/1.1 tunnel's checks, timeouts and failure statuses
+  and backpressure both ways; the client's END_STREAM shuts the upstream's send direction down.
+- `Conn::shutdown_write_after_send` and `ConnInner::shutdown_write_after_send`: a FIN once the
+  queue is written, reads going on (epoll, kqueue, io_uring).
+
+### Added: Unix-domain stream listeners, and a TLS server capped at TLS 1.2 (akio, akio-epoll, akio-uring, akio-sys, akio-tls)
+
+ADR-121, requested by akit (A23, A9):
+
+- `Listener::unix(path)`, `Listener::unix_from_std(UnixListener)` and `Listener::unix_mode(mode)`:
+  a stream listener on a socket file served like a TCP one, on epoll, kqueue and io_uring, at
+  build time or through `Engine::add_listener`; the mode set before it listens, a stale socket
+  file replaced, one in use (or a file that is not a socket) `AddrInUse`. Its connections'
+  addresses are `UNIX_ADDR`.
+- `EpollGroup::bind_unix_listener`, `UringGroup::bind_unix_listener`.
+- `akio_sys::listen_unix` and `akio_sys::accept_stream`.
+- `ServerConfigBuilder::tls12_only` and `ClientConfigBuilder::tls12_only` (public; the hidden
+  `__tls12_only` calls them). Set with `tls13_only`, `build` fails.
+
 ### Added: dialing a Unix-domain socket, and the HTTP client over one (akio, akio-http, akio-sys)
 
 ADR-120, requested by akit (A135):

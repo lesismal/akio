@@ -10,6 +10,33 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/2 和 HTTP/3 流上的 CONNECT，以及关闭连接的发送方向（akio-http、akio-h3、akio-socks、akio-core）
+
+ADR-122，由 akit 提出（A134）：
+
+- akio-http：HTTP/2 流上只带 `:method` 和 `:authority` 的 `CONNECT`（RFC 9113 §8.5）立即分派，
+  目标是 authority，DATA 是流式请求体；流式的 `2xx` 使该流成为两半各自关闭的隧道。带 `:scheme`
+  或 `:path`、或缺少 `:authority` 的被重置（`PROTOCOL_ERROR`）；此前所有普通 CONNECT 都会被重置。
+  `H2Client` 也按这种形式发送 `CONNECT` 请求，其 `:authority` 取请求的 `Host` 字段。
+- akio-h3：`CONNECT`（RFC 9114 §4.4）在收到头部时分派，而不是等流结束。
+- akio-socks：`connect_proxy` 为 HTTP/2 或 HTTP/3 流上的 `CONNECT` 做中继（此前它不应答就返回），
+  检查、超时、失败状态码与 HTTP/1.1 隧道相同，双向背压；客户端的 END_STREAM 关闭上游的发送方向。
+- `Conn::shutdown_write_after_send` 与 `ConnInner::shutdown_write_after_send`：队列写完后发送 FIN，
+  继续读取（epoll、kqueue、io_uring）。
+
+### 新增：Unix 域流监听器，以及限定 TLS 1.2 的 TLS 服务端（akio、akio-epoll、akio-uring、akio-sys、akio-tls）
+
+ADR-121，由 akit 提出（A23、A9）：
+
+- `Listener::unix(path)`、`Listener::unix_from_std(UnixListener)` 与 `Listener::unix_mode(mode)`：
+  套接字文件上的流监听器，像 TCP 监听器一样提供服务，支持 epoll、kqueue 和 io_uring，可在构建时
+  加入或通过 `Engine::add_listener` 加入；权限在监听前设置，残留的套接字文件被替换，正在使用的
+  （或不是套接字的文件）返回 `AddrInUse`。其连接的地址为 `UNIX_ADDR`。
+- `EpollGroup::bind_unix_listener`、`UringGroup::bind_unix_listener`。
+- `akio_sys::listen_unix` 与 `akio_sys::accept_stream`。
+- `ServerConfigBuilder::tls12_only` 与 `ClientConfigBuilder::tls12_only`（公开；隐藏的
+  `__tls12_only` 调用它们）。与 `tls13_only` 同时设置时 `build` 失败。
+
 ### 新增：拨号 Unix 域套接字，以及在其上的 HTTP 客户端（akio、akio-http、akio-sys）
 
 ADR-120，由 akit 提出（A135）：

@@ -87,7 +87,35 @@ fn setup(seen: mpsc::Sender<String>) -> (Arc<Engine>, SocketAddr) {
     let cert = akio::tls::Certificate::from_der(ck.0.as_der().to_vec());
     let key = akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let seen = Arc::new(Mutex::new(seen));
-    let app = Router::new().get(
+    let seen2 = seen.clone();
+    let app = Router::new().fallback(Streaming(move |ctx: &mut Context| {
+        // A CONNECT (RFC 9114 §4.4, A134): the target is the authority; a streamed `200`
+        // naming it, then the stream's bytes echoed back.
+        let target = ctx.req().target.clone();
+        let seen = seen2.clone();
+        let _ = seen.lock().unwrap().send(format!("connect {target}"));
+        let out = Arc::new(Mutex::new(ctx.stream_response(200, Headers::new())));
+        if let Some(s) = out.lock().unwrap().as_ref() {
+            let _ = s.write(format!("to {target};").as_bytes());
+        }
+        ctx.on_body(move |_ctx, ev: BodyEvent<'_>| {
+            let mut out = out.lock().unwrap();
+            match ev {
+                BodyEvent::Chunk(b) => {
+                    if let Some(s) = out.as_ref() {
+                        let _ = s.write(b);
+                    }
+                }
+                BodyEvent::End(_) => {
+                    if let Some(s) = out.take() {
+                        s.finish();
+                    }
+                    let _ = seen.lock().unwrap().send("end".into());
+                }
+            }
+        });
+    }));
+    let app = app.get(
         "/tunnel",
         Streaming(move |ctx: &mut Context| {
             let seen = seen.clone();
@@ -240,6 +268,47 @@ fn a_streamed_200_to_an_extended_connect_is_a_tunnel() {
             "{g:?}"
         );
     }
+    e.shutdown();
+    e.wait();
+}
+
+/// A CONNECT (RFC 9114 §4.4, A134), `:method` and `:authority` alone: dispatched at its head,
+/// before any DATA, and its streamed `200` a tunnel.
+#[test]
+fn a_streamed_200_to_a_connect_is_a_tunnel() {
+    let (tx, seen) = mpsc::channel();
+    let (e, addr) = setup(tx);
+    let (rtx, rx) = mpsc::channel();
+    let cc = akio_quic::client_config_insecure(&[b"h3"]).unwrap();
+    let c = akio_quic::dial(&e, addr, "localhost", cc, Raw(rtx)).unwrap();
+    assert!(matches!(rx.recv_timeout(WAIT).unwrap(), Got::Connected));
+    let id = c.open_bi().unwrap();
+    let mut block = Vec::new();
+    akio_h3::qpack::encode(
+        [(":method", "CONNECT"), (":authority", "example.com:443")],
+        &mut block,
+    );
+    let mut head = Vec::new();
+    frame(&mut head, HEADERS, &block);
+    c.send(id, head).unwrap();
+    assert_eq!(
+        seen.recv_timeout(WAIT).unwrap(),
+        "connect example.com:443",
+        "dispatched before any DATA"
+    );
+    let mut s = Stream {
+        id,
+        buf: Vec::new(),
+        fin: false,
+    };
+    let (ty, _) = s.frame(&rx).expect("the response head");
+    assert_eq!(ty, HEADERS);
+    s.data(&rx, b"to example.com:443;");
+    c.send(id, data(b"ping")).unwrap();
+    s.data(&rx, b"ping");
+    c.finish(id).unwrap();
+    assert_eq!(seen.recv_timeout(WAIT).unwrap(), "end");
+    assert!(s.frame(&rx).is_none(), "our half ended after the client's");
     e.shutdown();
     e.wait();
 }

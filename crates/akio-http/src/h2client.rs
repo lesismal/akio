@@ -1610,17 +1610,30 @@ impl H2Conn {
         let is_stream = streaming.is_some();
         let sid = self.next_id;
         self.next_id += 2;
-        let mut list: Vec<(Vec<u8>, Vec<u8>)> = vec![
-            (b":method".to_vec(), req.method.as_str().as_bytes().to_vec()),
-            (
-                b":scheme".to_vec(),
-                (if pu.key.tls { "https" } else { "http" })
-                    .as_bytes()
-                    .to_vec(),
-            ),
-            (b":authority".to_vec(), pu.host_header.clone().into_bytes()),
-            (b":path".to_vec(), pu.target.into_bytes()),
-        ];
+        let mut list: Vec<(Vec<u8>, Vec<u8>)> = if req.method == Method::Connect {
+            // A CONNECT (RFC 9113 §8.5, ADR-122): `:method` and `:authority` alone, the
+            // authority the tunnel's `host:port`: the request's `Host` field, else the URL's.
+            let authority = req
+                .headers
+                .get("host")
+                .map_or_else(|| pu.host_header.clone(), str::to_owned);
+            vec![
+                (b":method".to_vec(), b"CONNECT".to_vec()),
+                (b":authority".to_vec(), authority.into_bytes()),
+            ]
+        } else {
+            vec![
+                (b":method".to_vec(), req.method.as_str().as_bytes().to_vec()),
+                (
+                    b":scheme".to_vec(),
+                    (if pu.key.tls { "https" } else { "http" })
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                (b":authority".to_vec(), pu.host_header.clone().into_bytes()),
+                (b":path".to_vec(), pu.target.into_bytes()),
+            ]
+        };
         let mut has_cl = false;
         for (n, v) in req.headers.iter() {
             let n = n.to_ascii_lowercase();

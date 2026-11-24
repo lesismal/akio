@@ -230,6 +230,7 @@ pub fn akio_tls::ClientConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn akio_tls::ClientConfigBuilder::resumption(self, bool) -> Self
 pub fn akio_tls::ClientConfigBuilder::roots(self, akio_tls::RootCerts) -> Self
 pub fn akio_tls::ClientConfigBuilder::sni(self, bool) -> Self
+pub fn akio_tls::ClientConfigBuilder::tls12_only(self, bool) -> Self
 pub fn akio_tls::ClientConfigBuilder::tls13_only(self, bool) -> Self
 impl core::fmt::Debug for akio_tls::ClientConfigBuilder
 pub fn akio_tls::ClientConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -387,6 +388,7 @@ pub fn akio_tls::ServerConfigBuilder::session_ticket_keys(self, akio_tls::Ticket
 pub fn akio_tls::ServerConfigBuilder::session_tickets(self, bool) -> Self
 pub fn akio_tls::ServerConfigBuilder::sni_cert(self, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<akio_tls::Certificate>, akio_tls::PrivateKey) -> Self
 pub fn akio_tls::ServerConfigBuilder::sni_ocsp_response(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
+pub fn akio_tls::ServerConfigBuilder::tls12_only(self, bool) -> Self
 pub fn akio_tls::ServerConfigBuilder::tls13_only(self, bool) -> Self
 impl core::fmt::Debug for akio_tls::ServerConfigBuilder
 pub fn akio_tls::ServerConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

@@ -1036,11 +1036,22 @@ impl ServerConfigBuilder {
         self
     }
 
-    /// Tests and interop tools: TLS 1.2 only.
-    #[doc(hidden)]
-    pub fn __tls12_only(mut self, yes: bool) -> Self {
+    /// Accepts TLS 1.2 only (default: TLS 1.2 and 1.3; ADR-121), as Go's
+    /// `tls.Config.MaxVersion = tls.VersionTLS12`: for network cards that offload TLS 1.2
+    /// alone, or peers that must not negotiate 1.3. The TLS 1.3 suites are left out, so a
+    /// client offering 1.3 negotiates 1.2 (without the downgrade sentinel of RFC 8446 section
+    /// 4.1.3, as 1.2 is the most this server speaks) and one offering only 1.3 fails. Exclusive with
+    /// [`tls13_only`](Self::tls13_only) (`build` fails when both are set). QUIC needs TLS 1.3:
+    /// such a config serves TCP only.
+    pub fn tls12_only(mut self, yes: bool) -> Self {
         self.tls12_only = yes;
         self
+    }
+
+    /// The former name of [`tls12_only`](Self::tls12_only), kept for tests and interop tools.
+    #[doc(hidden)]
+    pub fn __tls12_only(self, yes: bool) -> Self {
+        self.tls12_only(yes)
     }
 
     /// Tests and interop tools: the cipher suites, by IANA code, in preference order.
@@ -1118,6 +1129,9 @@ impl ServerConfigBuilder {
             Some(ids) => suites_from_ids(ids)?,
             None => suites::ALL.to_vec(),
         };
+        if self.tls13_only && self.tls12_only {
+            return Err(Error::new("tls12_only and tls13_only together"));
+        }
         if self.tls13_only {
             suites.retain(|s| s.is_tls13());
         }
@@ -1510,11 +1524,21 @@ impl ClientConfigBuilder {
         self
     }
 
-    /// Tests and interop tools: TLS 1.2 only.
-    #[doc(hidden)]
-    pub fn __tls12_only(mut self, yes: bool) -> Self {
+    /// Accepts TLS 1.2 only (default: TLS 1.2 and 1.3; ADR-121), as Go's
+    /// `tls.Config.MaxVersion = tls.VersionTLS12`: for network cards that offload TLS 1.2
+    /// alone, or peers that must not negotiate 1.3. The TLS 1.3 suites are left out, and the
+    /// client offers 1.2 alone; a server that only speaks 1.3 fails the handshake. Exclusive with
+    /// [`tls13_only`](Self::tls13_only) (`build` fails when both are set). QUIC needs TLS 1.3:
+    /// such a config serves TCP only.
+    pub fn tls12_only(mut self, yes: bool) -> Self {
         self.tls12_only = yes;
         self
+    }
+
+    /// The former name of [`tls12_only`](Self::tls12_only), kept for tests and interop tools.
+    #[doc(hidden)]
+    pub fn __tls12_only(self, yes: bool) -> Self {
+        self.tls12_only(yes)
     }
 
     /// Tests and interop tools: the cipher suites, by IANA code, in preference order.
@@ -1559,6 +1583,9 @@ impl ClientConfigBuilder {
             Some(ids) => suites_from_ids(ids)?,
             None => suites::ALL.to_vec(),
         };
+        if self.tls13_only && self.tls12_only {
+            return Err(Error::new("tls12_only and tls13_only together"));
+        }
         if self.tls13_only {
             suites.retain(|s| s.is_tls13());
         }

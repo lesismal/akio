@@ -598,6 +598,7 @@ pub fn akio_core::Conn<H>::send_owned(&self, alloc::vec::Vec<u8>) -> akio_core::
 pub fn akio_core::Conn<H>::send_segments(&self, alloc::vec::Vec<u8>, usize) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::send_shared(&self, akio_buf::SharedBuf) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::set_relayed(&self, bool)
+pub fn akio_core::Conn<H>::shutdown_write_after_send(&self)
 pub fn akio_core::Conn<H>::with_transport<R>(&self, impl core::ops::function::FnOnce(&mut dyn akio_core::Transport) -> R) -> core::option::Option<R>
 impl<H> core::clone::Clone for akio_core::Conn<H>
 pub fn akio_core::Conn<H>::clone(&self) -> Self

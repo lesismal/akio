@@ -20,6 +20,8 @@ use crate::reactor::{Cmd, Loop, LoopShared, Roster};
 /// A group of epoll/kqueue I/O threads serving one listener.
 pub struct EpollGroup {
     addr: SocketAddr,
+    /// A Unix-domain listener (ADR-121): its connections have no addresses.
+    unix: bool,
     /// Listener fds in loop order when they form a `SO_REUSEPORT` group (Linux), as bound.
     fds: Vec<i32>,
     /// The active loops (dials, listener handover).
@@ -154,6 +156,42 @@ impl EpollGroup {
         )
     }
 
+    /// Serves a listening Unix-domain stream socket (ADR-121, `akio_sys::listen_unix`) as
+    /// [`bind_listener`](Self::bind_listener) serves an inherited one: `threads` loops share it.
+    /// Its connections are accepted without reading an address; their `peer_addr` and
+    /// `local_addr`, and the group's, are [`akio_core::UNIX_ADDR`].
+    pub fn bind_unix_listener(
+        listener: TcpListener,
+        acceptor: Arc<dyn DynAcceptor>,
+        threads: usize,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<EpollGroup> {
+        listener.set_nonblocking(true)?;
+        let mut listeners = Vec::with_capacity(threads.max(1));
+        for _ in 1..threads.max(1) {
+            listeners.push(Some(listener.try_clone()?));
+        }
+        let base = listener.try_clone()?;
+        listeners.insert(0, Some(listener));
+        let mut g = Self::assemble(
+            listeners,
+            akio_core::UNIX_ADDR,
+            Vec::new(),
+            Some(acceptor),
+            Listening::Shared(Some(base)),
+            cfg,
+            pool,
+        )?;
+        g.unix = true;
+        for s in &mut lock(&g.state).slots {
+            if let Some(lp) = s.pending.as_mut() {
+                lp.set_unix();
+            }
+        }
+        Ok(g)
+    }
+
     fn assemble(
         listeners: Vec<Option<TcpListener>>,
         addr: SocketAddr,
@@ -185,6 +223,7 @@ impl EpollGroup {
         roster.set(slots.iter().map(|s| s.shared.clone()).collect());
         Ok(EpollGroup {
             addr,
+            unix: false,
             fds,
             roster,
             state: Mutex::new(State {
@@ -315,6 +354,9 @@ impl EpollGroup {
                 )?;
                 if let Some(lp) = slot.pending.as_mut() {
                     lp.set_filter(&st.filter);
+                    if self.unix {
+                        lp.set_unix();
+                    }
                 }
                 Self::spawn(i, &mut slot, self.pin_of(i))?;
                 if existed {

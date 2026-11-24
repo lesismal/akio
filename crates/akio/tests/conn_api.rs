@@ -161,3 +161,59 @@ fn write_api_corners() {
     e.wait();
     let _ = std::fs::remove_file(path);
 }
+
+/// Half-closes after its answer: `w` gets 512 KiB then a FIN; what comes after is reported.
+struct Half(Report);
+
+impl Handler for Half {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if data == b"w" {
+            c.send_owned(vec![b'h'; 512 << 10]).unwrap();
+            c.shutdown_write_after_send();
+        } else {
+            let msg = format!("after {}", String::from_utf8_lossy(data));
+            let _ = self.0.lock().unwrap().send(msg);
+        }
+    }
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {
+        let _ = self.0.lock().unwrap().send("closed".into());
+    }
+}
+
+/// `shutdown_write_after_send` (ADR-122): the peer reads everything queued, then the end of
+/// the stream, and what it sends afterwards still arrives; the connection closes when it does.
+#[test]
+fn shutdown_write_after_send_keeps_reading() {
+    let (tx, rx) = mpsc::channel();
+    let report: Report = Arc::new(Mutex::new(tx));
+    let e = Engine::builder()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v
+        })
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<Half>| Half(report.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut s = connect(&e);
+    s.write_all(b"w").unwrap();
+    let mut got = Vec::new();
+    s.read_to_end(&mut got).unwrap();
+    assert_eq!(got.len(), 512 << 10, "everything queued, then the end");
+    assert!(got.iter().all(|&b| b == b'h'));
+    s.write_all(b"late").unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "after late"
+    );
+    drop(s);
+    assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "closed");
+    e.shutdown();
+    e.wait();
+}

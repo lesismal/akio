@@ -425,6 +425,10 @@ struct WriteState {
     file_bytes: u64,
     corked: bool,
     close_after_send: bool,
+    /// [`ConnInner::shutdown_write_after_send`]: asked (the send direction shuts down once the
+    /// queue is empty) and done.
+    shutdown_write: bool,
+    write_shut: bool,
     /// Called once the queue is empty again (see [`Conn::on_drain`]).
     drain: Option<Box<dyn FnOnce() + Send>>,
     /// Called when the peer goes ([`ConnInner::on_peer_gone`]), by their callers' keys. Empty
@@ -1539,9 +1543,25 @@ impl ConnInner {
     fn write_locked(&self, w: &mut WriteState) -> io::Result<bool> {
         let r = self.write_queue(w);
         if matches!(r, Ok(true)) {
+            if w.shutdown_write && !w.write_shut {
+                self.shut_write(w);
+            }
             self.stash_drain(w);
         }
         r
+    }
+
+    /// Shuts the send direction down now that everything queued is written (ADR-122).
+    #[cold]
+    fn shut_write(&self, w: &mut WriteState) {
+        #[cfg(target_os = "linux")]
+        if w.kernel_tx {
+            return; // the kernel still holds what the transport moved there
+        }
+        if let Sock::Tcp(s) = &self.sock {
+            w.write_shut = true;
+            let _ = s.shutdown(std::net::Shutdown::Write);
+        }
     }
 
     /// The queue drained: moves the drain waiter, if any, aside for
@@ -2080,6 +2100,27 @@ impl ConnInner {
         {
             self.link.close_conn(self.id, None);
         }
+    }
+
+    /// Shuts the connection's send direction down (`shutdown(SHUT_WR)`, a TCP FIN) once
+    /// everything queued is written, keeping it open for reading: the peer sees the end of the
+    /// stream and may still answer (ADR-122). A transport's closing message (TLS
+    /// `close_notify`) goes first. Later sends fail once the socket is shut. Stream sockets only;
+    /// nothing on datagram or virtual connections, nor on a connection whose sends kernel TLS
+    /// took over.
+    pub fn shutdown_write_after_send(&self) {
+        let mut w = self.lock();
+        if w.shutdown_write || w.close_after_send {
+            return;
+        }
+        w.shutdown_write = true;
+        if let Some(t) = w.transport.as_mut() {
+            let mut out = Vec::new();
+            t.shutdown(&mut out);
+            self.queue_raw(&mut w, out);
+        }
+        drop(w);
+        self.link.wake_conn(self.id);
     }
 
     pub fn close_after_send(&self) {
@@ -2826,6 +2867,12 @@ impl<H> Conn<H> {
     /// Closes once everything queued has been written; further sends fail with `Closed`.
     pub fn close_after_send(&self) {
         self.inner.close_after_send();
+    }
+
+    /// Shuts the send direction down (a TCP FIN) once everything queued has been written, and
+    /// keeps reading: see [`ConnInner::shutdown_write_after_send`] (ADR-122).
+    pub fn shutdown_write_after_send(&self) {
+        self.inner.shutdown_write_after_send();
     }
 
     /// Pauses (`true`) or resumes (`false`) reading from the peer.

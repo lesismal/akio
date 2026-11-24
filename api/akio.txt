@@ -391,6 +391,9 @@ pub fn akio::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
 pub fn akio::Listener::tcp_from_std(std::net::tcp::TcpListener) -> Self
 pub fn akio::Listener::threads(self, usize) -> Self
 pub fn akio::Listener::udp(core::net::socket_addr::SocketAddr) -> Self
+pub fn akio::Listener::unix(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn akio::Listener::unix_from_std(std::os::unix::net::listener::UnixListener) -> Self
+pub fn akio::Listener::unix_mode(self, u32) -> Self
 impl core::fmt::Debug for akio::Listener
 pub fn akio::Listener::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio::Listener

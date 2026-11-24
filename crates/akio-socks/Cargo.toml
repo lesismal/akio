@@ -27,6 +27,9 @@ fuzzing = ["akio-core/fuzzing"]
 akio-core = { workspace = true, features = ["fuzzing"] }
 # Test certificates for the TLS-to-the-proxy tests.
 akio-x509 = { workspace = true }
+# CONNECT on HTTP/3 streams (tests/connect_streams.rs).
+akio-h3 = { path = "../akio-h3" }
+akio-quic = { workspace = true }
 
 [lints]
 workspace = true

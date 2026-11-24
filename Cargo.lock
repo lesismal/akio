@@ -355,8 +355,10 @@ version = "1.0.0-rc.1"
 dependencies = [
  "akio",
  "akio-core",
+ "akio-h3",
  "akio-http",
  "akio-mux",
+ "akio-quic",
  "akio-ws",
  "akio-x509",
 ]

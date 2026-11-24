@@ -114,3 +114,5 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-118: A request's peer is the client a trusted PROXY header names](118-http-peer-from-proxy-header.md) (accepted 2026-11-24)
 - [ADR-119: A proxy's tunnel checked once connected, and its connect timeout](119-socks-connected-check-and-connect-timeout.md) (accepted 2026-11-24)
 - [ADR-120: Dialing a Unix-domain socket, and the HTTP client over one](120-unix-socket-dial.md) (accepted 2026-11-24)
+- [ADR-121: Unix-domain stream listeners, and a TLS server capped at TLS 1.2](121-unix-listeners-tls12-cap.md) (accepted 2026-11-25)
+- [ADR-122: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down](122-connect-on-h2-h3-streams-half-close.md) (accepted 2026-11-25)

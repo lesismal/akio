@@ -183,6 +183,18 @@ pub struct Listener {
     inherited: Option<std::net::TcpListener>,
     /// Run on every accepted connection before the acceptor (ADR-099).
     filter: Option<AcceptFilter>,
+    /// A Unix-domain stream listener (ADR-121).
+    unix: Option<UnixSpec>,
+    /// The socket file's mode ([`Listener::unix_mode`]).
+    unix_mode: Option<u32>,
+}
+
+/// Where a Unix-domain listener's socket comes from (ADR-121).
+enum UnixSpec {
+    /// Bound at this path when the listener is built.
+    Path(std::path::PathBuf),
+    /// Already bound and listening.
+    Std(std::os::unix::net::UnixListener),
 }
 
 impl std::fmt::Debug for Listener {
@@ -205,6 +217,8 @@ impl Listener {
             datagrams: None,
             inherited: None,
             filter: None,
+            unix: None,
+            unix_mode: None,
         }
     }
 
@@ -222,6 +236,50 @@ impl Listener {
             inherited: Some(listener),
             ..Listener::tcp(addr)
         }
+    }
+
+    /// A Unix-domain stream listener at `path` (ADR-121), served like a TCP listener: the same
+    /// acceptors (akio-http's `serve`, TLS, akio-mux), on epoll, kqueue and io_uring; its I/O
+    /// threads share the one socket and race to accept, as for
+    /// [`tcp_from_std`](Self::tcp_from_std). A connection has no IP address: its `peer_addr`
+    /// and `local_addr` are [`UNIX_ADDR`] (`0.0.0.0:0`), and so is the listener's entry in
+    /// [`Engine::local_addrs`]; an accept [`filter`](Self::filter) sees that address.
+    ///
+    /// The socket is bound when the engine is built (or by [`Engine::add_listener`]), with the
+    /// permission bits of [`unix_mode`](Self::unix_mode) set before it listens. A socket file
+    /// already at `path` that no one listens on (one a process left behind) is replaced; one
+    /// that is in use, or a file that is not a socket, fails with `AddrInUse`. The file stays
+    /// after the listener is removed or the engine shuts down (as with `tcp_from_std`, the
+    /// socket is the caller's to clean up). A path that is empty, has a NUL byte or is longer
+    /// than `sun_path` holds (107 bytes on Linux, 103 on macOS) fails with `InvalidInput`.
+    /// Not on the DPDK backend (`Unsupported`); [`Accel::Ebpf`] has no socket group to steer.
+    pub fn unix(path: impl Into<std::path::PathBuf>) -> Self {
+        Listener {
+            unix: Some(UnixSpec::Path(path.into())),
+            ..Listener::tcp(UNIX_ADDR)
+        }
+    }
+
+    /// A Unix-domain stream listener serving `listener`, a socket already bound and listening
+    /// (passed by a supervisor, or bound by the caller), as [`unix`](Self::unix) serves one it
+    /// binds. The socket is made non-blocking when the engine is built.
+    pub fn unix_from_std(listener: std::os::unix::net::UnixListener) -> Self {
+        Listener {
+            unix: Some(UnixSpec::Std(listener)),
+            ..Listener::tcp(UNIX_ADDR)
+        }
+    }
+
+    /// The permission bits of a [`unix`](Self::unix) listener's socket file (`0o600`: its
+    /// owner's processes only), set after the socket is bound and before it listens, so no
+    /// connection is accepted while it has the process umask's. Without it the file keeps what
+    /// the umask leaves. On any other listener (including
+    /// [`unix_from_std`](Self::unix_from_std), already listening) `build` and
+    /// [`Engine::add_listener`] fail with `InvalidInput`.
+    #[must_use]
+    pub fn unix_mode(mut self, mode: u32) -> Self {
+        self.unix_mode = Some(mode);
+        self
     }
 
     /// A UDP listener on `addr`. Every distinct peer address becomes a connection: the acceptor's
@@ -429,9 +487,27 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
         let g = bind_datagrams(l.addr, factory, &l.backend, l.threads, cfg, pool)?;
         return Ok((g, Kind::Datagrams));
     }
+    if l.unix_mode.is_some() && !matches!(l.unix, Some(UnixSpec::Path(_))) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unix_mode applies to a Unix-domain listener akio binds (Listener::unix)",
+        ));
+    }
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
+    if let Some(spec) = l.unix {
+        #[cfg(feature = "dpdk")]
+        if matches!(l.backend, Backend::Dpdk(_)) {
+            return Err(unsupported("a Unix-domain listener on the DPDK backend"));
+        }
+        let listener = match spec {
+            UnixSpec::Path(path) => listen_unix(&path, cfg.backlog, l.unix_mode)?,
+            UnixSpec::Std(u) => std::net::TcpListener::from(std::os::fd::OwnedFd::from(u)),
+        };
+        let g = bind_inherited(listener, true, acceptor, &l.backend, l.threads, cfg, pool)?;
+        return Ok((g, Kind::Tcp));
+    }
     #[cfg(feature = "dpdk")]
     if let Backend::Dpdk(d) = &l.backend {
         let g = akio_dpdk::DpdkGroup::bind(
@@ -463,7 +539,7 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
         return Err(unsupported("UDP on this platform"));
     }
     if let Some(listener) = l.inherited {
-        let g = bind_inherited(listener, acceptor, &l.backend, l.threads, cfg, pool)?;
+        let g = bind_inherited(listener, false, acceptor, &l.backend, l.threads, cfg, pool)?;
         return Ok((g, Kind::Tcp));
     }
     let epoll = |acceptor| -> io::Result<Box<dyn Group>> {
@@ -792,9 +868,40 @@ fn bind_datagrams(
     }
 }
 
-/// The group serving an inherited listener (see [`Listener::tcp_from_std`]).
+/// Binds a Unix-domain listener at `path` (ADR-121): a socket file no one listens on is
+/// replaced, one in use (or a file that is not a socket) is `AddrInUse`.
+fn listen_unix(
+    path: &std::path::Path,
+    backlog: i32,
+    mode: Option<u32>,
+) -> io::Result<std::net::TcpListener> {
+    match akio_sys::listen_unix(path, backlog, mode) {
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            use std::os::unix::fs::FileTypeExt;
+            let stale = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
+                && matches!(
+                    akio_sys::connect_unix_nonblocking(path),
+                    Err(c) if c.kind() == io::ErrorKind::ConnectionRefused
+                );
+            if !stale {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("{}: in use, or not a socket", path.display()),
+                ));
+            }
+            std::fs::remove_file(path)?;
+            akio_sys::listen_unix(path, backlog, mode)
+        }
+        r => r,
+    }
+}
+
+/// The group serving an inherited listener (see [`Listener::tcp_from_std`]), or a Unix-domain
+/// one (`unix`, ADR-121).
+#[allow(clippy::too_many_arguments)]
 fn bind_inherited(
     listener: std::net::TcpListener,
+    unix: bool,
     acceptor: Arc<dyn DynAcceptor>,
     backend: &Backend,
     threads: usize,
@@ -805,17 +912,20 @@ fn bind_inherited(
     if let Backend::IoUring(u) = backend {
         match akio_uring::probe() {
             Ok(()) => {
-                return Ok(Box::new(akio_uring::UringGroup::bind_listener(
-                    listener,
-                    acceptor,
-                    threads,
-                    cfg.clone(),
-                    pool.clone(),
-                    akio_uring::UringOptions {
-                        entries: u.entries,
-                        sqpoll: u.sqpoll,
-                    },
-                )?));
+                let opts = akio_uring::UringOptions {
+                    entries: u.entries,
+                    sqpoll: u.sqpoll,
+                };
+                let (cfg, pool) = (cfg.clone(), pool.clone());
+                return Ok(Box::new(if unix {
+                    akio_uring::UringGroup::bind_unix_listener(
+                        listener, acceptor, threads, cfg, pool, opts,
+                    )?
+                } else {
+                    akio_uring::UringGroup::bind_listener(
+                        listener, acceptor, threads, cfg, pool, opts,
+                    )?
+                }));
             }
             Err(why) if u.strict => {
                 return Err(unsupported(&format!("the io_uring backend ({why})")));
@@ -834,17 +944,16 @@ fn bind_inherited(
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        Ok(Box::new(akio_epoll::EpollGroup::bind_listener(
-            listener,
-            acceptor,
-            threads,
-            cfg.clone(),
-            pool.clone(),
-        )?))
+        let (cfg, pool) = (cfg.clone(), pool.clone());
+        Ok(Box::new(if unix {
+            akio_epoll::EpollGroup::bind_unix_listener(listener, acceptor, threads, cfg, pool)?
+        } else {
+            akio_epoll::EpollGroup::bind_listener(listener, acceptor, threads, cfg, pool)?
+        }))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (listener, acceptor, backend, threads, cfg, pool);
+        let _ = (listener, unix, acceptor, backend, threads, cfg, pool);
         Err(unsupported("the epoll/kqueue backend on this platform"))
     }
 }

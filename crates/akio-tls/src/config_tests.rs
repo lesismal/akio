@@ -262,3 +262,48 @@ fn system_roots_load() {
     assert_eq!(RootCerts::system().unwrap().len(), r.len());
     ClientConfig::builder().roots(r).build().unwrap();
 }
+
+/// A server capped at TLS 1.2 (ADR-122, akit A9): a client offering 1.3 as well gets 1.2, one
+/// offering only 1.3 fails; the cap and `tls13_only` together are refused.
+#[test]
+fn a_server_capped_at_tls12() {
+    let srv = pki("localhost");
+    let s = ServerConfig::builder(vec![srv.cert.clone()], srv.key.clone())
+        .tls12_only(true)
+        .build()
+        .unwrap();
+    let both = ClientConfig::builder()
+        .insecure_skip_verify()
+        .build()
+        .unwrap();
+    let (sc, cc) = handshake(&s, &both, "localhost").unwrap();
+    assert_eq!(sc.version_name(), Some("TLSv1_2"));
+    assert_eq!(cc.version_name(), Some("TLSv1_2"));
+    let only13 = ClientConfig::builder()
+        .insecure_skip_verify()
+        .tls13_only(true)
+        .build()
+        .unwrap();
+    assert!(handshake(&s, &only13, "localhost").is_err());
+    let capped = ClientConfig::builder()
+        .insecure_skip_verify()
+        .tls12_only(true)
+        .build()
+        .unwrap();
+    let (sc, _) = handshake(&s, &capped, "localhost").unwrap();
+    assert_eq!(sc.version_name(), Some("TLSv1_2"));
+    assert!(
+        ServerConfig::builder(vec![srv.cert.clone()], srv.key)
+            .tls12_only(true)
+            .tls13_only(true)
+            .build()
+            .is_err()
+    );
+    assert!(
+        ClientConfig::builder()
+            .tls12_only(true)
+            .tls13_only(true)
+            .build()
+            .is_err()
+    );
+}
