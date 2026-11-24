@@ -14,7 +14,7 @@ use akio::{Backend, Config, Engine, Listener, UringConfig, tls::Tls};
 use akio_http::{
     BodyEvent, Context, Headers, Router, Streaming,
     client::ClientRequest,
-    h2client::{H2Client, H2Options},
+    h2client::{H2Client, H2Options, NotH2},
     serve,
 };
 
@@ -516,6 +516,9 @@ fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
         .unwrap();
     let c =
         H2Client::dial_blocking(&e, addr, Some((ccfg, "localhost")), H2Options::default()).unwrap();
+    // Over TLS the dial completes on the server's SETTINGS: its stream limit is known (ADR-110).
+    assert_eq!(c.max_concurrent_streams(), 128);
+    assert_eq!(c.open_streams(), 0);
     let url = format!("https://localhost:{}", addr.port());
     let r = c
         .send(ClientRequest::get(&format!("{url}/hello")))
@@ -527,6 +530,34 @@ fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
         .wait()
         .unwrap();
     assert!(r.body == pattern(500_000));
+    stop(&e);
+}
+
+#[test]
+fn tls_dial_fails_with_not_h2_when_alpn_chooses_http1() {
+    let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = akio::tls::ServerConfig::builder(
+        vec![akio::tls::Certificate::from_der(cert.clone())],
+        akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .alpn(["http/1.1"])
+    .build()
+    .unwrap();
+    let e = start(Tls::server(scfg, serve(app())));
+    let addr = e.local_addrs()[0];
+    let mut roots = akio::tls::RootCerts::empty();
+    roots.add(&akio::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = akio::tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["h2", "http/1.1"])
+        .build()
+        .unwrap();
+    let err = H2Client::dial_blocking(&e, addr, Some((ccfg, "localhost")), H2Options::default())
+        .unwrap_err();
+    let not = NotH2::of(&err).unwrap_or_else(|| panic!("{err:?}"));
+    assert_eq!(not.alpn.as_deref(), Some(&b"http/1.1"[..]));
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     stop(&e);
 }
 

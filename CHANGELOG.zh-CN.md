@@ -10,6 +10,27 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN（akio-http）
+
+ADR-110，akit 的需求（A51、A52、A53）：
+
+- `H2Upload::stream()` 返回 `H2Stream`（`Clone`）：`cancel()` 重置流（`CANCEL`），`on_event` 以
+  `ClientError::Cancelled` 失败一次（另有 `H2Upload::cancel`）；`hold_reads(bool)` 暂停期间不归还流的接收窗口，恢复时
+  归还欠账；`id()`。
+- `H2Client::open` 启用 `ClientRequest::timeout`：超时后重置流，`on_event` 收到 `ClientError::Timeout`。
+- `H2Upload::finish_with_trailers(Headers)`；`H2Upload::try_write`（`Err(Closed)` / `Err(Overloaded)`）、
+  `queued_bytes` 和 `on_drain`；写入受新的 `H2Options::max_queued_bytes`（64 MiB）限制，并成批投递到 I/O 线程。
+- `H2Client::max_concurrent_streams`、`open_streams` 和 `waiting_streams`：客户端遵守服务端的
+  `SETTINGS_MAX_CONCURRENT_STREAMS`；超过上限的请求在新的 `H2Options::max_pending_streams`（1024）以内等待，否则以新
+  的 `ClientError::Busy` 失败。
+- 新的 `ClientError::Refused`：高于 `GOAWAY` 最后流 id 的流（流式请求的 `on_event` 现在会得到通知）、`GOAWAY` 之后发起
+  或当时仍在等待的请求、被 `REFUSED_STREAM` 重置的流（原为 `Protocol("stream refused")` 和 `Closed`）。收到或发出
+  `GOAWAY` 后 `H2Client::is_open` 为 `false`。
+- `H2Options::happy_eyeballs`：`H2Client::connect` 的竞速与连接超时。
+- TLS 上 `dial` 和 `connect` 在服务端第一帧到达后才调用 `ready`；ALPN 未选择 `h2` 时以携带新的 `NotH2 { alpn }`
+  （`NotH2::of`）的 `io::Error` 失败。
+- 变更：响应先于请求体结束的流被重置（`CANCEL`），不再半开；流结束后 `H2Upload::write` 和 `finish` 返回 `false`。
+
 ### 新增：HTTP/1 客户端的响应头超时、空闲超时与取消，服务端请求得知客户端离开，运行时修改写超时（akio-http、akio-h3、akio-core、akio-epoll、akio-uring）
 
 ADR-108，纯新增，应 akit 的需求（A36、A37、A38）：

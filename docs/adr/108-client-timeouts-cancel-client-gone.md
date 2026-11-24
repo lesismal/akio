@@ -119,7 +119,9 @@ Rejected:
 - **`BodyEvent::Aborted`** for a cut HTTP/1 body: `BodyEvent` is not `#[non_exhaustive]`, so a
   variant would break exhaustive matches. The sink is dropped instead, as on HTTP/2.
 - **`H2Client` in this change.** akit's I18 (h2 upstreams) is later; the same request fields apply
-  to it then. `H2Client` ignores them, as it ignores `ClientRequest::streamed`.
+  to it then. `H2Client` ignores them, as it ignores `ClientRequest::streamed`. (Its streamed
+  requests are reset and timed since by ADR-110; the header and idle timeouts and `CancelToken`
+  are still not applied to it.)
 
 ## Consequences
 

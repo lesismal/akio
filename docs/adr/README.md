@@ -104,3 +104,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-107: Certificate signing requests in akio-x509](107-x509-certificate-requests.md) (accepted 2026-11-23)
 - [ADR-108: The HTTP/1 client's response header and idle timeouts and its cancellation, a server request that hears its client go, and a write timeout changed at run time](108-client-timeouts-cancel-client-gone.md) (accepted 2026-11-24)
 - [ADR-109: bcrypt, the client's certificate on each request, and requests suspended and resumed](109-bcrypt-client-certificates-suspend.md) (accepted 2026-11-24)
+- [ADR-110: The HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN](110-h2-client-streams-backpressure-limits.md) (accepted 2026-11-24)

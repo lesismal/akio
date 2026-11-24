@@ -10,6 +10,32 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN (akio-http)
+
+ADR-110, requested by akit (A51, A52, A53):
+
+- `H2Upload::stream()` gives an `H2Stream` (`Clone`): `cancel()` resets the stream (`CANCEL`) and
+  fails `on_event` once with `ClientError::Cancelled` (also `H2Upload::cancel`); `hold_reads(bool)`
+  stops giving the stream's receive window back while held, and gives back what is owed on resume;
+  `id()`.
+- `H2Client::open` applies `ClientRequest::timeout`: the stream is reset and `on_event` gets
+  `ClientError::Timeout`.
+- `H2Upload::finish_with_trailers(Headers)`; `H2Upload::try_write` (`Err(Closed)` /
+  `Err(Overloaded)`), `queued_bytes` and `on_drain`; writes are bounded by the new
+  `H2Options::max_queued_bytes` (64 MiB) and batched per post to the I/O thread.
+- `H2Client::max_concurrent_streams`, `open_streams` and `waiting_streams`: the client heeds the
+  server's `SETTINGS_MAX_CONCURRENT_STREAMS`; a request past it waits, within the new
+  `H2Options::max_pending_streams` (1024), else fails with the new `ClientError::Busy`.
+- The new `ClientError::Refused`: the streams above a `GOAWAY`'s last stream id (a streamed
+  request's `on_event` is now told), requests made after a `GOAWAY` or waiting when it came, and
+  streams reset with `REFUSED_STREAM` (were `Protocol("stream refused")` and `Closed`).
+  `H2Client::is_open` is `false` once a `GOAWAY` came or was sent.
+- `H2Options::happy_eyeballs`: `H2Client::connect`'s race and connect timeout.
+- Over TLS, `dial` and `connect` call `ready` once the server's first frame came, and fail with an
+  `io::Error` carrying the new `NotH2 { alpn }` (`NotH2::of`) when ALPN did not choose `h2`.
+- Changed: a stream whose response ends before its request body is reset (`CANCEL`) rather than
+  left half-open; `H2Upload::write` and `finish` return `false` once the stream is over.
+
 ### Added: the HTTP/1 client's response header and idle timeouts and its cancellation, a server request that hears its client go, a write timeout changed at run time (akio-http, akio-h3, akio-core, akio-epoll, akio-uring)
 
 ADR-108, additive, requested by akit (A36, A37, A38):

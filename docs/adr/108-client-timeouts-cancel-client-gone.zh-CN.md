@@ -90,7 +90,8 @@ A36、A37 和 A38 列出了 akio 为此缺少的东西：
 - **为截断的 HTTP/1 消息体增加 `BodyEvent::Aborted`**：`BodyEvent` 不是 `#[non_exhaustive]`，新增变体会破坏穷尽
   匹配。改为丢弃 sink，与 HTTP/2 相同。
 - **本次变更包含 `H2Client`。** akit 的 I18（h2 上游）在后面；届时同样的请求字段适用于它。`H2Client` 忽略它们，正如它
-  忽略 `ClientRequest::streamed`。
+  忽略 `ClientRequest::streamed`。（其流式请求此后已由 ADR-110 支持重置与超时；响应头、空闲超时和 `CancelToken`
+  仍未用于它。）
 
 ## 影响
 

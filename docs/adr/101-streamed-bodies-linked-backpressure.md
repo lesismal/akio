@@ -113,7 +113,8 @@ Rejected:
 - **Holding the rest of a read on HTTP/1.1** (keeping already-read bytes until resume): a resume
   with nothing new to read would never deliver them. One read is bounded by the read buffer.
 - **`H2Client` streaming in this change.** akit's I18 (h2 upstreams) is later; the same handler
-  trait can be added to `H2Client` then.
+  trait can be added to `H2Client` then. (Its streamed requests got per-stream backpressure since,
+  with their event callback rather than the trait: ADR-110.)
 - **An idle timeout between response reads** (fit's `response_idle_timeout`, A20's last point).
   It belongs with akit's I17, and needs the read-gap clock to stop while the handler holds reads.
   (Done since by ADR-108.)

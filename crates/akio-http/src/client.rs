@@ -357,8 +357,17 @@ pub enum ClientError {
     HeaderTimeout,
     /// The response's body went silent for [`ClientRequest::response_idle_timeout`].
     IdleTimeout,
-    /// The request was cancelled ([`CancelToken::cancel`]).
+    /// The request was cancelled ([`CancelToken::cancel`], or an HTTP/2 stream's
+    /// [`H2Stream::cancel`](crate::h2client::H2Stream::cancel)).
     Cancelled,
+    /// The server did not process the request, so it may be sent again, on another connection
+    /// (HTTP/2: a stream above a `GOAWAY`'s last stream id, a stream reset with
+    /// `REFUSED_STREAM`, or a request made after a `GOAWAY`; ADR-110).
+    Refused,
+    /// The HTTP/2 connection had no stream free under the server's
+    /// `SETTINGS_MAX_CONCURRENT_STREAMS`, and its queue of requests waiting for one was full
+    /// ([`H2Options::max_pending_streams`](crate::h2client::H2Options::max_pending_streams)).
+    Busy,
 }
 
 impl ClientError {
@@ -386,6 +395,12 @@ impl std::fmt::Display for ClientError {
             ClientError::HeaderTimeout => f.write_str("timed out waiting for the response head"),
             ClientError::IdleTimeout => f.write_str("response body idle too long"),
             ClientError::Cancelled => f.write_str("request cancelled"),
+            ClientError::Refused => {
+                f.write_str("request refused by the server before processing (may be retried)")
+            }
+            ClientError::Busy => {
+                f.write_str("no stream free on the connection, and its queue full")
+            }
         }
     }
 }
