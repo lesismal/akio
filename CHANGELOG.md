@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the HTTP/1 client hands a connection over on `101 Switching Protocols`; a streamed `2xx` to an HTTP/2 extended CONNECT is a tunnel (akio-http)
+
+ADR-113, requested by akit (A93, A94):
+
+- `ClientRequest::upgrade(protocol)` (`Connection: Upgrade`, `Upgrade: <protocol>`) and
+  `ResponseHandler::on_upgrade(&ResponseHead, &RawConn) -> Option<Box<dyn RawHandler>>`: a `101`
+  to a request that asked to upgrade settles it (its timeouts and token no longer apply) and hands
+  its connection to the returned `RawHandler` as a byte stream, with the bytes that followed the
+  head; the default (`None`) delivers the `101` as a bodyless response and closes the connection.
+- Changed: a `101` no longer returns its connection to the keep-alive pool; a `101` to a request
+  that did not ask to upgrade fails it with `ClientError::Protocol`.
+- HTTP/2: a streamed `2xx` answer to an extended CONNECT (`Context::stream_response`,
+  `Detached::stream_response`) makes the stream a tunnel, as `upgrade_websocket` does: its halves
+  close separately (our END_STREAM no longer resets a peer still sending), and a peer that never
+  ends its half is reset (`CANCEL`) 5 s after ours ended. HTTP/3 already behaved so (tested).
+
 ### Added: the HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN (akio-http)
 
 ADR-110, requested by akit (A51, A52, A53):

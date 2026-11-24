@@ -46,6 +46,8 @@ use akio::{
     tls::{ClientConfig as TlsClientConfig, RootCerts, Tls},
 };
 use akio_core::ConnInner;
+
+use crate::raw::{RawConn, RawHandler};
 pub use akio_ws::proxy::{Proxy, ProxyRefused};
 use akio_ws::{
     http1,
@@ -194,6 +196,18 @@ impl ClientRequest {
     #[must_use]
     pub fn cancel_with(mut self, token: &CancelToken) -> ClientRequest {
         self.cancel = Some(token.clone());
+        self
+    }
+
+    /// Asks the server to switch to `protocol` (RFC 9110 section 7.8; `websocket`, say): adds
+    /// `Connection: Upgrade` and `Upgrade: <protocol>`. A request that carries these fields
+    /// itself asks the same. Its `101 Switching Protocols` hands the connection over to the
+    /// handler of [`Client::request_with`] ([`ResponseHandler::on_upgrade`], ADR-113); any
+    /// other answer is an ordinary response. HTTP/1 client only.
+    #[must_use]
+    pub fn upgrade(mut self, protocol: &str) -> ClientRequest {
+        self.headers.set("Connection", "Upgrade");
+        self.headers.set("Upgrade", protocol);
         self
     }
 }
@@ -672,6 +686,19 @@ pub trait ResponseHandler: Send + 'static {
     fn on_end(&mut self, trailers: &Headers);
     /// The request failed (after the head: the body did not complete).
     fn on_error(&mut self, e: ClientError);
+    /// A `101 Switching Protocols` answer to a request that asked to upgrade
+    /// ([`ClientRequest::upgrade`], ADR-113): the connection is no longer HTTP's. Returning a
+    /// handler hands it over as a plain byte stream: its [`on_open`](RawHandler::on_open) runs
+    /// at once, then [`on_data`](RawHandler::on_data) with any bytes the server sent after the
+    /// head, then as they arrive, and [`on_close`](RawHandler::on_close) when it closes. The
+    /// request is over: neither [`on_head`](Self::on_head) nor [`on_end`](Self::on_end) nor
+    /// [`on_error`](Self::on_error) follows, and its timeouts and cancel token no longer apply.
+    ///
+    /// The default returns `None`: the answer is then delivered as an ordinary response
+    /// without a body (`on_head`, `on_end`) and the connection closed.
+    fn on_upgrade(&mut self, _head: &ResponseHead, _conn: &RawConn) -> Option<Box<dyn RawHandler>> {
+        None
+    }
 }
 
 /// Where a response goes.
@@ -1164,6 +1191,9 @@ struct Pending {
     /// The response header and idle timeouts in force.
     header_timeout: Option<Duration>,
     idle_timeout: Option<Duration>,
+    /// The request asks to switch protocols (`Connection: upgrade`): a `101` hands its
+    /// connection over ([`ResponseHandler::on_upgrade`]).
+    upgrade: bool,
 }
 
 #[derive(Clone, Default)]
@@ -1364,7 +1394,9 @@ impl Client {
     /// ([`ClientRequest::timeout`], [`Client::with_timeout`]) runs until the body is complete;
     /// a retry on a fresh connection is made, as for [`request`](Self::request), only for a
     /// `GET`, `HEAD` or `OPTIONS` without a streamed body and before any byte of the response.
-    /// The keep-alive pool takes the connection back after [`ResponseHandler::on_end`].
+    /// The keep-alive pool takes the connection back after [`ResponseHandler::on_end`]. A
+    /// request that asks to upgrade ([`ClientRequest::upgrade`]) may have its connection handed
+    /// over on `101` ([`ResponseHandler::on_upgrade`], ADR-113).
     pub fn request_with(&self, req: ClientRequest, handler: impl ResponseHandler) {
         let ex = self.exchange(&req, Box::new(|_| {}));
         let mut h: Box<dyn ResponseHandler> = Box::new(handler);
@@ -1537,6 +1569,7 @@ impl Client {
         let mut key = pu.key;
         key.proxy = proxy.as_ref().map(|p| (p.host.clone(), p.port));
         let head_only = req.method == Method::Head;
+        let upgrade = req.headers.has_token("connection", "upgrade");
         let retryable = streamed.is_none()
             && matches!(req.method, Method::Get | Method::Head | Method::Options);
         if let Some(h) = handler {
@@ -1553,6 +1586,7 @@ impl Client {
                 streamed,
                 header_timeout,
                 idle_timeout,
+                upgrade,
             });
         }
         // The request is kept only when a redirect may need it again.
@@ -1606,6 +1640,7 @@ impl Client {
             streamed: None,
             header_timeout,
             idle_timeout,
+            upgrade,
         });
     }
 
@@ -1924,6 +1959,8 @@ enum RState {
     },
     Chunked(Box<ChunkDecoder>),
     UntilClose,
+    /// Switched protocols (`101`): the connection's bytes go to the handler it was handed to.
+    Tunnel(Box<(RawConn, Box<dyn RawHandler>)>),
 }
 
 struct Active {
@@ -1939,6 +1976,8 @@ struct Active {
     req_body: Option<Arc<ReqBody>>,
     /// The reads of a response delivered as it arrives.
     resp_body: Option<Arc<RespBody>>,
+    /// The request asks to switch protocols.
+    upgrade: bool,
 }
 
 /// The per-connection client handler.
@@ -2035,6 +2074,7 @@ impl ClientConn {
             streamed,
             header_timeout,
             idle_timeout,
+            upgrade,
         } = p;
         {
             let mut slot = ex.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -2061,6 +2101,7 @@ impl ClientConn {
             streamed: None,
             header_timeout,
             idle_timeout,
+            upgrade,
         });
         self.ex = Some(ex);
         self.state = RState::Head;
@@ -2108,6 +2149,7 @@ impl ClientConn {
             conn_close: false,
             req_body: req_body.clone(),
             resp_body: None,
+            upgrade,
         });
         if c.send_owned(bytes).is_err() {
             return self.fail(c, ClientError::Closed);
@@ -2226,10 +2268,69 @@ impl ClientConn {
         }
     }
 
+    /// A `101 Switching Protocols` came: the request is over, and its connection is handed
+    /// over to the handler's [`RawHandler`] (ADR-113), or closed. A `101` to a request that did
+    /// not ask to upgrade fails it.
+    fn switched(&mut self, c: &Conn<Self>, head: ResponseHead) {
+        if !self.active.as_ref().is_some_and(|a| a.upgrade) {
+            return self.fail(
+                c,
+                ClientError::Protocol("101 to a request that asked for no upgrade"),
+            );
+        }
+        self.state = RState::Idle;
+        let Some(a) = self.active.take() else { return };
+        // Its timeouts and cancel no longer apply; the connection never goes back to the pool.
+        self.settle(&a);
+        if let Some(t) = &self.timer {
+            t.watch.release();
+        }
+        self.timer = None;
+        self.ex = None;
+        match a.deliver {
+            Deliver::Stream(mut h) => {
+                let raw = RawConn(c.inner().clone());
+                match h.on_upgrade(&head, &raw) {
+                    Some(mut tunnel) => {
+                        tunnel.on_open(&raw);
+                        let rest = std::mem::take(&mut self.buf);
+                        if !rest.is_empty() && c.is_open() {
+                            tunnel.on_data(&raw, &rest);
+                        }
+                        self.state = RState::Tunnel(Box::new((raw, tunnel)));
+                    }
+                    None => {
+                        c.close();
+                        let shared = Arc::new(RespBody {
+                            conn: c.inner().clone(),
+                            live: Mutex::new(false),
+                            idle: None,
+                        });
+                        h.on_head(head, ResponseBody { shared });
+                        h.on_end(&Headers::new());
+                    }
+                }
+            }
+            Deliver::Whole(cb) => {
+                c.close();
+                cb(Ok(ClientResponse {
+                    status: head.status,
+                    reason: head.reason,
+                    headers: head.headers,
+                    body: Vec::new(),
+                    trailers: Headers::new(),
+                    pushed: Vec::new(),
+                    url: String::new(),
+                }));
+            }
+        }
+    }
+
     /// Parses what is buffered. Returns once more bytes are needed.
     fn advance(&mut self, c: &Conn<Self>) {
         loop {
             match &mut self.state {
+                RState::Tunnel(_) => return,
                 RState::Idle => {
                     if !self.buf.is_empty() {
                         // Bytes nobody asked for: the connection is not trustworthy.
@@ -2277,8 +2378,17 @@ impl ClientConn {
                         self.head = http1::Resume::default();
                         continue;
                     }
+                    if status == 101 {
+                        let head = ResponseHead {
+                            status,
+                            reason,
+                            headers,
+                            version,
+                        };
+                        return self.switched(c, head);
+                    }
                     let head_only = self.active.as_ref().is_some_and(|a| a.head_only);
-                    let no_body = head_only || status == 204 || status == 304 || status == 101;
+                    let no_body = head_only || status == 204 || status == 304;
                     let te_chunked = headers.has_token("transfer-encoding", "chunked");
                     let cl = headers.get("content-length").map(str::parse::<usize>);
                     // A handler takes the body as it arrives and decides about its size.
@@ -2461,6 +2571,7 @@ pub(crate) fn fuzz_responses(pieces: &[&[u8]], head_only: bool) {
             conn_close: false,
             req_body: None,
             resp_body: None,
+            upgrade: false,
         });
     };
     for p in pieces {
@@ -2474,6 +2585,10 @@ pub(crate) fn fuzz_responses(pieces: &[&[u8]], head_only: bool) {
 
 impl Handler for ClientConn {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if let RState::Tunnel(t) = &mut self.state {
+            let (raw, h) = &mut **t;
+            return h.on_data(raw, data);
+        }
         self.received_any = true;
         self.buf.extend_from_slice(data);
         self.advance(c);
@@ -2494,7 +2609,8 @@ impl Handler for ClientConn {
         if let Some(t) = &self.timer {
             t.watch.release();
         }
-        match self.state {
+        match &mut self.state {
+            RState::Tunnel(t) => t.1.on_close(),
             RState::UntilClose => self.complete(c, false, Headers::new()),
             RState::Idle => {
                 // Closed while idle (by the server, or expired): leave the pool.

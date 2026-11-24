@@ -10,6 +10,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/1 客户端在 `101 Switching Protocols` 时交出连接；对 HTTP/2 扩展 CONNECT 的流式 `2xx` 应答即隧道（akio-http）
+
+ADR-113，akit 的需求（A93、A94）：
+
+- `ClientRequest::upgrade(protocol)`（`Connection: Upgrade`、`Upgrade: <protocol>`）与
+  `ResponseHandler::on_upgrade(&ResponseHead, &RawConn) -> Option<Box<dyn RawHandler>>`：对请求升级的请求返回的
+  `101` 结束该请求（其超时与令牌不再生效），把连接连同头部之后的字节作为字节流交给返回的 `RawHandler`；默认
+  （`None`）把 `101` 作为无响应体的响应交付并关闭连接。
+- 变更：`101` 的连接不再回到 keep-alive 池；对未请求升级的请求返回的 `101` 以 `ClientError::Protocol` 失败。
+- HTTP/2：对扩展 CONNECT 的流式 `2xx` 应答（`Context::stream_response`、`Detached::stream_response`）使该流成为
+  隧道，与 `upgrade_websocket` 相同：两半各自关闭（我方 END_STREAM 不再重置仍在发送的对端），对端一直不结束其一半
+  时在我方结束 5 秒后以 `CANCEL` 重置。HTTP/3 本就如此（已补测试）。
+
 ### 新增：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN（akio-http）
 
 ADR-110，akit 的需求（A51、A52、A53）：
