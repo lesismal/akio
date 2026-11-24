@@ -46,18 +46,6 @@ fn ring_sends() -> bool {
     *ON.get_or_init(|| std::env::var("AKIO_URING_SENDS").map_or(true, |v| v != "write"))
 }
 
-/// Temporary A/B knob: submit the unsent ring sends once this many have gathered (0: only
-/// before the loop waits).
-fn send_batch() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("AKIO_URING_SEND_BATCH")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
-    })
-}
-
 /// The `msghdr` and iovecs of a connection's ring send of several buffers. Boxed so that the
 /// address in the entry stays valid while the connection moves in the slot map; the kernel
 /// reads it when the entry is submitted.
@@ -886,8 +874,6 @@ pub(crate) struct Loop {
     /// before the loop enters the kernel (`submit_sends`), each described again then, so that
     /// everything the batch queued for a connection leaves in one send.
     unsent: Vec<u64>,
-    /// `submit_sends` is running (no nested submission from a refresh it makes).
-    submitting: bool,
 }
 
 /// A datagram listener socket of a loop.
@@ -1031,7 +1017,6 @@ impl Loop {
             rs: RingSend::default(),
             orphans: akio_core::IdMap::default(),
             unsent: Vec::new(),
-            submitting: false,
         })
     }
 
@@ -1855,12 +1840,6 @@ impl Loop {
             self.unsent.push(id);
         }
         // (Cannot be missing: a flush that describes a send leaves the connection open.)
-        let batch = send_batch();
-        if batch > 0 && self.unsent.len() >= batch && !self.submitting {
-            // A long batch: the answers so far go out now rather than after the whole batch.
-            self.submit_sends();
-            let _ = self.ring.submit();
-        }
     }
 
     /// Right before the loop enters the kernel: submits the ring sends taken by `submit_send`,
@@ -1869,7 +1848,6 @@ impl Loop {
         if self.unsent.is_empty() {
             return;
         }
-        self.submitting = true;
         let mut ids = std::mem::take(&mut self.unsent);
         for &id in &ids {
             let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
@@ -1898,7 +1876,6 @@ impl Loop {
         if self.unsent.is_empty() {
             self.unsent = ids; // keep the allocation
         }
-        self.submitting = false;
     }
 
     /// A ring send of connection `id` completed with `res` (bytes sent, or `-errno`).
