@@ -13,7 +13,7 @@ use std::{
 
 use akio_core::{
     Config, ConnInfo, ConnInner, DatagramPort, DynAcceptor, DynHandler, Error, LoopLink, LoopMeta,
-    LoopStats, Pool, Task,
+    LoopStats, Pool, RING_IOV, RingSend, RingSent, Task,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use akio_sys::EventFd;
@@ -36,6 +36,50 @@ const OP_RESET: u64 = 6;
 const OP_RECV1: u64 = 7;
 /// A one-shot poll on a datagram listener socket (ADR-065); the id is its index in `dgrams`.
 const OP_DGRAM: u64 = 8;
+/// A connection's ring send (`IORING_OP_SEND` / `SENDMSG`, ADR-106).
+const OP_SEND: u64 = 9;
+
+/// Whether connections send their output through the ring (ADR-106, the default) or with
+/// `write`/`writev` from the loop as before (`AKIO_URING_SENDS=write`).
+fn ring_sends() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("AKIO_URING_SENDS").map_or(true, |v| v != "write"))
+}
+
+/// The `msghdr` and iovecs of a connection's ring send of several buffers. Boxed so that the
+/// address in the entry stays valid while the connection moves in the slot map; the kernel
+/// reads it when the entry is submitted.
+struct SendMsg {
+    hdr: ffi::msghdr,
+    iov: [ffi::iovec; RING_IOV],
+}
+
+impl SendMsg {
+    fn new() -> Box<SendMsg> {
+        Box::new(SendMsg {
+            hdr: ffi::msghdr {
+                msg_name: std::ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: std::ptr::null_mut(),
+                msg_iovlen: 0,
+                msg_control: std::ptr::null_mut(),
+                msg_controllen: 0,
+                msg_flags: 0,
+            },
+            iov: [ffi::iovec {
+                iov_base: std::ptr::null_mut(),
+                iov_len: 0,
+            }; RING_IOV],
+        })
+    }
+}
+
+/// A ring send still in flight when its connection closed: what it reads stays alive until its
+/// completion (`Loop::orphans`).
+struct Orphan {
+    inner: Arc<ConnInner>,
+    _msg: Option<Box<SendMsg>>,
+}
 
 /// The recv operation kind for buffer group `bgid`.
 fn recv_op(bgid: u16) -> u64 {
@@ -702,6 +746,38 @@ struct LoopConn {
     rx_offload: bool,
     /// Attempts at that so far (a stream that never pauses on a record boundary gives up).
     rx_offload_tries: u8,
+    /// A ring send is in flight (ADR-106): its completion flushes what was queued meanwhile.
+    send_armed: bool,
+    /// That send is described but still waits in `Loop::unsent` (not submitted: the kernel has
+    /// not seen it).
+    send_unsent: bool,
+    /// Header of multi-buffer ring sends, allocated on first use.
+    send_msg: Option<Box<SendMsg>>,
+}
+
+/// Turns the send described in `rs` into an entry for connection `id` and marks it in flight;
+/// `None` (and nothing changed) when `rs` is empty.
+fn prep_send(lc: &mut LoopConn, id: u64, rs: &mut RingSend) -> Option<Sqe> {
+    let parts = rs.parts();
+    if parts.is_empty() {
+        return None;
+    }
+    let fd = lc.inner.stream().as_raw_fd();
+    let e = if let [(addr, len)] = *parts {
+        Sqe::send(fd, addr as *const u8, len as u32)
+    } else {
+        let m = lc.send_msg.get_or_insert_with(SendMsg::new);
+        for (slot, &(addr, len)) in m.iov.iter_mut().zip(parts) {
+            slot.iov_base = addr as *mut std::ffi::c_void;
+            slot.iov_len = len;
+        }
+        m.hdr.msg_iov = m.iov.as_mut_ptr();
+        m.hdr.msg_iovlen = parts.len();
+        Sqe::sendmsg(fd, &raw const m.hdr)
+    };
+    rs.clear();
+    lc.send_armed = true;
+    Some(e.user_data(ud(id, OP_SEND)))
 }
 
 /// Attempts at moving a connection's receive direction into the kernel before giving up.
@@ -788,6 +864,16 @@ pub(crate) struct Loop {
     /// Datagram listener sockets (ADR-065): readiness by a one-shot `POLL_ADD` each, I/O by the
     /// port's `recvmmsg` / `sendmmsg` (the batching the epoll loops use too).
     dgrams: Vec<Dgram>,
+    /// Connections send through the ring (ADR-106, `ring_sends`).
+    ring_sends: bool,
+    /// The send the last flush described, turned into an entry right after it (`submit_send`).
+    rs: RingSend,
+    /// Ring sends of closed connections, by connection id, until their completions.
+    orphans: akio_core::IdMap<Orphan>,
+    /// Connections whose described ring send is not submitted yet: submitted together right
+    /// before the loop enters the kernel (`submit_sends`), each described again then, so that
+    /// everything the batch queued for a connection leaves in one send.
+    unsent: Vec<u64>,
 }
 
 /// A datagram listener socket of a loop.
@@ -799,7 +885,10 @@ struct Dgram {
 
 // SAFETY: a `Loop` is built on one thread and then moved to, and used only by, its I/O thread.
 // The raw pointers inside submitted entries point into `bufs`/`old_bufs`/`wake_buf`, heap
-// allocations that move with it without changing address and are freed only after `ring`.
+// allocations that move with it without changing address and are freed only after `ring`, or
+// into a connection's queued output and boxed `SendMsg` (ring sends), kept alive by the
+// connection (or `orphans`) until the send's completion. `SendMsg` holds raw pointers, which
+// only this thread uses.
 unsafe impl Send for Loop {}
 
 fn panic_error() -> Error {
@@ -831,6 +920,7 @@ fn feed(
     cfg: &Config,
     st: &LoopStats,
     clock: &mut Instant,
+    rs: &mut RingSend,
 ) -> Done {
     lc.inner.set_corked(true);
     let r = catch_unwind(AssertUnwindSafe(|| lc.handler.on_data(data)));
@@ -842,7 +932,7 @@ fn feed(
     if r.is_err() {
         return Done::Panic;
     }
-    match lc.inner.uncork_flush() {
+    match lc.inner.uncork_flush_ring(rs) {
         Ok(q) => {
             lc.q_hint = Some(q);
             Done::No
@@ -923,6 +1013,10 @@ impl Loop {
             inflight: 0,
             spare_cmds: Vec::new(),
             dgrams: Vec::new(),
+            ring_sends: ring_sends(),
+            rs: RingSend::default(),
+            orphans: akio_core::IdMap::default(),
+            unsent: Vec::new(),
         })
     }
 
@@ -984,7 +1078,9 @@ impl Loop {
         loop {
             // SAFETY: every entry pushed refers to memory that outlives its completion: the
             // provided-buffer area and the wake buffer are owned by `self` and never moved or
-            // freed while the ring lives; the other entries carry only integers (fds, ids).
+            // freed while the ring lives; a ring send's bytes stay in its connection's queue
+            // (`ring_inflight`) and its boxed `msghdr` in the `LoopConn`, both kept (`orphans`)
+            // until its completion; the other entries carry only integers (fds, ids).
             if unsafe { self.ring.push(&e) }.is_ok() {
                 self.inflight += 1;
                 return;
@@ -1050,6 +1146,7 @@ impl Loop {
             return;
         }
         loop {
+            self.submit_sends();
             self.arm_loop_ops();
             if !self.graveyard.is_empty() {
                 // Submit before blocking: the kernel then holds its own references to the
@@ -1166,6 +1263,18 @@ impl Loop {
                 g.leak();
             }
             self.wake_buf.leaked = true;
+            // Ring sends the kernel may still read: keep their bytes forever.
+            for (_, o) in self.orphans.drain() {
+                std::mem::forget(o);
+            }
+            for slot in self.slots.values_mut() {
+                if let Slot::Conn(lc) = slot {
+                    if lc.send_armed && !lc.send_unsent {
+                        std::mem::forget(lc.inner.clone());
+                        std::mem::forget(lc.send_msg.take());
+                    }
+                }
+            }
         }
     }
 
@@ -1248,6 +1357,7 @@ impl Loop {
             OP_POLL => self.on_poll(id),
             OP_RESET => self.on_reset_watch(id),
             OP_DGRAM => self.on_dgram(id as usize, res),
+            OP_SEND => self.on_send(id, res),
             _ => {} // buffer provisioning, cancels
         }
     }
@@ -1399,7 +1509,7 @@ impl Loop {
                             // in order, for when they resume (`replay`).
                             lc.held_in.extend_from_slice(data);
                         } else {
-                            done = feed(lc, data, id, &self.cfg, st, &mut self.clock);
+                            done = feed(lc, data, id, &self.cfg, st, &mut self.clock, &mut self.rs);
                             fed = true;
                         }
                     }
@@ -1435,14 +1545,24 @@ impl Loop {
                         if !lc.held_in.is_empty() || reads_paused(lc, usize::MAX) {
                             lc.held_in.extend_from_slice(&buf[..n]);
                         } else {
-                            done = feed(lc, &buf[..n], id, &self.cfg, st, &mut self.clock);
+                            done = feed(
+                                lc,
+                                &buf[..n],
+                                id,
+                                &self.cfg,
+                                st,
+                                &mut self.clock,
+                                &mut self.rs,
+                            );
                             fed = true;
                         }
                     }
-                    Ok(akio_core::KernelRead::Control) => match lc.inner.uncork_flush() {
-                        Ok(q) => lc.q_hint = Some(q),
-                        Err(e) => done = Done::Err(e),
-                    },
+                    Ok(akio_core::KernelRead::Control) => {
+                        match lc.inner.uncork_flush_ring(&mut self.rs) {
+                            Ok(q) => lc.q_hint = Some(q),
+                            Err(e) => done = Done::Err(e),
+                        }
+                    }
                     Err(e) => done = Done::Err(e),
                 }
             } else if res != -ffi::ENOBUFS && res != -ffi::ECANCELED && res != -ffi::EINTR {
@@ -1450,6 +1570,7 @@ impl Loop {
             }
             // ENOBUFS/ECANCELED/EINTR end the multishot; `refresh` re-arms it if still wanted.
         }
+        self.submit_send(id);
         if let Some(bid) = bid {
             if let Some(g) = self.group(bgid) {
                 g.give_back(bid);
@@ -1481,6 +1602,7 @@ impl Loop {
                     &self.cfg,
                     &self.shared.stats,
                     &mut self.clock,
+                    &mut self.rs,
                 );
                 fed = true;
                 off = end;
@@ -1497,6 +1619,7 @@ impl Loop {
                 done = Done::Eof;
             }
         }
+        self.submit_send(id);
         self.after_data(id, done, fed);
     }
 
@@ -1553,6 +1676,9 @@ impl Loop {
             self.shared.clone(),
             self.cfg.clone(),
         );
+        if self.ring_sends {
+            inner.set_ring_sends(true);
+        }
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             inner.mark_closed();
             tel.conn_closed();
@@ -1589,6 +1715,9 @@ impl Loop {
                 shutdown_after_data: false,
                 rx_offload: false,
                 rx_offload_tries: 0,
+                send_armed: false,
+                send_unsent: false,
+                send_msg: None,
             }),
         );
         self.arm_reset_watch(id, fd);
@@ -1674,7 +1803,18 @@ impl Loop {
         let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
             return;
         };
-        match lc.inner.flush_queue() {
+        let r = lc.inner.flush_queue_ring(&mut self.rs);
+        self.after_flush(id, r);
+    }
+
+    /// After a flush that returned `r` (`Ok(true)`: nothing left queued): submits the ring send
+    /// it described, applies `close_after_send` and refreshes interest.
+    fn after_flush(&mut self, id: u64, r: io::Result<bool>) {
+        self.submit_send(id);
+        let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+            return;
+        };
+        match r {
             Err(e) => self.finalize(id, Some(Error::Io(e))),
             Ok(empty) => {
                 if empty && lc.inner.close_after_send_requested() {
@@ -1683,6 +1823,92 @@ impl Loop {
                     lc.q_hint = empty.then_some(0);
                     self.refresh(id);
                 }
+            }
+        }
+    }
+
+    /// Takes the ring send the last flush of connection `id` described in `rs`, if any (ADR-106),
+    /// for `submit_sends`. Called right after every such flush, before anything else uses `rs`.
+    fn submit_send(&mut self, id: u64) {
+        if self.rs.parts().is_empty() {
+            return;
+        }
+        self.rs.clear();
+        if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+            lc.send_armed = true;
+            lc.send_unsent = true;
+            self.unsent.push(id);
+        }
+        // (Cannot be missing: a flush that describes a send leaves the connection open.)
+    }
+
+    /// Right before the loop enters the kernel: submits the ring sends taken by `submit_send`,
+    /// each described again to carry what was queued after it.
+    fn submit_sends(&mut self) {
+        if self.unsent.is_empty() {
+            return;
+        }
+        let mut ids = std::mem::take(&mut self.unsent);
+        for &id in &ids {
+            let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+                continue; // finalized meanwhile: `finalize` released it
+            };
+            if !std::mem::take(&mut lc.send_unsent) {
+                continue;
+            }
+            let e = if lc.inner.ring_redescribe(&mut self.rs) > 0 {
+                prep_send(lc, id, &mut self.rs)
+            } else {
+                None
+            };
+            match e {
+                Some(e) => self.push(e),
+                None => {
+                    // Nothing to send after all (cannot happen): back to the plain flush path.
+                    lc.send_armed = false;
+                    lc.inner.ring_release();
+                    self.rs.clear();
+                    self.refresh(id);
+                }
+            }
+        }
+        ids.clear();
+        if self.unsent.is_empty() {
+            self.unsent = ids; // keep the allocation
+        }
+    }
+
+    /// A ring send of connection `id` completed with `res` (bytes sent, or `-errno`).
+    fn on_send(&mut self, id: u64, res: i32) {
+        let r = match self.slots.get_mut(&id) {
+            Some(Slot::Conn(lc)) if lc.send_armed => {
+                lc.send_armed = false;
+                lc.inner.ring_sent(res, &mut self.rs)
+            }
+            _ => {
+                // The connection closed while its send was in flight: free what it read.
+                if let Some(o) = self.orphans.remove(&id) {
+                    o.inner.ring_release();
+                }
+                return;
+            }
+        };
+        match r {
+            Err(e) => self.finalize(id, Some(Error::Io(e))),
+            Ok(RingSent::Drained { close: true }) => self.finalize(id, None),
+            Ok(RingSent::Drained { close: false }) => {
+                // The usual case: the answer is out. Interest changes only if reads were held
+                // back for the queue, or kernel TLS waits to move its receive direction.
+                if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+                    if lc.bp || lc.inner.offload_rx_waiting() {
+                        lc.q_hint = Some(0);
+                        self.refresh(id);
+                    }
+                }
+            }
+            Ok(RingSent::Pending) => {
+                self.submit_send(id);
+                self.refresh(id);
             }
         }
     }
@@ -1752,7 +1978,8 @@ impl Loop {
             entries
                 .push(Sqe::async_cancel(ud(id, recv_op(lc.recv_bgid))).user_data(ud(id, OP_OTHER)));
         }
-        if q > 0 && !lc.poll_armed {
+        if q > 0 && !lc.poll_armed && !lc.send_armed {
+            // (A ring send in flight goes on with the rest when it completes.)
             lc.poll_armed = true;
             entries.push(Sqe::poll_add(fd, ffi::POLLOUT as u32).user_data(ud(id, OP_POLL)));
         }
@@ -1780,6 +2007,20 @@ impl Loop {
             self.wheel.cancel(t);
         }
         lc.inner.mark_closed();
+        if lc.send_unsent {
+            // Described but never submitted: the kernel never saw its bytes.
+            lc.inner.ring_release();
+        } else if lc.send_armed {
+            // The kernel still reads its queued bytes (kept by `mark_closed`) and maybe its
+            // header: both live until the send completes (the shutdown below ends it).
+            self.orphans.insert(
+                id,
+                Orphan {
+                    inner: lc.inner.clone(),
+                    _msg: lc.send_msg.take(),
+                },
+            );
+        }
         self.graveyard.push(lc.inner.clone());
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
         let t0 = self.timing();
@@ -2197,12 +2438,13 @@ impl Loop {
             if catch_unwind(AssertUnwindSafe(|| lc.handler.run_task(task))).is_err() {
                 failed = Some(panic_error());
             } else {
-                match lc.inner.uncork_flush() {
+                match lc.inner.uncork_flush_ring(&mut self.rs) {
                     Ok(q) => lc.q_hint = Some(q),
                     Err(e) => failed = Some(Error::Io(e)),
                 }
             }
         }
+        self.submit_send(id);
         self.check_slow("spawn_blocking completion", id, t0);
         match failed {
             Some(e) => self.finalize(id, Some(e)),

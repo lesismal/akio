@@ -41,7 +41,10 @@ See [Blocking work](concepts/blocking.md).
 - **epoll** is the default and the baseline. Reads are level-triggered from one scratch buffer
   per thread; writes go straight to the socket from whichever thread calls `send`.
 - **io_uring** (Linux 5.19+) uses multishot accept/recv and a provided-buffer ring, so idle
-  connections hold no read buffer, and returning a buffer is a memory write. It was 10–25% ahead
+  connections hold no read buffer, and returning a buffer is a memory write. What a loop's
+  callbacks answer leaves as ring sends (`IORING_OP_SEND`, ADR-106) submitted with the loop's one
+  `io_uring_enter` per batch, so a request costs no send system call of its own
+  (`AKIO_URING_SENDS=write` goes back to `writev` for comparisons). It was 10–25% ahead
   of epoll when the server was the bottleneck (one server thread, 512 connections) and within a
   few percent, either way, when the client was. Try it for many-connection, server-bound
   workloads, measure, and keep the one that wins; per-listener choice lets you mix.
@@ -50,11 +53,8 @@ See [Blocking work](concepts/blocking.md).
 - Other io_uring features were measured on Linux 7.0 and left out, since none gained a clear 3%
   without losing elsewhere (see the benchmark report, "io_uring features evaluation"):
   registered files and a registered ring fd (in steady state the backend submits no entry per
-  request: the multishot recv stays armed and responses are written directly), `MSG_RING`
-  wake-ups instead of the eventfd (−1.3% to +4.8% on `spawn_blocking` round trips, noise elsewhere),
-  ring-based sends (`IORING_OP_SEND`: +1–4% and 2–6% less CPU per request in a bare-ring prototype,
-  but the engine writes from any thread, so adopting them means redesigning the write path), and
-  `SEND_ZC`, which on loopback or veth always falls back to copying and was 12–27% slower from
+  request beyond the responses' sends), `MSG_RING` wake-ups instead of the eventfd (−1.3% to
+  +4.8% on `spawn_blocking` round trips, noise elsewhere), and `SEND_ZC`, which on loopback or veth always falls back to copying and was 12–27% slower from
   16 KiB up. Zero-copy sends are worth re-measuring only with a real NIC
   (`tools/bench/uring-eval.sh`).
 - UDP always uses the readiness backend with `recvmmsg`/`sendmmsg`.

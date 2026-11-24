@@ -70,8 +70,8 @@ pub(crate) const OP_POLL_ADD: u8 = 6;
 pub(crate) const OP_ACCEPT: u8 = 13;
 pub(crate) const OP_ASYNC_CANCEL: u8 = 14;
 pub(crate) const OP_READ: u8 = 22;
-#[cfg(test)]
-const OP_SEND: u8 = 26;
+pub(crate) const OP_SENDMSG: u8 = 9;
+pub(crate) const OP_SEND: u8 = 26;
 pub(crate) const OP_RECV: u8 = 27;
 #[cfg(test)]
 const OP_CLOSE: u8 = 19;
@@ -90,7 +90,6 @@ const SEND_ZC_REPORT_USAGE: u16 = 1 << 3;
 #[cfg(test)]
 const FILE_INDEX_ALLOC: u32 = !0;
 /// `MSG_NOSIGNAL` (a reset peer fails the send with `EPIPE` instead of raising `SIGPIPE`).
-#[cfg(test)]
 const MSG_NOSIGNAL: u32 = 0x4000;
 /// `IORING_MSG_DATA` (the `MSG_RING` command in `addr`).
 #[cfg(test)]
@@ -342,14 +341,26 @@ impl Sqe {
         }
     }
 
-    #[cfg(test)]
-    /// `IORING_OP_SEND` of `len` bytes at `buf`.
+    /// `IORING_OP_SEND` of `len` bytes at `buf`, with `MSG_NOSIGNAL`.
     pub(crate) fn send(fd: RawFd, buf: *const u8, len: u32) -> Sqe {
         Sqe {
             opcode: OP_SEND,
             fd,
             addr: buf as u64,
             len,
+            op_flags: MSG_NOSIGNAL,
+            ..Sqe::default()
+        }
+    }
+
+    /// `IORING_OP_SENDMSG` of the `struct msghdr` at `msg`, with `MSG_NOSIGNAL`. The header and
+    /// its iovecs are read when the entry is submitted (and copied if the send has to wait).
+    pub(crate) fn sendmsg(fd: RawFd, msg: *const ffi::msghdr) -> Sqe {
+        Sqe {
+            opcode: OP_SENDMSG,
+            fd,
+            addr: msg as u64,
+            len: 1,
             op_flags: MSG_NOSIGNAL,
             ..Sqe::default()
         }

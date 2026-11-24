@@ -345,7 +345,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 性能优化各轮以及 2026-11-23 各轮留下、尚无一轮接手的事项。每项都在等一个决定、硬件或一次重新设计；都不阻塞 1.0.0。
 
 - [ ] 编解码器中的 BMI2 代码路径（akio-brotli、akio-zstd）：在安全函数上用 `#[target_feature(enable = "bmi2")]` 需要 target_feature 1.1，即 MSRV 1.86（工作区目前为 1.85），调用方还要在运行时检测之后用 `unsafe` 调用。**等待用户决定是否提高 MSRV。** 预期收益在比特读取器的移位（BZHI/SHRX）；采用前用 `tools/codec-bench` 与 libbrotli/libzstd 对比测量。
-- [ ] io_uring 基于 ring 的发送（`IORING_OP_SEND`，低优先级）：在裸 ring 上 +1–4%，每请求 CPU 少 2–6%（2026-11-16 评估，见上文 M2），但写入可能来自任意线程，需要重新设计共享写路径（发送归 ring 线程所有，其他线程移交缓冲区）。只按通常规则采用（同轮 +3%，无回退）。
+- [x] io_uring 环上发送：已完成（ADR-106，2026-11-24）。原记录：io_uring 基于 ring 的发送（`IORING_OP_SEND`，低优先级）：在裸 ring 上 +1–4%，每请求 CPU 少 2–6%（2026-11-16 评估，见上文 M2），但写入可能来自任意线程，需要重新设计共享写路径（发送归 ring 线程所有，其他线程移交缓冲区）。只按通常规则采用（同轮 +3%，无回退）。
 - [ ] 在 TLS 卸载网卡上运行内核 TLS：等待有这类网卡的主机；见上文 M2 中的条目（ADR-067）。
 - [ ] `akio-bittorrent` 的 `seed_limits_pause` 在高负载主机上超时过一次，原因不明；断言现在会打印双方的统计。下次失败时查看。
 - [ ] `akio-ebpf` 的 `syn_flood_protection_leaves_established_connections_alone` 在共享主机上会失败：`lo` 上的 XDP 限速器会计入其他进程的 SYN（2026-11-23 在 gpu51 上失败一次，单独运行 3/3 通过）。改为只统计自己的端口，或放在独立的网络命名空间中运行。
@@ -362,7 +362,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 功能 | crate / 计划条目 | 已测 | 已优化 | 证据或剩余工作 |
 |---|---|---|---|---|
 | 事件循环，epoll | akio-core、akio-epoll、akio-buf、akio-timer（M1） | 是（BENCHMARKS 测评 `10070cff`，TCP echo，每连接内存） | 是（2026-11-14 一轮：每次回调读一次时钟、内联队列头；`3d3aca96`） | 与 tokio 同一档次；keep-alive HTTP/1 受内核限制。时间轮和缓冲池没有单独的微基准。 |
-| 事件循环，io_uring | akio-uring（M2） | 是（测评；“io_uring 特性评估”） | 部分 | 评估过注册文件、SEND_ZC、MSG_RING，均未采用；基于 ring 的发送仍未做（“未排期的遗留项”）。 |
+| 事件循环，io_uring | akio-uring（M2） | 是（测评；“io_uring 特性评估”） | 部分 | 评估过注册文件、SEND_ZC、MSG_RING，均未采用；环上发送已采用（ADR-106：echo-ws、HTTP/1.1 baseline 与 pipelined 比使用 `writev` 的 io_uring 快 9–13%）。 |
 | 事件循环，kqueue | akio-epoll（macOS，M1） | 否 | 否 | 开发/调试用后端；规则 17 不采用 macOS 数字。需要决定它是否要基准测试（一台空闲的 macOS 主机，或者不测）。 |
 | TCP echo 与每连接内存 | akio-core | 是（测评，`tools/bench/echo.sh`、`mem.sh`） | 是（内联队列头、装箱的会话状态、装箱的 deflate 状态） | 受客户端限制，平台期在 0.65–0.8 M req/s；没有延迟分位数。 |
 | UDP：按对端、无连接、GRO/GSO、自有缓冲区 | akio-core、akio-sys（ADR-024、ADR-065、ADR-093） | 是（“无连接 UDP”“绑定 UDP 套接字接收”，测评 UDP echo） | 是（默认 GRO、`recvmmsg` 槽位来自池化 slab、`sendmmsg` + GSO，数据报监听器 1.08x） | – |

@@ -105,3 +105,4 @@
 - [ADR-103：I/O 循环上的定时器](103-loop-timers.zh-CN.md)（2026-11-23 采纳）
 - [ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次](104-rounds-scheduling.zh-CN.md)（2026-11-23 提议）
 - [ADR-105：在监听器的各线程之间于 accept 时均衡连接](105-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
+- [ADR-106：io_uring 环上发送：响应作为 SEND 条目，随 loop 的那一次 `io_uring_enter` 发出](106-uring-ring-sends.zh-CN.md)（2026-11-24 采纳）

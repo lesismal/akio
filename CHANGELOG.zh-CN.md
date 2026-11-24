@@ -10,6 +10,22 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：io_uring 后端通过环发送响应（akio-uring、akio-core）
+
+ADR-106。行为不变；公开 API 没有变化：
+
+- io_uring 连接不再由 loop 调用 `write`/`writev`。loop 回调排队的数据留在队列里并描述给后端；loop
+  进入内核之前，每个连接排队的字节变成一个 `IORING_OP_SEND`（多个缓冲区时为 `SENDMSG`），所有
+  连接的发送都随 loop 每批完成事件后的那一次 `io_uring_enter` 交给内核。每个连接同时只有一个发送
+  在途；短发送从停下的地方继续；每个连接的顺序（包括其他线程的发送、仍由 loop 执行的 kernel TLS
+  socket 操作和 `sendfile` 块）保持不变；背压、`close_after_send`、`write_timeout` 以及有发送在途
+  时的关闭与以前一样。
+- io_uring 上，排队的不超过 1 KiB 的自有缓冲区被拷进队列尾部并立即还给池（排队的缓冲区现在要活到
+  这一批的发送完成）。
+- `AKIO_URING_SENDS=write` 恢复旧路径（用于 A/B 测量）。epoll 和 kqueue 不变。
+- `ConnInner` 为此新增了 `#[doc(hidden)]` 的后端接口（`set_ring_sends`、`uncork_flush_ring`、
+  `flush_queue_ring`、`ring_redescribe`、`ring_sent`、`ring_release`、`RingSend`、`RingSent`、`RING_IOV`）。
+
 ### 新增：TCP listener 的轮次调度，默认关闭（akio、akio-epoll、akio-sys）
 
 ADR-104，均为新增：
