@@ -118,3 +118,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-122: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down](122-connect-on-h2-h3-streams-half-close.md) (accepted 2026-11-25)
 - [ADR-123: Root certificates outside a handshake, and ALPN protocols for the handshake only](123-root-store-and-handshake-only-alpn.md) (accepted 2026-11-25)
 - [ADR-124: `Files` as a gateway's static handler, bounded in memory, and file bodies encoded](124-files-as-a-gateway-static-handler.md) (accepted 2026-11-25)
+- [ADR-125: A WebAssembly runtime for plugins: a safe interpreter in a crate of its own](125-wasm-runtime-for-plugins.md) (proposed 2026-11-25; akit A165, for I71 and I72)
