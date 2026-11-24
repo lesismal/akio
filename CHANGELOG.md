@@ -71,6 +71,24 @@ ADR-104, second revision; no API change:
   50k/s 15.6 → 9.9 µs. Skew cases and echo with 64 connections unchanged, echo with 256-1024
   connections -2.5%.
 
+### Added: rounds listeners added, removed and drained at run time, accept filters, a write timeout changed at run time (akio, akio-epoll)
+
+ADR-104, third revision; no API change:
+
+- `Engine::remove_listener` and `shutdown_listener` work on rounds listeners as on loops ones
+  (ADR-099): every per-worker `SO_REUSEPORT` socket is closed before the call returns (an accept
+  job that runs later finds no socket), so the port can be bound again and a connection right
+  after a same-address replacement is served; open connections keep running, a drain sends
+  `on_shutdown` and closes what is left at the deadline, the workers and drivers finish once the
+  last connection is gone (except the builder listener whose threads serve `dial`), and the engine
+  reaps them; removed listeners still serving count under `max_listeners`.
+- Accept filters (`Listener::filter`, `set_listener_filter`) run on rounds listeners, so
+  `AKIO_DEFAULT_SCHEDULING=rounds` no longer leaves a listener with a filter on loops.
+- A write timeout set or cleared with `Engine::reload` / `Live::set_write_timeout` applies to open
+  rounds connections (ADR-108); it was read only from the build-time `Config`.
+- `set_listener_threads` is still refused for rounds listeners. No throughput change measured on
+  gpu51 (rounds echo-like, skew and churn cases, loops echo).
+
 ### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
 
 ADR-111, requested by akit (A66):

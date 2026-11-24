@@ -3,7 +3,8 @@
 English | [简体中文](104-rounds-scheduling.zh-CN.md)
 
 Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements;
-second revision 2026-11-24: accepts and closes on the workers, fewer wake-ups at light load)
+second revision 2026-11-24: accepts and closes on the workers, fewer wake-ups at light load;
+third revision 2026-11-24: run-time listeners, accept filters, a live write timeout)
 
 ## Context
 
@@ -88,9 +89,11 @@ handler, write) runs on whichever worker is idle.
      blocked worker delays the connections queued behind it, though the others steal them.
 3. **What is the same**: `Conn` and `ConnInner` (already thread-safe, ADR-002), the cork and
    flush protocol, backpressure, `hold_reads`, ordered responses, `close_after_send`, idle /
-   write / handshake / connect timeouts, slow-callback reports (per worker), `max_connections`,
-   kernel TLS offload. Every protocol crate runs unmodified: their thread-local caches are only
-   borrowed within one callback.
+   write / handshake / connect timeouts (idle and write timeouts changed at run time apply to
+   open connections, ADR-108), slow-callback reports (per worker), `max_connections`, kernel
+   TLS offload, listeners added, removed and drained at run time and accept filters (ADR-099;
+   see the third revision below). Every protocol crate runs unmodified: their thread-local
+   caches are only borrowed within one callback.
 4. **Not in rounds mode** (prototype scope): UDP listeners (they keep their loops; a warning is
    logged), io_uring (`Backend::IoUring` with rounds is rejected), `set_threads` (returns
    `Unsupported`), BPF steering (it steers to pollers, which is pointless). The workers are one
@@ -266,3 +269,50 @@ Conclusions of the revision:
   poll before spinning, the spin itself, and the queue and table locks.
 - Few or uneven connections and h2c-like work are unchanged; echo over many connections loses
   another 2-3%.
+
+### Third revision: run-time listeners, accept filters, a live write timeout (2026-11-24)
+
+Rounds listeners now do what loops listeners do for ADR-099 and ADR-108; no API change.
+
+- **Removing a listener** (`Engine::remove_listener` / `shutdown_listener`, the group's
+  `stop_listening`): the group closes every listening socket itself, on the calling thread,
+  before it returns: on Linux all of its per-worker `SO_REUSEPORT` sockets, elsewhere every
+  clone. Each socket is closed under its accept job's lock (which waits for an accept job in
+  progress, a short one: it never runs handler code), and the job's socket becomes `None`, so an
+  accept job queued or run afterwards accepts nothing; a pending accept backoff is cleared too, so
+  the driver's wait does not count on it. So when `remove_listener` returns, the address's
+  `SO_REUSEPORT` group holds only other listeners' sockets (a connection right after a
+  same-address replacement is served), and once it is the last one the port can be bound again.
+  Then the group posts `StopListening { drain, exit }` to each driver: open connections keep
+  running; with a drain each gets `on_shutdown` at once and those still open at the deadline are
+  closed (`Duration::ZERO`: at the next poll); with `exit` (every listener but the builder
+  listener whose threads serve `dial`) a driver finishes once its connection table is empty (a
+  connection leaving the table wakes it, as during a shutdown), and the group is `finished` once
+  every driver is. The engine then reaps it like a loops group: it joins the workers and takes
+  the workers' and drivers' rows out of the metrics. A removed listener with open connections
+  keeps its place under `max_listeners`. The builder listener that serves `dial` keeps its
+  workers and drivers until shutdown.
+- **Accept filters**: an accept job runs the group's filter (`FilterCell`, read through a
+  `FilterView` kept under the job's lock: one atomic load per accepted connection, as in loops)
+  before it opens a connection; refused ones count in `filtered`. `AKIO_DEFAULT_SCHEDULING=rounds`
+  therefore applies to listeners with a filter too.
+- **Write timeout changed at run time** (`Engine::reload`, `Live::set_write_timeout`): the end
+  of a round and the write-timeout check read the live value instead of the build-time
+  `Config`, so a timeout turned on applies to open connections at their next write that leaves
+  output queued, and one turned off ends the pending checks (and a later value arms them again).
+- Still not in rounds mode: `set_threads` (and `set_listener_threads`), UDP, io_uring, BPF
+  steering.
+
+Cost: the round loop gains no work. The end of a round reads the write timeout from `Live` (a
+relaxed atomic load) instead of from `Config`; a driver's wait reads one more `Option`; a
+connection leaving the table reads one more flag. Measured on gpu51 (server on 8 CPUs, rounds 8
+workers and 1 driver, loops 8 threads; `skew-bench`, two alternating rounds of each build):
+
+| Case | Before | After |
+|---|---|---|
+| rounds, 256 conns, depth 1, no work (echo-like) | 817.7k-820.0k req/s, p99 478-483 µs | 817.5k-819.1k req/s, p99 480-481 µs |
+| rounds, 12 conns, depth 4, 50 µs | 152.4k-152.6k req/s, p99 391 µs | 152.5k-152.7k req/s, p99 389-391 µs |
+| rounds, churn 512 clients x 10 requests (3 s) | 330.2k-330.3k req/s, 33.0k conn/s | 330.2k-330.8k req/s, 33.0k-33.1k conn/s |
+| loops, 256 conns, depth 1, no work | 888k-964k req/s | 919k-967k req/s |
+
+Within noise: no regression in either mode.

@@ -225,7 +225,10 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     assert_eq!(infos[0].local_addr, first);
     for info in &infos[1..] {
         assert_ne!(info.local_addr.port(), 0);
-        assert_eq!(info.threads, 2);
+        if !common::rounds() {
+            // Rounds: the workers are sized by `RoundsConfig`, not `threads` (ADR-104).
+            assert_eq!(info.threads, 2);
+        }
         assert!(!info.udp);
         let mut c = connect(info.local_addr);
         echo_once(&mut c, b"added");
@@ -233,14 +236,17 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     // The builder's view is unchanged.
     assert_eq!(e.local_addrs(), vec![first]);
     echo_once(&mut a, b"after");
-    // A runtime listener's thread count changes by id.
-    e.set_listener_threads(ids[0], 3).unwrap();
-    assert_eq!(e.listeners()[1].threads, 3);
-    for _ in 0..8 {
+    // A runtime listener's thread count changes by id (loops only: rounds has no
+    // `set_threads`, ADR-104).
+    if !common::rounds() {
+        e.set_listener_threads(ids[0], 3).unwrap();
+        assert_eq!(e.listeners()[1].threads, 3);
+        for _ in 0..8 {
+            assert!(served(infos[1].local_addr));
+        }
+        e.set_listener_threads(ids[0], 1).unwrap();
         assert!(served(infos[1].local_addr));
     }
-    e.set_listener_threads(ids[0], 1).unwrap();
-    assert!(served(infos[1].local_addr));
     // Removing and draining them does not disturb the first one either.
     e.remove_listener(ids[1]).unwrap();
     e.shutdown_listener(ids[2], Duration::from_millis(50))
@@ -642,9 +648,11 @@ fn the_filter_refuses_and_accepts_and_is_swapped_at_run_time() {
     for _ in 0..10 {
         assert!(served(addr));
     }
-    // Threads added later take the current filter.
+    // Threads added later take the current filter (rounds cannot add threads, ADR-104).
     e.set_listener_filter(id, |_| false).unwrap();
-    e.set_listener_threads(id, 4).unwrap();
+    if !common::rounds() {
+        e.set_listener_threads(id, 4).unwrap();
+    }
     for _ in 0..8 {
         assert!(!served(addr));
     }
