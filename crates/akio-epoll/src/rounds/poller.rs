@@ -1,13 +1,19 @@
-//! A poller of rounds scheduling (ADR-104): waits for readiness, accepts, and runs the control
-//! path (dials, timers, telemetry, shutdown). It never reads, writes or runs handler code: a
-//! readiness event becomes pending bits on the connection, served by a worker.
+//! A poller of rounds scheduling (ADR-104): waits for readiness and runs the control path
+//! (dials, telemetry, shutdown, timers). It never reads, writes, accepts or runs handler code:
+//! a readiness event becomes pending bits on a connection, or an accept job for a listener, both
+//! served by the workers.
+//!
+//! The connections a poller watches are in its [`ConnTable`]: sharded and behind locks, so the
+//! workers add the connections they accept and remove the ones they close themselves, without
+//! posting to the poller. The table also holds the connections' timers (idle, write, handshake);
+//! the poller fires them.
 
 use std::{
     io,
     net::{SocketAddr, TcpListener, TcpStream},
-    os::fd::AsRawFd,
+    os::fd::{AsRawFd, RawFd},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -20,28 +26,28 @@ use akio_core::{
 use akio_sys::{Event, Poller, Registry, Waker};
 use akio_timer::{TimerId, Wheel};
 
-use super::conn::{HUP, RConn, READ, SHUTDOWN, WRITE};
-use super::workers::Workers;
+use super::conn::{HUP, RConn, READ, SHUTDOWN, WAKE, WRITE};
+use super::workers::{Job, WorkerCtx, Workers};
 
 const WAKER: u64 = 0;
 const LISTEN_BIT: u64 = 1 << 62;
-const MAX_ACCEPT_PER_EVENT: usize = 64;
+const MAX_ACCEPT_PER_JOB: usize = 64;
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// Timer ids: write-timeout checks, connect and handshake deadlines (else idle checks).
 const WRITE_TIMER: u64 = 1 << 63;
 const CONNECT_TIMER: u64 = 1 << 62;
 const HANDSHAKE_TIMER: u64 = 1 << 61;
+/// `wait_until` while no blocking poll is in progress.
+const NOT_WAITING: u64 = 0;
 
 /// Connection ids, shared with the per-thread loops so ids stay unique per process.
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1 << 40);
 
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 pub(crate) enum RCmd {
-    /// A connection was finalized by its round: drop it.
-    Remove(u64),
-    /// Output is queued: arm a write-timeout check.
-    ArmWrite(u64),
-    /// `on_open` installed a transport with a handshake deadline.
-    ArmHandshake(u64),
     Shutdown,
     Core(LoopCmd),
     Dial {
@@ -49,6 +55,63 @@ pub(crate) enum RCmd {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     },
+}
+
+struct Timers {
+    idle: Option<TimerId>,
+    write: Option<TimerId>,
+    write_mark: u64,
+    hs: Option<TimerId>,
+}
+
+struct TableInner {
+    conns: IdMap<(Arc<RConn>, Timers)>,
+    wheel: Wheel<u64>,
+}
+
+impl TableInner {
+    fn schedule(&mut self, at: u64, id: u64, now: u64) -> TimerId {
+        if self.wheel.is_empty() {
+            // The wheel's clock stops while it is empty; catch it up first.
+            self.wheel.advance(now, drop);
+        }
+        self.wheel.schedule(at, id)
+    }
+}
+
+struct TableShard {
+    inner: Mutex<TableInner>,
+    /// The earliest timer deadline in this shard (`u64::MAX`: none), readable without the lock.
+    next: AtomicU64,
+}
+
+/// The connections of one poller and their timers, sharded by id so the workers that open and
+/// close connections rarely meet on a lock.
+pub(crate) struct ConnTable {
+    shards: Box<[TableShard]>,
+    mask: usize,
+}
+
+impl ConnTable {
+    fn new(workers: usize) -> ConnTable {
+        let n = (workers * 2).next_power_of_two().clamp(4, 64);
+        ConnTable {
+            shards: (0..n)
+                .map(|_| TableShard {
+                    inner: Mutex::new(TableInner {
+                        conns: IdMap::default(),
+                        wheel: Wheel::new(0),
+                    }),
+                    next: AtomicU64::new(u64::MAX),
+                })
+                .collect(),
+            mask: n - 1,
+        }
+    }
+
+    fn shard(&self, id: u64) -> &TableShard {
+        &self.shards[id as usize & self.mask]
+    }
 }
 
 /// The part of a poller other threads reach.
@@ -61,6 +124,12 @@ pub(crate) struct PollerShared {
     pub(crate) stats: Arc<LoopStats>,
     pub(crate) cfg: Arc<Config>,
     pub(crate) epoch: Instant,
+    table: ConnTable,
+    /// Shutting down: connections opened from now on are told so at once.
+    draining: AtomicBool,
+    /// The tick a blocking poll in progress waits until (`u64::MAX`: no limit,
+    /// [`NOT_WAITING`]: none in progress). A timer due earlier interrupts it.
+    wait_until: AtomicU64,
 }
 
 impl PollerShared {
@@ -69,6 +138,7 @@ impl PollerShared {
         pool: Arc<Pool>,
         cfg: Arc<Config>,
         stats: Arc<LoopStats>,
+        workers: usize,
     ) -> io::Result<Arc<PollerShared>> {
         let sh = Arc::new(PollerShared {
             waker: Waker::new(poller, WAKER)?,
@@ -79,6 +149,9 @@ impl PollerShared {
             stats,
             cfg,
             epoch: Instant::now(),
+            table: ConnTable::new(workers),
+            draining: AtomicBool::new(false),
+            wait_until: AtomicU64::new(NOT_WAITING),
         });
         let weak = Arc::downgrade(&sh);
         sh.cfg.telemetry.register_loop(
@@ -93,28 +166,427 @@ impl PollerShared {
     }
 
     pub(crate) fn post(&self, cmd: RCmd) {
-        self.cmds
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(cmd);
-        if !self.wake_pending.swap(true, Ordering::AcqRel) {
-            self.waker.wake();
-        }
+        lock(&self.cmds).push(cmd);
+        self.wake();
     }
 
     /// Interrupts a blocking poll of this poller (a worker waiting in it in driver mode).
     pub(crate) fn wake(&self) {
         if !self.wake_pending.swap(true, Ordering::AcqRel) {
+            super::trace::count(&super::trace::C.driver_wakes);
             self.waker.wake();
         }
     }
 
     fn take_into(&self, batch: &mut Vec<RCmd>) {
         self.wake_pending.store(false, Ordering::Release);
-        std::mem::swap(
-            &mut *self.cmds.lock().unwrap_or_else(|p| p.into_inner()),
-            batch,
+        std::mem::swap(&mut *lock(&self.cmds), batch);
+    }
+
+    pub(crate) fn tick(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    // ---- the connection table ---------------------------------------------------------------
+
+    /// After a change to `shard`'s timers: publishes its earliest deadline, and interrupts a
+    /// blocking poll that would sleep past it.
+    fn timers_changed(&self, shard: &TableShard, inner: &TableInner) {
+        let next = inner.wheel.next_deadline().unwrap_or(u64::MAX);
+        shard.next.store(next, Ordering::SeqCst);
+        if next < self.wait_until.load(Ordering::SeqCst) {
+            self.wake();
+        }
+    }
+
+    /// Adds `bits` to the connection with this id, if it is still open. False if it is not in
+    /// the table. Under the shard's lock, so no reference count changes hands; a worker's poll
+    /// only queues the connection here (it wakes others after the poll).
+    fn notify_conn(&self, id: u64, bits: u32) -> bool {
+        let g = lock(&self.table.shard(id).inner);
+        let Some((c, _)) = g.conns.get(&id) else {
+            return false;
+        };
+        if bits != 0 {
+            c.notify(bits);
+        }
+        true
+    }
+
+    /// Opens an accepted or connected socket: registers it (edge-triggered, once) and queues its
+    /// first round. Runs on the worker that accepted it, or on the poller (dials).
+    pub(crate) fn open(
+        self: &Arc<Self>,
+        stream: TcpStream,
+        peer: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+        dialed: bool,
+        workers: &Arc<Workers>,
+    ) {
+        if stream.set_nonblocking(true).is_err() {
+            return;
+        }
+        let _ = stream.set_nodelay(true);
+        let Ok(local) = stream.local_addr() else {
+            return;
+        };
+        let tel = &self.cfg.telemetry;
+        if !tel.conn_opened(!dialed) {
+            self.stats.rejected.add(1);
+            akio_log::debug!(target: "akio", peer:% = peer; "connection refused: max_connections reached");
+            return;
+        }
+        let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+        let fd = stream.as_raw_fd();
+        let now = self.tick();
+        let c = RConn::new(
+            id,
+            stream,
+            local,
+            peer,
+            acceptor,
+            self.clone(),
+            workers.clone(),
+            now,
         );
+        let idle = tel.live().idle_ms();
+        // Into the table before the registration, so the first event finds it.
+        {
+            let shard = self.table.shard(id);
+            let mut g = lock(&shard.inner);
+            let idle_timer = (idle != 0).then(|| g.schedule(now + idle, id, now));
+            g.conns.insert(
+                id,
+                (
+                    c.clone(),
+                    Timers {
+                        idle: idle_timer,
+                        write: None,
+                        write_mark: 0,
+                        hs: None,
+                    },
+                ),
+            );
+            if idle_timer.is_some() {
+                self.timers_changed(shard, &g);
+            }
+        }
+        if self.registry.add_edge(fd, id).is_err() {
+            self.remove(id);
+            c.inner.mark_closed();
+            tel.conn_closed();
+            return;
+        }
+        if dialed {
+            &self.stats.dialed
+        } else {
+            &self.stats.accepted
+        }
+        .add(1);
+        akio_log::trace!(target: "akio", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
+        if self.draining.load(Ordering::SeqCst) {
+            c.pending_or(SHUTDOWN);
+        }
+        c.start();
+    }
+
+    /// Drops a connection its round finalized, with its timers. With the last reference the
+    /// socket closes.
+    pub(crate) fn remove(&self, id: u64) {
+        let shard = self.table.shard(id);
+        let removed = {
+            let mut g = lock(&shard.inner);
+            let removed = g.conns.remove(&id);
+            if let Some((_, t)) = &removed {
+                for t in [t.idle, t.write, t.hs].into_iter().flatten() {
+                    g.wheel.cancel(t);
+                }
+                shard.next.store(
+                    g.wheel.next_deadline().unwrap_or(u64::MAX),
+                    Ordering::SeqCst,
+                );
+            }
+            removed
+        };
+        if removed.is_some() && self.draining.load(Ordering::SeqCst) {
+            // The poller finishes the drain once the table is empty.
+            self.wake();
+        }
+    }
+
+    /// Output is queued: arms a write-timeout check.
+    pub(crate) fn arm_write(&self, id: u64) {
+        let Some(wt) = self.cfg.write_timeout else {
+            return;
+        };
+        let now = self.tick();
+        let at = now + (wt.as_millis() as u64).max(1);
+        let shard = self.table.shard(id);
+        let mut g = lock(&shard.inner);
+        let Some(mark) = g.conns.get(&id).map(|(c, _)| c.inner.debug_state().0) else {
+            return;
+        };
+        let t = g.schedule(at, id | WRITE_TIMER, now);
+        let old = g.conns.get_mut(&id).and_then(|(_, tm)| {
+            tm.write_mark = mark;
+            tm.write.replace(t)
+        });
+        if let Some(old) = old {
+            g.wheel.cancel(old);
+        }
+        self.timers_changed(shard, &g);
+    }
+
+    /// `on_open` installed a transport with a handshake deadline: arms it.
+    pub(crate) fn arm_handshake(&self, id: u64) {
+        let shard = self.table.shard(id);
+        let mut g = lock(&shard.inner);
+        let Some(d) = g
+            .conns
+            .get(&id)
+            .and_then(|(c, _)| c.inner.handshake_timeout())
+        else {
+            return;
+        };
+        let now = self.tick();
+        let at = now + (d.as_millis() as u64).max(1);
+        let t = g.schedule(at, id | HANDSHAKE_TIMER, now);
+        if let Some((_, tm)) = g.conns.get_mut(&id) {
+            tm.hs = Some(t);
+        }
+        self.timers_changed(shard, &g);
+    }
+
+    /// The earliest timer deadline of the table.
+    fn next_deadline(&self) -> Option<u64> {
+        let next = self
+            .table
+            .shards
+            .iter()
+            .map(|s| s.next.load(Ordering::SeqCst))
+            .min()
+            .unwrap_or(u64::MAX);
+        (next != u64::MAX).then_some(next)
+    }
+
+    /// Drops whatever is left in the table (after the workers stopped): a connection holds its
+    /// poller, so leftovers would keep both alive.
+    pub(crate) fn clear_table(&self) {
+        for s in &self.table.shards {
+            let left = std::mem::take(&mut lock(&s.inner).conns);
+            drop(left);
+        }
+    }
+
+    fn table_is_empty(&self) -> bool {
+        self.table
+            .shards
+            .iter()
+            .all(|s| lock(&s.inner).conns.is_empty())
+    }
+
+    /// Runs `f` on every connection (under its shard's lock).
+    fn each(&self, mut f: impl FnMut(u64, &Arc<RConn>)) {
+        for s in &self.table.shards {
+            for (id, (c, _)) in &lock(&s.inner).conns {
+                f(*id, c);
+            }
+        }
+    }
+
+    /// Fires the table's due timers. `due` is scratch space.
+    fn fire_timers(&self, due: &mut Vec<u64>) {
+        let now = self.tick();
+        let idle = self.cfg.telemetry.live().idle_ms();
+        for shard in &self.table.shards {
+            if shard.next.load(Ordering::SeqCst) > now {
+                continue;
+            }
+            let mut g = lock(&shard.inner);
+            due.clear();
+            g.wheel.advance(now, |id| due.push(id));
+            for &id in due.iter() {
+                if id & WRITE_TIMER != 0 {
+                    self.on_write_timer(&mut g, id & !WRITE_TIMER, now);
+                } else if id & HANDSHAKE_TIMER != 0 {
+                    let id = id & !HANDSHAKE_TIMER;
+                    if let Some((c, tm)) = g.conns.get_mut(&id) {
+                        tm.hs = None;
+                        if c.inner.transport_handshaking() {
+                            c.inner.note_transport_error();
+                            c.close_with(Some(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "handshake timeout",
+                            )));
+                        }
+                    }
+                } else {
+                    let Some((c, tm)) = g.conns.get_mut(&id) else {
+                        continue;
+                    };
+                    tm.idle = None;
+                    if idle == 0 {
+                        continue;
+                    }
+                    let expires = c.last_active.load(Ordering::Relaxed) + idle;
+                    if expires <= now {
+                        self.stats.idle_timeouts.add(1);
+                        c.close_with(Some(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "idle timeout",
+                        )));
+                    } else {
+                        let t = g.wheel.schedule(expires, id);
+                        if let Some((_, tm)) = g.conns.get_mut(&id) {
+                            tm.idle = Some(t);
+                        }
+                    }
+                }
+            }
+            shard.next.store(
+                g.wheel.next_deadline().unwrap_or(u64::MAX),
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    fn on_write_timer(&self, g: &mut TableInner, id: u64, now: u64) {
+        let Some(wt) = self.cfg.write_timeout else {
+            return;
+        };
+        let Some((c, tm)) = g.conns.get_mut(&id) else {
+            return;
+        };
+        tm.write = None;
+        let (sent, pending, ..) = c.inner.debug_state();
+        if pending == 0 {
+            c.write_armed.store(false, Ordering::Release);
+            return;
+        }
+        if sent != tm.write_mark {
+            tm.write_mark = sent;
+            let t = g
+                .wheel
+                .schedule(now + (wt.as_millis() as u64).max(1), id | WRITE_TIMER);
+            if let Some((_, tm)) = g.conns.get_mut(&id) {
+                tm.write = Some(t);
+            }
+            return;
+        }
+        self.stats.write_timeouts.add(1);
+        c.close_with(Some(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "write timeout",
+        )));
+    }
+
+    /// Re-applies the live idle timeout to every connection (a reload).
+    fn reload_idle(&self, idle: u64) {
+        let now = self.tick();
+        for shard in &self.table.shards {
+            let mut g = lock(&shard.inner);
+            let g = &mut *g;
+            for (id, (c, tm)) in &mut g.conns {
+                if let Some(t) = tm.idle.take() {
+                    g.wheel.cancel(t);
+                }
+                if idle != 0 {
+                    if g.wheel.is_empty() {
+                        g.wheel.advance(now, drop);
+                    }
+                    let last = c.last_active.load(Ordering::Relaxed);
+                    tm.idle = Some(g.wheel.schedule(last + idle, *id));
+                }
+                // Backpressure is re-evaluated by the connection's next round.
+                c.notify(WAKE);
+            }
+            self.timers_changed(shard, g);
+        }
+    }
+}
+
+/// A listening socket. Its readiness queues it on the workers like a connection: one worker at a
+/// time accepts from it, opens what it accepted, and registers it with the poller.
+pub(crate) struct ListenJob {
+    /// `None` once the poller shut down (the socket is closed).
+    listener: Mutex<Option<TcpListener>>,
+    fd: RawFd,
+    token: u64,
+    acceptor: Arc<dyn DynAcceptor>,
+    home: Arc<PollerShared>,
+    pending: AtomicBool,
+    scheduled: AtomicBool,
+    /// Accepts paused after an error until this tick (0: not paused).
+    paused_until: AtomicU64,
+}
+
+impl ListenJob {
+    /// Readiness: queues an accept job unless one is queued or running.
+    fn notify(self: &Arc<Self>, workers: &Workers) {
+        self.pending.store(true, Ordering::SeqCst);
+        if !self.scheduled.load(Ordering::SeqCst) && !self.scheduled.swap(true, Ordering::SeqCst) {
+            workers.submit(Job::Accept(self.clone()));
+        }
+    }
+
+    /// Runs on a worker: accepts until the backlog is empty (or the budget is spent, then it
+    /// goes to the back of the queue).
+    pub(crate) fn run(self: Arc<Self>, ctx: &WorkerCtx) {
+        self.pending.store(false, Ordering::SeqCst);
+        let mut again = false;
+        {
+            let g = lock(&self.listener);
+            if let Some(l) = g.as_ref() {
+                again = true;
+                for _ in 0..MAX_ACCEPT_PER_JOB {
+                    match l.accept() {
+                        Ok((stream, peer)) => {
+                            self.home.open(
+                                stream,
+                                peer,
+                                self.acceptor.clone(),
+                                false,
+                                &ctx.workers,
+                            );
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            again = false;
+                            break;
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) => {
+                            again = false;
+                            self.home.stats.accept_errors.add(1);
+                            log_or_stderr(
+                                akio_log::Level::Warn,
+                                format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
+                            );
+                            self.home.registry.delete(self.fd);
+                            let until = self.home.tick() + ACCEPT_BACKOFF.as_millis() as u64;
+                            self.paused_until.store(until.max(1), Ordering::SeqCst);
+                            // The poller re-arms it; let it compute its wait with this.
+                            self.home.wake();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        self.scheduled.store(false, Ordering::SeqCst);
+        if (again || self.pending.load(Ordering::SeqCst))
+            && !self.scheduled.swap(true, Ordering::SeqCst)
+        {
+            ctx.workers.submit(Job::Accept(self));
+        }
+    }
+
+    /// Closes the socket (shutdown). Waits for an accept job in progress, so every connection
+    /// it accepted is in the table afterwards.
+    fn close(&self) {
+        let l = lock(&self.listener).take();
+        if let Some(l) = l {
+            self.home.registry.delete(l.as_raw_fd());
+        }
     }
 }
 
@@ -124,28 +596,20 @@ struct Connecting {
     on_error: Option<Box<dyn FnOnce(io::Error) + Send>>,
 }
 
-struct Timers {
-    idle: Option<TimerId>,
-    write: Option<TimerId>,
-    write_mark: u64,
-    hs: Option<TimerId>,
-}
-
 pub(crate) struct RLoop {
     poller: Poller,
     shared: Arc<PollerShared>,
-    listeners: Vec<TcpListener>,
-    acceptor: Option<Arc<dyn DynAcceptor>>,
+    jobs: Vec<Arc<ListenJob>>,
     workers: Arc<Workers>,
-    conns: IdMap<(Arc<RConn>, Timers)>,
     connecting: IdMap<Connecting>,
+    /// Connect deadlines (the connections' own timers are in the table).
     wheel: Wheel<u64>,
     backlog: i32,
     draining: Option<Instant>,
     /// Remaining connections were told to close (the drain deadline passed).
     killed: bool,
-    accept_paused_until: Option<Instant>,
     spare: Vec<RCmd>,
+    due: Vec<u64>,
     events: Vec<Event>,
     finished: bool,
     /// Tracing: how long the last `wait` took.
@@ -160,25 +624,38 @@ impl RLoop {
         acceptor: Option<Arc<dyn DynAcceptor>>,
         workers: Arc<Workers>,
     ) -> io::Result<RLoop> {
-        for (i, l) in listeners.iter().enumerate() {
-            l.set_nonblocking(true)?;
-            poller.add(l.as_raw_fd(), LISTEN_BIT | i as u64, true, false)?;
+        let mut jobs = Vec::new();
+        if let Some(acceptor) = acceptor {
+            for (i, l) in listeners.into_iter().enumerate() {
+                l.set_nonblocking(true)?;
+                let token = LISTEN_BIT | i as u64;
+                let fd = l.as_raw_fd();
+                shared.registry.add_edge(fd, token)?;
+                jobs.push(Arc::new(ListenJob {
+                    listener: Mutex::new(Some(l)),
+                    fd,
+                    token,
+                    acceptor: acceptor.clone(),
+                    home: shared.clone(),
+                    pending: AtomicBool::new(false),
+                    scheduled: AtomicBool::new(false),
+                    paused_until: AtomicU64::new(0),
+                }));
+            }
         }
         let backlog = shared.cfg.telemetry.live().backlog();
         Ok(RLoop {
             poller,
             shared,
-            listeners,
-            acceptor,
+            jobs,
             workers,
-            conns: IdMap::default(),
             connecting: IdMap::default(),
             wheel: Wheel::new(0),
             backlog,
             draining: None,
             killed: false,
-            accept_paused_until: None,
             spare: Vec::new(),
+            due: Vec::new(),
             events: Vec::with_capacity(1024),
             finished: false,
             last_wait: Duration::ZERO,
@@ -186,7 +663,7 @@ impl RLoop {
     }
 
     fn tick(&self) -> u64 {
-        self.shared.epoch.elapsed().as_millis() as u64
+        self.shared.tick()
     }
 
     fn cfg(&self) -> &Arc<Config> {
@@ -197,13 +674,20 @@ impl RLoop {
     /// a short tick while draining. `None`: until an event.
     pub(crate) fn next_timeout(&self) -> Option<Duration> {
         let mut timeout = self.draining.map(|_| Duration::from_millis(20));
-        if let Some(next) = self.wheel.next_deadline() {
-            let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
-            timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
+        let now = self.tick();
+        let mut next = self.wheel.next_deadline();
+        if let Some(t) = self.shared.next_deadline() {
+            next = Some(next.map_or(t, |n| n.min(t)));
         }
-        if let Some(t) = self.accept_paused_until {
-            let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
-            timeout = Some(timeout.map_or(left, |x| x.min(left)));
+        for j in &self.jobs {
+            let p = j.paused_until.load(Ordering::SeqCst);
+            if p != 0 {
+                next = Some(next.map_or(p, |n| n.min(p)));
+            }
+        }
+        if let Some(next) = next {
+            let wait = Duration::from_millis(next.saturating_sub(now) + 1);
+            timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
         }
         timeout
     }
@@ -211,25 +695,47 @@ impl RLoop {
     /// Dedicated-poller mode: polls until the poller is done.
     pub(crate) fn run(&mut self) {
         loop {
-            let t = self.next_timeout();
-            if self.poll_once(t) {
+            if self.poll_once(None) {
                 break;
             }
         }
         self.shared.stats.set_running(false);
     }
 
-    /// One poll: waits up to `timeout` for readiness, hands the events to the connections, runs
-    /// commands and timers. True once the poller has finished (shut down and drained). Called by
-    /// the dedicated poller thread, or by a worker holding the driver (ADR-104, driver mode).
-    pub(crate) fn poll_once(&mut self, timeout: Option<Duration>) -> bool {
+    /// One poll: waits up to `limit` (and no longer than the next deadline of this poller) for
+    /// readiness, hands the events to the connections and listeners, runs commands and timers.
+    /// True once the poller has finished (shut down and drained). Called by the dedicated poller
+    /// thread, or by a worker holding the driver (ADR-104, driver mode).
+    pub(crate) fn poll_once(&mut self, limit: Option<Duration>) -> bool {
         if self.finished {
             return true;
         }
+        let blocking = limit != Some(Duration::ZERO);
+        let timeout = if blocking {
+            // Announce the wait before reading the deadlines: a worker arming an earlier timer
+            // meanwhile either is seen here or sees the announcement and interrupts the wait.
+            self.shared.wait_until.store(u64::MAX, Ordering::SeqCst);
+            let own = self.next_timeout();
+            let t = match (own, limit) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            if let Some(t) = t {
+                let until = self.tick() + t.as_millis() as u64;
+                self.shared.wait_until.store(until.max(1), Ordering::SeqCst);
+            }
+            t
+        } else {
+            limit
+        };
         let mut events = std::mem::take(&mut self.events);
         events.clear();
         let t_wait = super::trace::on().then(Instant::now);
-        if let Err(e) = self.poller.wait(&mut events, timeout) {
+        let r = self.poller.wait(&mut events, timeout);
+        if blocking {
+            self.shared.wait_until.store(NOT_WAITING, Ordering::SeqCst);
+        }
+        if let Err(e) = r {
             log_or_stderr(akio_log::Level::Error, format_args!("poller error: {e}"));
             self.events = events;
             self.finished = true;
@@ -244,7 +750,11 @@ impl RLoop {
         for ev in &events {
             match ev.token {
                 WAKER => self.shared.waker.drain(),
-                t if t & LISTEN_BIT != 0 => self.accept((t & !LISTEN_BIT) as usize),
+                t if t & LISTEN_BIT != 0 => {
+                    if let Some(j) = self.jobs.get((t & !LISTEN_BIT) as usize) {
+                        j.notify(&self.workers);
+                    }
+                }
                 id => self.on_event(id, *ev),
             }
         }
@@ -264,16 +774,14 @@ impl RLoop {
             );
         }
         if let Some(deadline) = self.draining {
-            if self.conns.is_empty() && self.connecting.is_empty() {
+            if self.connecting.is_empty() && self.shared.table_is_empty() {
                 self.finished = true;
                 return true;
             }
             let now = Instant::now();
             if now >= deadline && !self.killed {
                 self.killed = true;
-                for (c, _) in self.conns.values() {
-                    c.close_with(None);
-                }
+                self.shared.each(|_, c| c.close_with(None));
                 for (_, d) in self.connecting.drain() {
                     if let Some(f) = d.on_error {
                         f(io::Error::new(
@@ -292,13 +800,10 @@ impl RLoop {
     }
 
     fn on_event(&mut self, id: u64, ev: Event) {
-        if let Some((c, _)) = self.conns.get(&id) {
-            let bits = if ev.readable { READ } else { 0 }
-                | if ev.writable { WRITE } else { 0 }
-                | if ev.hup { HUP } else { 0 };
-            if bits != 0 {
-                c.notify(bits);
-            }
+        let bits = if ev.readable { READ } else { 0 }
+            | if ev.writable { WRITE } else { 0 }
+            | if ev.hup { HUP } else { 0 };
+        if self.shared.notify_conn(id, bits) {
             return;
         }
         if self.connecting.contains_key(&id) && (ev.readable || ev.writable) {
@@ -306,113 +811,34 @@ impl RLoop {
         }
     }
 
-    // ---- accept / open / dial ---------------------------------------------------------------
+    // ---- accept / dial ----------------------------------------------------------------------
 
-    fn accept(&mut self, idx: usize) {
-        for _ in 0..MAX_ACCEPT_PER_EVENT {
-            let (Some(l), Some(acceptor)) = (self.listeners.get(idx), &self.acceptor) else {
-                return;
-            };
-            match l.accept() {
-                Ok((stream, peer)) => {
-                    let acceptor = acceptor.clone();
-                    self.open(stream, peer, acceptor, false);
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    self.shared.stats.accept_errors.add_local(1);
-                    log_or_stderr(
-                        akio_log::Level::Warn,
-                        format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
-                    );
-                    for l in &self.listeners {
-                        self.poller.delete(l.as_raw_fd());
-                    }
-                    self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
-                    return;
-                }
+    fn resume_accept(&self) {
+        if self.draining.is_some() {
+            return;
+        }
+        let now = self.tick();
+        for j in &self.jobs {
+            let p = j.paused_until.load(Ordering::SeqCst);
+            if p == 0 || now < p {
+                continue;
             }
-        }
-    }
-
-    fn resume_accept(&mut self) {
-        let Some(t) = self.accept_paused_until else {
-            return;
-        };
-        if Instant::now() < t || self.draining.is_some() {
-            return;
-        }
-        self.accept_paused_until = None;
-        for (i, l) in self.listeners.iter().enumerate() {
-            if let Err(e) = self
-                .poller
-                .add(l.as_raw_fd(), LISTEN_BIT | i as u64, true, false)
-            {
+            j.paused_until.store(0, Ordering::SeqCst);
+            let g = lock(&j.listener);
+            if g.is_none() {
+                continue;
+            }
+            if let Err(e) = self.shared.registry.add_edge(j.fd, j.token) {
                 log_or_stderr(
                     akio_log::Level::Warn,
                     format_args!("re-arming the listener: {e}"),
                 );
+                continue;
             }
+            drop(g);
+            // Edge-triggered: what queued up during the pause gives no new edge.
+            j.notify(&self.workers);
         }
-    }
-
-    fn open(
-        &mut self,
-        stream: TcpStream,
-        peer: SocketAddr,
-        acceptor: Arc<dyn DynAcceptor>,
-        dialed: bool,
-    ) {
-        if stream.set_nonblocking(true).is_err() {
-            return;
-        }
-        let _ = stream.set_nodelay(true);
-        let Ok(local) = stream.local_addr() else {
-            return;
-        };
-        let tel = self.cfg().telemetry.clone();
-        if !tel.conn_opened(!dialed) {
-            self.shared.stats.rejected.add_local(1);
-            akio_log::debug!(target: "akio", peer:% = peer; "connection refused: max_connections reached");
-            return;
-        }
-        let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
-        let fd = stream.as_raw_fd();
-        let now = self.tick();
-        let c = RConn::new(
-            id,
-            stream,
-            local,
-            peer,
-            acceptor,
-            self.shared.clone(),
-            self.workers.clone(),
-            now,
-        );
-        if self.shared.registry.add_edge(fd, id).is_err() {
-            c.inner.mark_closed();
-            tel.conn_closed();
-            return;
-        }
-        let st = &self.shared.stats;
-        if dialed { &st.dialed } else { &st.accepted }.add_local(1);
-        akio_log::trace!(target: "akio", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
-        let idle = self.cfg().telemetry.live().idle_ms();
-        let idle_timer = (idle != 0).then(|| self.schedule(now + idle, id));
-        self.conns.insert(
-            id,
-            (
-                c.clone(),
-                Timers {
-                    idle: idle_timer,
-                    write: None,
-                    write_mark: 0,
-                    hs: None,
-                },
-            ),
-        );
-        c.start();
     }
 
     fn begin_dial(
@@ -441,7 +867,10 @@ impl RLoop {
         );
         if let Some(ct) = self.cfg().connect_timeout {
             let at = self.tick() + (ct.as_millis() as u64).max(1);
-            self.schedule(at, id | CONNECT_TIMER);
+            if self.wheel.is_empty() {
+                self.wheel.advance(self.tick(), drop);
+            }
+            self.wheel.schedule(at, id | CONNECT_TIMER);
         }
     }
 
@@ -460,7 +889,9 @@ impl RLoop {
             Ok(Some(e)) | Err(e) => Err(e),
         };
         match result {
-            Ok(peer) => self.open(stream, peer, acceptor, true),
+            Ok(peer) => self
+                .shared
+                .open(stream, peer, acceptor, true, &self.workers),
             Err(e) => {
                 if let Some(f) = on_error {
                     f(e);
@@ -489,61 +920,21 @@ impl RLoop {
 
     fn on_cmd(&mut self, cmd: RCmd) {
         match cmd {
-            RCmd::Remove(id) => {
-                if let Some((_, t)) = self.conns.remove(&id) {
-                    for t in [t.idle, t.write, t.hs].into_iter().flatten() {
-                        self.wheel.cancel(t);
-                    }
-                }
-            }
-            RCmd::ArmWrite(id) => {
-                let Some(wt) = self.cfg().write_timeout else {
-                    return;
-                };
-                let at = self.tick() + (wt.as_millis() as u64).max(1);
-                if !self.conns.contains_key(&id) {
-                    return;
-                }
-                let t = self.schedule(at, id | WRITE_TIMER);
-                if let Some((c, tm)) = self.conns.get_mut(&id) {
-                    tm.write_mark = c.inner.debug_state().0;
-                    if let Some(old) = tm.write.replace(t) {
-                        self.wheel.cancel(old);
-                    }
-                }
-            }
-            RCmd::ArmHandshake(id) => {
-                let Some(d) = self
-                    .conns
-                    .get(&id)
-                    .and_then(|(c, _)| c.inner.handshake_timeout())
-                else {
-                    return;
-                };
-                let at = self.tick() + (d.as_millis() as u64).max(1);
-                let t = self.schedule(at, id | HANDSHAKE_TIMER);
-                if let Some((_, tm)) = self.conns.get_mut(&id) {
-                    tm.hs = Some(t);
-                }
-            }
             RCmd::Shutdown => self.begin_shutdown(),
             RCmd::Core(LoopCmd::Inspect(reply)) => {
                 let now = self.tick();
                 let meta = self.shared.stats.meta().clone();
-                let infos = self
-                    .conns
-                    .iter()
-                    .map(|(id, (c, _))| {
-                        let mut ci = ConnInfo::new(*id, &c.inner, meta.clone());
-                        ci.age = Duration::from_millis(now.saturating_sub(c.opened));
-                        ci.idle = Duration::from_millis(
-                            now.saturating_sub(c.last_active.load(Ordering::Relaxed)),
-                        );
-                        ci.bytes_in = c.bytes_in.load(Ordering::Relaxed);
-                        ci.backpressure = c.bp_flag.load(Ordering::Relaxed);
-                        ci
-                    })
-                    .collect();
+                let mut infos = Vec::new();
+                self.shared.each(|id, c| {
+                    let mut ci = ConnInfo::new(id, &c.inner, meta.clone());
+                    ci.age = Duration::from_millis(now.saturating_sub(c.opened));
+                    ci.idle = Duration::from_millis(
+                        now.saturating_sub(c.last_active.load(Ordering::Relaxed)),
+                    );
+                    ci.bytes_in = c.bytes_in.load(Ordering::Relaxed);
+                    ci.backpressure = c.bp_flag.load(Ordering::Relaxed);
+                    infos.push(ci);
+                });
                 reply(infos);
             }
             RCmd::Core(LoopCmd::Reload) => self.on_reload(),
@@ -561,31 +952,13 @@ impl RLoop {
         let backlog = live.backlog();
         if backlog != self.backlog {
             self.backlog = backlog;
-            for l in &self.listeners {
-                let _ = akio_sys::set_backlog(l, backlog);
-            }
-        }
-        let idle = live.idle_ms();
-        let ids: Vec<u64> = self.conns.keys().copied().collect();
-        for id in ids {
-            let Some((c, tm)) = self.conns.get_mut(&id) else {
-                continue;
-            };
-            let last = c.last_active.load(Ordering::Relaxed);
-            if let Some(t) = tm.idle.take() {
-                self.wheel.cancel(t);
-            }
-            if idle != 0 {
-                let t = self.schedule(last + idle, id);
-                if let Some((_, tm)) = self.conns.get_mut(&id) {
-                    tm.idle = Some(t);
+            for j in &self.jobs {
+                if let Some(l) = lock(&j.listener).as_ref() {
+                    let _ = akio_sys::set_backlog(l, backlog);
                 }
             }
-            // Backpressure is re-evaluated by the connection's next round.
-            if let Some((c, _)) = self.conns.get(&id) {
-                c.notify(super::conn::WAKE);
-            }
         }
+        self.shared.reload_idle(live.idle_ms());
     }
 
     fn begin_shutdown(&mut self) {
@@ -593,12 +966,13 @@ impl RLoop {
             return;
         }
         self.draining = Some(Instant::now() + self.cfg().telemetry.live().shutdown_timeout());
-        for l in std::mem::take(&mut self.listeners) {
-            self.poller.delete(l.as_raw_fd());
+        self.shared.draining.store(true, Ordering::SeqCst);
+        for j in std::mem::take(&mut self.jobs) {
+            j.close();
         }
-        for (c, _) in self.conns.values() {
-            c.notify(SHUTDOWN);
-        }
+        // Every connection an accept job opened is in the table now (`close` waited for it);
+        // later ones (none but in-flight dials) see `draining` themselves.
+        self.shared.each(|_, c| c.notify(SHUTDOWN));
         for (_, d) in self.connecting.drain() {
             self.poller.delete(d.stream.as_raw_fd());
             if let Some(f) = d.on_error {
@@ -612,26 +986,14 @@ impl RLoop {
 
     // ---- timers -----------------------------------------------------------------------------
 
-    fn schedule(&mut self, at: u64, id: u64) -> TimerId {
-        if self.wheel.is_empty() {
-            // The wheel's clock stops while it is empty; catch it up first.
-            self.wheel.advance(self.tick(), drop);
-        }
-        self.wheel.schedule(at, id)
-    }
-
     fn fire_timers(&mut self) {
-        if self.wheel.is_empty() {
-            return;
-        }
-        let now = self.tick();
-        let mut due = Vec::new();
-        self.wheel.advance(now, |id| due.push(id));
-        let idle = self.cfg().telemetry.live().idle_ms();
-        for id in due {
-            if id & WRITE_TIMER != 0 {
-                self.on_write_timer(id & !WRITE_TIMER, now);
-            } else if id & CONNECT_TIMER != 0 {
+        let mut due = std::mem::take(&mut self.due);
+        self.shared.fire_timers(&mut due);
+        if !self.wheel.is_empty() {
+            due.clear();
+            let now = self.tick();
+            self.wheel.advance(now, |id| due.push(id));
+            for &id in &due {
                 let id = id & !CONNECT_TIMER;
                 if let Some(d) = self.connecting.remove(&id) {
                     self.poller.delete(d.stream.as_raw_fd());
@@ -639,71 +1001,10 @@ impl RLoop {
                         f(io::Error::new(io::ErrorKind::TimedOut, "connect timeout"));
                     }
                 }
-            } else if id & HANDSHAKE_TIMER != 0 {
-                let id = id & !HANDSHAKE_TIMER;
-                if let Some((c, tm)) = self.conns.get_mut(&id) {
-                    tm.hs = None;
-                    if c.inner.transport_handshaking() {
-                        c.inner.note_transport_error();
-                        c.close_with(Some(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "handshake timeout",
-                        )));
-                    }
-                }
-            } else {
-                let Some((c, tm)) = self.conns.get_mut(&id) else {
-                    continue;
-                };
-                tm.idle = None;
-                if idle == 0 {
-                    continue;
-                }
-                let expires = c.last_active.load(Ordering::Relaxed) + idle;
-                if expires <= now {
-                    self.shared.stats.idle_timeouts.add_local(1);
-                    c.close_with(Some(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "idle timeout",
-                    )));
-                } else {
-                    let t = self.wheel.schedule(expires, id);
-                    if let Some((_, tm)) = self.conns.get_mut(&id) {
-                        tm.idle = Some(t);
-                    }
-                }
             }
         }
-    }
-
-    fn on_write_timer(&mut self, id: u64, now: u64) {
-        let Some(wt) = self.cfg().write_timeout else {
-            return;
-        };
-        let Some((c, tm)) = self.conns.get_mut(&id) else {
-            return;
-        };
-        tm.write = None;
-        let (sent, pending, ..) = c.inner.debug_state();
-        if pending == 0 {
-            c.write_armed.store(false, Ordering::Release);
-            return;
-        }
-        if sent != tm.write_mark {
-            tm.write_mark = sent;
-            let t = self
-                .wheel
-                .schedule(now + (wt.as_millis() as u64).max(1), id | WRITE_TIMER);
-            if let Some((_, tm)) = self.conns.get_mut(&id) {
-                tm.write = Some(t);
-            }
-            return;
-        }
-        self.shared.stats.write_timeouts.add_local(1);
-        c.close_with(Some(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "write timeout",
-        )));
+        due.clear();
+        self.due = due;
     }
 }
 

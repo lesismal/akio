@@ -23,6 +23,12 @@ pub(crate) struct Counters {
     pub(crate) poll_gt1ms: AtomicU64,
     pub(crate) poll_max_us: AtomicU64,
     pub(crate) wait_gt3ms_with_events: AtomicU64,
+    /// Parked workers woken (`unpark`).
+    pub(crate) unparks: AtomicU64,
+    /// Blocking polls interrupted through the eventfd / kqueue user event.
+    pub(crate) driver_wakes: AtomicU64,
+    /// Workers that parked.
+    pub(crate) parks: AtomicU64,
 }
 
 pub(crate) static C: Counters = Counters {
@@ -35,7 +41,18 @@ pub(crate) static C: Counters = Counters {
     poll_gt1ms: AtomicU64::new(0),
     poll_max_us: AtomicU64::new(0),
     wait_gt3ms_with_events: AtomicU64::new(0),
+    unparks: AtomicU64::new(0),
+    driver_wakes: AtomicU64::new(0),
+    parks: AtomicU64::new(0),
 };
+
+/// Counts one event in `c` when tracing is on.
+#[inline]
+pub(crate) fn count(c: &AtomicU64) {
+    if ON.load(Ordering::Relaxed) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// Whether tracing is on (decided once; starts the reporter thread).
 pub(crate) fn on() -> bool {
@@ -92,7 +109,7 @@ fn report() {
         std::thread::sleep(Duration::from_secs(1));
         let t = |a: &AtomicU64| a.swap(0, Ordering::Relaxed);
         eprintln!(
-            "rounds-trace rounds={} q>100us={} q>1ms={} q>3ms={} qmax={}us polls={} poll>1ms={} pollmax={}us longwait+events={}",
+            "rounds-trace rounds={} q>100us={} q>1ms={} q>3ms={} qmax={}us polls={} poll>1ms={} pollmax={}us longwait+events={} unparks={} driver_wakes={} parks={}",
             t(&C.rounds),
             t(&C.queue_gt100us),
             t(&C.queue_gt1ms),
@@ -102,6 +119,9 @@ fn report() {
             t(&C.poll_gt1ms),
             t(&C.poll_max_us),
             t(&C.wait_gt3ms_with_events),
+            t(&C.unparks),
+            t(&C.driver_wakes),
+            t(&C.parks),
         );
     }
 }

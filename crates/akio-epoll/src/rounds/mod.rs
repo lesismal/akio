@@ -1,5 +1,7 @@
 //! Rounds scheduling (ADR-104): a few pollers report readiness, and each round of a
-//! connection (read, handler, write) runs on whichever worker is free.
+//! connection (read, handler, write) runs on whichever worker is free. So does accepting: a
+//! listening socket's readiness queues an accept job, and the worker running it opens and
+//! registers what it accepted.
 
 mod conn;
 mod poller;
@@ -104,27 +106,35 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl RoundsGroup {
     /// Binds `listen` (if any) with `rc`'s pollers and workers. Nothing runs until
     /// [`Group::start`].
+    ///
+    /// On Linux there is one `SO_REUSEPORT` socket per worker, spread over the pollers, so that
+    /// accepts run on several workers at once; elsewhere one socket, cloned for each poller.
     pub fn bind(
         listen: Option<(SocketAddr, Arc<dyn DynAcceptor>)>,
         rc: RoundsConfig,
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<RoundsGroup> {
-        let (pollers, _) = rc.resolved();
-        let mut listeners: Vec<Option<TcpListener>> = (0..pollers).map(|_| None).collect();
+        let (pollers, workers) = rc.resolved();
+        let mut listeners: Vec<Vec<TcpListener>> = (0..pollers).map(|_| Vec::new()).collect();
         let mut addr = SocketAddr::from(([0, 0, 0, 0], 0));
         let mut acceptor = None;
         if let Some((a, acc)) = listen {
             let first = akio_sys::listen(a, cfg!(target_os = "linux"), cfg.backlog)?;
             addr = first.local_addr()?;
-            for slot in listeners.iter_mut().skip(1) {
-                *slot = Some(if cfg!(target_os = "linux") {
+            let n = if cfg!(target_os = "linux") {
+                workers.max(pollers)
+            } else {
+                pollers
+            };
+            for i in 1..n {
+                listeners[i % pollers].push(if cfg!(target_os = "linux") {
                     akio_sys::listen(addr, true, cfg.backlog)?
                 } else {
                     first.try_clone()?
                 });
             }
-            listeners[0] = Some(first);
+            listeners[0].insert(0, first);
             acceptor = Some(acc);
         }
         let fds = if cfg!(target_os = "linux") {
@@ -148,14 +158,14 @@ impl RoundsGroup {
         let (pollers, _) = rc.resolved();
         let mut listeners = Vec::with_capacity(pollers);
         for _ in 1..pollers {
-            listeners.push(Some(listener.try_clone()?));
+            listeners.push(vec![listener.try_clone()?]);
         }
-        listeners.insert(0, Some(listener));
+        listeners.insert(0, vec![listener]);
         Self::assemble(listeners, addr, Vec::new(), Some(acceptor), rc, cfg, pool)
     }
 
     fn assemble(
-        listeners: Vec<Option<TcpListener>>,
+        listeners: Vec<Vec<TcpListener>>,
         addr: SocketAddr,
         fds: Vec<i32>,
         acceptor: Option<Arc<dyn DynAcceptor>>,
@@ -174,14 +184,8 @@ impl RoundsGroup {
             // Pollers are numbered after the workers in the metrics of the listener.
             let meta = LoopMeta::new(BACKEND, listener_addr, nworkers + i);
             let stats = Arc::new(LoopStats::new(meta));
-            let sh = PollerShared::new(&poller, pool.clone(), cfg.clone(), stats)?;
-            let lp = RLoop::new(
-                poller,
-                sh.clone(),
-                l.into_iter().collect(),
-                acceptor.clone(),
-                workers.clone(),
-            )?;
+            let sh = PollerShared::new(&poller, pool.clone(), cfg.clone(), stats, nworkers)?;
+            let lp = RLoop::new(poller, sh.clone(), l, acceptor.clone(), workers.clone())?;
             slots.push(Slot {
                 shared: sh,
                 pending: Some(lp),
@@ -302,6 +306,10 @@ impl Group for RoundsGroup {
         }
         if any || self.started.load(Ordering::Acquire) {
             self.workers.stop_and_join();
+            // Break the cycle poller -> table -> connection -> poller.
+            for sh in &self.shareds {
+                sh.clear_table();
+            }
         }
     }
 

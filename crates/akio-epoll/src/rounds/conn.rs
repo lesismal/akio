@@ -19,8 +19,8 @@ use std::{
 
 use akio_core::{ConnInner, DynAcceptor, DynHandler, Error, LoopLink, LoopStats, Pool, Task};
 
-use super::poller::{PollerShared, RCmd};
-use super::workers::{WorkerCtx, Workers};
+use super::poller::PollerShared;
+use super::workers::{Job, WorkerCtx, Workers};
 
 /// `on_open` has not run yet (set once, when the connection is created).
 pub(crate) const OPEN: u32 = 1;
@@ -184,14 +184,19 @@ impl RConn {
             return;
         }
         if !self.scheduled.swap(true, Ordering::SeqCst) {
-            self.workers.submit(self.clone());
+            self.workers.submit(Job::Round(self.clone()));
         }
+    }
+
+    /// Adds `bits` for the first round, before [`start`](Self::start).
+    pub(crate) fn pending_or(&self, bits: u32) {
+        self.pending.fetch_or(bits, Ordering::SeqCst);
     }
 
     /// Queues the first round (`on_open`).
     pub(crate) fn start(self: &Arc<Self>) {
         self.scheduled.store(true, Ordering::SeqCst);
-        self.workers.submit(self.clone());
+        self.workers.submit(Job::Round(self.clone()));
     }
 
     /// Closes the connection with `err` in its next round.
@@ -206,7 +211,7 @@ impl RConn {
     }
 
     fn tick(&self) -> u64 {
-        self.home.epoch.elapsed().as_millis() as u64
+        self.home.tick()
     }
 
     /// Runs on a worker: serves pending events until none are left (or the connection should
@@ -236,7 +241,7 @@ impl RConn {
         if (yielded || self.pending.load(Ordering::SeqCst) != 0)
             && !self.scheduled.swap(true, Ordering::SeqCst)
         {
-            ctx.workers.submit(self);
+            ctx.workers.submit(Job::Round(self));
         }
     }
 
@@ -269,7 +274,7 @@ impl RConn {
                 .telemetry
                 .callback_done(&ctx.stats, "on_open", self.id, t0);
             if self.inner.handshake_timeout().is_some() {
-                self.home.post(RCmd::ArmHandshake(self.id));
+                self.home.arm_handshake(self.id);
             }
         }
         if bits & SHUTDOWN != 0 {
@@ -369,7 +374,7 @@ impl RConn {
             return;
         }
         if st.q > 0 && !self.write_armed.swap(true, Ordering::AcqRel) {
-            self.home.post(RCmd::ArmWrite(self.id));
+            self.home.arm_write(self.id);
         }
     }
 
@@ -537,7 +542,8 @@ impl RConn {
         self.tasks.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.home.stats.closed.add(1);
         self.home.cfg.telemetry.conn_closed();
-        // The poller drops its reference (and with the last one the socket closes).
-        self.home.post(RCmd::Remove(self.id));
+        // Out of the table, with its timers: no message to the poller. The socket closes with
+        // the last reference (the round's own, at the latest).
+        self.home.remove(self.id);
     }
 }
