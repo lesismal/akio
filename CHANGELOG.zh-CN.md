@@ -10,6 +10,24 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/1 客户端的响应头超时、空闲超时与取消，服务端请求得知客户端离开，运行时修改写超时（akio-http、akio-h3、akio-core、akio-epoll、akio-uring）
+
+ADR-108，纯新增，应 akit 的需求（A36、A37、A38）：
+
+- `ClientRequest::response_header_timeout` 与 `response_idle_timeout`（默认值在 `ClientOptions` 中）：请求完整写出后
+  （流式请求体：从 `RequestBody::finish` 起）等待响应头的时长，以及两次读取消息体之间的最长间隔，在
+  `ResponseBody::hold_reads` 暂停读取期间停表。超时后请求以新的 `ClientError::HeaderTimeout` / `IdleTimeout` 失败并
+  关闭连接；`ClientError::is_timeout`。
+- `CancelToken` 与 `ClientRequest::cancel_with`：在任意时刻取消请求（发送前直接丢弃，发送后关闭其连接），请求以新的
+  `ClientError::Cancelled` 失败一次；一个令牌可覆盖多个请求。
+- `Context::on_gone` 与 `Detached::on_gone`：客户端在响应完成前离开时运行一次：HTTP/1 上连接关闭或客户端 EOF 到来
+  （akio-core 新增的 `ConnInner::on_peer_gone`），HTTP/2 上流被重置或连接关闭，HTTP/3 上通过新的
+  `ConnSink::on_gone`（默认从不调用），akio-h3 实现了它。
+- 修复：流式接收请求体的 HTTP/1 请求在客户端离开后不再保留其 context 和消息体 sink：会话在连接关闭时丢弃它们，并在
+  客户端的 EOF 于消息体中途到来时关闭连接。
+- `Live::set_write_timeout` / `write_timeout`：`Config::write_timeout` 可热加载（`Engine::reload` 把它列在
+  `applied` 中），支持 epoll 与 io_uring。
+
 ### 修复：监听器移除后立即发起的连接不再落到其旧 socket 上（akio、akio-uring、akio-epoll）
 
 `Engine::remove_listener` 与 `shutdown_listener`（ADR-099）原先在变更投递给 I/O 线程后即返回，并且在 io_uring 上，被移除

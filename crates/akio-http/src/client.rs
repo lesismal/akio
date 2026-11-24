@@ -35,7 +35,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Condvar, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering},
     },
     task::{Context as TaskContext, Poll, Waker},
     time::{Duration, Instant},
@@ -52,7 +52,10 @@ use akio_ws::{
     proxy::{Connect, ProxyServer, Refusal},
 };
 
-use crate::cookie::CookieJar;
+use crate::{
+    cookie::CookieJar,
+    deadline::{OnDeadline, Watch},
+};
 
 use crate::{
     message::{Headers, Method, Version},
@@ -84,6 +87,22 @@ pub struct ClientRequest {
     /// [`Client::request`] and [`Client::send`] ignore it and send `body`, as does
     /// [`H2Client`](crate::h2client::H2Client). `None` by default.
     pub streamed: Option<StreamedBody>,
+    /// Limit on the wait for the response's head once the request is written whole (its last
+    /// byte queued: at once for a body given whole, at [`RequestBody::finish`] for a streamed
+    /// one), interim 1xx responses included; `None` uses the client's
+    /// ([`ClientOptions::response_header_timeout`]). Past it the request fails with
+    /// [`ClientError::HeaderTimeout`] and its connection is closed (ADR-108). Each redirect
+    /// hop has its own. HTTP/1 client only.
+    pub response_header_timeout: Option<Duration>,
+    /// Limit on the gap between two reads of the response's body, from its head on; `None`
+    /// uses the client's ([`ClientOptions::response_idle_timeout`]). Past it the request fails
+    /// with [`ClientError::IdleTimeout`] (after [`ResponseHandler::on_head`] for a response
+    /// delivered as it arrives) and its connection is closed. The time reads are held
+    /// ([`ResponseBody::hold_reads`]) does not count (ADR-108). HTTP/1 client only.
+    pub response_idle_timeout: Option<Duration>,
+    /// Cancels the request when cancelled ([`CancelToken::cancel`], ADR-108). `None` by
+    /// default. HTTP/1 client only.
+    pub cancel: Option<CancelToken>,
 }
 
 /// How a request body written as it is produced is framed ([`ClientRequest::streamed`], ADR-101).
@@ -107,6 +126,9 @@ impl ClientRequest {
             body: Vec::new(),
             timeout: None,
             streamed: None,
+            response_header_timeout: None,
+            response_idle_timeout: None,
+            cancel: None,
         }
     }
 
@@ -151,6 +173,97 @@ impl ClientRequest {
         self.timeout = Some(d);
         self
     }
+
+    /// Sets this request's response header timeout
+    /// ([`response_header_timeout`](Self::response_header_timeout)).
+    #[must_use]
+    pub fn response_header_timeout(mut self, d: Duration) -> ClientRequest {
+        self.response_header_timeout = Some(d);
+        self
+    }
+
+    /// Sets this request's response idle timeout
+    /// ([`response_idle_timeout`](Self::response_idle_timeout)).
+    #[must_use]
+    pub fn response_idle_timeout(mut self, d: Duration) -> ClientRequest {
+        self.response_idle_timeout = Some(d);
+        self
+    }
+
+    /// Cancels this request when `token` is cancelled ([`cancel`](Self::cancel)).
+    #[must_use]
+    pub fn cancel_with(mut self, token: &CancelToken) -> ClientRequest {
+        self.cancel = Some(token.clone());
+        self
+    }
+}
+
+/// Cancels the requests given it ([`ClientRequest::cancel_with`], ADR-108) at any point: before
+/// a request is sent it is dropped; once sent, its connection is closed. The request then fails
+/// with [`ClientError::Cancelled`], once, unless it was over already: a whole response's
+/// callback is called on the thread that cancels, a [`ResponseHandler`] gets
+/// [`on_error`](ResponseHandler::on_error) on the connection's I/O thread (or, before there is
+/// a connection, on the thread that resolves or dials it, once that is done).
+///
+/// Cheap to clone and usable from any thread. One token may serve several requests (the
+/// attempts of a retrying proxy, say): cancelling it cancels every one of them that is not over,
+/// and a request given a token already cancelled fails at once.
+#[derive(Clone, Default)]
+pub struct CancelToken(Arc<Mutex<TokenState>>);
+
+#[derive(Default)]
+struct TokenState {
+    cancelled: bool,
+    /// The requests given the token; finished ones are pruned as more are added.
+    exchanges: Vec<Weak<Exchange>>,
+}
+
+impl std::fmt::Debug for CancelToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelToken")
+            .field("cancelled", &self.is_cancelled())
+            .finish_non_exhaustive()
+    }
+}
+
+impl CancelToken {
+    /// A token not cancelled.
+    pub fn new() -> CancelToken {
+        CancelToken::default()
+    }
+
+    /// Cancels every request given the token that is not over (and any given it later).
+    pub fn cancel(&self) {
+        let exchanges = {
+            let mut st = lock_or(&self.0);
+            if st.cancelled {
+                return;
+            }
+            st.cancelled = true;
+            std::mem::take(&mut st.exchanges)
+        };
+        for ex in exchanges.iter().filter_map(Weak::upgrade) {
+            ex.give_up(GaveUp::Cancelled);
+        }
+    }
+
+    /// Whether [`cancel`](Self::cancel) was called.
+    pub fn is_cancelled(&self) -> bool {
+        lock_or(&self.0).cancelled
+    }
+
+    /// Ties `ex` to the token; `false` when the token is already cancelled.
+    fn attach(&self, ex: &Arc<Exchange>) -> bool {
+        let mut st = lock_or(&self.0);
+        if st.cancelled {
+            return false;
+        }
+        if st.exchanges.len() == st.exchanges.capacity() {
+            st.exchanges.retain(|w| w.strong_count() > 0);
+        }
+        st.exchanges.push(Arc::downgrade(ex));
+        true
+    }
 }
 
 /// Limits of a [`Client`] ([`Client::with_options`]). Every one has a safe default; raise them
@@ -176,6 +289,12 @@ pub struct ClientOptions {
     /// How the addresses of a server (or proxy) are raced when it has several (RFC 8305:
     /// IPv6 and IPv4 interleaved, a new attempt every 250 ms by default).
     pub happy_eyeballs: akio::dns::HappyEyeballs,
+    /// Default [`ClientRequest::response_header_timeout`]. `None` by default (the request
+    /// timeout, if any, bounds the wait).
+    pub response_header_timeout: Option<Duration>,
+    /// Default [`ClientRequest::response_idle_timeout`]. `None` by default (the request
+    /// timeout, if any, bounds the body).
+    pub response_idle_timeout: Option<Duration>,
 }
 
 impl Default for ClientOptions {
@@ -187,6 +306,8 @@ impl Default for ClientOptions {
             max_idle_per_host: 32,
             max_idle: 256,
             happy_eyeballs: akio::dns::HappyEyeballs::default(),
+            response_header_timeout: None,
+            response_idle_timeout: None,
         }
     }
 }
@@ -232,6 +353,23 @@ pub enum ClientError {
     /// The server refused a WebSocket ([`H2Client::websocket`](crate::h2client::H2Client::websocket))
     /// with this status.
     Status(u16),
+    /// The response's head did not come within [`ClientRequest::response_header_timeout`].
+    HeaderTimeout,
+    /// The response's body went silent for [`ClientRequest::response_idle_timeout`].
+    IdleTimeout,
+    /// The request was cancelled ([`CancelToken::cancel`]).
+    Cancelled,
+}
+
+impl ClientError {
+    /// Whether this is one of the timeouts ([`Timeout`](Self::Timeout),
+    /// [`HeaderTimeout`](Self::HeaderTimeout), [`IdleTimeout`](Self::IdleTimeout)).
+    pub fn is_timeout(&self) -> bool {
+        matches!(
+            self,
+            ClientError::Timeout | ClientError::HeaderTimeout | ClientError::IdleTimeout
+        )
+    }
 }
 
 impl std::fmt::Display for ClientError {
@@ -245,6 +383,9 @@ impl std::fmt::Display for ClientError {
             ClientError::TooManyRedirects => f.write_str("too many redirects"),
             ClientError::TooLarge(what) => write!(f, "too large: {what}"),
             ClientError::Status(s) => write!(f, "WebSocket refused with status {s}"),
+            ClientError::HeaderTimeout => f.write_str("timed out waiting for the response head"),
+            ClientError::IdleTimeout => f.write_str("response body idle too long"),
+            ClientError::Cancelled => f.write_str("request cancelled"),
         }
     }
 }
@@ -288,6 +429,8 @@ impl std::fmt::Debug for RequestBody {
 struct ReqBody {
     conn: Arc<ConnInner>,
     st: Mutex<ReqBodyState>,
+    /// The response header timeout, armed when the body is finished.
+    header: Option<(Arc<ConnTimer>, Duration)>,
 }
 
 struct ReqBodyState {
@@ -296,6 +439,8 @@ struct ReqBodyState {
     finished: bool,
     /// The request is over (its response complete, or failed): nothing more is sent.
     aborted: bool,
+    /// The response's head came (a finish after it arms no header timeout).
+    head_in: bool,
 }
 
 impl ReqBody {
@@ -393,6 +538,11 @@ impl RequestBody {
             }
         }
         st.finished = true;
+        // The request is written whole: the wait for the response's head starts (unless it came
+        // already, early).
+        if let (false, Some((t, d))) = (st.head_in, &self.shared.header) {
+            t.arm(PHASE_HEAD, *d);
+        }
         Ok(())
     }
 }
@@ -441,6 +591,8 @@ struct RespBody {
     conn: Arc<ConnInner>,
     /// The response is in progress.
     live: Mutex<bool>,
+    /// The response idle timeout: stopped while reads are held.
+    idle: Option<(Arc<ConnTimer>, Duration)>,
 }
 
 impl RespBody {
@@ -457,15 +609,26 @@ impl ResponseBody {
     /// Stops (`true`) or resumes (`false`) reading the connection, so that the server stops
     /// sending once the socket buffers fill. Bytes already read are still delivered: at most one
     /// read's worth arrives after holding.
+    ///
+    /// While reads are held, the response idle timeout
+    /// ([`ClientRequest::response_idle_timeout`]) is stopped; it starts again on resuming.
     pub fn hold_reads(&self, hold: bool) {
         let live = lock_or(&self.shared.live);
         if *live {
             self.shared.conn.hold_reads(hold);
+            if let Some((t, d)) = &self.shared.idle {
+                if hold {
+                    t.disarm();
+                } else {
+                    t.arm(PHASE_IDLE, *d);
+                }
+            }
         }
     }
 
     /// Abandons the response: closes the connection. The handler then gets
-    /// [`on_error`](ResponseHandler::on_error) with [`ClientError::Closed`].
+    /// [`on_error`](ResponseHandler::on_error) with [`ClientError::Closed`] (with
+    /// [`ClientError::Cancelled`] when the request was cancelled meanwhile).
     pub fn cancel(&self) {
         let live = lock_or(&self.shared.live);
         if *live {
@@ -872,16 +1035,25 @@ fn redirect(
     Ok(Some(next))
 }
 
+/// Why an exchange gave up: [`GaveUp::Timeout`] or [`GaveUp::Cancelled`] (0: it did not).
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum GaveUp {
+    Timeout = 1,
+    Cancelled = 2,
+}
+
 /// One logical request across its attempts (retries, redirects): delivers the outcome once and
-/// carries the timeout.
+/// carries the timeout and the cancellation.
 struct Exchange {
     done: Mutex<Option<Callback>>,
     /// The site of the first request (cookies: a chain that leaves it is cross-site).
     site: OnceLock<String>,
     cross_site: AtomicBool,
-    /// The connection serving the current attempt, for the timeout to close.
+    /// The connection serving the current attempt, for the timeout or a cancel to close.
     conn: Mutex<Option<Weak<ConnInner>>>,
-    expired: AtomicBool,
+    /// Why the exchange gave up ([`GaveUp`]), 0 while it did not.
+    gave_up: AtomicU8,
     hops: AtomicU32,
 }
 
@@ -893,22 +1065,27 @@ impl Exchange {
         }
     }
 
-    fn expired(&self) -> bool {
-        self.expired.load(Ordering::Acquire)
+    /// The error the request failed with when it timed out or was cancelled.
+    fn gave_up(&self) -> Option<ClientError> {
+        match self.gave_up.load(Ordering::Acquire) {
+            0 => None,
+            1 => Some(ClientError::Timeout),
+            _ => Some(ClientError::Cancelled),
+        }
     }
 
-    /// A response delivered as it arrives ended (its handler was told): a later timeout does
-    /// nothing.
+    /// A response delivered as it arrives ended (its handler was told): a later timeout or
+    /// cancel does nothing.
     fn settle(&self) {
         self.done.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
-    /// The timeout passed: fail the request and close its connection. A response delivered as
-    /// it arrives learns it from its connection (or the dial) as [`ClientError::Timeout`].
-    fn expire(&self) {
+    /// The timeout passed, or the request was cancelled: fail it and close its connection. A
+    /// response delivered as it arrives learns it from its connection (or the dial).
+    fn give_up(&self, why: GaveUp) {
         let cb = self.done.lock().unwrap_or_else(|e| e.into_inner()).take();
         let Some(cb) = cb else { return };
-        self.expired.store(true, Ordering::Release);
+        self.gave_up.store(why as u8, Ordering::Release);
         let conn = self
             .conn
             .lock()
@@ -918,7 +1095,39 @@ impl Exchange {
         if let Some(c) = conn {
             c.close();
         }
-        cb(Err(ClientError::Timeout));
+        cb(Err(match why {
+            GaveUp::Timeout => ClientError::Timeout,
+            GaveUp::Cancelled => ClientError::Cancelled,
+        }));
+    }
+}
+
+/// What a connection's deadline ([`ConnTimer`]) is armed for.
+const PHASE_NONE: u8 = 0;
+/// The response's head ([`ClientRequest::response_header_timeout`]).
+const PHASE_HEAD: u8 = 1;
+/// The next read of the response's body ([`ClientRequest::response_idle_timeout`]).
+const PHASE_IDLE: u8 = 2;
+
+/// A connection's response header and idle deadline (ADR-108), registered the first time a
+/// request on it has either timeout. Armed from the I/O thread, and from the threads that
+/// finish a streamed request body or hold a response's reads.
+struct ConnTimer {
+    watch: Arc<Watch<ClientConn>>,
+    /// What the deadline is armed for (`PHASE_*`). Written after the deadline when arming and
+    /// before it when disarming, so an expiry seen with a phase set is that phase's.
+    phase: AtomicU8,
+}
+
+impl ConnTimer {
+    fn arm(&self, phase: u8, d: Duration) {
+        self.watch.arm(Some(d));
+        self.phase.store(phase, Ordering::Release);
+    }
+
+    fn disarm(&self) {
+        self.phase.store(PHASE_NONE, Ordering::Release);
+        self.watch.arm(None);
     }
 }
 
@@ -937,6 +1146,9 @@ struct Pending {
     deliver: Deliver,
     /// The body is written later through a [`RequestBody`].
     streamed: Option<StreamedBody>,
+    /// The response header and idle timeouts in force.
+    header_timeout: Option<Duration>,
+    idle_timeout: Option<Duration>,
 }
 
 #[derive(Clone, Default)]
@@ -1151,22 +1363,30 @@ impl Client {
         self.attempt(ex, req, Some(h));
     }
 
-    /// The exchange of a new request, with its timeout armed. `done` is the callback of a
-    /// whole response, a placeholder for one delivered as it arrives.
+    /// The exchange of a new request, with its timeout armed and its cancel token attached.
+    /// `done` is the callback of a whole response, a placeholder for one delivered as it
+    /// arrives. A token already cancelled fails a whole response at once (a handler learns it
+    /// from the dial).
     fn exchange(&self, req: &ClientRequest, done: Callback) -> Arc<Exchange> {
         let ex = Arc::new(Exchange {
             done: Mutex::new(Some(done)),
             site: OnceLock::new(),
             cross_site: AtomicBool::new(false),
             conn: Mutex::new(None),
-            expired: AtomicBool::new(false),
+            gave_up: AtomicU8::new(0),
             hops: AtomicU32::new(0),
         });
+        if let Some(t) = &req.cancel {
+            if !t.attach(&ex) {
+                ex.give_up(GaveUp::Cancelled);
+                return ex;
+            }
+        }
         if let Some(d) = req.timeout.or(self.inner.settings.timeout) {
             let weak = Arc::downgrade(&ex);
             crate::timer::after(d, move || {
                 if let Some(ex) = weak.upgrade() {
-                    ex.expire();
+                    ex.give_up(GaveUp::Timeout);
                 }
             });
         }
@@ -1181,6 +1401,13 @@ impl Client {
         req: ClientRequest,
         handler: Option<Box<dyn ResponseHandler>>,
     ) {
+        if let Some(e) = ex.gave_up() {
+            // Cancelled before it was sent (a whole response's callback was told already).
+            if let Some(mut h) = handler {
+                h.on_error(e);
+            }
+            return;
+        }
         let pu = match parse_url(&req.url) {
             Ok(p) => p,
             Err(e) => {
@@ -1194,6 +1421,9 @@ impl Client {
             }
         };
         let streamed = req.streamed;
+        let opts = &self.inner.settings.opts;
+        let header_timeout = req.response_header_timeout.or(opts.response_header_timeout);
+        let idle_timeout = req.response_idle_timeout.or(opts.response_idle_timeout);
         let proxy = self
             .inner
             .settings
@@ -1306,6 +1536,8 @@ impl Client {
                 ex,
                 deliver: Deliver::Stream(h),
                 streamed,
+                header_timeout,
+                idle_timeout,
             });
         }
         // The request is kept only when a redirect may need it again.
@@ -1332,7 +1564,7 @@ impl Client {
                     match redirect(policy, hops, &req, &resp) {
                         Ok(Some(next)) => {
                             ex2.hops.store(hops + 1, Ordering::Relaxed);
-                            if !ex2.expired() {
+                            if ex2.gave_up().is_none() {
                                 me.attempt(ex2, next, None);
                             }
                             return;
@@ -1357,6 +1589,8 @@ impl Client {
             ex,
             deliver: Deliver::Whole(cb),
             streamed: None,
+            header_timeout,
+            idle_timeout,
         });
     }
 
@@ -1509,9 +1743,9 @@ impl Client {
     }
 
     fn dial(&self, mut p: Pending) {
-        if p.ex.expired() {
+        if let Some(e) = p.ex.gave_up() {
             // A whole response's callback was told already; a handler learns it here.
-            return p.deliver.fail(ClientError::Timeout);
+            return p.deliver.fail(e);
         }
         let local = p.proxy.as_ref().is_some_and(|s| s.resolves_locally())
             && p.tunnel_host.is_none()
@@ -1528,7 +1762,10 @@ impl Client {
                         p.tunnel_host = Some(a.ip().to_string());
                         me.dial(p);
                     }
-                    Err(e) => p.deliver.fail(ClientError::Io(e)),
+                    Err(e) => {
+                        let e = p.ex.gave_up().unwrap_or(ClientError::Io(e));
+                        p.deliver.fail(e);
+                    }
                 }
             });
         }
@@ -1544,7 +1781,10 @@ impl Client {
                     p.addrs = a;
                     me.dial(p);
                 }
-                Err(e) => p.deliver.fail(ClientError::Io(e)),
+                Err(e) => {
+                    let e = p.ex.gave_up().unwrap_or(ClientError::Io(e));
+                    p.deliver.fail(e);
+                }
             });
         }
         let key = p.key.clone();
@@ -1562,7 +1802,8 @@ impl Client {
         let fail = move |e: io::Error| {
             let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(p) = taken {
-                p.deliver.fail(ClientError::Io(e));
+                let e = p.ex.gave_up().unwrap_or(ClientError::Io(e));
+                p.deliver.fail(e);
             }
         };
         let he = self.inner.settings.opts.happy_eyeballs;
@@ -1705,6 +1946,10 @@ pub struct ClientConn {
     refusal: Option<Refusal>,
     /// The connection is marked a relay end (a streamed request body is being written).
     relayed: bool,
+    /// The response header and idle deadline, once a request on this connection had one.
+    timer: Option<Arc<ConnTimer>>,
+    /// The response idle timeout of the request in flight.
+    idle_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for ClientConn {
@@ -1728,6 +1973,8 @@ impl ClientConn {
             ex: None,
             refusal: None,
             relayed: false,
+            timer: None,
+            idle_timeout: None,
         }
     }
 
@@ -1771,15 +2018,17 @@ impl ClientConn {
             ex,
             deliver,
             streamed,
+            header_timeout,
+            idle_timeout,
         } = p;
         {
             let mut slot = ex.conn.lock().unwrap_or_else(|e| e.into_inner());
-            if ex.expired() {
-                // Timed out while this connection was being set up: a whole response's
-                // callback was told already, a handler learns it here.
+            if let Some(e) = ex.gave_up() {
+                // Timed out or cancelled while this connection was being set up: a whole
+                // response's callback was told already, a handler learns it here.
                 drop(slot);
                 c.close();
-                return deliver.fail(ClientError::Timeout);
+                return deliver.fail(e);
             }
             *slot = Some(Arc::downgrade(c.inner()));
         }
@@ -1795,6 +2044,8 @@ impl ClientConn {
             ex: ex.clone(),
             deliver: Deliver::Whole(Box::new(|_| {})),
             streamed: None,
+            header_timeout,
+            idle_timeout,
         });
         self.ex = Some(ex);
         self.state = RState::Head;
@@ -1804,6 +2055,16 @@ impl ClientConn {
         self.received_any = false;
         self.client = Some(client);
         self.key = Some(key);
+        self.idle_timeout = idle_timeout;
+        if self.timer.is_none() {
+            if let Some(t) = header_timeout.into_iter().chain(idle_timeout).min() {
+                self.timer = Some(Arc::new(ConnTimer {
+                    watch: Watch::register(c, t),
+                    phase: AtomicU8::new(PHASE_NONE),
+                }));
+            }
+        }
+        let header = header_timeout.and_then(|d| Some((self.timer.clone()?, d)));
         let req_body = streamed.map(|framing| {
             Arc::new(ReqBody {
                 conn: c.inner().clone(),
@@ -1812,7 +2073,9 @@ impl ClientConn {
                     written: 0,
                     finished: false,
                     aborted: false,
+                    head_in: false,
                 }),
+                header: header.clone(),
             })
         });
         // The body's producer paces this connection's queue itself (`RequestBody::on_drain`):
@@ -1833,6 +2096,11 @@ impl ClientConn {
         });
         if c.send_owned(bytes).is_err() {
             return self.fail(c, ClientError::Closed);
+        }
+        // A body given whole is written with the head: the wait for the response's head starts
+        // now. A streamed one starts it from `RequestBody::finish`.
+        if let (None, Some((t, d))) = (&req_body, &header) {
+            t.arm(PHASE_HEAD, *d);
         }
         if let Some(shared) = req_body {
             let body = RequestBody {
@@ -1855,6 +2123,10 @@ impl ClientConn {
         if let Some(r) = &a.resp_body {
             r.settle();
         }
+        // After the response's reads are settled: a resume racing with this cannot re-arm it.
+        if let Some(t) = &self.timer {
+            t.disarm();
+        }
         if matches!(a.deliver, Deliver::Stream(_)) {
             if let Some(ex) = &self.ex {
                 ex.settle();
@@ -1876,12 +2148,15 @@ impl ClientConn {
             Some(io) => ClientError::Io(io),
             None => e,
         };
-        let expired = self.ex.as_ref().is_some_and(|x| x.expired());
+        let gave_up = self.ex.as_ref().and_then(|x| x.gave_up());
         if let Some(a) = self.active.take() {
             // A reused connection the server had already closed: one retry on a fresh one.
-            if let (Some(mut p), Some(client), false, false) =
-                (a.retry, self.client.clone(), self.received_any, expired)
-            {
+            if let (Some(mut p), Some(client), false, false) = (
+                a.retry,
+                self.client.clone(),
+                self.received_any,
+                gave_up.is_some(),
+            ) {
                 if matches!(e, ClientError::Closed | ClientError::Io(_)) {
                     p.deliver = a.deliver;
                     client.dial(p);
@@ -1891,9 +2166,9 @@ impl ClientConn {
             }
             let a = Active { retry: None, ..a };
             self.settle(&a);
-            // The timeout closed the connection: a handler learns why (a whole response's
-            // callback was told already).
-            let e = if expired { ClientError::Timeout } else { e };
+            // The timeout or a cancel closed the connection: a handler learns why (a whole
+            // response's callback was told already).
+            let e = gave_up.unwrap_or(e);
             c.close();
             return a.deliver.fail(e);
         }
@@ -2016,6 +2291,23 @@ impl ClientConn {
                         }
                     };
                     let conn_close = headers.has_token("connection", "close");
+                    // The head is in: the header timeout ends, the idle one starts with the body.
+                    let idle = self
+                        .idle_timeout
+                        .filter(|_| next.is_some())
+                        .and_then(|d| Some((self.timer.clone()?, d)));
+                    if let Some(t) = &self.timer {
+                        let req_body = self.active.as_ref().and_then(|a| a.req_body.clone());
+                        // Under the body's lock: a `finish` racing with this arms nothing.
+                        let st = req_body.as_ref().map(|b| lock_or(&b.st));
+                        match &idle {
+                            Some((_, d)) => t.arm(PHASE_IDLE, *d),
+                            None => t.disarm(),
+                        }
+                        if let Some(mut st) = st {
+                            st.head_in = true;
+                        }
+                    }
                     if let Some(a) = &mut self.active {
                         a.version = version;
                         a.conn_close = conn_close;
@@ -2039,6 +2331,7 @@ impl ClientConn {
                                 let shared = Arc::new(RespBody {
                                     conn: c.inner().clone(),
                                     live: Mutex::new(true),
+                                    idle,
                                 });
                                 a.resp_body = Some(shared.clone());
                                 let head = ResponseHead {
@@ -2169,9 +2462,23 @@ impl Handler for ClientConn {
         self.received_any = true;
         self.buf.extend_from_slice(data);
         self.advance(c);
+        // A read of the body: the idle timeout starts over, unless the handler holds the reads
+        // (the time held does not count; resuming re-arms it).
+        if let (Some(t), Some(d)) = (&self.timer, self.idle_timeout) {
+            if matches!(
+                self.state,
+                RState::Body { .. } | RState::Chunked(_) | RState::UntilClose
+            ) && !c.inner().read_held()
+            {
+                t.arm(PHASE_IDLE, d);
+            }
+        }
     }
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<akio::Error>) {
+        if let Some(t) = &self.timer {
+            t.watch.release();
+        }
         match self.state {
             RState::UntilClose => self.complete(c, false, Headers::new()),
             RState::Idle => {
@@ -2181,6 +2488,34 @@ impl Handler for ClientConn {
                 }
             }
             _ => self.fail(c, ClientError::Closed),
+        }
+    }
+}
+
+impl Drop for ClientConn {
+    fn drop(&mut self) {
+        if let Some(t) = &self.timer {
+            t.watch.release();
+        }
+    }
+}
+
+impl OnDeadline for ClientConn {
+    fn on_deadline(&mut self, c: &Conn<Self>) {
+        let Some(t) = &self.timer else { return };
+        // The phase first: an expiry seen with a phase set is that phase's (see `ConnTimer`).
+        let phase = t.phase.load(Ordering::Acquire);
+        if phase == PHASE_NONE || !t.watch.fired() {
+            return; // disarmed, or re-armed since it fired
+        }
+        match (&self.state, phase) {
+            (RState::Head, PHASE_HEAD) => self.fail(c, ClientError::HeaderTimeout),
+            (RState::Body { .. } | RState::Chunked(_) | RState::UntilClose, PHASE_IDLE)
+                if !c.inner().read_held() =>
+            {
+                self.fail(c, ClientError::IdleTimeout);
+            }
+            _ => {}
         }
     }
 }

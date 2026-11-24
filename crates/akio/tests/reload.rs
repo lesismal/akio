@@ -1,5 +1,5 @@
-//! Hot reload of the read buffer, listen backlog and UDP idle timeout, and I/O thread
-//! resizing under load (ADR-028).
+//! Hot reload of the read buffer, listen backlog, UDP idle timeout and write timeout
+//! (ADR-108), and I/O thread resizing under load (ADR-028).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -260,6 +260,69 @@ fn reloaded_udp_idle_timeout_applies_to_open_peers() {
         .load(Ordering::Relaxed)
         == 1));
     assert_eq!(e.metrics().total.idle_timeouts, 1);
+    stop(&e);
+}
+
+#[test]
+fn reloaded_write_timeout_applies_to_open_connections() {
+    const BIG: usize = 4 << 20;
+    // Each read asks for `BIG` bytes more; the peer never reads them.
+    struct Flood(Arc<Mutex<Vec<ErrorKind>>>);
+    impl Handler for Flood {
+        fn on_data(&mut self, c: &Conn<Self>, _data: &[u8]) {
+            let _ = c.send(&vec![7u8; BIG]);
+        }
+        fn on_close(&mut self, _c: &Conn<Self>, err: Option<akio::Error>) {
+            if let Some(akio::Error::Io(e)) = err {
+                self.0.lock().unwrap().push(e.kind());
+            }
+        }
+    }
+    let kinds = Arc::new(Mutex::new(Vec::new()));
+    let k = kinds.clone();
+    let mut cfg = quick();
+    cfg.write_timeout = None;
+    cfg.max_queued_bytes = 64 << 20;
+    let e = Engine::builder()
+        .config(cfg.clone())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<Flood>| Flood(k.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let mut stalled = connect(addr);
+    stalled.write_all(b"go").unwrap();
+    // No write timeout: the stalled connection stays.
+    thread::sleep(Duration::from_millis(600));
+    assert!(kinds.lock().unwrap().is_empty());
+    // Turned on at run time: the next write that queues output arms the check.
+    cfg.write_timeout = Some(Duration::from_millis(200));
+    assert_eq!(e.reload(&cfg).applied, vec!["write_timeout"]);
+    assert_eq!(
+        e.telemetry().live().write_timeout(),
+        Some(Duration::from_millis(200))
+    );
+    stalled.write_all(b"go").unwrap();
+    assert!(wait_until(Duration::from_secs(5), || !kinds
+        .lock()
+        .unwrap()
+        .is_empty()));
+    assert_eq!(*kinds.lock().unwrap(), vec![ErrorKind::TimedOut]);
+    assert_eq!(e.metrics().total.write_timeouts, 1);
+    // Turned off again: a new stalled connection stays, its check (if one was pending) ends.
+    e.telemetry().live().set_write_timeout(None);
+    let mut stalled2 = connect(addr);
+    stalled2.write_all(b"go").unwrap();
+    thread::sleep(Duration::from_millis(600));
+    stalled2.write_all(b"go").unwrap();
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(kinds.lock().unwrap().len(), 1);
+    drop((stalled, stalled2));
     stop(&e);
 }
 

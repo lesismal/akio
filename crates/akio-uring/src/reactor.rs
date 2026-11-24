@@ -1622,7 +1622,7 @@ impl Loop {
             Some(q) => q,
             None => lc.inner.queued_bytes(),
         };
-        let arm = q > 0 && lc.write_timer.is_none() && self.cfg.write_timeout.is_some();
+        let arm = q > 0 && lc.write_timer.is_none() && self.cfg.telemetry.live().write_ms() != 0;
         if q >= high && lc.inner.write_backpressure() {
             if !lc.bp {
                 self.shared.stats.backpressure.add_local(1);
@@ -2164,7 +2164,7 @@ impl Loop {
     /// Arms the write-timeout check of a connection that has output queued (if the timeout is
     /// set and no check is pending). `now` comes from the cached loop clock.
     fn arm_write(&mut self, id: u64) {
-        let Some(wt) = self.cfg.write_timeout else {
+        let Some(wt) = self.cfg.telemetry.live().write_timeout() else {
             return;
         };
         let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
@@ -2253,13 +2253,16 @@ impl Loop {
     /// A write-timeout check is due: close the connection if output is still queued and nothing
     /// was written since the last check, else check again later.
     fn on_write_timer(&mut self, id: u64, now: u64) {
-        let Some(wt) = self.cfg.write_timeout else {
-            return;
-        };
+        let wt = self.cfg.telemetry.live().write_timeout();
         let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
             return;
         };
         lc.write_timer = None;
+        // Turned off at run time (`Live::set_write_timeout`): no more checks until it is set
+        // again and a write arms one.
+        let Some(wt) = wt else {
+            return;
+        };
         let (sent, pending, ..) = lc.inner.debug_state();
         if pending == 0 {
             return; // drained: the next blocked write arms a new check

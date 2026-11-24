@@ -124,6 +124,9 @@ struct Responder {
     version: Version,
     keep_alive: bool,
     head_only: bool,
+    /// [`Context::on_gone`] registered a peer-gone callback under this slot's number (it fits
+    /// in the padding: `Out` stays 24 bytes), forgotten once the response is sent.
+    gone: bool,
 }
 
 /// Where a response goes: an HTTP/1 ordered slot, or an HTTP/2 stream.
@@ -150,6 +153,14 @@ impl ExtOut {
 }
 
 impl Out {
+    fn on_gone(&mut self, f: Box<dyn FnOnce() + Send>) {
+        match self {
+            Out::H1(r) => r.set_gone(f),
+            Out::H2(r) => r.on_gone(f),
+            Out::Ext(e) => e.0.get().on_gone(e.1, f),
+        }
+    }
+
     fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
         match self {
             Out::H1(r) => r.send(resp, fin, req),
@@ -258,7 +269,23 @@ impl Finish {
 }
 
 impl Responder {
-    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+    /// Runs `f` when the connection closes before the response is sent ([`Context::on_gone`]).
+    fn set_gone(&mut self, f: Box<dyn FnOnce() + Send>) {
+        if let Some(c) = self.slot.conn() {
+            self.gone = c.on_peer_gone(self.slot.seq(), f);
+        }
+    }
+
+    fn forget_gone(&mut self) {
+        if std::mem::take(&mut self.gone) {
+            if let Some(c) = self.slot.conn() {
+                c.forget_peer_gone(self.slot.seq());
+            }
+        }
+    }
+
+    fn send(mut self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+        self.forget_gone();
         fin.apply(&mut resp, req);
         let status = resp.status;
         // From the I/O thread's buffer pool: the connection gives it back there once written.
@@ -400,6 +427,7 @@ impl Context {
                 version: req.version,
                 keep_alive,
                 head_only,
+                gone: false,
             })),
             fin: Finish::new(),
             req: ReqCell::Own(req),
@@ -612,6 +640,25 @@ impl Context {
             Out::Ext(e) => ReadsInner::Ext(e.0.clone(), e.1),
         };
         Some(BodyReads(inner))
+    }
+
+    /// Calls `f` once if the client goes before the response is finished (ADR-108): on
+    /// HTTP/1 its connection closes or it finishes sending (EOF: a client that half-closes after
+    /// its request counts as gone, as Go's server takes it); on HTTP/2 and HTTP/3 the connection
+    /// closes or the client resets the request's stream or stops its response. `f` runs on the
+    /// connection's I/O thread (HTTP/2: the thread that drops the stream, usually that one), or
+    /// at once on this thread when that already happened. It
+    /// replaces an earlier `f`, carries over to [`detach`](Self::detach) and to a streamed
+    /// response ([`BodyStream`]) until it is finished, and is dropped unrun once the response
+    /// is sent whole or finished. A transport outside this crate runs it as its
+    /// [`ConnSink::on_gone`](crate::transport::ConnSink::on_gone) says. Nothing when a response
+    /// was already sent.
+    ///
+    /// A proxy cancels its upstream request from it ([`CancelToken`](crate::client::CancelToken)).
+    pub fn on_gone(&mut self, f: impl FnOnce() + Send + 'static) {
+        if let Some(out) = self.responder.as_mut() {
+            out.on_gone(Box::new(f));
+        }
     }
 
     /// Marks the request as one whose body arrives after `call` (see [`body_reads`]).
@@ -898,7 +945,9 @@ impl Context {
             return false;
         }
         match self.responder.take() {
-            Some(Out::H1(r)) => {
+            Some(Out::H1(mut r)) => {
+                // The connection is the handler's now: its close is not a client gone early.
+                r.forget_gone();
                 // Keep the response order: earlier pipelined answers still go out first.
                 r.slot.fill(Vec::new());
                 self.detached = true;
@@ -1042,6 +1091,12 @@ impl Detached {
         self.params.as_ref()?.raw(name, self.req.path())
     }
 
+    /// Calls `f` once if the client goes before the response is finished, as
+    /// [`Context::on_gone`] says; replaces an earlier `f` (one registered on the context too).
+    pub fn on_gone(&mut self, f: impl FnOnce() + Send + 'static) {
+        self.responder.on_gone(Box::new(f));
+    }
+
     /// Sends the response. Safe from any thread.
     pub fn respond(mut self, resp: Response) {
         self.responder.send(resp, &mut self.fin, &self.req);
@@ -1081,6 +1136,7 @@ fn start_stream(
             resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
             Inner::H1 {
                 conn: r.slot.conn().cloned(),
+                gone: r.gone,
                 stream: r.slot.stream(head),
                 chunked,
                 keep_alive: r.keep_alive,
@@ -1111,6 +1167,9 @@ enum Inner {
     H1 {
         /// For [`BodyStream::on_drain`].
         conn: Option<Arc<akio_core::ConnInner>>,
+        /// [`Context::on_gone`]'s callback is registered (under the response's number),
+        /// forgotten when finished.
+        gone: bool,
         stream: ResponseStream,
         chunked: bool,
         keep_alive: bool,
@@ -1217,12 +1276,14 @@ impl Inner {
     fn finish(self) {
         match self {
             Inner::H1 {
+                conn,
+                gone,
                 stream,
                 chunked,
                 keep_alive,
                 head_only,
-                ..
             } => {
+                forget_gone(conn.as_ref(), gone, stream.seq());
                 if chunked && !head_only {
                     let _ = stream.write(b"0\r\n\r\n".to_vec());
                 }
@@ -1236,12 +1297,14 @@ impl Inner {
     fn finish_with_trailers(self, trailers: Headers) {
         match self {
             Inner::H1 {
+                conn,
+                gone,
                 stream,
                 chunked,
                 keep_alive,
                 head_only,
-                ..
             } => {
+                forget_gone(conn.as_ref(), gone, stream.seq());
                 if chunked && !head_only {
                     let mut t = Vec::with_capacity(64);
                     t.extend_from_slice(b"0\r\n");
@@ -1259,6 +1322,13 @@ impl Inner {
             Inner::H2(s) => s.finish_with(Some(trailers)),
             Inner::Ext(s) => s.finish(Some(trailers)),
         }
+    }
+}
+
+/// The response is finished: the connection's close no longer means the client went early.
+fn forget_gone(conn: Option<&Arc<akio_core::ConnInner>>, gone: bool, seq: u64) {
+    if let (Some(c), true) = (conn, gone) {
+        c.forget_peer_gone(seq);
     }
 }
 

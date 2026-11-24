@@ -328,11 +328,13 @@ pub fn akio_core::telemetry::Live::set_slow_callback_threshold(&self, core::opti
 pub fn akio_core::telemetry::Live::set_slow_hook(&self, core::option::Option<akio_core::SlowHook>)
 pub fn akio_core::telemetry::Live::set_udp_idle_timeout(&self, core::time::Duration)
 pub fn akio_core::telemetry::Live::set_write_high_watermark(&self, usize)
+pub fn akio_core::telemetry::Live::set_write_timeout(&self, core::option::Option<core::time::Duration>)
 pub fn akio_core::telemetry::Live::shutdown_timeout(&self) -> core::time::Duration
 pub fn akio_core::telemetry::Live::slow_callback_threshold(&self) -> core::option::Option<core::time::Duration>
 pub fn akio_core::telemetry::Live::slow_hook(&self) -> core::option::Option<akio_core::SlowHook>
 pub fn akio_core::telemetry::Live::udp_idle_timeout(&self) -> core::time::Duration
 pub fn akio_core::telemetry::Live::write_high_watermark(&self) -> usize
+pub fn akio_core::telemetry::Live::write_timeout(&self) -> core::option::Option<core::time::Duration>
 impl core::default::Default for akio_core::telemetry::Live
 pub fn akio_core::telemetry::Live::default() -> akio_core::telemetry::Live
 impl core::fmt::Debug for akio_core::telemetry::Live
@@ -733,11 +735,13 @@ pub fn akio_core::telemetry::Live::set_slow_callback_threshold(&self, core::opti
 pub fn akio_core::telemetry::Live::set_slow_hook(&self, core::option::Option<akio_core::SlowHook>)
 pub fn akio_core::telemetry::Live::set_udp_idle_timeout(&self, core::time::Duration)
 pub fn akio_core::telemetry::Live::set_write_high_watermark(&self, usize)
+pub fn akio_core::telemetry::Live::set_write_timeout(&self, core::option::Option<core::time::Duration>)
 pub fn akio_core::telemetry::Live::shutdown_timeout(&self) -> core::time::Duration
 pub fn akio_core::telemetry::Live::slow_callback_threshold(&self) -> core::option::Option<core::time::Duration>
 pub fn akio_core::telemetry::Live::slow_hook(&self) -> core::option::Option<akio_core::SlowHook>
 pub fn akio_core::telemetry::Live::udp_idle_timeout(&self) -> core::time::Duration
 pub fn akio_core::telemetry::Live::write_high_watermark(&self) -> usize
+pub fn akio_core::telemetry::Live::write_timeout(&self) -> core::option::Option<core::time::Duration>
 impl core::default::Default for akio_core::telemetry::Live
 pub fn akio_core::telemetry::Live::default() -> akio_core::telemetry::Live
 impl core::fmt::Debug for akio_core::telemetry::Live

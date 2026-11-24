@@ -1423,8 +1423,7 @@ impl Engine {
     /// `backlog` and `udp_idle_timeout`. Open connections pick up the new idle timeouts and
     /// watermark right away, and the new read buffer at their next read; listening sockets are
     /// `listen`ed again with the new backlog (see [`Live`]). Settings fixed at build time
-    /// (`max_pending_responses`, `write_timeout`, `connect_timeout`, `udp_max_peers`,
-    /// `udp_gro`) are reported in [`ReloadReport::ignored`] when they differ. Thread counts
+    /// (`max_pending_responses`, `connect_timeout`, `udp_max_peers`, `udp_gro`) are reported in [`ReloadReport::ignored`] when they differ. Thread counts
     /// change with [`set_threads`](Self::set_threads); listeners, backends and pool sizes need
     /// a restart.
     pub fn reload(&self, cfg: &Config) -> ReloadReport {

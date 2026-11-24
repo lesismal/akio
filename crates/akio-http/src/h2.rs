@@ -213,6 +213,9 @@ struct Stream {
     held: bool,
     /// Waits for the queued response bytes to be framed ([`H2Stream::on_drain`]).
     drain: Option<Waiter>,
+    /// Runs if the stream goes before its response ended ([`H2Responder::on_gone`], ADR-108):
+    /// dropped with the stream, unless disarmed once the response ended.
+    gone: Option<Waiter>,
 }
 
 /// A drain waiter: runs when it is dropped, so a stream or connection that goes away runs it
@@ -258,6 +261,17 @@ impl Stream {
             pushed: false,
             held: false,
             drain: None,
+            gone: None,
+        }
+    }
+
+    /// The response ended (our END_STREAM went out): the stream going away is no longer the
+    /// client going early.
+    fn disarm_gone(&mut self) {
+        if self.sent_end {
+            if let Some(mut w) = self.gone.take() {
+                w.0 = None;
+            }
         }
     }
 }
@@ -593,7 +607,8 @@ impl Core {
     }
 
     fn close_stream(&mut self, sid: u32) {
-        if let Some(s) = self.streams.remove(&sid) {
+        if let Some(mut s) = self.streams.remove(&sid) {
+            s.disarm_gone();
             if !self.stats_closed {
                 self.stat(|s| &s.streams_closed);
             }
@@ -1776,6 +1791,22 @@ impl H2Responder {
         }
     }
 
+    /// Runs `f` if the stream goes (reset by the peer, the connection closed) before its
+    /// response ended; at once when it is gone already. Replaces an earlier one.
+    pub(crate) fn on_gone(&self, f: Box<dyn FnOnce() + Send>) {
+        let Some(core) = self.core.upgrade() else {
+            return f();
+        };
+        let mut c = lock(&core);
+        let Some(st) = c.streams.get_mut(&self.sid) else {
+            drop(c);
+            return f();
+        };
+        if let Some(mut old) = st.gone.replace(Waiter(Some(f))) {
+            old.0 = None;
+        }
+    }
+
     /// The connection, while the session lives.
     pub(crate) fn conn(&self) -> Option<Arc<ConnInner>> {
         self.core.upgrade().map(|c| lock(&c).conn.clone())
@@ -2480,7 +2511,14 @@ impl<S: Service> H2Session<S> {
         let mut c = lock(&self.core);
         c.dead = true;
         c.count_close();
-        let all: Vec<Stream> = c.streams.drain().map(|(_, s)| s).collect();
+        let all: Vec<Stream> = c
+            .streams
+            .drain()
+            .map(|(_, mut s)| {
+                s.disarm_gone();
+                s
+            })
+            .collect();
         c.dropped.extend(all);
     }
 }

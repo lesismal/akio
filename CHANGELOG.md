@@ -10,6 +10,28 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the HTTP/1 client's response header and idle timeouts and its cancellation, a server request that hears its client go, a write timeout changed at run time (akio-http, akio-h3, akio-core, akio-epoll, akio-uring)
+
+ADR-108, additive, requested by akit (A36, A37, A38):
+
+- `ClientRequest::response_header_timeout` and `response_idle_timeout` (defaults in
+  `ClientOptions`): the wait for the response's head once the request is written whole (a
+  streamed body: from `RequestBody::finish`), and the longest gap between body reads, stopped
+  while `ResponseBody::hold_reads` holds them. They fail the request with the new
+  `ClientError::HeaderTimeout` / `IdleTimeout` and close its connection; `ClientError::is_timeout`.
+- `CancelToken` with `ClientRequest::cancel_with`: cancels a request at any point (dropped before
+  it is sent, its connection closed after), failing it once with the new `ClientError::Cancelled`;
+  one token may cover several requests.
+- `Context::on_gone` and `Detached::on_gone`: run once if the client goes before the response is
+  finished: on HTTP/1 the connection closes or the client's EOF comes (akio-core's new
+  `ConnInner::on_peer_gone`), on HTTP/2 the stream is reset or the connection closes, on HTTP/3
+  through the new `ConnSink::on_gone` (default: never called), which akio-h3 implements.
+- Fixed: an HTTP/1 request whose body streams no longer keeps its context and body sink after its
+  client went: the session drops them when the connection closes, and closes the connection when
+  the client's EOF comes mid-body.
+- `Live::set_write_timeout` / `write_timeout`: `Config::write_timeout` is reloadable
+  (`Engine::reload` lists it in `applied`), on epoll and io_uring.
+
 ### Fixed: a connection right after a listener's removal no longer lands on its old sockets (akio, akio-uring, akio-epoll)
 
 `Engine::remove_listener` and `shutdown_listener` (ADR-099) returned once the change was posted to

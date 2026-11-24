@@ -427,6 +427,11 @@ struct WriteState {
     close_after_send: bool,
     /// Called once the queue is empty again (see [`Conn::on_drain`]).
     drain: Option<Box<dyn FnOnce() + Send>>,
+    /// Called when the peer goes ([`ConnInner::on_peer_gone`]), by their callers' keys. Empty
+    /// for almost every connection.
+    peer_gone: Vec<(u64, Box<dyn FnOnce() + Send>)>,
+    /// The peer went: callbacks registered from now on run at once.
+    peer_went: bool,
     /// Bytes written to the socket so far.
     sent: u64,
     /// Counters of the owning I/O thread.
@@ -1455,6 +1460,59 @@ impl ConnInner {
         w.drain = Some(f);
     }
 
+    /// Calls `f` once, on the connection's I/O thread, when the peer goes: it finishes sending
+    /// (EOF; on a request-response protocol the client has nothing more to ask, and has most
+    /// likely closed: Go's HTTP server cancels a request's context then too) or the connection
+    /// closes. `key` is the caller's (a response position, say): registering it again replaces
+    /// the callback, [`forget_peer_gone`](Self::forget_peer_gone) drops it. When that already
+    /// happened (or the connection is closing), `f` runs at once on this thread and `false` is
+    /// returned. Any number may be registered (ADR-108: a detached HTTP/1 request hearing its
+    /// client went).
+    pub fn on_peer_gone(&self, key: u64, f: Box<dyn FnOnce() + Send>) -> bool {
+        let mut w = self.lock();
+        if !self.is_open() || w.peer_went {
+            drop(w);
+            f();
+            return false;
+        }
+        let old = match w.peer_gone.iter_mut().find(|(k, _)| *k == key) {
+            Some(e) => Some(std::mem::replace(&mut e.1, f)),
+            None => {
+                w.peer_gone.push((key, f));
+                None
+            }
+        };
+        drop(w);
+        drop(old); // outside the lock: its captures may run code of their own when dropped
+        true
+    }
+
+    /// Drops the [`on_peer_gone`](Self::on_peer_gone) callback of `key` without running it;
+    /// nothing when there is none (it ran already, say).
+    pub fn forget_peer_gone(&self, key: u64) {
+        let f = {
+            let mut w = self.lock();
+            w.peer_gone
+                .iter()
+                .position(|(k, _)| *k == key)
+                .map(|at| w.peer_gone.swap_remove(at).1)
+        };
+        drop(f);
+    }
+
+    /// The peer went: runs the [`on_peer_gone`](Self::on_peer_gone) callbacks, and any
+    /// registered later at once.
+    fn peer_went(&self) {
+        let hooks = {
+            let mut w = self.lock();
+            w.peer_went = true;
+            std::mem::take(&mut w.peer_gone)
+        };
+        for (_, f) in hooks {
+            f();
+        }
+    }
+
     /// Loop side: the connection is gone; drop queued output.
     pub fn mark_closed(&self) {
         self.state.store(CLOSED, Ordering::Release);
@@ -1466,6 +1524,7 @@ impl ConnInner {
         if let Some(f) = waiter {
             f();
         }
+        self.peer_went();
     }
 
     fn lock(&self) -> MutexGuard<'_, WriteState> {
@@ -2046,6 +2105,7 @@ impl ConnInner {
     /// response reserved before now has been written: the close takes the next response
     /// position, so pipelined requests still being answered (on the pool, say) are not cut off.
     pub fn close_after_responses(&self) {
+        self.peer_went();
         let seq = self.reserve();
         self.fill_parts(seq, Vec::new(), true);
     }
@@ -2882,6 +2942,13 @@ impl ResponseSlot {
         self.inner.as_ref()
     }
 
+    /// This position's number on its connection (unique per connection, in reservation
+    /// order).
+    #[doc(hidden)]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
     /// Supplies the response bytes. Safe to call from any thread.
     pub fn fill(mut self, data: Vec<u8>) {
         if let Some(inner) = self.inner.take() {
@@ -2925,6 +2992,12 @@ pub struct ResponseStream {
 }
 
 impl ResponseStream {
+    /// The response position's number on its connection ([`ResponseSlot::seq`]).
+    #[doc(hidden)]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
     /// Appends bytes. Fails with `Overloaded` when too much is held back or queued, and `Closed`
     /// when the connection is gone: stop producing then.
     pub fn write(&self, data: Vec<u8>) -> Result<()> {

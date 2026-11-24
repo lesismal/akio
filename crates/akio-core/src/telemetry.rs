@@ -347,11 +347,14 @@ pub struct SlowRecord {
 ///   receive is re-armed). UDP threads with GRO on keep at least 64 KiB.
 /// * `backlog`: every listening socket is `listen(2)`ed again with the new value.
 ///
-/// Not reloadable (fixed when the engine is built): `max_pending_responses`, `write_timeout`,
+/// * `write_timeout` (ADR-108): see [`set_write_timeout`](Self::set_write_timeout).
+///
+/// Not reloadable (fixed when the engine is built): `max_pending_responses`,
 /// `connect_timeout`, `udp_max_peers`, `udp_gro`, listeners, backends and pool sizes. Thread
 /// counts change with `Engine::set_threads` (ADR-028).
 pub struct Live {
     idle_ms: AtomicU64,
+    write_ms: AtomicU64,
     slow_ns: AtomicU64,
     slow_hook: RwLock<Option<SlowHook>>,
     max_queued: AtomicUsize,
@@ -374,6 +377,7 @@ impl Default for Live {
         use crate::config::*;
         Live {
             idle_ms: AtomicU64::new(0),
+            write_ms: AtomicU64::new(DEFAULT_WRITE_TIMEOUT.as_millis() as u64),
             slow_ns: AtomicU64::new(DEFAULT_SLOW_CALLBACK.as_nanos() as u64),
             slow_hook: RwLock::new(None),
             max_queued: AtomicUsize::new(DEFAULT_MAX_QUEUED_BYTES),
@@ -391,6 +395,7 @@ impl Default for Live {
 impl Live {
     fn apply(&self, c: &Config) {
         self.set_idle_timeout(c.idle_timeout);
+        self.set_write_timeout(c.write_timeout);
         self.set_slow_callback_threshold(c.slow_callback_threshold);
         self.set_slow_hook(c.slow_hook.clone());
         self.set_max_queued_bytes(c.max_queued_bytes);
@@ -423,6 +428,29 @@ impl Live {
     /// Sets the idle timeout (applies to open connections too).
     pub fn set_idle_timeout(&self, d: Option<Duration>) {
         self.idle_ms.store(opt_ms(d), Ordering::Relaxed);
+    }
+
+    /// Current `Config::write_timeout`.
+    #[inline]
+    pub fn write_timeout(&self) -> Option<Duration> {
+        match self.write_ms.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        }
+    }
+
+    /// Write timeout in milliseconds, 0 when off.
+    #[doc(hidden)]
+    #[inline]
+    pub fn write_ms(&self) -> u64 {
+        self.write_ms.load(Ordering::Relaxed)
+    }
+
+    /// Sets the write timeout (ADR-108). It applies to open connections too: a check already
+    /// pending runs as it was armed and re-arms with the new value; `None` stops the checks at
+    /// the next one, and a value set again arms them at the next write that queues output.
+    pub fn set_write_timeout(&self, d: Option<Duration>) {
+        self.write_ms.store(opt_ms(d), Ordering::Relaxed);
     }
 
     /// Current `Config::slow_callback_threshold`.
@@ -561,6 +589,7 @@ impl std::fmt::Debug for Live {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Live")
             .field("idle_timeout", &self.idle_timeout())
+            .field("write_timeout", &self.write_timeout())
             .field("slow_callback_threshold", &self.slow_callback_threshold())
             .field("max_queued_bytes", &self.max_queued_bytes())
             .field("write_high_watermark", &self.write_high_watermark())
@@ -578,7 +607,6 @@ impl std::fmt::Debug for Live {
 #[derive(Clone)]
 struct Fixed {
     max_pending_responses: Option<usize>,
-    write_timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     udp_max_peers: Option<usize>,
     udp_gro: bool,
@@ -667,7 +695,6 @@ impl Telemetry {
         self.live.apply(cfg);
         *lock(&self.fixed) = Some(Fixed {
             max_pending_responses: cfg.max_pending_responses,
-            write_timeout: cfg.write_timeout,
             connect_timeout: cfg.connect_timeout,
             udp_max_peers: cfg.udp_max_peers,
             udp_gro: cfg.udp_gro,
@@ -740,6 +767,13 @@ impl Telemetry {
             "idle_timeout",
         );
         note(
+            l.write_timeout()
+                != cfg
+                    .write_timeout
+                    .map(|d| Duration::from_millis(opt_ms(Some(d)))),
+            "write_timeout",
+        );
+        note(
             l.slow_callback_threshold()
                 != cfg
                     .slow_callback_threshold
@@ -791,7 +825,6 @@ impl Telemetry {
                     f.max_pending_responses != cfg.max_pending_responses,
                     "max_pending_responses",
                 ),
-                (f.write_timeout != cfg.write_timeout, "write_timeout"),
                 (f.connect_timeout != cfg.connect_timeout, "connect_timeout"),
                 (f.udp_max_peers != cfg.udp_max_peers, "udp_max_peers"),
                 (f.udp_gro != cfg.udp_gro, "udp_gro"),

@@ -170,6 +170,9 @@ enum State {
         kind: Kind,
         keep_alive: bool,
         scratch: Vec<u8>,
+        /// The key of the connection's peer-gone callback that closes it should the client stop
+        /// sending mid-body (`None`: it ran already).
+        gone: Option<u64>,
     },
     /// No more requests are read (`Connection: close`, or a protocol error).
     Closed,
@@ -246,6 +249,16 @@ impl<S: Service> Handler for Session<S> {
     fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
         if let Some(w) = &self.watch {
             w.release();
+        }
+        // A streamed request body cut short: its context, and with it the body's sink, goes now
+        // (ADR-108), as HTTP/2 drops a closed connection's streams. The session itself may live
+        // on while a detached response holds the connection.
+        if matches!(self.state, State::Stream { .. }) {
+            let st = std::mem::replace(&mut self.state, State::Closed);
+            if let State::Stream { ctx, .. } = st {
+                ctx.end_reads();
+                drop(ctx);
+            }
         }
         if self.span.is_recording() {
             if let Some(e) = &err {
@@ -600,11 +613,15 @@ impl<S: Service> Session<S> {
                         mut ctx,
                         kind,
                         keep_alive,
+                        gone,
                         ..
                     } = std::mem::replace(&mut self.state, State::Head)
                     else {
                         unreachable!()
                     };
+                    if let Some(k) = gone {
+                        c.inner().forget_peer_gone(k);
+                    }
                     let trailers = match kind {
                         Kind::Chunked(dec) => dec.trailers(),
                         Kind::Length(_) => Headers::new(),
@@ -723,16 +740,34 @@ impl<S: Service> Session<S> {
             self.state = State::Closed;
             return;
         };
+        // The peer-gone key below, apart from the responses' numbers (`Context::on_gone`'s).
+        let key = slot.seq() | 1 << 63;
         let mut ctx = Box::new(Context::new(req, slot, keep_alive));
         ctx.set_streamed();
         let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
         drop(g);
+        // A client that stops sending (EOF) mid-body cannot complete the request, and the
+        // response it waits for may never come (a detached handler waiting on the body): close
+        // the connection, which drops the context and its sink (ADR-108).
+        let weak = Arc::downgrade(c.inner());
+        let gone = c
+            .inner()
+            .on_peer_gone(
+                key,
+                Box::new(move || {
+                    if let Some(i) = weak.upgrade() {
+                        i.close();
+                    }
+                }),
+            )
+            .then_some(key);
         self.state = State::Stream {
             ctx,
             kind,
             keep_alive,
             scratch: Vec::new(),
+            gone,
         };
     }
 

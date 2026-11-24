@@ -39,6 +39,15 @@ pub trait ConnSink: Send + Sync + 'static {
     /// `tag` ([`BodyReads::hold`](crate::BodyReads::hold), ADR-101): stop extending its
     /// flow-control window, say. The default does nothing.
     fn hold_reads(&self, _tag: u64, _hold: bool) {}
+    /// Calls `f` once if the client goes before the response to the request tagged `tag` is
+    /// finished ([`Context::on_gone`](crate::Context::on_gone), ADR-108): the connection
+    /// closes, or the client resets the request's stream or stops the response; at once when
+    /// that already happened. Replaces an earlier `f` for `tag`; dropped unrun once the
+    /// response is sent. The default drops `f` unrun: a transport that cannot tell never
+    /// calls it.
+    fn on_gone(&self, _tag: u64, f: Box<dyn FnOnce() + Send>) {
+        drop(f);
+    }
 }
 
 /// A connection's [`ConnSink`], shared by its requests: cloning it is one reference count

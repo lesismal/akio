@@ -116,6 +116,7 @@ Rejected:
   trait can be added to `H2Client` then.
 - **An idle timeout between response reads** (fit's `response_idle_timeout`, A20's last point).
   It belongs with akit's I17, and needs the read-gap clock to stop while the handler holds reads.
+  (Done since by ADR-108.)
 
 ## Consequences
 

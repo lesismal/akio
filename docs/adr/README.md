@@ -102,3 +102,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-100: Static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings](100-static-files-gateway-settings.md) (accepted 2026-11-24)
 - [ADR-101: Streamed bodies with linked backpressure: client request bodies as produced, client responses as they arrive, a server request's hold on its reads and drain notice](101-streamed-bodies-linked-backpressure.md) (accepted 2026-11-24)
 - [ADR-107: Certificate signing requests in akio-x509](107-x509-certificate-requests.md) (accepted 2026-11-23)
+- [ADR-108: The HTTP/1 client's response header and idle timeouts and its cancellation, a server request that hears its client go, and a write timeout changed at run time](108-client-timeouts-cancel-client-gone.md) (accepted 2026-11-24)

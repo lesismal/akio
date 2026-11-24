@@ -170,6 +170,7 @@ pub fn serve_with<S: Service>(
             c: c.clone(),
             outs: Arc::default(),
             drains: Arc::default(),
+            gones: Arc::default(),
             enc: None,
         };
         ServerConn {
@@ -1253,6 +1254,8 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     }
 
     fn on_stream_reset(&mut self, c: &Connection, id: StreamId, _code: u64) {
+        // The client gave up the request (`Context::on_gone`).
+        self.out.gones.run(id);
         if let Some(mut r) = self.reqs.remove(&id) {
             self.forget(id, &mut r);
             self.conn.flush(c);
@@ -1263,6 +1266,7 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         // The response is not wanted any more: what waits for it is dropped.
         lock(&self.out.outs).remove(&id);
         run_drain(&self.out.drains, id);
+        self.out.gones.run(id);
     }
 
     fn on_stream_writable(&mut self, c: &Connection, id: StreamId) {
@@ -1278,6 +1282,10 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         lock(&self.out.outs).clear();
         let drains: Vec<_> = lock(&self.out.drains).drain().map(|(_, f)| f).collect();
         for f in drains {
+            f();
+        }
+        let gones: Vec<_> = lock(&self.out.gones.map).drain().map(|(_, f)| f).collect();
+        for f in gones {
             f();
         }
         if self.span.is_recording() {
@@ -1510,6 +1518,33 @@ type Outs = Mutex<StreamMap<Out>>;
 /// Drain waiters per stream (`BodySink::on_drain`), run once the stream's send buffer has room.
 type Drains = Mutex<StreamMap<Box<dyn FnOnce() + Send>>>;
 
+/// What runs if a request's client goes before its response is finished
+/// (`ConnSink::on_gone`, ADR-108), by stream.
+#[derive(Default)]
+struct Gones {
+    /// Some were ever registered: responses check the map only then.
+    any: AtomicBool,
+    map: Drains,
+}
+
+impl Gones {
+    /// The response of stream `id` is finished: its callback is dropped unrun.
+    #[inline]
+    fn forget(&self, id: StreamId) {
+        if self.any.load(Ordering::Acquire) {
+            let f = lock(&self.map).remove(&id);
+            drop(f);
+        }
+    }
+
+    /// The client went: runs the callback of stream `id`, if any (outside the lock).
+    fn run(&self, id: StreamId) {
+        if self.any.load(Ordering::Acquire) {
+            run_drain(&self.map, id);
+        }
+    }
+}
+
 /// Runs the drain waiter of stream `id`, if any (outside the lock).
 fn run_drain(drains: &Drains, id: StreamId) {
     let f = lock(drains).remove(&id);
@@ -1717,6 +1752,8 @@ struct H3Out {
     outs: Arc<Outs>,
     /// Streamed responses waiting for room to write more (`BodySink::on_drain`).
     drains: Arc<Drains>,
+    /// What runs if a request's client goes early (`ConnSink::on_gone`).
+    gones: Arc<Gones>,
     /// The connection's QPACK encoder, when it has a dynamic table.
     enc: Option<Arc<EncShared>>,
 }
@@ -1733,11 +1770,25 @@ fn tag(id: StreamId, head_only: bool) -> u64 {
 impl ConnSink for H3Out {
     #[inline]
     fn send(&self, tag: u64, resp: Response) {
-        Sink::of(self, tag).send(resp);
+        let s = Sink::of(self, tag);
+        self.gones.forget(s.id);
+        s.send(resp);
     }
 
     fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>> {
         Sink::of(self, tag).start_stream(resp)
+    }
+
+    /// Runs `f` when the client resets the request stream, stops the response, or the
+    /// connection closes, unless the response was finished before.
+    fn on_gone(&self, tag: u64, f: Box<dyn FnOnce() + Send>) {
+        let id = Sink::of(self, tag).id;
+        self.gones.any.store(true, Ordering::Release);
+        // Registered first: a reset handled on the I/O thread meanwhile finds it.
+        lock(&self.gones.map).insert(id, f);
+        if self.c.is_closed() || self.c.send_capacity(id).is_err() {
+            self.gones.run(id); // gone already
+        }
     }
 
     fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
@@ -2012,6 +2063,7 @@ impl BodySink for StreamBody {
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
+        self.o.gones.forget(self.id);
         let mut out = Vec::new();
         self.sink().put_trailers(&mut out, trailers.as_ref());
         if self.waiting() {

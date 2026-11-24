@@ -86,7 +86,7 @@ akio-core 已在每个连接上具备这两半（`ConnInner::hold_reads`、`on_d
   受读缓冲大小约束。
 - **本次改动中让 `H2Client` 支持流式。** akit 的 I18（h2 上游）在后面；届时可以给 `H2Client` 加上同一个 handler trait。
 - **响应读取之间的空闲超时**（fit 的 `response_idle_timeout`，A20 的最后一点）。它属于 akit 的 I17，并且需要在
-  handler 暂停读取时停下读取间隔的计时。
+  handler 暂停读取时停下读取间隔的计时。（此后已由 ADR-108 完成。）
 
 ## 影响
 

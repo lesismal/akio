@@ -376,6 +376,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | HTTP/1.1 服务端 | akio-http（M3） | 是（测评，对比 hyper / fib / monoio） | 是（请求头先用 32 个槽位解析，ADR-081 每请求分配） | keep-alive 受内核限制。 |
 | HTTP/1 请求头解析器、HPACK | akio-ws `http1`、akio-http `hpack` | 是（“编解码微基准”） | 部分 | 完整请求头上耗时为 httparse 的 1.0–1.2x（没有 SIMD）；HPACK 领先 loona-hpack。 |
 | 带联动背压的流式消息体 | akio-http `client`、`h2`，akio-h3（ADR-101） | 否 | 否 | 要测：流式与完整消息体下代理式中继（客户端 ↔ 服务端）的吞吐与内存；`client-bench`（完整消息体路径）与 h2c 的 A/B（HTTP/2 core 释放锁时多一次检查）。 |
+| 客户端响应头/空闲超时与取消、服务端 `on_gone`、运行时写超时 | akio-http `client`、`context`、`session`、`h2`，akio-h3，akio-core（ADR-108） | 否 | 否 | 要测：带与不带响应头和空闲超时的 `client-bench` A/B（每次读消息体一次截止时间 store），HTTP/1 流水线与流式请求体服务（每个流式请求注册一次 peer-gone），h2c 与 h3（每个响应一次原子读）。 |
 | HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s） | 部分（每连接一个截止时间定时器，`95bca264`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
 | 路由与路由正则 | akio-http、akio-regex（ADR-051） | 是（`router-bench`，“编解码微基准”） | 是（每次查找约 28 ns、0 次分配；路由正则快于 `regex`） | – |
 | 日志过滤正则 | akio-regex、akio-log（ADR-047） | 是（“编解码微基准”，`logregex`） | 部分 | 对比 `regex`：无匹配的多选分支 92 对 16 ns，`\b\d+ms\b` 93 对 33 ns；编译更慢。不在热路径上（只用于过滤）。 |

@@ -294,11 +294,11 @@ fn a_response_before_the_body_is_finished() {
         &c,
         ClientRequest::post(&format!("{}/early", base(&e)), Vec::new()),
         move |body| {
-            body.write(b"first").unwrap();
-            // Keep writing until the connection, closed once the answer is in, refuses.
+            // Keep writing until the connection, closed once the answer is in, refuses. The
+            // answer may even be in before the first write (it comes with the head).
             let t = Instant::now();
-            let mut failed = false;
-            while t.elapsed() < Duration::from_secs(10) {
+            let mut failed = body.write(b"first").is_err();
+            while !failed && t.elapsed() < Duration::from_secs(10) {
                 if body.write(&[0u8; 1024]).is_err() {
                     failed = true;
                     break;
