@@ -378,6 +378,7 @@ pub fn akio_sys::set_backlog(&std::net::tcp::TcpListener, i32) -> core::io::erro
 pub fn akio_sys::set_dont_fragment(std::os::fd::raw::RawFd, bool, bool) -> core::io::error::Result<()>
 pub fn akio_sys::set_multicast_hops_v6(&std::net::udp::UdpSocket, u32) -> core::io::error::Result<()>
 pub fn akio_sys::set_unicast_hops_v6(&std::net::udp::UdpSocket, u32) -> core::io::error::Result<()>
+pub fn akio_sys::stop_listening(&std::net::tcp::TcpListener) -> core::io::error::Result<()>
 pub fn akio_sys::tun_gone(&core::io::error::Error) -> bool
 pub fn akio_sys::tun_is_multi_queue(&std::os::fd::owned::OwnedFd) -> core::io::error::Result<bool>
 pub fn akio_sys::tun_open(core::option::Option<&str>, bool) -> core::io::error::Result<(std::os::fd::owned::OwnedFd, alloc::string::String)>
