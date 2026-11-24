@@ -262,3 +262,29 @@ fn system_roots_load() {
     assert_eq!(RootCerts::system().unwrap().len(), r.len());
     ClientConfig::builder().roots(r).build().unwrap();
 }
+
+#[test]
+fn roots_verify_a_chain_outside_a_handshake() {
+    // ADR-123: the store a handshake would use, for a `Verifier` of the caller's own.
+    let a = pki("a.example");
+    let b = pki("b.example");
+    let r = roots(&a.cert);
+    let leaf = |p: &Pki| akio_x509::Certificate::from_der(p.cert.as_der().to_vec()).unwrap();
+    let v = akio_x509::Verifier::new(r.store());
+    v.verify_server(&leaf(&a), &[], "a.example").unwrap();
+    assert!(v.verify_server(&leaf(&b), &[], "b.example").is_err());
+    // Owned, the same roots.
+    let owned: akio_x509::RootStore = r.clone().into();
+    assert_eq!(owned.len(), r.len());
+    akio_x509::Verifier::new(&owned)
+        .verify_server(&leaf(&a), &[], "a.example")
+        .unwrap();
+    // The system's roots, as the handshake's.
+    let sys = RootCerts::system().expect("system roots");
+    assert_eq!(sys.store().len(), sys.len());
+    assert!(
+        akio_x509::Verifier::new(sys.store())
+            .verify_server(&leaf(&a), &[], "a.example")
+            .is_err()
+    );
+}

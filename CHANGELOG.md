@@ -10,6 +10,40 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: `Files` as a gateway's static handler, bounded in memory; file bodies encoded (akio-http)
+
+ADR-124, requested by akit (A14, A15, A92):
+
+- `Files::index_files`, `redirect_directories`, `mime_types` (`MimeTypes::builtin`, Go's table,
+  and `MimeTypes::system`, with the system's `mime.types` as Go reads them), `default_type`,
+  `sniff` (`files::sniff`, Go's `http.DetectContentType`), `error_response` and
+  `serve_prefixed` (listings and redirects name the whole path).
+- `Files::max_cache_bytes` (default 64 MiB): the bytes kept in memory, twins and compressed
+  copies included, evicted least recently used first; `Files::disk_timeout`: a request the disk
+  pool has not answered in time gets `503` with `Retry-After: 1`.
+- A response whose body is a file and which a response filter gave a stream coding
+  (`Response::set_stream_coding`) is sent streamed: read, encoded and written in 64 KiB pieces on
+  the disk pool, under the connection's backpressure.
+
+### Changed: `Files` (akio-http)
+
+- `403` for a file that may not be read; `404` for what is neither a regular file nor a
+  directory (it is no longer opened: a FIFO held a disk pool thread) and for a file asked for
+  with a trailing slash; a name with `:` is served.
+- At most 64 MiB of files are kept in memory by default (`max_cache_bytes`).
+- Under a route, a request's trailing slash counts (a directory listed, not redirected), though
+  the route's wildcard drops it.
+
+### Added: root certificates outside a handshake; ALPN protocols for the handshake only (akio-tls)
+
+ADR-123, requested by akit (A57, A58):
+
+- `RootCerts::store()` and `From<RootCerts> for akio_x509::RootStore`: the roots (the system's
+  included) for a `Verifier` of the caller's own.
+- `ServerConfigBuilder::handshake_only_alpn(protocols)`: a connection negotiating one of them
+  (`acme-tls/1`, RFC 8737) is closed once its handshake completes, and nothing it sends reaches
+  the application.
+
 ### Added: dialing a Unix-domain socket, and the HTTP client over one (akio, akio-http, akio-sys)
 
 ADR-120, requested by akit (A135):

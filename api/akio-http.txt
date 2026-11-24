@@ -349,18 +349,27 @@ impl akio_http::files::Files
 pub fn akio_http::files::Files::cache_control(self, &str) -> akio_http::files::Files
 pub fn akio_http::files::Files::check_interval(self, core::time::Duration) -> akio_http::files::Files
 pub fn akio_http::files::Files::compress(self, &[&str]) -> akio_http::files::Files
+pub fn akio_http::files::Files::default_type(self, core::option::Option<&str>) -> akio_http::files::Files
+pub fn akio_http::files::Files::disk_timeout(self, core::option::Option<core::time::Duration>) -> akio_http::files::Files
+pub fn akio_http::files::Files::error_response(self, impl core::ops::function::Fn(u16) -> akio_http::message::Response + core::marker::Send + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe + 'static) -> akio_http::files::Files
 pub fn akio_http::files::Files::hide(self, impl core::ops::function::Fn(&str) -> bool + core::marker::Send + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe + 'static) -> akio_http::files::Files
 pub fn akio_http::files::Files::index(self, &str) -> akio_http::files::Files
+pub fn akio_http::files::Files::index_files(self, &[&str]) -> akio_http::files::Files
 pub fn akio_http::files::Files::list_directories(self, usize) -> akio_http::files::Files
+pub fn akio_http::files::Files::max_cache_bytes(self, u64) -> akio_http::files::Files
 pub fn akio_http::files::Files::max_cached_bytes(self, u64) -> akio_http::files::Files
 pub fn akio_http::files::Files::max_open_files(self, usize) -> akio_http::files::Files
 pub fn akio_http::files::Files::max_watches(self, usize) -> akio_http::files::Files
+pub fn akio_http::files::Files::mime_types(self, alloc::rcs::arc::Arc<akio_http::files::MimeTypes>) -> akio_http::files::Files
 pub fn akio_http::files::Files::new(impl core::convert::Into<std::path::PathBuf>) -> akio_http::files::Files
+pub fn akio_http::files::Files::redirect_directories(self, bool) -> akio_http::files::Files
+pub fn akio_http::files::Files::sniff(self, bool) -> akio_http::files::Files
 pub fn akio_http::files::Files::try_paths(self, &[&str]) -> akio_http::files::Files
 pub fn akio_http::files::Files::twins(self, &[&str]) -> akio_http::files::Files
 pub fn akio_http::files::Files::watch(self, bool) -> akio_http::files::Files
 impl akio_http::files::Files
 pub fn akio_http::files::Files::serve(&self, &mut akio_http::Context, &str)
+pub fn akio_http::files::Files::serve_prefixed(&self, &mut akio_http::Context, &str, &str)
 impl akio_http::Service for akio_http::files::Files
 pub fn akio_http::files::Files::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
 pub fn akio_http::files::Files::call(&self, &mut akio_http::Context)
@@ -372,6 +381,28 @@ impl core::marker::Sync for akio_http::files::Files
 impl core::marker::Unpin for akio_http::files::Files
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::files::Files
 impl core::panic::unwind_safe::UnwindSafe for akio_http::files::Files
+pub struct akio_http::files::MimeTypes
+impl akio_http::files::MimeTypes
+pub fn akio_http::files::MimeTypes::builtin() -> akio_http::files::MimeTypes
+pub fn akio_http::files::MimeTypes::empty() -> akio_http::files::MimeTypes
+pub fn akio_http::files::MimeTypes::get(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::files::MimeTypes::insert(&mut self, &str, &str)
+pub fn akio_http::files::MimeTypes::is_empty(&self) -> bool
+pub fn akio_http::files::MimeTypes::len(&self) -> usize
+pub fn akio_http::files::MimeTypes::system() -> alloc::rcs::arc::Arc<akio_http::files::MimeTypes>
+impl core::clone::Clone for akio_http::files::MimeTypes
+pub fn akio_http::files::MimeTypes::clone(&self) -> Self
+impl core::default::Default for akio_http::files::MimeTypes
+pub fn akio_http::files::MimeTypes::default() -> Self
+impl core::fmt::Debug for akio_http::files::MimeTypes
+pub fn akio_http::files::MimeTypes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::files::MimeTypes
+impl core::marker::Sync for akio_http::files::MimeTypes
+impl core::marker::Unpin for akio_http::files::MimeTypes
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::files::MimeTypes
+impl core::panic::unwind_safe::UnwindSafe for akio_http::files::MimeTypes
+pub const akio_http::files::SNIFF_LEN: usize
+pub fn akio_http::files::sniff(&[u8]) -> &'static str
 pub mod akio_http::h2client
 pub enum akio_http::h2client::H2Event<'a>
 pub akio_http::h2client::H2Event::Data(&'a [u8])

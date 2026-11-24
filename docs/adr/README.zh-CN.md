@@ -114,3 +114,5 @@
 - [ADR-118：请求的对端是受信任 PROXY 头所指的客户端](118-http-peer-from-proxy-header.zh-CN.md)（2026-11-24 采纳）
 - [ADR-119：代理隧道在连接建立后检查，以及它的连接超时](119-socks-connected-check-and-connect-timeout.zh-CN.md)（2026-11-24 采纳）
 - [ADR-120：拨号 Unix 域套接字，以及在其上的 HTTP 客户端](120-unix-socket-dial.zh-CN.md)（2026-11-24 采纳）
+- [ADR-123：握手之外使用的根证书，以及仅用于握手的 ALPN 协议](123-root-store-and-handshake-only-alpn.zh-CN.md)（2026-11-25 采纳）
+- [ADR-124：`Files` 作为网关的静态文件处理器、内存有界，以及文件消息体编码](124-files-as-a-gateway-static-handler.zh-CN.md)（2026-11-25 采纳）
