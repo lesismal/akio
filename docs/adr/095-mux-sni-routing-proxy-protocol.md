@@ -144,7 +144,7 @@ only akio-core change.
   targets `mux_tls_hello` and `proxy_header` check no panics, prefix consistency, and that
   encoding a parsed header parses back to it.
 - akio-http still reports `peer_addr` as the remote address. Using `proxy::client_addr` there
-  (and in access logs) is left to the application or a later change.
+  (and in access logs) is left to the application or a later change (done since in ADR-118 for akio-http).
 
 ## Not done
 

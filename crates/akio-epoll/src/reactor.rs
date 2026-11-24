@@ -90,6 +90,8 @@ pub(crate) enum Cmd {
         addr: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        /// A Unix-domain socket (ADR-120): its addresses are `UNIX_ADDR`.
+        unix: bool,
     },
     /// Thread resizing (ADR-028): accept on listening socket `.0` (the group's listener index)
     /// from now on.
@@ -389,6 +391,7 @@ enum Slot {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Option<Box<dyn FnOnce(io::Error) + Send>>,
+        unix: bool,
     },
 }
 
@@ -832,7 +835,7 @@ impl Loop {
                         acceptor,
                     });
                 } else {
-                    self.open(stream, peer, acceptor, false);
+                    self.open(stream, peer, acceptor, false, None);
                 }
             }
             Cmd::Dial {
@@ -840,7 +843,8 @@ impl Loop {
                 addr,
                 acceptor,
                 on_error,
-            } => self.begin_dial(stream, addr, acceptor, on_error),
+                unix,
+            } => self.begin_dial(stream, addr, acceptor, on_error, unix),
             Cmd::AddListener(idx, l) => self.add_listener(idx, l),
             Cmd::GiveListener { idx, to } => {
                 if let Some(pos) = self.listeners.iter().position(|(i, _)| *i == idx) {
@@ -1129,7 +1133,7 @@ impl Loop {
                         });
                         continue;
                     }
-                    self.open(stream, peer, acceptor, false);
+                    self.open(stream, peer, acceptor, false, None);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -1185,13 +1189,21 @@ impl Loop {
         peer: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         dialed: bool,
+        // The local address of a Unix-domain socket, which has none of its own (ADR-120).
+        unix_local: Option<SocketAddr>,
     ) {
         if stream.set_nonblocking(true).is_err() {
             return;
         }
-        let _ = stream.set_nodelay(true);
-        let Ok(local) = stream.local_addr() else {
-            return;
+        let local = match unix_local {
+            Some(l) => l,
+            None => {
+                let _ = stream.set_nodelay(true);
+                let Ok(l) = stream.local_addr() else {
+                    return;
+                };
+                l
+            }
         };
         let tel = self.cfg.telemetry.clone();
         if !tel.conn_opened(!dialed) {
@@ -1259,6 +1271,7 @@ impl Loop {
         _addr: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        unix: bool,
     ) {
         if self.draining.is_some() {
             return on_error(io::Error::new(
@@ -1276,6 +1289,7 @@ impl Loop {
                 stream,
                 acceptor,
                 on_error: Some(on_error),
+                unix,
             },
         );
         self.arm_connect(id);
@@ -1286,21 +1300,23 @@ impl Loop {
             stream,
             acceptor,
             on_error,
+            unix,
         }) = self.slots.remove(&id)
         else {
             return;
         };
         self.poller.delete(stream.as_raw_fd());
         let result = match stream.take_error() {
+            Ok(None) if unix => Ok((akio_core::UNIX_ADDR, akio_core::UNIX_ADDR)),
             Ok(None) => stream
                 .peer_addr()
                 .and_then(|p| stream.local_addr().map(|l| (l, p))),
             Ok(Some(e)) | Err(e) => Err(e),
         };
         match result {
-            Ok((_, peer)) => {
+            Ok((local, peer)) => {
                 // `open` re-registers the stream under a fresh id.
-                self.open(stream, peer, acceptor, true);
+                self.open(stream, peer, acceptor, true, unix.then_some(local));
             }
             Err(e) => {
                 if let Some(f) = on_error {

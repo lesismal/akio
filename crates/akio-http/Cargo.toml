@@ -24,6 +24,9 @@ akio-ws = { workspace = true }
 akio-deflate = { workspace = true }
 akio-brotli = { workspace = true }
 akio-zstd = { workspace = true }
+# The client address of a connection behind a load balancer: the PROXY header akio-mux's
+# listener layer attached (ADR-118).
+akio-mux = { workspace = true }
 
 [features]
 default = ["regex"]

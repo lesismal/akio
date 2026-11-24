@@ -64,6 +64,7 @@ pub const FD_CLOEXEC: c_int = 1;
 // ---- sockets -------------------------------------------------------------------------------
 pub const AF_INET: c_int = 2;
 pub const AF_INET6: c_int = 10;
+pub const AF_UNIX: c_int = 1;
 pub const AF_PACKET: c_int = 17;
 pub const SOCK_STREAM: c_int = 1;
 pub const SOCK_DGRAM: c_int = 2;
@@ -228,6 +229,14 @@ pub struct sockaddr_in6 {
     pub sin6_flowinfo: u32,
     pub sin6_addr: in6_addr,
     pub sin6_scope_id: u32,
+}
+
+/// `struct sockaddr_un`: a Unix-domain socket's path, at most 107 bytes and a NUL.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct sockaddr_un {
+    pub sun_family: sa_family_t,
+    pub sun_path: [c_char; 108],
 }
 
 /// `struct sockaddr_storage`: 128 bytes, 8-aligned.

@@ -1,6 +1,6 @@
 //! Pattern syntax to a tree ([`Node`]), with the flags applied: case folding is done here, so
-//! the tree only has characters, classes, `.`, assertions, concatenation, alternation and
-//! counted repetition.
+//! the tree only has characters, classes, `.`, assertions, concatenation, alternation, counted
+//! repetition (greedy or lazy, `(?U)` applied) and capturing groups.
 
 use crate::{Error, tables};
 
@@ -8,6 +8,8 @@ use crate::{Error, tables};
 const MAX_REPEAT: u32 = 1000;
 /// Deepest group nesting.
 const MAX_DEPTH: u32 = 64;
+/// Most capturing groups in a pattern.
+const MAX_GROUPS: u32 = 1000;
 
 /// A zero-width assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +41,15 @@ pub(crate) enum Node {
     Look(Look),
     Concat(Vec<Node>),
     Alt(Vec<Node>),
-    Repeat(Box<Node>, u32, Option<u32>),
+    /// `x{min,max}`, greedy or lazy (`(?U)` already applied).
+    Repeat {
+        node: Box<Node>,
+        min: u32,
+        max: Option<u32>,
+        greedy: bool,
+    },
+    /// A capturing group: its number (1 for the first `(` of the pattern) and what is inside.
+    Group(u32, Box<Node>),
 }
 
 /// The parse result: the tree and the classes it refers to.
@@ -48,6 +58,8 @@ pub(crate) struct Parsed {
     /// The options it was parsed with (the compiler applies [`Options::whole`]).
     pub(crate) opts: Options,
     pub(crate) classes: Vec<Box<[(u32, u32)]>>,
+    /// The name of each group, by number (group 0, the whole match, has none).
+    pub(crate) names: Vec<Option<Box<str>>>,
 }
 
 /// Compile options that change what the syntax means.
@@ -68,6 +80,7 @@ pub(crate) fn parse(pattern: &str, opts: Options) -> Result<Parsed, Error> {
         depth: 0,
         flags: Flags::default(),
         names: Vec::new(),
+        groups: vec![None],
         classes: Vec::new(),
     };
     let root = p.alt()?;
@@ -78,6 +91,7 @@ pub(crate) fn parse(pattern: &str, opts: Options) -> Result<Parsed, Error> {
         root,
         opts,
         classes: p.classes,
+        names: p.groups,
     })
 }
 
@@ -89,6 +103,8 @@ struct Flags {
     m: bool,
     /// `s`: `.` matches `\n`.
     s: bool,
+    /// `U`: greedy and lazy repetition swapped.
+    u: bool,
 }
 
 /// Whether `c` is in the sorted ranges `r`.
@@ -193,6 +209,8 @@ struct Parser {
     flags: Flags,
     /// Group names seen (duplicates are an error, as in the `regex` crate).
     names: Vec<String>,
+    /// The name of each capturing group so far, by number (`None` for group 0 and unnamed ones).
+    groups: Vec<Option<Box<str>>>,
     classes: Vec<Box<[(u32, u32)]>>,
 }
 
@@ -341,8 +359,8 @@ impl Parser {
                 'i' => f.i = !negated,
                 'm' => f.m = !negated,
                 's' => f.s = !negated,
-                // Swapped greediness: whether an input matches does not depend on it.
-                'U' => {}
+                // Swapped greediness.
+                'U' => f.u = !negated,
                 'u' | 'x' | 'R' => {
                     return self.err("unsupported flag (only i, m, s and U are supported)");
                 }
@@ -359,7 +377,7 @@ impl Parser {
         Ok(f)
     }
 
-    fn group_name(&mut self) -> Result<(), Error> {
+    fn group_name(&mut self) -> Result<String, Error> {
         let start = self.i;
         while let Some(c) = self.peek() {
             if c == '>' {
@@ -382,9 +400,9 @@ impl Parser {
         if self.names.contains(&name) {
             return self.err("duplicate group name");
         }
-        self.names.push(name);
+        self.names.push(name.clone());
         self.i += 1;
-        Ok(())
+        Ok(name)
     }
 
     /// After a `(`.
@@ -393,6 +411,8 @@ impl Parser {
             return self.err("groups nested too deeply");
         }
         let saved = self.flags;
+        // The group's number, for a capturing group: taken at its `(`, before the groups inside.
+        let mut capture = None;
         if self.eat('?') {
             if self.peek() == Some('<') && matches!(self.peek2(), Some('=' | '!')) {
                 return self.err("look-around is not supported");
@@ -401,7 +421,8 @@ impl Parser {
                 if self.peek() == Some('P') {
                     self.i += 2;
                 }
-                self.group_name()?;
+                let name = self.group_name()?;
+                capture = Some(self.new_group(Some(name.into()))?);
             } else {
                 let f = self.flags()?;
                 if self.eat(')') {
@@ -412,6 +433,8 @@ impl Parser {
                 self.i += 1; // `:`
                 self.flags = f;
             }
+        } else {
+            capture = Some(self.new_group(None)?);
         }
         self.depth += 1;
         let inner = self.alt();
@@ -421,7 +444,22 @@ impl Parser {
         if !self.eat(')') {
             return self.err("unclosed group");
         }
-        Ok(Atom::Node(inner))
+        Ok(Atom::Node(match capture {
+            Some(k) => Node::Group(k, Box::new(inner)),
+            None => inner,
+        }))
+    }
+
+    /// Numbers a new capturing group.
+    fn new_group(&mut self, name: Option<Box<str>>) -> Result<u32, Error> {
+        let Ok(k) = u32::try_from(self.groups.len()) else {
+            return self.err("too many groups");
+        };
+        if k > MAX_GROUPS {
+            return self.err("too many groups");
+        }
+        self.groups.push(name);
+        Ok(k)
     }
 
     fn hex(&mut self, digits: usize) -> Result<char, Error> {
@@ -627,8 +665,15 @@ impl Parser {
                 _ => return Ok(node),
             };
             self.i += 1;
-            self.eat('?'); // lazy: whether an input matches does not depend on it
-            node = Node::Repeat(Box::new(node), min, max);
+            // Lazy (`*?`) or, under `(?U)`, greedy: it changes where a match ends and what the
+            // groups hold, not whether a text matches.
+            let greedy = self.eat('?') == self.flags.u;
+            node = Node::Repeat {
+                node: Box::new(node),
+                min,
+                max,
+                greedy,
+            };
         }
     }
 }

@@ -496,6 +496,73 @@ pub fn connect_nonblocking(addr: SocketAddr) -> io::Result<TcpStream> {
     Ok(TcpStream::from(fd))
 }
 
+/// Starts a non-blocking connect to the Unix-domain stream socket at `path` (ADR-120), as the
+/// Docker daemon's `/var/run/docker.sock`. The socket is non-blocking and close-on-exec; as with
+/// [`connect_nonblocking`] it becomes writable once connected (a Unix-domain connect usually
+/// finishes at once); check `SO_ERROR` then. A path longer than `sun_path` holds (107 bytes on
+/// Linux, 103 on macOS), or one with a NUL byte, is `InvalidInput`; a listener whose backlog is
+/// full is `WouldBlock`.
+pub fn connect_unix_nonblocking(path: &std::path::Path) -> io::Result<OwnedFd> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain-old-data; all-zero is a valid value.
+    let mut sun: ffi::sockaddr_un = unsafe { mem::zeroed() };
+    // One byte is left for the NUL the zeroed array already holds.
+    if bytes.is_empty() || bytes.len() >= sun.sun_path.len() || bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a Unix-domain socket path: empty, too long or with a NUL byte",
+        ));
+    }
+    for (d, &b) in sun.sun_path.iter_mut().zip(bytes) {
+        *d = b as ffi::c_char;
+    }
+    sun.sun_family = ffi::AF_UNIX as ffi::sa_family_t;
+    let len = mem::offset_of!(ffi::sockaddr_un, sun_path) + bytes.len() + 1;
+    #[cfg(target_os = "macos")]
+    {
+        sun.sun_len = len as u8;
+    }
+    #[cfg(target_os = "linux")]
+    let fd = {
+        // SAFETY: plain syscall with valid constant arguments.
+        let fd = cvt(unsafe {
+            ffi::socket(
+                ffi::AF_UNIX,
+                ffi::SOCK_STREAM | ffi::SOCK_NONBLOCK | ffi::SOCK_CLOEXEC,
+                0,
+            )
+        })?;
+        // SAFETY: `fd` was just created by socket(2) and is owned by no one else.
+        unsafe { OwnedFd::from_raw_fd(fd) }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let fd = {
+        // SAFETY: plain syscall with valid constant arguments.
+        let fd = cvt(unsafe { ffi::socket(ffi::AF_UNIX, ffi::SOCK_STREAM, 0) })?;
+        // SAFETY: `fd` was just created by socket(2) and is owned by no one else.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        crate::poller::set_nonblock_cloexec(std::os::fd::AsRawFd::as_raw_fd(&fd))?;
+        fd
+    };
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    // SAFETY: `sun` is a valid sockaddr_un and `len` does not pass its end.
+    let r = unsafe {
+        ffi::connect(
+            raw,
+            (&raw const sun).cast::<ffi::sockaddr>(),
+            len as ffi::socklen_t,
+        )
+    };
+    if r < 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(ffi::EINPROGRESS) {
+            return Err(e);
+        }
+    }
+    Ok(fd)
+}
+
 /// Starts a non-blocking connect to `addr` from `local`, bound with `SO_REUSEADDR` and
 /// `SO_REUSEPORT` first: several sockets (connections to different peers, a listener) may
 /// share the local port, which TCP simultaneous open needs (ICE-TCP `so` candidates, RFC

@@ -1,5 +1,7 @@
 //! The tree compiled to a Thompson NFA program ([`Prog`]), run by a Pike VM (no captures) and
-//! by a DFA built from it ahead of time.
+//! by a DFA built from it ahead of time. A second program, with the groups' `Save` instructions
+//! and the repetitions' priorities, is run by the capturing Pike VM ([`crate::pike`]) to find
+//! where a match is and what its groups hold.
 //!
 //! Both engines move a set of *pending* instructions (threads waiting to be expanded) from one
 //! position to the next. At each position the pending set is expanded through jumps, splits and
@@ -42,13 +44,13 @@ const DEAD: u32 = u32::MAX - 1;
 const MISS: u32 = u32::MAX - 2;
 
 /// Character categories, as the assertions see them.
-const EDGE: u8 = 0;
+pub(crate) const EDGE: u8 = 0;
 const NL: u8 = 1;
 const WORD: u8 = 2;
 const OTHER: u8 = 3;
 
 #[derive(Clone, Copy, Debug)]
-enum Inst {
+pub(crate) enum Inst {
     Char(char),
     /// Index into `Prog::classes`.
     Class(u32),
@@ -59,11 +61,13 @@ enum Inst {
     Split(u32, u32),
     Jmp(u32),
     Look(Look),
+    /// Records the position in a capture slot (the capturing program only).
+    Save(u32),
     Match,
 }
 
 /// Whether `c` is a word character (`\w`): Unicode, or ASCII only with `ascii`.
-fn is_word(c: char, ascii: bool) -> bool {
+pub(crate) fn is_word(c: char, ascii: bool) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphanumeric() || c == '_'
     } else {
@@ -71,7 +75,7 @@ fn is_word(c: char, ascii: bool) -> bool {
     }
 }
 
-fn look_ok(l: Look, prev: u8, next: u8) -> bool {
+pub(crate) fn look_ok(l: Look, prev: u8, next: u8) -> bool {
     match l {
         Look::StartText => prev == EDGE,
         Look::EndText => next == EDGE,
@@ -102,10 +106,19 @@ pub(crate) struct Prog {
     /// Matches the whole text only: [`literal`](Prog::literal) is compared, not searched for.
     whole: bool,
     dfa: Option<Dfa>,
+    /// The capturing program: the same pattern with `Save` instructions around each group and
+    /// around the whole match (slots 0 and 1), and splits ordered by priority (the preferred
+    /// branch first: the left alternative, more of a greedy repetition, less of a lazy one).
+    pub(crate) caps: Vec<Inst>,
+    /// The name of each group, by number; group 0 is the whole match.
+    pub(crate) names: std::sync::Arc<[Option<Box<str>>]>,
 }
 
 struct Compiler {
     insts: Vec<Inst>,
+    /// Compiling the capturing program: groups save their bounds, and lazy repetitions prefer
+    /// to stop.
+    caps: bool,
 }
 
 impl Compiler {
@@ -162,34 +175,147 @@ impl Compiler {
                     self.insts[j as usize] = Inst::Jmp(end);
                 }
             }
-            Node::Repeat(n, min, max) => {
-                for _ in 0..*min {
+            Node::Repeat {
+                node,
+                min,
+                max,
+                greedy,
+            } => self.repeat(node, *min, *max, *greedy)?,
+            Node::Group(k, n) => {
+                if self.caps {
+                    self.push(Inst::Save(k * 2))?;
                     self.emit(n)?;
-                }
-                match max {
-                    None => {
-                        // x*: L: split(L+1, out); x; jmp L
-                        let l = self.push(Inst::Split(0, 0))?;
-                        self.emit(n)?;
-                        self.push(Inst::Jmp(l))?;
-                        let out = self.here();
-                        self.insts[l as usize] = Inst::Split(l + 1, out);
-                    }
-                    Some(max) => {
-                        let mut splits = Vec::new();
-                        for _ in *min..*max {
-                            splits.push(self.push(Inst::Split(0, 0))?);
-                            self.emit(n)?;
-                        }
-                        let out = self.here();
-                        for s in splits {
-                            self.insts[s as usize] = Inst::Split(s + 1, out);
-                        }
-                    }
+                    self.push(Inst::Save(k * 2 + 1))?;
+                } else {
+                    self.emit(n)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// A split preferring `more` (another repetition) over `out`, or the other way round for a
+    /// lazy repetition in the capturing program (only it runs threads by priority).
+    fn split(&self, greedy: bool, more: u32, out: u32) -> Inst {
+        if self.caps && !greedy {
+            Inst::Split(out, more)
+        } else {
+            Inst::Split(more, out)
+        }
+    }
+
+    /// `n{min,max}`, in the shapes Go's `regexp/syntax` simplifies and compiles it to, so that
+    /// the threads' priorities, hence the match and its groups, are Go's: `x{n,}` is `n - 1`
+    /// copies of `x` then `x+`, `x{n,m}` is `n` copies then `(x(x)?)?` nested, `x+` loops back
+    /// after `x`, and `x*` is `(x+)?` when `x` can match the empty text (golang/go#46123), a
+    /// loop before `x` otherwise. A repetition of a repetition of the same kind and greediness
+    /// is one (`x**` is `x*`).
+    fn repeat(
+        &mut self,
+        mut n: &Node,
+        mut min: u32,
+        mut max: Option<u32>,
+        greedy: bool,
+    ) -> Result<(), Error> {
+        let kind = |min: u32, max: Option<u32>| matches!((min, max), (0 | 1, None) | (0, Some(1)));
+        while let Node::Repeat {
+            node: inner,
+            min: imin,
+            max: imax,
+            greedy: ig,
+        } = n
+        {
+            if !(kind(min, max) && (min, max) == (*imin, *imax) && greedy == *ig) {
+                break;
+            }
+            n = inner;
+            (min, max) = (*imin, *imax);
+        }
+        let Some(max) = max else {
+            if min == 0 {
+                return self.star(n, greedy);
+            }
+            for _ in 1..min {
+                self.emit(n)?;
+            }
+            return self.plus(n, greedy);
+        };
+        for _ in 0..min {
+            self.emit(n)?;
+        }
+        let mut splits = Vec::new();
+        for _ in min..max {
+            splits.push(self.push(Inst::Split(0, 0))?);
+            self.emit(n)?;
+        }
+        let out = self.here();
+        for s in splits {
+            self.insts[s as usize] = self.split(greedy, s + 1, out);
+        }
+        Ok(())
+    }
+
+    /// `x*`.
+    fn star(&mut self, n: &Node, greedy: bool) -> Result<(), Error> {
+        if nullable(n) {
+            // (x+)?
+            let q = self.push(Inst::Split(0, 0))?;
+            self.plus(n, greedy)?;
+            let out = self.here();
+            self.insts[q as usize] = self.split(greedy, q + 1, out);
+            return Ok(());
+        }
+        // L: split(L+1, out); x; jmp L
+        let l = self.push(Inst::Split(0, 0))?;
+        self.emit(n)?;
+        self.push(Inst::Jmp(l))?;
+        let out = self.here();
+        self.insts[l as usize] = self.split(greedy, l + 1, out);
+        Ok(())
+    }
+
+    /// `x+`: L: x; split(L, out).
+    fn plus(&mut self, n: &Node, greedy: bool) -> Result<(), Error> {
+        let l = self.here();
+        self.emit(n)?;
+        let s = self.push(Inst::Split(0, 0))?;
+        self.insts[s as usize] = self.split(greedy, l, s + 1);
+        Ok(())
+    }
+
+    /// The program for `parsed`: the matching one, or with `caps` the capturing one.
+    fn program(parsed: &Parsed, caps: bool) -> Result<Vec<Inst>, Error> {
+        let mut c = Compiler {
+            insts: Vec::new(),
+            caps,
+        };
+        if parsed.opts.whole {
+            c.push(Inst::Look(Look::StartText))?;
+        }
+        if caps {
+            c.push(Inst::Save(0))?;
+        }
+        c.emit(&parsed.root)?;
+        if caps {
+            c.push(Inst::Save(1))?;
+        }
+        if parsed.opts.whole {
+            c.push(Inst::Look(Look::EndText))?;
+        }
+        c.push(Inst::Match)?;
+        Ok(c.insts)
+    }
+}
+
+/// Whether `n` can match the empty text.
+fn nullable(n: &Node) -> bool {
+    match n {
+        Node::Empty | Node::Look(_) => true,
+        Node::Char(_) | Node::Class(_) | Node::Any { .. } => false,
+        Node::Concat(v) => v.iter().all(nullable),
+        Node::Alt(v) => v.iter().any(nullable),
+        Node::Repeat { node, min, .. } => *min == 0 || nullable(node),
+        Node::Group(_, n) => nullable(n),
     }
 }
 
@@ -197,6 +323,7 @@ impl Compiler {
 fn literal(n: &Node) -> Option<Box<str>> {
     match n {
         Node::Char(c) => Some(c.to_string().into()),
+        Node::Group(_, n) => literal(n),
         Node::Concat(v) => v
             .iter()
             .map(|n| match n {
@@ -212,22 +339,14 @@ fn literal(n: &Node) -> Option<Box<str>> {
 impl Prog {
     pub(crate) fn new(parsed: Parsed) -> Result<Prog, Error> {
         let whole = parsed.opts.whole;
-        let mut c = Compiler { insts: Vec::new() };
-        if whole {
-            c.push(Inst::Look(Look::StartText))?;
-        }
-        c.emit(&parsed.root)?;
-        if whole {
-            c.push(Inst::Look(Look::EndText))?;
-        }
-        c.push(Inst::Match)?;
-        let looks =
-            |f: fn(Look) -> bool| c.insts.iter().any(|i| matches!(i, Inst::Look(l) if f(*l)));
+        let insts = Compiler::program(&parsed, false)?;
+        let caps = Compiler::program(&parsed, true)?;
+        let looks = |f: fn(Look) -> bool| insts.iter().any(|i| matches!(i, Inst::Look(l) if f(*l)));
         let word_looks = looks(|l| matches!(l, Look::Word | Look::NotWord));
         let line_looks = looks(|l| matches!(l, Look::StartLine | Look::EndLine));
         let mut prog = Prog {
-            anchored: matches!(c.insts[0], Inst::Look(Look::StartText)),
-            insts: c.insts,
+            anchored: matches!(insts[0], Inst::Look(Look::StartText)),
+            insts,
             classes: parsed.classes,
             always: false,
             word_looks,
@@ -236,6 +355,8 @@ impl Prog {
             literal: literal(&parsed.root),
             whole,
             dfa: None,
+            caps,
+            names: parsed.names.into(),
         };
         let mut sc = Scratch::default();
         sc.reserve(prog.insts.len());
@@ -250,6 +371,11 @@ impl Prog {
         Ok(prog)
     }
 
+    /// Whether threads start at position 0 only (`^` / `\A` first).
+    pub(crate) fn anchored(&self) -> bool {
+        self.anchored
+    }
+
     /// The literal text the pattern is, and whether it must be the whole text.
     pub(crate) fn literal(&self) -> Option<(&str, bool)> {
         self.literal.as_deref().map(|l| (l, self.whole))
@@ -257,7 +383,7 @@ impl Prog {
 
     /// The category of `c`, merged with `OTHER` where no assertion tells them apart (fewer DFA
     /// states).
-    fn category(&self, c: char) -> u8 {
+    pub(crate) fn category(&self, c: char) -> u8 {
         if c == '\n' {
             if self.line_looks { NL } else { OTHER }
         } else if self.word_looks && is_word(c, self.ascii_word) {
@@ -267,7 +393,7 @@ impl Prog {
         }
     }
 
-    fn consumes(&self, inst: Inst, c: char) -> bool {
+    pub(crate) fn consumes(&self, inst: Inst, c: char) -> bool {
         match inst {
             Inst::Char(x) => x == c,
             Inst::Any => c != '\n',

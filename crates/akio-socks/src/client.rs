@@ -606,7 +606,7 @@ impl<A: Acceptor> Acceptor for Shared<A> {
     type Handler = A::Handler;
     fn on_open(&self, c: &Conn<A::Handler>) -> A::Handler {
         let slot: UpstreamSlot = Arc::new(Mutex::new(None));
-        if let Some(w) = Watch::start(c.inner(), &slot, self.0.timeout, None) {
+        if let Some(w) = Watch::start(c.inner(), &slot, self.0.timeout, None, None) {
             let plan = self.0.clone();
             w.on_fire(Box::new(move || {
                 plan.fail(io::Error::new(
@@ -928,7 +928,7 @@ impl Acceptor for ControlAcceptor {
             proxy: self.proxy,
             done: self.done.clone(),
             err: None,
-            watch: Watch::start(c.inner(), &slot, self.timeout, None),
+            watch: Watch::start(c.inner(), &slot, self.timeout, None, None),
         }
     }
 }

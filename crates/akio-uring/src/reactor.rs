@@ -459,6 +459,8 @@ pub(crate) enum Cmd {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        /// A Unix-domain socket (ADR-120): its addresses are `UNIX_ADDR`.
+        unix: bool,
     },
     /// Thread resizing (ADR-028): accept on listening socket `.0` (the group's listener index).
     AddListener(usize, TcpListener),
@@ -798,6 +800,7 @@ enum Slot {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Option<Box<dyn FnOnce(io::Error) + Send>>,
+        unix: bool,
     },
 }
 
@@ -1409,7 +1412,7 @@ impl Loop {
             let Some(acceptor) = self.drain_acceptor.clone() else {
                 return; // dropped: closes it
             };
-            if let Some(id) = self.open(stream, peer, acceptor, false) {
+            if let Some(id) = self.open(stream, peer, acceptor, false, None) {
                 if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
                     lc.shutdown_after_data = true;
                 }
@@ -1433,7 +1436,7 @@ impl Loop {
                 return;
             }
         }
-        self.open(stream, peer, acceptor, false);
+        self.open(stream, peer, acceptor, false, None);
     }
 
     /// A connection another loop accepted and handed here (ADR-105).
@@ -1446,7 +1449,7 @@ impl Loop {
         if self.draining.is_some() {
             // As for one the cancelled multishot accept completes while draining (`on_accept`):
             // serve its first request, then shut it down.
-            if let Some(id) = self.open(stream, peer, acceptor, false) {
+            if let Some(id) = self.open(stream, peer, acceptor, false, None) {
                 if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
                     lc.shutdown_after_data = true;
                 }
@@ -1458,7 +1461,7 @@ impl Loop {
                 acceptor,
             });
         } else {
-            self.open(stream, peer, acceptor, false);
+            self.open(stream, peer, acceptor, false, None);
         }
     }
 
@@ -1661,13 +1664,18 @@ impl Loop {
         peer: std::net::SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         dialed: bool,
+        // The local address of a Unix-domain socket, which has none of its own (ADR-120).
+        unix_local: Option<std::net::SocketAddr>,
     ) -> Option<u64> {
         if stream.set_nonblocking(true).is_err() {
             return None;
         }
-        let _ = stream.set_nodelay(true);
-        let Ok(local) = stream.local_addr() else {
-            return None;
+        let local = match unix_local {
+            Some(l) => l,
+            None => {
+                let _ = stream.set_nodelay(true);
+                stream.local_addr().ok()?
+            }
         };
         let tel = self.cfg.telemetry.clone();
         if !tel.conn_opened(!dialed) {
@@ -1761,6 +1769,7 @@ impl Loop {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        unix: bool,
     ) {
         if self.draining.is_some() {
             return on_error(io::Error::new(
@@ -1777,6 +1786,7 @@ impl Loop {
                 stream,
                 acceptor,
                 on_error: Some(on_error),
+                unix,
             },
         );
         self.arm_connect(id);
@@ -1787,17 +1797,20 @@ impl Loop {
             stream,
             acceptor,
             on_error,
+            unix,
         }) = self.slots.remove(&id)
         else {
             return;
         };
         let result = match stream.take_error() {
+            Ok(None) if unix => Ok(akio_core::UNIX_ADDR),
             Ok(None) => stream.peer_addr(),
             Ok(Some(e)) | Err(e) => Err(e),
         };
         match result {
             Ok(peer) => {
-                self.open(stream, peer, acceptor, true);
+                let unix_local = unix.then_some(akio_core::UNIX_ADDR);
+                self.open(stream, peer, acceptor, true, unix_local);
             }
             Err(e) => {
                 if let Some(f) = on_error {
@@ -2073,7 +2086,8 @@ impl Loop {
                         stream,
                         acceptor,
                         on_error,
-                    } => self.begin_dial(stream, acceptor, on_error),
+                        unix,
+                    } => self.begin_dial(stream, acceptor, on_error, unix),
                     Cmd::AddListener(idx, l) => self.add_listener(idx, l),
                     Cmd::GiveListener { idx, to } => {
                         if let Some(l) = self.drop_listener(idx) {

@@ -181,30 +181,50 @@ impl Out {
 }
 
 /// Response filters: the first two inline (a middleware stack rarely registers more), the rest
-/// in a vector, so a request with filters does not also allocate a list for them.
+/// in a vector, so a request with filters does not also allocate a list for them. Outer filters
+/// ([`Context::add_outer_response_filter`], ADR-116) go in the vector, marked.
 #[derive(Default)]
 struct Filters {
     inline: [Option<Filter>; 2],
-    rest: Vec<Filter>,
+    /// Each filter, and whether it is an outer one.
+    rest: Vec<(bool, Filter)>,
 }
 
 impl Filters {
     #[inline]
     fn is_empty(&self) -> bool {
-        self.inline[0].is_none()
+        self.inline[0].is_none() && self.rest.is_empty()
     }
 
     fn push(&mut self, f: Filter) {
         match self.inline.iter_mut().find(|s| s.is_none()) {
             Some(slot) => *slot = Some(f),
-            None => self.rest.push(f),
+            None => self.rest.push((false, f)),
         }
     }
 
-    /// Takes every filter, in registration order.
+    fn push_outer(&mut self, f: Filter) {
+        self.rest.push((true, f));
+    }
+
+    /// Takes every filter: the ordinary ones in registration order, then the outer ones in
+    /// reverse registration order.
     fn drain(&mut self) -> impl Iterator<Item = Filter> {
         let [a, b] = std::mem::take(&mut self.inline);
-        a.into_iter().chain(b).chain(std::mem::take(&mut self.rest))
+        let mut rest = std::mem::take(&mut self.rest);
+        // Only a request with an outer filter pays for sorting them out.
+        let outer: Vec<Filter> = if rest.iter().any(|(outer, _)| *outer) {
+            let (outer, ordinary): (Vec<_>, Vec<_>) =
+                rest.into_iter().partition(|(outer, _)| *outer);
+            rest = ordinary;
+            outer.into_iter().rev().map(|(_, f)| f).collect()
+        } else {
+            Vec::new()
+        };
+        a.into_iter()
+            .chain(b)
+            .chain(rest.into_iter().map(|(_, f)| f))
+            .chain(outer)
     }
 }
 
@@ -533,7 +553,9 @@ impl Context {
         &self.req.body
     }
 
-    /// The peer address.
+    /// The client's address: the source of the PROXY header akio-mux's `ProxyProtocol` layer
+    /// read for the connection, when it read one naming an address, else the socket's peer
+    /// ([`Request::peer`], ADR-118).
     pub fn peer(&self) -> SocketAddr {
         self.req.peer
     }
@@ -582,6 +604,18 @@ impl Context {
         f: impl FnOnce(&mut Response, &Request) + Send + 'static,
     ) {
         self.fin.filters.push(Box::new(f));
+    }
+
+    /// Adds a response filter that runs after every filter
+    /// [`add_response_filter`](Self::add_response_filter) adds, the outer filters in the reverse
+    /// of the order they were added (ADR-116): a middleware that registers one before calling the
+    /// handlers it wraps sees the response as the middlewares inside it left it (encoded by a
+    /// `compress` filter, say), as a cache in front of them must.
+    pub fn add_outer_response_filter(
+        &mut self,
+        f: impl FnOnce(&mut Response, &Request) + Send + 'static,
+    ) {
+        self.fin.filters.push_outer(Box::new(f));
     }
 
     /// Adds `header: <elapsed>ms` (time since this call; at dispatch for the `response_time`
@@ -1275,6 +1309,14 @@ fn start_stream(
         .map(|c| Box::new(Mutex::new(StreamEncoder::new(c))));
     // Kept by the stream until it ends (`Response::keep_until_sent`).
     let kept = resp.take_kept();
+    // A HEAD answer sends no body to see. A stream that does not start drops the tap, which
+    // tells it the body was cut.
+    let tap = resp
+        .tap
+        .take()
+        .filter(|_| req.method != Method::Head)
+        .and_then(|t| t.take())
+        .map(Box::new);
     let inner = match out {
         Out::H1(r) => {
             let mut head = Vec::with_capacity(192);
@@ -1291,7 +1333,12 @@ fn start_stream(
         Out::H2(r) => Inner::H2(r.start_stream(resp)?),
         Out::Ext(r) => Inner::Ext(r.start_stream(resp)?),
     };
-    Some(BodyStream { inner, coder, kept })
+    Some(BodyStream {
+        inner,
+        coder,
+        tap,
+        kept,
+    })
 }
 
 /// A response body being written in pieces; see [`Context::stream_response`].
@@ -1300,6 +1347,8 @@ pub struct BodyStream {
     /// The content coding's encoder (ADR-074); the lock also keeps concurrent writes in the
     /// order they are encoded.
     coder: Option<Box<Mutex<StreamEncoder>>>,
+    /// What sees the body as it is sent (ADR-116).
+    tap: Option<Box<crate::tap::StreamTap>>,
     /// What a response filter kept until the body is sent (ADR-112), dropped with the stream.
     #[allow(dead_code, reason = "kept for its drop")]
     kept: Option<Arc<crate::message::Kept>>,
@@ -1334,20 +1383,36 @@ impl BodyStream {
     /// the client can decode everything written so far: each write goes out as it is made.
     pub fn write(&self, data: &[u8]) -> akio_core::Result<()> {
         match &self.coder {
-            None => self.inner.write(data),
+            None => self.send(data),
             Some(_) if data.is_empty() => Ok(()),
             Some(c) => {
                 let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
-                self.inner.write(c.encode(data, false))
+                self.send(c.encode(data, false))
             }
         }
+    }
+
+    /// Writes `data`, as encoded, to the transport, and shows it to the tap.
+    fn send(&self, data: &[u8]) -> akio_core::Result<()> {
+        let r = self.inner.write(data);
+        if let Some(t) = &self.tap {
+            t.wrote(data, r.is_ok());
+        }
+        r
     }
 
     /// The encoder's last output, written before the stream ends.
     fn end_coding(&mut self) {
         if let Some(c) = self.coder.take() {
             let mut c = c.into_inner().unwrap_or_else(PoisonError::into_inner);
-            let _ = self.inner.write(c.encode(&[], true));
+            let _ = self.send(c.encode(&[], true));
+        }
+    }
+
+    /// Tells the tap how the body ended.
+    fn end_tap(&mut self, end: crate::TapEnd) {
+        if let Some(t) = self.tap.take() {
+            t.end(end);
         }
     }
 
@@ -1383,6 +1448,7 @@ impl BodyStream {
     /// Completes the body (the final chunk) and lets later responses go out.
     pub fn finish(mut self) {
         self.end_coding();
+        self.end_tap(crate::TapEnd::Finished);
         self.inner.finish();
     }
 
@@ -1390,6 +1456,7 @@ impl BodyStream {
     /// the chunked trailer section on HTTP/1.1).
     pub fn finish_with_trailers(mut self, trailers: Headers) {
         self.end_coding();
+        self.end_tap(crate::TapEnd::Trailers);
         self.inner.finish_with_trailers(trailers);
     }
 }

@@ -86,6 +86,7 @@ akio-epoll = { path = "crates/akio-epoll", version = "=1.0.0-rc.1" }
 akio-uring = { path = "crates/akio-uring", version = "=1.0.0-rc.1" }
 akio-tls = { path = "crates/akio-tls", version = "=1.0.0-rc.1" }
 akio-http = { path = "crates/akio-http", version = "=1.0.0-rc.1" }
+akio-mux = { path = "crates/akio-mux", version = "=1.0.0-rc.1" }
 akio-ws = { path = "crates/akio-ws", version = "=1.0.0-rc.1" }
 akio-quic = { path = "crates/akio-quic", version = "=1.0.0-rc.1" }
 akio-kcp = { path = "crates/akio-kcp", version = "=1.0.0-rc.1" }

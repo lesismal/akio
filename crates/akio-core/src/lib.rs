@@ -31,6 +31,13 @@ mod sync;
 pub mod telemetry;
 pub mod timer;
 
+/// The address a Unix-domain connection reports as its peer and its local address (`0.0.0.0:0`):
+/// such a socket has no IP address (`Engine::dial_unix`, ADR-120).
+pub const UNIX_ADDR: std::net::SocketAddr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
+    std::net::Ipv4Addr::UNSPECIFIED,
+    0,
+));
+
 pub use akio_buf::SharedBuf;
 #[doc(hidden)]
 pub use akio_pool::Pool;

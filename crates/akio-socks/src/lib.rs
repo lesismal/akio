@@ -30,7 +30,10 @@
 //! a tunnel with no byte in either direction for 5 minutes is closed, at most 256 KiB of early
 //! data is held while the upstream connects, and only public destinations are dialled
 //! ([`Destinations::PublicOnly`]): a proxy reachable by others must not become a way into the
-//! loopback, link-local (cloud metadata) or private networks behind it.
+//! loopback, link-local (cloud metadata) or private networks behind it. A tunnel's upstream may
+//! also be checked once it is open, by the name asked for and both of its addresses
+//! ([`ProxyConfig::connected`]), and its connect given a timeout of its own
+//! ([`ProxyConfig::connect_timeout`], ADR-119).
 //!
 //! Guide: [SOCKS and HTTP CONNECT proxies](https://lesismal.github.io/akio/en/protocols/socks.html)
 //! (中文: [SOCKS 与 HTTP CONNECT 代理](https://lesismal.github.io/akio/zh-CN/protocols/socks.html)).
@@ -163,7 +166,7 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 }
 
 /// Limits and policy of a proxy ([`Socks::config`], [`connect_proxy_with`]).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct ProxyConfig {
     /// Longest time from accepting the client until its upstream is connected (SOCKS greeting,
@@ -183,7 +186,31 @@ pub struct ProxyConfig {
     /// splicing fails; those relay in userspace. Spliced bytes bypass the engine's write
     /// watermarks; the idle timeout and closing keep working (from the sockets' TCP counters).
     pub sockmap: Option<akio::ebpf::Relay>,
+    /// Decides each `CONNECT` tunnel's upstream connection (SOCKS and HTTP) once it is open and
+    /// before anything is sent on it or the client hears of it ([`Connected`]), after
+    /// [`destinations`](Self::destinations) allowed its address. A refused one is closed, no
+    /// other address is tried, and the request fails as not allowed: SOCKS5 reply 2, SOCKS4
+    /// `0x5b`, HTTP `502 Bad Gateway`. Default `None`.
+    pub connected: Option<Connected>,
+    /// Longest time from a `CONNECT` request (SOCKS or HTTP) to its upstream being connected:
+    /// name resolution and every address tried. Past it the request fails: SOCKS5 reply 4 (host
+    /// unreachable), SOCKS4 `0x5b`, HTTP `504 Gateway Timeout`, and the client is closed once the
+    /// reply is sent. Default `None`: only [`handshake_timeout`](Self::handshake_timeout), which
+    /// still runs, bounds it.
+    pub connect_timeout: Option<Duration>,
 }
+
+/// A check of a `CONNECT` tunnel's upstream connection once it is open
+/// ([`ProxyConfig::connected`]): given the destination as the client asked for it (an address,
+/// or a host name with the address it resolved to in the second argument), the address the
+/// connection was opened to and the local address it was opened from (both with IPv4-mapped
+/// IPv6 addresses written as IPv4), `true` lets the tunnel go on.
+///
+/// It sees what a check before the dial cannot: the name a resolved address was asked for, so
+/// that a rule may treat an address differently by the name that led to it, and the local
+/// address, so that a connection to the host's own address shows as one coming from the address
+/// it goes to. It runs on the upstream's I/O thread, so it must not block.
+pub type Connected = Arc<dyn Fn(&Dest, SocketAddr, SocketAddr) -> bool + Send + Sync>;
 
 impl Default for ProxyConfig {
     fn default() -> ProxyConfig {
@@ -192,7 +219,22 @@ impl Default for ProxyConfig {
             idle_timeout: Some(DEFAULT_IDLE_TIMEOUT),
             destinations: Destinations::PublicOnly,
             sockmap: None,
+            connected: None,
+            connect_timeout: None,
         }
+    }
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("handshake_timeout", &self.handshake_timeout)
+            .field("idle_timeout", &self.idle_timeout)
+            .field("destinations", &self.destinations)
+            .field("sockmap", &self.sockmap)
+            .field("connected", &self.connected.as_ref().map(|_| ".."))
+            .field("connect_timeout", &self.connect_timeout)
+            .finish()
     }
 }
 
@@ -289,10 +331,55 @@ impl Handler for Upstream {
 /// Runs when the upstream connection is established (on its I/O thread).
 type OnUp = Box<dyn FnOnce(&Arc<ConnInner>) + Send>;
 
+/// Why a `CONNECT` tunnel's upstream was not connected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Failure {
+    /// The name did not resolve.
+    Unresolved,
+    /// No address could be connected to.
+    Unreachable,
+    /// The destination's addresses are not allowed ([`ProxyConfig::destinations`]), or the
+    /// connection was refused once open ([`ProxyConfig::connected`]).
+    Refused,
+    /// [`ProxyConfig::connect_timeout`] passed.
+    TimedOut,
+    /// The resolver's queue is full (HTTP `CONNECT`).
+    Busy,
+}
+
+/// Tells the client why its tunnel failed.
+type OnFail = Box<dyn FnOnce(Failure) + Send>;
+
+/// The outcome of one tunnel's dial, settled once: by the first upstream connection that opens
+/// and passes [`ProxyConfig::connected`] (`on_up`), or by a failure or the connect timeout
+/// (`on_fail`), whichever comes first; the other never runs.
+struct Pending(Mutex<Option<(OnUp, OnFail)>>);
+
+impl Pending {
+    fn new(on_up: OnUp, on_fail: OnFail) -> Arc<Pending> {
+        Arc::new(Pending(Mutex::new(Some((on_up, on_fail)))))
+    }
+
+    fn settle(&self) -> Option<(OnUp, OnFail)> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    /// Fails the tunnel, unless it is settled already.
+    fn fail(&self, why: Failure) {
+        if let Some((_, f)) = self.settle() {
+            f(why);
+        }
+    }
+}
+
+/// What decides a tunnel's upstream once open: the check, and the destination asked for.
+type Check = (Connected, Arc<Dest>);
+
 struct UpstreamAcceptor {
     client: Arc<ConnInner>,
     slot: UpstreamSlot,
-    on_up: Arc<Mutex<Option<OnUp>>>,
+    pending: Arc<Pending>,
+    check: Option<Check>,
     watch: Option<Arc<Watch>>,
     splice: Option<Arc<SpliceCtl>>,
     stall: Duration,
@@ -302,24 +389,33 @@ impl Acceptor for UpstreamAcceptor {
     type Handler = Upstream;
     fn on_open(&self, c: &Conn<Upstream>) -> Upstream {
         c.inner().set_relayed(true);
-        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
-        let taken = self.on_up.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(w) = &self.watch {
-            w.established();
-        }
-        if let Some(f) = taken {
-            f(c.inner());
-        }
-        Upstream {
+        let handler = Upstream {
             client: self.client.clone(),
             watch: self.watch.clone(),
             splice: self.splice.clone(),
             stall: self.stall,
+        };
+        if let Some((check, dest)) = &self.check
+            && !check(dest, udp::canon(c.peer_addr()), udp::canon(c.local_addr()))
+        {
+            // The reply goes out before this connection's close closes the client.
+            self.pending.fail(Failure::Refused);
+            c.close();
+            return handler;
         }
+        // Settled already: the connect timeout passed, or the client is gone.
+        let Some((up, _)) = self.pending.settle() else {
+            c.close();
+            return handler;
+        };
+        *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
+        if let Some(w) = &self.watch {
+            w.established();
+        }
+        up(c.inner());
+        handler
     }
 }
-
-type OnFail = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
 /// What one session needs to dial its upstream.
 #[derive(Clone)]
@@ -330,20 +426,23 @@ struct DialCtx {
     splice: Option<Arc<SpliceCtl>>,
     /// How long a spliced side may make no progress forwarding before it is closed anyway.
     stall: Duration,
+    /// [`ProxyConfig::connected`] and the destination asked for.
+    check: Option<Check>,
 }
 
-/// Dials the addresses in order for `client`; `on_up` runs on the first that connects,
-/// `on_fail` when none does.
-fn dial(
-    engine: &EngineRef,
-    addrs: Vec<SocketAddr>,
-    ctx: DialCtx,
-    on_up: OnUp,
-    on_fail: Box<dyn FnOnce() + Send>,
-) {
-    let up = Arc::new(Mutex::new(Some(on_up)));
-    let fail: OnFail = Arc::new(Mutex::new(Some(on_fail)));
-    try_dial(engine.get(), Arc::new(addrs), 0, ctx, up, fail);
+/// Starts the connect timeout of a tunnel whose request came now: past `timeout`, `pending`
+/// fails as timed out.
+fn time_connect(watch: Option<&Watch>, timeout: Option<Duration>, pending: &Arc<Pending>) {
+    if let (Some(w), Some(_)) = (watch, timeout) {
+        let p = pending.clone();
+        w.connecting(Box::new(move || p.fail(Failure::TimedOut)));
+    }
+}
+
+/// Dials the addresses in order for `client`; `pending` settles on the first that connects
+/// (and passes the check), or fails when none does.
+fn dial(engine: &EngineRef, addrs: Vec<SocketAddr>, ctx: DialCtx, pending: Arc<Pending>) {
+    try_dial(engine.get(), Arc::new(addrs), 0, ctx, pending);
 }
 
 fn try_dial(
@@ -351,30 +450,26 @@ fn try_dial(
     addrs: Arc<Vec<SocketAddr>>,
     i: usize,
     ctx: DialCtx,
-    up: Arc<Mutex<Option<OnUp>>>,
-    fail: OnFail,
+    pending: Arc<Pending>,
 ) {
     if !ctx.client.is_open() {
         return; // the client gave up (or timed out) while we were dialling
     }
     let (Some(e), Some(&addr)) = (engine, addrs.get(i)) else {
-        let taken = fail.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(f) = taken {
-            f();
-        }
-        return;
+        return pending.fail(Failure::Unreachable);
     };
     let acceptor = UpstreamAcceptor {
         client: ctx.client.clone(),
         slot: ctx.slot.clone(),
-        on_up: up.clone(),
+        pending: pending.clone(),
+        check: ctx.check.clone(),
         watch: ctx.watch.clone(),
         splice: ctx.splice.clone(),
         stall: ctx.stall,
     };
     let e2 = e.clone();
     e.dial(addr, acceptor, move |_err| {
-        try_dial(Some(e2), addrs, i + 1, ctx, up, fail);
+        try_dial(Some(e2), addrs, i + 1, ctx, pending);
     });
 }
 
@@ -472,7 +567,9 @@ impl<'a> Request<'a> {
         self.version
     }
 
-    /// The client's address (its TCP control connection).
+    /// The client's address: its TCP control connection's peer, or the client a PROXY header
+    /// names when akio-mux's `proxy::ProxyProtocol` layer took one from a trusted proxy in front
+    /// of the server (ADR-119).
     pub fn client(&self) -> SocketAddr {
         self.client
     }
@@ -743,6 +840,7 @@ impl Acceptor for Socks {
             &upstream,
             self.cfg.handshake_timeout,
             self.cfg.idle_timeout,
+            self.cfg.connect_timeout,
         );
         SocksSession {
             engine: self.engine.clone(),
@@ -873,7 +971,7 @@ impl SocksSession {
         self.allow.as_ref().is_none_or(|f| {
             f(&Request {
                 version,
-                client: udp::canon(c.peer_addr()),
+                client: udp::canon(akio_mux::proxy::client_addr(c)),
                 user: self.user.as_deref(),
                 command,
                 dest,
@@ -909,6 +1007,11 @@ impl SocksSession {
             watch: self.watch.clone(),
             splice: self.splice.clone(),
             stall: stall(&self.cfg),
+            check: self
+                .cfg
+                .connected
+                .clone()
+                .map(|f| (f, Arc::new(target.clone()))),
         };
         let client = c.inner().clone();
         let (splice, watch) = (self.splice.clone(), self.watch.clone());
@@ -922,18 +1025,25 @@ impl SocksSession {
             client.hold_reads(false);
         };
         let client2 = c.inner().clone();
-        let fail = move || {
-            let reply = if v5 {
-                socks5_reply(REP_REFUSED, None)
-            } else {
-                SOCKS4_FAIL.to_vec()
+        let fail = move |why: Failure| {
+            let reply = match (v5, why) {
+                (false, _) => SOCKS4_FAIL.to_vec(),
+                (true, Failure::Refused) => socks5_reply(REP_NOT_ALLOWED, None),
+                (true, Failure::Unresolved | Failure::TimedOut) => {
+                    socks5_reply(REP_UNREACHABLE, None)
+                }
+                (true, Failure::Busy) => socks5_reply(REP_FAILURE, None),
+                (true, Failure::Unreachable) => socks5_reply(REP_REFUSED, None),
             };
             let _ = client2.send_owned(reply);
             client2.close_after_send();
         };
+        let pending = Pending::new(Box::new(ok_reply), Box::new(fail));
+        time_connect(self.watch.as_deref(), self.cfg.connect_timeout, &pending);
         match target {
-            Dest::Addr(a) => dial(&engine, vec![a], ctx, Box::new(ok_reply), Box::new(fail)),
+            Dest::Addr(a) => dial(&engine, vec![a], ctx, pending),
             Dest::Name(host, port) => {
+                let p = pending.clone();
                 // Name resolution blocks: do it on the logical pool.
                 let r = c.spawn_blocking(
                     move || {
@@ -941,31 +1051,23 @@ impl SocksSession {
                             .to_socket_addrs()
                             .map(|a| a.collect::<Vec<_>>())
                     },
-                    move |me: &mut SocksSession, c, res| match res {
+                    move |me: &mut SocksSession, _c, res| match res {
                         Ok(addrs) if !addrs.is_empty() => {
                             let allowed: Vec<SocketAddr> = addrs
                                 .into_iter()
                                 .filter(|a| me.cfg.destinations.allows(*a))
                                 .collect();
                             if allowed.is_empty() {
-                                me.fail(c, denied());
-                                return;
+                                me.st = St::Relaying; // ignore anything else
+                                return p.fail(Failure::Refused);
                             }
-                            dial(&engine, allowed, ctx, Box::new(ok_reply), Box::new(fail));
+                            dial(&engine, allowed, ctx, p);
                         }
-                        _ => {
-                            let reply = if v5 {
-                                socks5_reply(REP_UNREACHABLE, None)
-                            } else {
-                                SOCKS4_FAIL.to_vec()
-                            };
-                            let _ = c.send_owned(reply);
-                            c.close_after_send();
-                        }
+                        _ => p.fail(Failure::Unresolved),
                     },
                 );
                 if r.is_err() {
-                    c.close();
+                    pending.fail(Failure::Busy);
                 }
             }
         }
@@ -1054,13 +1156,18 @@ impl SocksSession {
                     watch,
                     splice: None,
                     stall: Duration::ZERO,
-                    on_up: Arc::new(Mutex::new(Some(Box::new(move |up: &Arc<ConnInner>| {
-                        if !client_up.is_open() {
-                            return up.close();
-                        }
-                        let peer = udp::canon(up.peer_addr());
-                        let _ = client_up.send_owned(bind_reply(v5, Some(peer), false));
-                    }) as OnUp))),
+                    check: None,
+                    // Settled by the connection adopted, or by `adopt_tcp`'s error below.
+                    pending: Pending::new(
+                        Box::new(move |up: &Arc<ConnInner>| {
+                            if !client_up.is_open() {
+                                return up.close();
+                            }
+                            let peer = udp::canon(up.peer_addr());
+                            let _ = client_up.send_owned(bind_reply(v5, Some(peer), false));
+                        }),
+                        Box::new(|_| {}),
+                    ),
                 };
                 engine.adopt_tcp(stream, acceptor, move |_e| {
                     let _ = client.send_owned(bind_reply(v5, None, false));
@@ -1580,6 +1687,8 @@ const BAD_GATEWAY: &[u8] =
     b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const FORBIDDEN: &[u8] =
     b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const GATEWAY_TIMEOUT: &[u8] =
+    b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const UNAVAILABLE: &[u8] =
     b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
@@ -1593,61 +1702,73 @@ impl RawHandler for Tunnel {
             &self.upstream,
             self.cfg.handshake_timeout,
             self.cfg.idle_timeout,
+            self.cfg.connect_timeout,
         );
         let engine = self.engine.clone();
         self.client = Some(conn.inner().clone());
+        let dest = match host.parse::<IpAddr>() {
+            Ok(ip) => Dest::Addr(SocketAddr::new(ip, port)),
+            Err(_) => Dest::Name(host.clone(), port),
+        };
         let ctx = DialCtx {
             client: conn.inner().clone(),
             slot: self.upstream.clone(),
             watch: self.watch.clone(),
             splice: self.splice.clone(),
             stall: stall(&self.cfg),
+            check: self.cfg.connected.clone().map(|f| (f, Arc::new(dest))),
         };
         let (splice, watch) = (self.splice.clone(), self.watch.clone());
         let cfg = self.cfg.clone();
+        let (c_ok, c_fail) = (conn.inner().clone(), conn.inner().clone());
+        let pending = Pending::new(
+            Box::new(move |up| {
+                const OK: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+                reply_and_splice(splice.as_deref(), watch.as_deref(), &c_ok, up, OK);
+                c_ok.hold_reads(false);
+            }),
+            Box::new(move |why| {
+                let _ = c_fail.send(match why {
+                    Failure::TimedOut => GATEWAY_TIMEOUT,
+                    Failure::Busy => UNAVAILABLE,
+                    _ => BAD_GATEWAY,
+                });
+                c_fail.close_after_send();
+            }),
+        );
+        time_connect(self.watch.as_deref(), self.cfg.connect_timeout, &pending);
+        let p = pending.clone();
         // Resolution may block: it runs on the proxy's resolver threads (a raw connection has
         // no typed handle for the logical pool), never on the I/O thread.
         let queued = guard::resolve(
             host,
             port,
             Box::new(move |res| {
-                let client = ctx.client.clone();
-                if !client.is_open() {
+                if !ctx.client.is_open() {
                     return;
                 }
                 let addrs: Vec<SocketAddr> = res.unwrap_or_default();
                 if addrs.is_empty() {
-                    let _ = client.send(BAD_GATEWAY);
-                    return client.close_after_send();
+                    return p.fail(Failure::Unresolved);
                 }
                 let allowed: Vec<SocketAddr> = addrs
                     .into_iter()
                     .filter(|a| cfg.destinations.allows(*a))
                     .collect();
                 if allowed.is_empty() {
-                    let _ = client.send(FORBIDDEN);
-                    return client.close_after_send();
+                    // A name whose every address the policy denies: 403, as a literal one.
+                    let client = ctx.client.clone();
+                    if p.settle().is_some() {
+                        let _ = client.send(FORBIDDEN);
+                        client.close_after_send();
+                    }
+                    return;
                 }
-                let (c_ok, c_fail) = (client.clone(), client);
-                dial(
-                    &engine,
-                    allowed,
-                    ctx,
-                    Box::new(move |up| {
-                        const OK: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
-                        reply_and_splice(splice.as_deref(), watch.as_deref(), &c_ok, up, OK);
-                        c_ok.hold_reads(false);
-                    }),
-                    Box::new(move || {
-                        let _ = c_fail.send(BAD_GATEWAY);
-                        c_fail.close_after_send();
-                    }),
-                );
+                dial(&engine, allowed, ctx, p);
             }),
         );
         if queued.is_err() {
-            let _ = conn.send(UNAVAILABLE);
-            conn.close_after_send();
+            pending.fail(Failure::Busy);
         }
     }
 

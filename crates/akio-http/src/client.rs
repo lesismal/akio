@@ -1246,11 +1246,16 @@ struct Pending {
 #[derive(Clone, Default)]
 struct Settings {
     tls: Option<TlsClientConfig>,
+    /// The name `https://` connections send in SNI and check the certificate against, in place
+    /// of the URL's host ([`Client::with_tls_server_name`]).
+    tls_server_name: Option<String>,
     redirects: RedirectPolicy,
     timeout: Option<Duration>,
     proxy: Proxy,
     opts: ClientOptions,
     cookies: Option<CookieJar>,
+    /// Every connection goes to this Unix-domain socket ([`Client::with_unix_socket`]).
+    unix: Option<std::path::PathBuf>,
 }
 
 /// Idle keep-alive connections, newest last per route, with when each became idle.
@@ -1344,6 +1349,26 @@ impl Client {
     #[must_use]
     pub fn with_tls(self, cfg: TlsClientConfig) -> Client {
         self.rebuild(|s| s.tls = Some(cfg))
+    }
+
+    /// Sends `name` in SNI, and checks the server's certificate against it, on every `https://`
+    /// connection, in place of the URL's host: for servers reached by an address whose
+    /// certificate names another host, as a proxy's upstream often is. Connections are still
+    /// kept and reused by the URL's host and port. An empty `name` restores the URL's host.
+    #[must_use]
+    pub fn with_tls_server_name(self, name: impl Into<String>) -> Client {
+        let name = name.into();
+        self.rebuild(|s| s.tls_server_name = (!name.is_empty()).then_some(name))
+    }
+
+    /// Connects to the Unix-domain stream socket at `path` for every request, whatever the
+    /// URL's host and port, as the Docker daemon's API on `/var/run/docker.sock` is reached
+    /// (ADR-120): the URL's host is still the request's `Host` and keys the idle connections,
+    /// `https://` still runs TLS over the socket, and no name is resolved and no proxy used.
+    /// `None` restores TCP.
+    #[must_use]
+    pub fn with_unix_socket(self, path: Option<std::path::PathBuf>) -> Client {
+        self.rebuild(|s| s.unix = path)
     }
 
     /// Follows redirects as `policy` says (none by default).
@@ -1844,6 +1869,9 @@ impl Client {
             // A whole response's callback was told already; a handler learns it here.
             return p.deliver.fail(e);
         }
+        if let Some(path) = &self.inner.settings.unix {
+            return self.dial_unix(p, path);
+        }
         let local = p.proxy.as_ref().is_some_and(|s| s.resolves_locally())
             && p.tunnel_host.is_none()
             && p.key.host.parse::<std::net::IpAddr>().is_err();
@@ -1914,10 +1942,10 @@ impl Client {
             None => None,
         };
         if key.tls {
-            let a = match self
-                .tls()
-                .and_then(|cfg| Tls::client(cfg, &key.host, acceptor))
-            {
+            let a = match self.tls().and_then(|cfg| {
+                let name = self.inner.settings.tls_server_name.as_deref();
+                Tls::client(cfg, name.unwrap_or(&key.host), acceptor)
+            }) {
                 Ok(a) => a,
                 Err(e) => return fail(e),
             };
@@ -1945,6 +1973,37 @@ impl Client {
             }
         } else {
             he.dial(engine, addrs, acceptor, fail);
+        }
+    }
+}
+
+impl Client {
+    /// [`Client::dial`] to the Unix-domain socket `path` ([`Client::with_unix_socket`]).
+    fn dial_unix(&self, p: Pending, path: &std::path::Path) {
+        let tls = p.key.tls.then(|| p.key.host.clone());
+        let slot = Arc::new(Mutex::new(Some(p)));
+        let acceptor = DialAcceptor {
+            pending: slot.clone(),
+            client: self.clone(),
+            refusal: None,
+        };
+        let fail = move |e: io::Error| {
+            let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(p) = taken {
+                let e = p.ex.gave_up().unwrap_or(ClientError::Io(e));
+                p.deliver.fail(e);
+            }
+        };
+        let engine = &self.inner.engine;
+        match tls {
+            Some(host) => match self.tls().and_then(|cfg| {
+                let name = self.inner.settings.tls_server_name.as_deref();
+                Tls::client(cfg, name.unwrap_or(&host), acceptor)
+            }) {
+                Ok(a) => engine.dial_unix(path, a, fail),
+                Err(e) => fail(e),
+            },
+            None => engine.dial_unix(path, acceptor, fail),
         }
     }
 }

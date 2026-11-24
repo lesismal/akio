@@ -89,6 +89,75 @@ ADR-104, third revision; no API change:
 - `set_listener_threads` is still refused for rounds listeners. No throughput change measured on
   gpu51 (rounds echo-like, skew and churn cases, loops echo).
 
+### Added: dialing a Unix-domain socket, and the HTTP client over one (akio, akio-http, akio-sys)
+
+ADR-120, requested by akit (A135):
+
+- `Engine::dial_unix(path, acceptor, on_error)`: a Unix-domain stream connection served like a
+  dialed TCP one, on epoll and io_uring; its `peer_addr` and `local_addr` are the new
+  `UNIX_ADDR` (`0.0.0.0:0`). `Group::dial_unix` (unsupported by default).
+- `Client::with_unix_socket(Option<PathBuf>)`: every request of the client goes to that socket,
+  the URL's host still its `Host` and the key of its idle connections.
+- `akio_sys::connect_unix_nonblocking`, `ffi::AF_UNIX` and `ffi::sockaddr_un`.
+
+### Added: a proxy's tunnel checked once connected, and its connect timeout (akio-socks)
+
+ADR-119, requested by akit (A132, A133):
+
+- `ProxyConfig::connected` (`Connected`): decides each `CONNECT` tunnel's upstream (SOCKS and
+  HTTP) once it opens, before it is used, given the destination as asked (a name or an address),
+  the address connected to and the local one; a refusal is SOCKS5 reply 2, SOCKS4 `0x5b` or HTTP
+  `502`, and no other address is tried.
+- `ProxyConfig::connect_timeout`: the longest time from a `CONNECT` request to its upstream
+  being connected; past it SOCKS5 reply 4, SOCKS4 `0x5b` or HTTP `504 Gateway Timeout`.
+- The access hook's `Request::client` is the client a trusted PROXY header names (akio-mux's
+  `ProxyProtocol` layer in front), as akio-http's requests have it since ADR-118.
+- A SOCKS request whose name resolution the logical pool refuses (full) gets reply 1 before the
+  close.
+
+### Added: where a regular expression matches, its groups, and Go's templates (akio-regex)
+
+ADR-115, requested by akit (A32):
+
+- `Regex::find`, `find_at`, `find_iter`, `captures`, `captures_at` (`Captures`: `get`, `name`,
+  `range`, `len`), `captures_len` and `group_names`: the leftmost-first match, as Go's `regexp`
+  and the `regex` crate find it, on a capturing Pike VM in linear time.
+- `Regex::expand` and `replace_all`, with Go's `Regexp.Expand` and `ReplaceAllString` rules.
+- Lazy repetition and `(?U)` now change where a match ends (they never changed whether a text
+  matches). A pattern with more than 1000 groups, or whose groups are repeated past 20 000
+  instructions, is refused when compiled.
+
+### Added: body taps, outer response filters and `parse_http_date` (akio-http)
+
+ADR-116, requested by akit (A111, A112, A113):
+
+- `Response::tap_body(impl BodyTap)`, `BodyTap` (`data`, `end`) and `TapEnd` (`Finished`,
+  `Trailers`, `Cut`): a response filter sees a streamed body as it is sent, after its stream
+  coding, and how it ended.
+- `Context::add_outer_response_filter`: a filter that runs after every ordinary one, the last
+  added first, so an outer middleware sees the response as the inner ones left it.
+- `akio_http::parse_http_date`: an HTTP-date in any of RFC 9110's three formats.
+
+### Added: the HTTP/1 client's TLS server name; a client certificate's key is checked (akio-http, akio-tls)
+
+ADR-117, requested by akit (A108, A109):
+
+- `Client::with_tls_server_name(name)`: every `https://` connection sends `name` in SNI and
+  verifies the server's certificate against it, in place of the URL's host; connections are still
+  pooled by host and port, and an empty name restores the URL's host.
+- `ClientConfigBuilder::build` checks that a client certificate's leaf parses and carries the
+  key's public key, as the server builder does; a mismatch is `client certificate: private key
+  does not match the certificate` (before, every handshake asking for the certificate failed).
+
+### Changed: a request's peer is the client a trusted PROXY header names (akio-http)
+
+ADR-118, requested by akit (A105):
+
+- `Request::peer` and `Context::peer` are the source of the PROXY header akio-mux's
+  `ProxyProtocol` layer attached to the connection, when it names one, over HTTP/1.1 and HTTP/2;
+  otherwise the socket's peer, as before. `Conn::peer_addr` is unchanged. akio-http now depends on
+  akio-mux.
+
 ### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
 
 ADR-111, requested by akit (A66):

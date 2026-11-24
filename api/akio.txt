@@ -31,6 +31,7 @@ pub use akio::SlowHook
 pub use akio::SlowRecord
 pub use akio::Telemetry
 pub use akio::Transport
+pub use akio::UNIX_ADDR
 pub use akio::UdpBinding
 pub use akio::UdpStats
 pub use akio::ebpf
@@ -350,6 +351,7 @@ pub fn akio::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec
 pub fn akio::Engine::datagram_sender(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<akio_core::datagrams::DatagramSender>
 pub fn akio::Engine::dial<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::dial_unix<A: akio_core::handler::Acceptor>(&self, &std::path::Path, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_udp_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::listeners(&self) -> alloc::vec::Vec<akio::ListenerInfo>

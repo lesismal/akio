@@ -77,6 +77,69 @@ ADR-104 第三次修订，API 不变：
 - 轮次模式的 listener 仍然拒绝 `set_listener_threads`。在 gpu51 上没有测到吞吐变化（rounds 的类 echo、skew
   和 churn 场景，loops 的 echo）。
 
+### 新增：拨号 Unix 域套接字，以及在其上的 HTTP 客户端（akio、akio-http、akio-sys）
+
+ADR-120，由 akit 提出（A135）：
+
+- `Engine::dial_unix(path, acceptor, on_error)`：像拨出的 TCP 连接一样服务的 Unix 域流连接，
+  支持 epoll 和 io_uring；它的 `peer_addr` 和 `local_addr` 是新常量 `UNIX_ADDR`（`0.0.0.0:0`）。
+  `Group::dial_unix`（默认不支持）。
+- `Client::with_unix_socket(Option<PathBuf>)`：该客户端的每个请求都发往这个套接字，URL 的主机
+  仍是 `Host` 字段，也仍是空闲连接的键。
+- `akio_sys::connect_unix_nonblocking`、`ffi::AF_UNIX` 和 `ffi::sockaddr_un`。
+
+### 新增：代理隧道在连接建立后检查，以及它的连接超时（akio-socks）
+
+ADR-119，应 akit 的请求（A132、A133）：
+
+- `ProxyConfig::connected`（`Connected`）：在每条 `CONNECT` 隧道（SOCKS 与 HTTP）的上游连接打开后、使用
+  之前做出判定，参数是所请求的目的地（名字或地址）、所连接的地址和本地地址；拒绝时应答 SOCKS5 2、SOCKS4
+  `0x5b` 或 HTTP `502`，且不再尝试其他地址。
+- `ProxyConfig::connect_timeout`：从 `CONNECT` 请求到上游连接建立的最长时间；超过后应答 SOCKS5 4、SOCKS4
+  `0x5b` 或 HTTP `504 Gateway Timeout`。
+- 访问钩子的 `Request::client` 是受信任 PROXY 头所指的客户端（前面有 akio-mux 的 `ProxyProtocol` 层），
+  与 ADR-118 以来 akio-http 的请求一致。
+- 名字解析被逻辑线程池拒绝（已满）的 SOCKS 请求，在关闭前会收到应答 1。
+
+### 新增：正则表达式的匹配位置、分组与 Go 的模板（akio-regex）
+
+ADR-115，应 akit 的请求（A32）：
+
+- `Regex::find`、`find_at`、`find_iter`、`captures`、`captures_at`（`Captures`：`get`、`name`、`range`、
+  `len`）、`captures_len` 与 `group_names`：按 Go `regexp` 与 `regex` crate 的方式求最左优先匹配，由带捕获的
+  Pike VM 以线性时间完成。
+- `Regex::expand` 与 `replace_all`，规则同 Go 的 `Regexp.Expand` 与 `ReplaceAllString`。
+- 惰性重复与 `(?U)` 现在会改变匹配的结束位置（它们从不改变文本是否匹配）。分组超过 1000 个、或分组重复到超过
+  20 000 条指令的模式，在编译时被拒绝。
+
+### 新增：消息体旁路、外层响应过滤器与 `parse_http_date`（akio-http）
+
+ADR-116，akit 的需求（A111、A112、A113）：
+
+- `Response::tap_body(impl BodyTap)`、`BodyTap`（`data`、`end`）与 `TapEnd`（`Finished`、`Trailers`、
+  `Cut`）：响应过滤器能看到流式消息体在经过流编码后发出的字节，以及它如何结束。
+- `Context::add_outer_response_filter`：在所有普通过滤器之后运行的过滤器，后添加的先运行，外层中间件因此
+  看到内层中间件处理后的响应。
+- `akio_http::parse_http_date`：解析 RFC 9110 三种格式中任意一种的 HTTP 日期。
+
+### 新增：HTTP/1 客户端的 TLS 服务器名；检查客户端证书的私钥（akio-http、akio-tls）
+
+ADR-117，应 akit 请求（A108、A109）：
+
+- `Client::with_tls_server_name(name)`：每个 `https://` 连接都在 SNI 中发送 `name` 并以它校验
+  服务器证书，代替 URL 的主机名；连接仍按主机和端口入池，空名字恢复 URL 的主机名。
+- `ClientConfigBuilder::build` 像服务端构建器一样，检查客户端证书的叶证书可解析且带有私钥的公钥；
+  不匹配时报 `client certificate: private key does not match the certificate`（以前是每次索要证书的
+  握手失败）。
+
+### 变更：请求的对端是受信任 PROXY 头所指的客户端（akio-http）
+
+ADR-118，akit 提出（A105）：
+
+- 在 HTTP/1.1 与 HTTP/2 上，akio-mux 的 `ProxyProtocol` 层若给连接挂上了给出地址的 PROXY 头，
+  `Request::peer` 与 `Context::peer` 就是该头的源地址；否则与以前一样是套接字的对端。
+  `Conn::peer_addr` 不变。akio-http 现在依赖 akio-mux。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：

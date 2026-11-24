@@ -2,9 +2,10 @@
 
 // akio-regex (the engine behind akio-log's `/regex` message filters) against the `regex` crate
 // (a fuzz-only dependency): an unanchored search, Unicode classes, case folding, assertions and
-// flags. Whatever akio-regex compiles, `regex` compiles and matches the same way; akio-regex may
-// refuse syntax it does not support. Each subject is also matched by the NFA alone and fed in
-// pieces through `is_match_fmt`; all the outcomes must agree.
+// flags. Whatever akio-regex compiles, `regex` compiles and matches the same way (whether, and
+// where: `find`, `find_iter`); akio-regex may refuse syntax it does not support. Each subject is
+// also matched by the NFA alone and fed in pieces through `is_match_fmt`; all the outcomes must
+// agree.
 //
 // Input: the pattern, then up to 16 subjects, NUL-separated (lossy UTF-8).
 
@@ -61,6 +62,23 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             ours.is_match_fmt(format_args!("{}", Pieces(s, pattern.as_bytes()))),
             want,
             "pieces: pattern {pattern:?}, subject {s:?}"
+        );
+        // Where: the leftmost-first match and every successive one (ADR-115). Groups are
+        // checked against Go's engine (crates/akio-regex/tests/captures.rs).
+        let found = ours.find(s);
+        assert_eq!(
+            found,
+            theirs.find(s).map(|m| m.range()),
+            "find: pattern {pattern:?}, subject {s:?}"
+        );
+        assert_eq!(
+            ours.captures(s).map(|c| c.range()),
+            found,
+            "captures: pattern {pattern:?}, subject {s:?}"
+        );
+        assert!(
+            ours.find_iter(s).eq(theirs.find_iter(s).map(|m| m.range())),
+            "find_iter: pattern {pattern:?}, subject {s:?}"
         );
     }
 });

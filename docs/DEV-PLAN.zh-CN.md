@@ -384,6 +384,9 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | HTTP/2 客户端：响应头与空闲超时、`CancelToken` | akio-http `h2client`、`client`（ADR-111） | 否 | 否 | 要测：设置与不设置两个超时时 h2c 请求速率的 A/B（每个 DATA 帧一次读时钟与一次原子存储，每个请求一个定时任务）。 |
 | 任何响应过滤器可设置的流编码；缓存文件的压缩副本 | akio-http `coding`、`message`、`files`（ADR-112） | 否 | 否 | 待测：普通响应（`Response` 多一个 `None` 字）和设置了 `compress` 但不需要副本时缓存文件命中的 A/B；在磁盘线程池上为 1 MiB 以内的文件做副本（gzip 9、brotli 9、zstd 19）的开销。 |
 | HTTP/1 客户端在 `101` 时交出连接；HTTP/2：对扩展 CONNECT 的流式 `2xx` 应答即隧道 | akio-http `client`、`h2`（ADR-113） | 否 | 否 | 要测：热路径未变（每个请求读一次标志）；由经 akit（I49）的 WebSocket 中继基准覆盖。 |
+| 正则的匹配位置、分组与模板（`find`、`captures`、`replace_all`） | akio-regex `pike`（ADR-115） | 否 | 否 | 要测：`is_match` 未变（DFA 程序相同；用日志过滤与路由模式的 A/B 确认）；路径长度文本上 `captures` 与 `replace_all` 对比 `regex` crate，以及多一个程序后的编译时间。 |
+| 消息体旁路、外层响应过滤器 | akio-http `context`、`message`、`tap`（ADR-116） | 否 | 否 | 待测：普通响应（`Response` 与 `BodyStream` 各多一个 `None` 字，过滤器多一次判空）的 A/B，以及有旁路的流（每次写入一次加锁）与无旁路的流的对比；其余由 akit 缓存（I67）的命中与未命中基准覆盖。 |
+| 请求的对端取自受信任的 PROXY 头 | akio-http `session`（ADR-118） | 否 | 否 | 要测：没有 PROXY 层时 HTTP/1.1 与 h2c 请求速率的 A/B（每个请求一次 `OnceLock::get`），在安静主机上。 |
 | HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s） | 部分（每连接一个截止时间定时器，`95bca264`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
 | 路由与路由正则 | akio-http、akio-regex（ADR-051） | 是（`router-bench`，“编解码微基准”） | 是（每次查找约 28 ns、0 次分配；路由正则快于 `regex`） | – |
 | 日志过滤正则 | akio-regex、akio-log（ADR-047） | 是（“编解码微基准”，`logregex`） | 部分 | 对比 `regex`：无匹配的多选分支 92 对 16 ns，`\b\d+ms\b` 93 对 33 ns；编译更慢。不在热路径上（只用于过滤）。 |

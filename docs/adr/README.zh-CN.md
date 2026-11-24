@@ -114,3 +114,9 @@
 - [ADR-112：任何响应过滤器都能设置的流编码，以及缓存文件的压缩副本](112-stream-coding-for-filters-and-compressed-copies.zh-CN.md)（2026-11-24 采纳）
 - [ADR-113：HTTP/1 客户端在 `101` 时交出连接，HTTP/2 扩展 CONNECT 的流式 `2xx` 应答即隧道](113-client-upgrade-handover-h2-tunnels.zh-CN.md)（2026-11-24 采纳）
 - [ADR-114：借用的 WebSocket 消息与无锁发送路径](114-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
+- [ADR-115：`akio-regex` 的匹配位置、分组与 Go 的模板](115-regex-matches-groups-expand.zh-CN.md)（2026-11-24 采纳）
+- [ADR-116：消息体旁路、外层响应过滤器与三种格式的 HTTP 日期](116-body-taps-outer-filters-http-dates.zh-CN.md)（2026-11-24 采纳）
+- [ADR-117：HTTP/1 客户端的 TLS 服务器名，以及构建时检查客户端证书的私钥](117-client-tls-server-name-and-client-key-check.zh-CN.md)（2026-11-24 采纳）
+- [ADR-118：请求的对端是受信任 PROXY 头所指的客户端](118-http-peer-from-proxy-header.zh-CN.md)（2026-11-24 采纳）
+- [ADR-119：代理隧道在连接建立后检查，以及它的连接超时](119-socks-connected-check-and-connect-timeout.zh-CN.md)（2026-11-24 采纳）
+- [ADR-120：拨号 Unix 域套接字，以及在其上的 HTTP 客户端](120-unix-socket-dial.zh-CN.md)（2026-11-24 采纳）
