@@ -26,6 +26,13 @@
 //! ([`H2Client::max_concurrent_streams`]): a request past it waits for a stream, within
 //! [`H2Options::max_pending_streams`]. After the server's `GOAWAY`, [`H2Client::is_open`] is
 //! `false` and the requests it did not process fail with [`ClientError::Refused`].
+//!
+//! Requests heed [`ClientRequest::response_header_timeout`] (from the request's END_STREAM to
+//! the final response's HEADERS), [`ClientRequest::response_idle_timeout`] (the longest gap
+//! between DATA frames from the head on, held reads not counted) and
+//! [`ClientRequest::cancel`] (ADR-111): each resets the stream (`CANCEL`) and fails the request
+//! with [`ClientError::HeaderTimeout`], [`ClientError::IdleTimeout`] or
+//! [`ClientError::Cancelled`], once, leaving the connection to its other streams.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -33,7 +40,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     time::Duration,
@@ -346,8 +353,9 @@ pub enum H2Event<'a> {
     /// The response is complete.
     End,
     /// The stream failed: reset by the server, refused ([`ClientError::Refused`]), cancelled
-    /// ([`ClientError::Cancelled`]), timed out ([`ClientError::Timeout`]), or its connection
-    /// lost. Nothing follows it.
+    /// ([`ClientError::Cancelled`]), timed out ([`ClientError::Timeout`],
+    /// [`ClientError::HeaderTimeout`], [`ClientError::IdleTimeout`]), or its connection lost.
+    /// Nothing follows it.
     Error(ClientError),
 }
 
@@ -360,6 +368,24 @@ impl<'a> std::fmt::Debug for H2Event<'a> {
 const STOP_NONE: u8 = 0;
 const STOP_CANCEL: u8 = 1;
 const STOP_TIMEOUT: u8 = 2;
+const STOP_HEADER: u8 = 3;
+const STOP_IDLE: u8 = 4;
+
+/// Where a request's response is, for its header and idle timeouts (ADR-111).
+const PHASE_NONE: u8 = 0;
+/// The request ended (END_STREAM sent): the header timeout runs.
+const PHASE_HEAD: u8 = 1;
+/// The response's head came: the idle timeout runs.
+const PHASE_BODY: u8 = 2;
+/// The stream is over.
+const PHASE_OVER: u8 = 3;
+
+/// Milliseconds on a monotonic clock, for the idle timeout's last activity.
+fn now_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let e = *EPOCH.get_or_init(std::time::Instant::now);
+    u64::try_from(e.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
 
 /// What a request's stream and the threads that cancel, time or hold it share.
 #[derive(Default)]
@@ -370,9 +396,47 @@ struct StreamCtl {
     stop: AtomicU8,
     /// Its response's reads are held: the stream's window is not given back.
     held: AtomicBool,
+    /// [`ClientRequest::response_header_timeout`].
+    header_timeout: Option<Duration>,
+    /// [`ClientRequest::response_idle_timeout`].
+    idle_timeout: Option<Duration>,
+    /// `PHASE_*`: which of the two runs.
+    phase: AtomicU8,
+    /// When the response last made progress ([`now_ms`]): its head, a DATA frame, the end of
+    /// a hold.
+    last: AtomicU64,
 }
 
 impl StreamCtl {
+    /// The control of `req`'s stream, with its header and idle timeouts.
+    fn of(req: &ClientRequest) -> StreamCtl {
+        StreamCtl {
+            header_timeout: req.response_header_timeout,
+            idle_timeout: req.response_idle_timeout,
+            ..StreamCtl::default()
+        }
+    }
+
+    /// The response progressed: the idle timeout starts over.
+    fn touch(&self) {
+        if self.idle_timeout.is_some() {
+            self.last.store(now_ms(), Ordering::Release);
+        }
+    }
+
+    /// Ties the request to its cancel token, if it has one: a token cancelled already gives
+    /// the request up at once.
+    fn attach(self: &Arc<Self>, req: &ClientRequest, conn: &Conn<H2Conn>) {
+        if let Some(t) = &req.cancel {
+            let target = CancelTarget {
+                ctl: Arc::downgrade(self),
+                conn: conn.clone(),
+            };
+            if !t.attach_h2(target) {
+                self.give_up(STOP_CANCEL);
+            }
+        }
+    }
     /// Asks for the stream to be given up for `why`: `false` when it was asked already.
     fn give_up(&self, why: u8) -> bool {
         self.stop
@@ -385,6 +449,8 @@ impl StreamCtl {
         match self.stop.load(Ordering::Acquire) {
             STOP_NONE => None,
             STOP_TIMEOUT => Some(ClientError::Timeout),
+            STOP_HEADER => Some(ClientError::HeaderTimeout),
+            STOP_IDLE => Some(ClientError::IdleTimeout),
             _ => Some(ClientError::Cancelled),
         }
     }
@@ -623,6 +689,8 @@ impl H2Stream {
     pub fn hold_reads(&self, hold: bool) {
         self.ctl.held.store(hold, Ordering::Release);
         if !hold {
+            // The time held does not count toward the idle timeout.
+            self.ctl.touch();
             let ctl = self.ctl.clone();
             let _ = self
                 .conn
@@ -634,6 +702,66 @@ impl H2Stream {
     pub fn id(&self) -> u32 {
         self.ctl.sid.load(Ordering::Acquire)
     }
+}
+
+/// A request's stream as a [`CancelToken`](crate::client::CancelToken) holds it (ADR-111).
+pub(crate) struct CancelTarget {
+    ctl: std::sync::Weak<StreamCtl>,
+    conn: Conn<H2Conn>,
+}
+
+impl CancelTarget {
+    /// Whether the request may still be given up (its control is not gone).
+    pub(crate) fn alive(&self) -> bool {
+        self.ctl.strong_count() > 0
+    }
+
+    /// As [`H2Stream::cancel`].
+    pub(crate) fn cancel(&self) {
+        if let Some(ctl) = self.ctl.upgrade() {
+            H2Stream {
+                conn: self.conn.clone(),
+                ctl,
+            }
+            .cancel();
+        }
+    }
+}
+
+impl StreamCtl {
+    /// In the body phase, how long until the idle timeout is due, or `None` when it is: the
+    /// whole timeout while the reads are held (the time held does not count).
+    fn idle_left(&self) -> Option<Duration> {
+        let d = self.idle_timeout?;
+        if self.held.load(Ordering::Acquire) {
+            return Some(d);
+        }
+        let since = now_ms().saturating_sub(self.last.load(Ordering::Acquire));
+        let d_ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        (since < d_ms).then(|| Duration::from_millis(d_ms - since))
+    }
+}
+
+/// Checks `ctl`'s header or idle timeout (`phase`) `d` from now: on the timer thread first,
+/// which re-arms an idle timeout the response's progress pushed back; then, when it looks due,
+/// on the connection's I/O thread, which gives the stream up (or re-arms it). One check is
+/// pending per stream at a time; none once the phase changed or the stream is over.
+fn arm(conn: Conn<H2Conn>, ctl: &Arc<StreamCtl>, phase: u8, d: Duration) {
+    let weak = Arc::downgrade(ctl);
+    crate::timer::after(d, move || {
+        let Some(ctl) = weak.upgrade() else { return };
+        if ctl.phase.load(Ordering::Acquire) != phase
+            || ctl.stop.load(Ordering::Acquire) != STOP_NONE
+        {
+            return;
+        }
+        if phase == PHASE_BODY {
+            if let Some(wait) = ctl.idle_left() {
+                return arm(conn, &ctl, phase, wait);
+            }
+        }
+        let _ = conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.expire(c, &ctl, phase));
+    });
 }
 
 /// What a connection's handler and its [`H2Client`]s share.
@@ -814,7 +942,8 @@ impl H2Client {
     pub fn request(&self, req: ClientRequest, done: impl FnOnce(Outcome) + Send + 'static) {
         let timeout = req.timeout;
         let mut done: Callback = Box::new(done);
-        let ctl = Arc::new(StreamCtl::default());
+        let ctl = Arc::new(StreamCtl::of(&req));
+        ctl.attach(&req, &self.conn);
         if let Some(d) = timeout {
             let once = Arc::new(Mutex::new(Some(done)));
             let (o2, ctl2, conn) = (once.clone(), ctl.clone(), self.conn.clone());
@@ -868,7 +997,8 @@ impl H2Client {
         mut req: ClientRequest,
         on_event: impl FnMut(H2Event<'_>) + Send + 'static,
     ) -> H2Upload {
-        let ctl = Arc::new(StreamCtl::default());
+        let ctl = Arc::new(StreamCtl::of(&req));
+        ctl.attach(&req, &self.conn);
         let up = Arc::new(UpShared {
             ctl: ctl.clone(),
             q: Mutex::new(UpQ::default()),
@@ -1200,6 +1330,15 @@ impl CStream {
     }
 }
 
+impl Drop for CStream {
+    fn drop(&mut self) {
+        // Its header and idle timeouts stop.
+        if let Some(ctl) = &self.ctl {
+            ctl.phase.store(PHASE_OVER, Ordering::Release);
+        }
+    }
+}
+
 /// A request waiting for a stream (the server's limit reached).
 struct Pending {
     req: ClientRequest,
@@ -1250,6 +1389,8 @@ pub struct H2Conn {
     pending: VecDeque<Pending>,
     /// Streams to reset: their response ended while their request body was still open.
     resets: Vec<u32>,
+    /// Requests whose END_STREAM went out: their header timeout is to be armed.
+    head_waits: Vec<Arc<StreamCtl>>,
     /// Over TLS, the dial's callback, until the server's first frame.
     ready: Option<ReadyCb>,
 }
@@ -1296,6 +1437,7 @@ impl H2Conn {
             }),
             pending: VecDeque::new(),
             resets: Vec::new(),
+            head_waits: Vec::new(),
             ready: None,
         }
     }
@@ -1346,6 +1488,36 @@ impl H2Conn {
             let mut out = Vec::new();
             window_update(&mut out, sid, owed);
             let _ = c.send_owned(out);
+        }
+    }
+
+    /// A header or idle timeout looks due (`arm`): give the stream up if it is, else check
+    /// again when it will be.
+    fn expire(&mut self, c: &Conn<Self>, ctl: &Arc<StreamCtl>, phase: u8) {
+        if ctl.phase.load(Ordering::Acquire) != phase {
+            return; // the head came, or the stream is over
+        }
+        if phase == PHASE_BODY {
+            if let Some(wait) = ctl.idle_left() {
+                return arm(c.clone(), ctl, phase, wait);
+            }
+        }
+        let why = if phase == PHASE_HEAD {
+            STOP_HEADER
+        } else {
+            STOP_IDLE
+        };
+        if ctl.give_up(why) {
+            self.stop(c, ctl);
+        }
+    }
+
+    /// Arms the header timeouts of the requests whose END_STREAM went out.
+    fn arm_heads(&mut self, c: &Conn<Self>) {
+        for ctl in std::mem::take(&mut self.head_waits) {
+            if let Some(d) = ctl.header_timeout {
+                arm(c.clone(), &ctl, PHASE_HEAD, d);
+            }
         }
     }
 
@@ -1511,6 +1683,7 @@ impl H2Conn {
         if let Some(up) = up {
             self.pump(c, &up);
         }
+        self.arm_heads(c);
     }
 
     /// Starts a WebSocket's extended CONNECT, once the server's SETTINGS allow it.
@@ -1738,6 +1911,7 @@ impl H2Conn {
         if !out.is_empty() {
             let _ = c.send_owned(out);
         }
+        self.arm_heads(c);
     }
 
     fn header_block(
@@ -1829,6 +2003,22 @@ impl H2Conn {
                 break;
             }
         }
+        // The request ended (END_STREAM went out): the wait for the response's head starts.
+        if let Some(ctl) = self
+            .streams
+            .get(&sid)
+            .filter(|s| s.upload_done && !s.got_head)
+            .and_then(|s| s.ctl.as_ref())
+            .filter(|x| x.header_timeout.is_some())
+        {
+            if ctl
+                .phase
+                .compare_exchange(PHASE_NONE, PHASE_HEAD, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.head_waits.push(ctl.clone());
+            }
+        }
         if let Some(f) = drained {
             f();
         }
@@ -1881,6 +2071,7 @@ impl H2Conn {
         for id in ids {
             self.ws_finish(id);
         }
+        self.arm_heads(c);
     }
 
     fn fail_all(&mut self, e: ClientError) {
@@ -2083,6 +2274,14 @@ impl H2Conn {
             }
             st.got_head = true;
             st.status = status;
+            // The header timeout stops; the idle timeout starts.
+            if let Some(ctl) = &st.ctl {
+                ctl.touch();
+                ctl.phase.store(PHASE_BODY, Ordering::Release);
+                if let (Some(d), false) = (ctl.idle_timeout, end_stream) {
+                    arm(c.clone(), ctl, PHASE_BODY, d);
+                }
+            }
             if let Some(ev) = st.events.as_mut() {
                 ev(H2Event::Head {
                     status,
@@ -2270,6 +2469,9 @@ impl H2Conn {
                         }
                     }
                     st.recv_window -= i64::from(total);
+                    if let Some(x) = &st.ctl {
+                        x.touch();
+                    }
                     if flags & flag::END_STREAM == 0 {
                         if st
                             .ctl

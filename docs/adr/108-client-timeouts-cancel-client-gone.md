@@ -120,8 +120,8 @@ Rejected:
   variant would break exhaustive matches. The sink is dropped instead, as on HTTP/2.
 - **`H2Client` in this change.** akit's I18 (h2 upstreams) is later; the same request fields apply
   to it then. `H2Client` ignores them, as it ignores `ClientRequest::streamed`. (Its streamed
-  requests are reset and timed since by ADR-110; the header and idle timeouts and `CancelToken`
-  are still not applied to it.)
+  requests are reset and timed since by ADR-110, and it heeds the header and idle timeouts and
+  `CancelToken` since ADR-111.)
 
 ## Consequences
 

@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
+
+ADR-111, requested by akit (A66):
+
+- `H2Client::request` and `open` heed `ClientRequest::response_header_timeout` (from the
+  request's END_STREAM to the final response's HEADERS), `response_idle_timeout` (the longest gap
+  between DATA frames from the head on, held reads not counted) and `cancel` (`CancelToken`, which
+  now covers HTTP/2 requests too): the stream is reset (`CANCEL`), or a request waiting for a stream
+  dropped unsent, and the request fails once with `ClientError::HeaderTimeout`, `IdleTimeout` or
+  `Cancelled`, the connection left to its other streams.
+
 ### Added: the HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN (akio-http)
 
 ADR-110, requested by akit (A51, A52, A53):

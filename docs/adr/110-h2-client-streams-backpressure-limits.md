@@ -117,7 +117,7 @@ Rejected:
   finishing, would see its request reset where it was not before. Left as it was; `cancel` resets.
 - **`CancelToken` and the response header and idle timeouts (ADR-108) on `H2Client`**: not asked
   by A51–A53. `H2Stream::cancel` and `ClientRequest::timeout` cover akit's I18b; the others can
-  reuse `StreamCtl` (a third reason) when needed.
+  reuse `StreamCtl` (a third reason) when needed. (Done since by ADR-111, for akit's A66.)
 - **Holding the connection's window too**: one held stream would stop the connection's others.
 
 ## Consequences

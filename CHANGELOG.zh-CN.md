@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
+
+ADR-111，akit 的需求（A66）：
+
+- `H2Client::request` 与 `open` 遵循 `ClientRequest::response_header_timeout`（从请求的 END_STREAM 到最终
+  响应的 HEADERS）、`response_idle_timeout`（从响应头起 DATA 帧之间的最长间隔，暂停读取的时间不计）和
+  `cancel`（`CancelToken`，现在也覆盖 HTTP/2 请求）：流被重置（`CANCEL`），或仍在等待流的请求不发送即丢弃，
+  请求以 `ClientError::HeaderTimeout`、`IdleTimeout` 或 `Cancelled` 失败一次，连接留给其他流。
+
 ### 新增：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN（akio-http）
 
 ADR-110，akit 的需求（A51、A52、A53）：

@@ -92,16 +92,25 @@ pub struct ClientRequest {
     /// one), interim 1xx responses included; `None` uses the client's
     /// ([`ClientOptions::response_header_timeout`]). Past it the request fails with
     /// [`ClientError::HeaderTimeout`] and its connection is closed (ADR-108). Each redirect
-    /// hop has its own. HTTP/1 client only.
+    /// hop has its own. [`H2Client`](crate::h2client::H2Client) heeds it too (ADR-111): from
+    /// the request's END_STREAM to the final response's HEADERS, past which the stream alone is
+    /// reset.
     pub response_header_timeout: Option<Duration>,
     /// Limit on the gap between two reads of the response's body, from its head on; `None`
     /// uses the client's ([`ClientOptions::response_idle_timeout`]). Past it the request fails
     /// with [`ClientError::IdleTimeout`] (after [`ResponseHandler::on_head`] for a response
     /// delivered as it arrives) and its connection is closed. The time reads are held
-    /// ([`ResponseBody::hold_reads`]) does not count (ADR-108). HTTP/1 client only.
+    /// ([`ResponseBody::hold_reads`]) does not count (ADR-108). [`H2Client`] heeds it too
+    /// (ADR-111): the longest gap between the response's DATA frames from its head on, the time
+    /// its reads are held ([`H2Stream::hold_reads`]) not counted; past it the stream alone is
+    /// reset.
+    ///
+    /// [`H2Client`]: crate::h2client::H2Client
+    /// [`H2Stream::hold_reads`]: crate::h2client::H2Stream::hold_reads
     pub response_idle_timeout: Option<Duration>,
     /// Cancels the request when cancelled ([`CancelToken::cancel`], ADR-108). `None` by
-    /// default. HTTP/1 client only.
+    /// default. [`H2Client`](crate::h2client::H2Client) heeds it too (ADR-111): the stream is
+    /// reset (`CANCEL`), or a request still waiting for one dropped unsent.
     pub cancel: Option<CancelToken>,
 }
 
@@ -203,7 +212,9 @@ impl ClientRequest {
 /// with [`ClientError::Cancelled`], once, unless it was over already: a whole response's
 /// callback is called on the thread that cancels, a [`ResponseHandler`] gets
 /// [`on_error`](ResponseHandler::on_error) on the connection's I/O thread (or, before there is
-/// a connection, on the thread that resolves or dials it, once that is done).
+/// a connection, on the thread that resolves or dials it, once that is done). An
+/// [`H2Client`](crate::h2client::H2Client)'s request has its stream reset (`CANCEL`) and fails
+/// on the connection's I/O thread, its connection left to its other streams (ADR-111).
 ///
 /// Cheap to clone and usable from any thread. One token may serve several requests (the
 /// attempts of a retrying proxy, say): cancelling it cancels every one of them that is not over,
@@ -215,7 +226,34 @@ pub struct CancelToken(Arc<Mutex<TokenState>>);
 struct TokenState {
     cancelled: bool,
     /// The requests given the token; finished ones are pruned as more are added.
-    exchanges: Vec<Weak<Exchange>>,
+    exchanges: Vec<Target>,
+}
+
+/// A request a [`CancelToken`] cancels: an HTTP/1 client's, or a stream of an
+/// [`H2Client`](crate::h2client::H2Client) (ADR-111).
+enum Target {
+    Http1(Weak<Exchange>),
+    H2(crate::h2client::CancelTarget),
+}
+
+impl Target {
+    fn alive(&self) -> bool {
+        match self {
+            Target::Http1(w) => w.strong_count() > 0,
+            Target::H2(t) => t.alive(),
+        }
+    }
+
+    fn cancel(&self) {
+        match self {
+            Target::Http1(w) => {
+                if let Some(ex) = w.upgrade() {
+                    ex.give_up(GaveUp::Cancelled);
+                }
+            }
+            Target::H2(t) => t.cancel(),
+        }
+    }
 }
 
 impl std::fmt::Debug for CancelToken {
@@ -242,8 +280,8 @@ impl CancelToken {
             st.cancelled = true;
             std::mem::take(&mut st.exchanges)
         };
-        for ex in exchanges.iter().filter_map(Weak::upgrade) {
-            ex.give_up(GaveUp::Cancelled);
+        for t in &exchanges {
+            t.cancel();
         }
     }
 
@@ -254,14 +292,23 @@ impl CancelToken {
 
     /// Ties `ex` to the token; `false` when the token is already cancelled.
     fn attach(&self, ex: &Arc<Exchange>) -> bool {
+        self.attach_target(Target::Http1(Arc::downgrade(ex)))
+    }
+
+    /// Ties an HTTP/2 stream to the token; `false` when the token is already cancelled.
+    pub(crate) fn attach_h2(&self, t: crate::h2client::CancelTarget) -> bool {
+        self.attach_target(Target::H2(t))
+    }
+
+    fn attach_target(&self, t: Target) -> bool {
         let mut st = lock_or(&self.0);
         if st.cancelled {
             return false;
         }
         if st.exchanges.len() == st.exchanges.capacity() {
-            st.exchanges.retain(|w| w.strong_count() > 0);
+            st.exchanges.retain(Target::alive);
         }
-        st.exchanges.push(Arc::downgrade(ex));
+        st.exchanges.push(t);
         true
     }
 }

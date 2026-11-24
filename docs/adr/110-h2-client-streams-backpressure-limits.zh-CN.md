@@ -90,7 +90,7 @@ akit 是基于 akio 的反向代理，用 akio 的 `H2Client` 代理到 HTTP/2 �
 - **未结束的 `H2Upload` 被丢弃时重置流**（如同 `RequestBody` 的 drop 会关闭连接）：在响应仍在流式到达时、未 finish 就
   丢弃它的调用方，会看到以前不会发生的重置。保持原样；`cancel` 才重置。
 - **`H2Client` 上的 `CancelToken` 以及响应头、空闲超时（ADR-108）**：A51–A53 没有要求。`H2Stream::cancel` 和
-  `ClientRequest::timeout` 足以支持 akit 的 I18b；需要时其余几项可复用 `StreamCtl`（加第三种原因）。
+  `ClientRequest::timeout` 足以支持 akit 的 I18b；需要时其余几项可复用 `StreamCtl`（加第三种原因）。（此后已由 ADR-111 为 akit 的 A66 实现。）
 - **同时暂停连接级窗口**：一个暂停的流会让连接上的其他流也停下。
 
 ## 影响

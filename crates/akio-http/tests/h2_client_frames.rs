@@ -1,7 +1,7 @@
 //! HTTP/2 client against a scripted fake server: CONTINUATION and padding in responses, PING,
 //! SETTINGS, RST_STREAM, GOAWAY, protocol errors and closing; streamed requests cancelled, timed
 //! out, ended with trailers, refused by a GOAWAY, their reads held and their bodies paced, and
-//! the server's stream limit (ADR-110).
+//! the server's stream limit (ADR-110); header and idle timeouts and cancel tokens (ADR-111).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -1025,5 +1025,196 @@ fn server_stream_limit_queues_requests_and_refuses_past_the_queue() {
     assert_eq!(fa.wait().unwrap().body, b"one");
     assert_eq!(fb.wait().unwrap().body, b"two");
     eventually(|| c.open_streams() == 0 && c.waiting_streams() == 0);
+    stop(&e, t);
+}
+
+// ---- header and idle timeouts, cancel tokens (ADR-111) ----------------------------------------
+
+/// The next `n` requests, by path.
+fn requests(srv: &mut Srv, n: usize) -> std::collections::HashMap<String, u32> {
+    (0..n)
+        .map(|_| {
+            let (sid, req) = srv.request();
+            let path = req
+                .into_iter()
+                .find(|(n, _)| n == ":path")
+                .map(|(_, v)| v)
+                .unwrap();
+            (path, sid)
+        })
+        .collect()
+}
+
+/// The next `n` RST_STREAMs: stream and error code.
+fn resets(srv: &mut Srv, n: usize) -> Vec<(u32, u32)> {
+    let mut v: Vec<(u32, u32)> = (0..n)
+        .map(|_| {
+            let f = srv.until(|f| f.ty == RST_STREAM).unwrap();
+            (
+                f.sid,
+                u32::from_be_bytes(f.payload[..4].try_into().unwrap()),
+            )
+        })
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn header_timeout_resets_the_stream_alone_from_the_requests_end() {
+    let (tx, rx) = mpsc::channel();
+    let (e, c, t) = setup(H2Options::default(), move |srv| {
+        let ids = requests(srv, 2);
+        let _ = tx.send(rst_code(srv, ids["/silent"]));
+        srv.respond(ids["/other"], b"other");
+        // A request body still open: its wait for the head has not started.
+        let (sid, _) = srv.request();
+        srv.until(|f| f.ty == DATA && f.sid == sid && f.flags & END_STREAM != 0)
+            .unwrap();
+        srv.respond(sid, b"late ok");
+    });
+    let t0 = std::time::Instant::now();
+    let silent = c.send(get("/silent").response_header_timeout(Duration::from_millis(200)));
+    let other = c.send(get("/other"));
+    let r = silent.wait();
+    assert!(matches!(r, Err(ClientError::HeaderTimeout)), "{r:?}");
+    let took = t0.elapsed();
+    assert!(
+        took >= Duration::from_millis(150) && took < Duration::from_secs(3),
+        "{took:?}"
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(CANCEL)
+    );
+    // The connection goes on with its other streams.
+    assert_eq!(other.wait().unwrap().body, b"other");
+    assert!(c.is_open());
+
+    let (on_event, evs) = recorder();
+    let up = c.open(
+        ClientRequest::post("http://x/slow-up", Vec::new())
+            .response_header_timeout(Duration::from_millis(200)),
+        on_event,
+    );
+    assert!(up.write(b"x"));
+    thread::sleep(Duration::from_millis(400));
+    assert!(up.finish());
+    assert_eq!(until_over(&evs), ["head 200", "data late ok", "end"]);
+    stop(&e, t);
+}
+
+#[test]
+fn idle_timeout_counts_the_gaps_between_data_frames_not_the_time_held() {
+    let (tx, rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let (e, c, t) = setup(H2Options::default(), move |srv| {
+        // Data every 100 ms for 400 ms: within an idle timeout of 300 ms.
+        let (sid, _) = srv.request();
+        let b = srv.block(&[(":status", "200")]);
+        srv.send(HEADERS, END_HEADERS, sid, &b);
+        for _ in 0..4 {
+            thread::sleep(Duration::from_millis(100));
+            srv.send(DATA, 0, sid, b"t");
+        }
+        srv.send(DATA, END_STREAM, sid, b"");
+        // A head, a piece, then silence.
+        let (sid, _) = srv.request();
+        let b = srv.block(&[(":status", "200")]);
+        srv.send(HEADERS, END_HEADERS, sid, &b);
+        srv.send(DATA, 0, sid, b"x");
+        let _ = tx.send(rst_code(srv, sid));
+        // Silence while the client holds the reads.
+        let (sid, _) = srv.request();
+        let b = srv.block(&[(":status", "200")]);
+        srv.send(HEADERS, END_HEADERS, sid, &b);
+        srv.send(DATA, 0, sid, b"a");
+        go_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        srv.send(DATA, END_STREAM, sid, b"z");
+    });
+    let r = c
+        .send(get("/trickle").response_idle_timeout(Duration::from_millis(300)))
+        .wait()
+        .unwrap();
+    assert_eq!(r.body, b"tttt");
+
+    let (on_event, evs) = recorder();
+    let t0 = std::time::Instant::now();
+    let up = c.open(
+        get("/stall").response_idle_timeout(Duration::from_millis(200)),
+        on_event,
+    );
+    assert!(up.finish());
+    assert_eq!(
+        until_over(&evs),
+        ["head 200", "data x", "error IdleTimeout"]
+    );
+    let took = t0.elapsed();
+    assert!(
+        took >= Duration::from_millis(150) && took < Duration::from_secs(3),
+        "{took:?}"
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(CANCEL)
+    );
+
+    let (on_event, evs) = recorder();
+    let up = c.open(
+        get("/held").response_idle_timeout(Duration::from_millis(200)),
+        on_event,
+    );
+    let s = up.stream();
+    s.hold_reads(true);
+    assert!(up.finish());
+    assert_eq!(
+        evs.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "head 200"
+    );
+    assert_eq!(evs.recv_timeout(Duration::from_secs(5)).unwrap(), "data a");
+    // Held for twice the idle timeout: not given up.
+    assert!(evs.recv_timeout(Duration::from_millis(500)).is_err());
+    s.hold_reads(false);
+    go_tx.send(()).unwrap();
+    assert_eq!(until_over(&evs), ["data z", "end"]);
+    stop(&e, t);
+}
+
+#[test]
+fn cancel_token_resets_its_streams_and_fails_them_once() {
+    use akio_http::client::CancelToken;
+    let (tx, rx) = mpsc::channel();
+    let (e, c, t) = setup(H2Options::default(), move |srv| {
+        let ids = requests(srv, 2);
+        let mut want = vec![(ids["/a"], CANCEL), (ids["/b"], CANCEL)];
+        want.sort_unstable();
+        let _ = tx.send(resets(srv, 2) == want);
+        // Requests given a token cancelled already are never sent.
+        let (sid, req) = srv.request();
+        assert!(
+            req.iter().any(|(n, v)| n == ":path" && v == "/after"),
+            "{req:?}"
+        );
+        srv.respond(sid, b"after");
+    });
+    let token = CancelToken::new();
+    let a = c.send(get("/a").cancel_with(&token));
+    let (on_event, evs) = recorder();
+    let b = c.open(get("/b").cancel_with(&token), on_event);
+    assert!(b.finish());
+    eventually(|| c.open_streams() == 2);
+    token.cancel();
+    assert!(matches!(a.wait(), Err(ClientError::Cancelled)));
+    assert_eq!(until_over(&evs), ["error Cancelled"]);
+    assert!(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    assert!(evs.recv_timeout(Duration::from_millis(100)).is_err());
+    assert!(!b.write(b"late"));
+
+    let r = c.send(get("/never").cancel_with(&token)).wait();
+    assert!(matches!(r, Err(ClientError::Cancelled)), "{r:?}");
+    let (on_event, evs) = recorder();
+    let _up = c.open(get("/never").cancel_with(&token), on_event);
+    assert_eq!(until_over(&evs), ["error Cancelled"]);
+    assert_eq!(c.send(get("/after")).wait().unwrap().body, b"after");
     stop(&e, t);
 }
