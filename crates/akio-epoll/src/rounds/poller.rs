@@ -26,7 +26,7 @@ use akio_core::{
 use akio_sys::{Event, Poller, Registry, Waker};
 use akio_timer::{TimerId, Wheel};
 
-use super::conn::{HUP, RConn, READ, SHUTDOWN, WAKE, WRITE};
+use super::conn::{HUP, RConn, READ, WAKE, WRITE};
 use super::workers::{Job, WorkerCtx, Workers};
 
 const WAKER: u64 = 0;
@@ -284,8 +284,10 @@ impl PollerShared {
         }
         .add(1);
         akio_log::trace!(target: "akio", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
+        #[cfg(test)]
+        tests::open_hook();
         if self.draining.load(Ordering::SeqCst) {
-            c.pending_or(SHUTDOWN);
+            c.shutdown_notice();
         }
         c.start();
     }
@@ -553,7 +555,14 @@ impl ListenJob {
                             again = false;
                             break;
                         }
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        // One connection failed before it was accepted: not the listener's fault.
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::Interrupted
+                                    | io::ErrorKind::ConnectionAborted
+                                    | io::ErrorKind::ConnectionReset
+                            ) => {}
                         Err(e) => {
                             again = false;
                             self.home.stats.accept_errors.add(1);
@@ -823,11 +832,14 @@ impl RLoop {
             if p == 0 || now < p {
                 continue;
             }
-            j.paused_until.store(0, Ordering::SeqCst);
+            // Under the listener's lock, which an accept job holds while it pauses: so a pause
+            // set meanwhile is seen here, and the socket is registered exactly when not paused.
             let g = lock(&j.listener);
-            if g.is_none() {
+            let p = j.paused_until.load(Ordering::SeqCst);
+            if g.is_none() || p == 0 || now < p {
                 continue;
             }
+            j.paused_until.store(0, Ordering::SeqCst);
             if let Err(e) = self.shared.registry.add_edge(j.fd, j.token) {
                 log_or_stderr(
                     akio_log::Level::Warn,
@@ -972,7 +984,7 @@ impl RLoop {
         }
         // Every connection an accept job opened is in the table now (`close` waited for it);
         // later ones (none but in-flight dials) see `draining` themselves.
-        self.shared.each(|_, c| c.notify(SHUTDOWN));
+        self.shared.each(|_, c| c.shutdown_notice());
         for (_, d) in self.connecting.drain() {
             self.poller.delete(d.stream.as_raw_fd());
             if let Some(f) = d.on_error {
@@ -1020,4 +1032,148 @@ pub(crate) fn post_dial(
         acceptor,
         on_error,
     });
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::{
+        io::Write,
+        net::TcpStream,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use akio_core::{
+        Config, ConnInner, DynAcceptor, DynHandler, Error, Group, Pool, PoolConfig, Task,
+    };
+
+    use super::super::{RoundsConfig, RoundsGroup};
+
+    /// A round was queued while the connection already was (the invariant broken).
+    pub(crate) static DOUBLE_QUEUED: AtomicU64 = AtomicU64::new(0);
+    /// Milliseconds `open` sleeps between registering a connection and queueing its first round.
+    static OPEN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn open_hook() {
+        let ms = OPEN_DELAY_MS.load(Ordering::SeqCst);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    #[derive(Default)]
+    struct Counts {
+        opens: AtomicUsize,
+        shutdowns: AtomicUsize,
+        bytes: AtomicUsize,
+        /// Milliseconds `on_open` / `on_data` take (to make rounds overlap with events).
+        slow_open_ms: AtomicU64,
+        slow_data_ms: AtomicU64,
+    }
+
+    fn nap(ms: &AtomicU64) {
+        let ms = ms.load(Ordering::SeqCst);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
+
+    struct Acc(Arc<Counts>);
+    struct H(Arc<Counts>);
+
+    impl DynHandler for H {
+        fn on_data(&mut self, data: &[u8]) {
+            nap(&self.0.slow_data_ms);
+            self.0.bytes.fetch_add(data.len(), Ordering::SeqCst);
+        }
+        fn on_close(&mut self, _err: Option<Error>) {}
+        fn run_task(&mut self, _task: Task) {}
+    }
+
+    impl DynAcceptor for Acc {
+        fn on_open(&self, _inner: &Arc<ConnInner>) -> Box<dyn DynHandler> {
+            self.0.opens.fetch_add(1, Ordering::SeqCst);
+            nap(&self.0.slow_open_ms);
+            Box::new(H(self.0.clone()))
+        }
+        fn on_shutdown(&self, _inner: &Arc<ConnInner>) {
+            // Not closing: a second notice would run it again (the drain deadline closes).
+            self.0.shutdowns.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn group(counts: &Arc<Counts>) -> RoundsGroup {
+        let mut cfg = Config::default();
+        cfg.shutdown_timeout = Duration::from_millis(500);
+        let g = RoundsGroup::bind(
+            Some((
+                "127.0.0.1:0".parse().expect("addr"),
+                Arc::new(Acc(counts.clone())),
+            )),
+            RoundsConfig::new(1, 2),
+            cfg,
+            Pool::new(PoolConfig::default()),
+        )
+        .expect("bind");
+        g.start().expect("start");
+        g
+    }
+
+    fn wait_for(what: &str, f: impl Fn() -> bool) {
+        let t0 = Instant::now();
+        while !f() {
+            assert!(t0.elapsed() < Duration::from_secs(5), "timed out: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A readable socket's first edge reaches a worker polling the driver while the accepting
+    /// worker is still between registration and `start`: the connection must be queued once.
+    #[test]
+    fn an_edge_before_the_first_round_does_not_queue_the_connection_twice() {
+        let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let counts = Arc::new(Counts::default());
+        // The round the edge queued is still in `on_data` when the accepting worker reaches
+        // `start` (100 ms later): a second queueing overlaps it.
+        counts.slow_data_ms.store(300, Ordering::SeqCst);
+        let g = group(&counts);
+        let before = DOUBLE_QUEUED.load(Ordering::SeqCst);
+        OPEN_DELAY_MS.store(100, Ordering::SeqCst);
+        let mut c = TcpStream::connect(g.local_addr()).expect("connect");
+        c.write_all(b"hello").expect("write");
+        wait_for("data", || counts.bytes.load(Ordering::SeqCst) == 5);
+        OPEN_DELAY_MS.store(0, Ordering::SeqCst);
+        assert_eq!(DOUBLE_QUEUED.load(Ordering::SeqCst), before);
+        assert_eq!(counts.opens.load(Ordering::SeqCst), 1);
+        drop(c);
+        g.shutdown();
+        g.join();
+    }
+
+    /// A connection accepted while the shutdown waits for the accept job gets `on_shutdown`
+    /// once, not once from the accept and once from the shutdown.
+    #[test]
+    fn a_connection_accepted_during_shutdown_gets_on_shutdown_once() {
+        let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let counts = Arc::new(Counts::default());
+        // The shutdown's notice arrives while the first round is still in `on_open`.
+        counts.slow_open_ms.store(100, Ordering::SeqCst);
+        let g = group(&counts);
+        OPEN_DELAY_MS.store(200, Ordering::SeqCst);
+        let _c = TcpStream::connect(g.local_addr()).expect("connect");
+        // The accept job is asleep in `open` now; the shutdown waits for it.
+        std::thread::sleep(Duration::from_millis(50));
+        g.shutdown();
+        wait_for("on_shutdown", || {
+            counts.shutdowns.load(Ordering::SeqCst) >= 1
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        OPEN_DELAY_MS.store(0, Ordering::SeqCst);
+        g.join();
+        assert_eq!(counts.shutdowns.load(Ordering::SeqCst), 1);
+    }
 }

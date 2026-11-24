@@ -40,6 +40,10 @@ ADR-104, second revision; no API change:
   is queued; one parked worker keeps a 10 ms watch instead of every parked worker waking every
   10 ms.
 - `AKIO_ROUNDS_TRACE=1` also reports unparks, driver wake-ups and parks per second.
+- A connection is born scheduled, so an edge between its registration and its first round cannot
+  queue it twice; `on_shutdown` runs once for a connection accepted while the shutdown starts; a
+  watch woken for work hands the watch on; an accept aborted or reset by the peer no longer pauses
+  the listening socket.
 - gpu51, 8 server CPUs, against rounds before this change (and loops): short-lived connections
   512 x 10 requests 513k → 703k req/s (loops 716k), 512 x 1 request 103k → 207k connections/s
   (loops 205k), 2048 x 10 requests 691k → 905k req/s (loops 757k-878k); at 10k requests/s over

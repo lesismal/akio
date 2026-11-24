@@ -83,6 +83,12 @@ pub(crate) struct RConn {
     pub(crate) bytes_in: AtomicU64,
     /// A write-timeout check is pending on the poller.
     pub(crate) write_armed: AtomicBool,
+    /// `on_shutdown` was requested (it runs once, whoever asks first: the poller's shutdown or
+    /// an accept that saw the drain begin).
+    shutdown_sent: AtomicBool,
+    /// Tests: rounds of this connection queued or running (more than one breaks the invariant).
+    #[cfg(test)]
+    pub(crate) in_queue: AtomicU32,
     pub(crate) bp_flag: AtomicBool,
     pub(crate) home: Arc<PollerShared>,
     workers: Arc<Workers>,
@@ -150,7 +156,9 @@ impl RConn {
                 id,
                 inner,
                 pending: AtomicU32::new(OPEN),
-                scheduled: AtomicBool::new(false),
+                // Scheduled from birth: events that arrive between the registration and
+                // `start` only add bits, and `start` queues the one first round.
+                scheduled: AtomicBool::new(true),
                 queued_ns: AtomicU64::new(0),
                 st: Mutex::new(St {
                     handler: None,
@@ -168,6 +176,9 @@ impl RConn {
                 opened: now,
                 bytes_in: AtomicU64::new(0),
                 write_armed: AtomicBool::new(false),
+                shutdown_sent: AtomicBool::new(false),
+                #[cfg(test)]
+                in_queue: AtomicU32::new(0),
                 bp_flag: AtomicBool::new(false),
                 home,
                 workers,
@@ -188,14 +199,17 @@ impl RConn {
         }
     }
 
-    /// Adds `bits` for the first round, before [`start`](Self::start).
-    pub(crate) fn pending_or(&self, bits: u32) {
-        self.pending.fetch_or(bits, Ordering::SeqCst);
+    /// Asks for `on_shutdown`, once per connection.
+    pub(crate) fn shutdown_notice(self: &Arc<Self>) {
+        if !self.shutdown_sent.swap(true, Ordering::SeqCst) {
+            self.notify(SHUTDOWN);
+        }
     }
 
-    /// Queues the first round (`on_open`).
+    /// Queues the first round (`on_open`). The connection is born scheduled, so this is its
+    /// only queueing until that round ends, whatever events came first.
     pub(crate) fn start(self: &Arc<Self>) {
-        self.scheduled.store(true, Ordering::SeqCst);
+        debug_assert!(self.scheduled.load(Ordering::SeqCst));
         self.workers.submit(Job::Round(self.clone()));
     }
 
@@ -237,6 +251,8 @@ impl RConn {
                 }
             }
         }
+        #[cfg(test)]
+        self.in_queue.fetch_sub(1, Ordering::SeqCst);
         self.scheduled.store(false, Ordering::SeqCst);
         if (yielded || self.pending.load(Ordering::SeqCst) != 0)
             && !self.scheduled.swap(true, Ordering::SeqCst)

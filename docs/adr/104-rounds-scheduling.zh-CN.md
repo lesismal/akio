@@ -46,9 +46,11 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      是一个互斥锁保护的 map 加一个时间轮）：worker 把自己 accept 的连接加进去，结束连接的那一轮把它移除
      并取消其定时器，所以 accept 和关闭都不再向 driver 投递消息，也不写它的 eventfd。driver 在表中查找
      连接以分发事件，并触发表中的定时器；worker 设置的定时器若早于 driver 当前等待的截止时间，就打断
-     这次等待。accept 出错时暂停该 socket 100 ms（由 driver 重新注册）；关闭时在 accept 任务的锁下关闭
-     socket，所以发送 `on_shutdown` 时 accept 任务打开的每个连接都已在表中，之后打开的连接会看到排空
-     标志。
+     这次等待。连接创建时就处于已调度状态，所以在注册之后、第一轮之前到达 driver 的边沿事件只增加待处理位：
+     它只入队一次。accept 出错时暂停该 socket 100 ms（由 driver 在该 socket 的锁下重新注册），但 accept
+     之前就被中止或重置的连接只是跳过。关闭时在 accept 任务的锁下关闭 socket，所以发送 `on_shutdown` 时
+     accept 任务打开的每个连接都已在表中，之后打开的连接会看到排空标志；每个连接有一个一次性标志，无论谁
+     先请求，`on_shutdown` 都只执行一次。
    - **Worker**（`RoundsConfig::workers`，0 = 自动：每个 CPU 一个）执行轮次。连接的一轮依次：
      若 `on_open` 还没执行则执行它；执行投递给它的 `spawn_blocking` 完成回调；刷出发送队列；读到
      socket 读空为止（最多 16 次读，之后让出、排到队尾）；每次读到数据就在 cork 状态下调用
@@ -65,7 +67,8 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      worker（Tokio 的规则）：轻负载时一次轮询只发现一个连接，它的一轮执行时没有任何线程唤醒另一个线程。
      通过搜索找到任务的 worker 在还有任务排队时唤醒另一个。一个 park 的 worker 担任 *值守*，最多睡
      10 ms，以防 driver 的最后一个轮询者进入了很长的一轮；其它 worker 一直睡到被唤醒（或它们的循环定时器
-     到期）。
+     到期）。值守因有任务而被唤醒时，唤醒另一个 park 的 worker 把值守交出去；停止自旋的 worker 在阻塞到
+     driver 之前，先执行自旋期间入队的任务（有 worker 自旋时投递方不唤醒任何线程）。
    - 阻塞任务仍然应该放到逻辑线程池（`spawn_blocking`、`run_on_pool`）：阻塞的 worker 会推迟排在
      它后面的连接，虽然其它 worker 会把它们偷走。
 3. **保持不变的部分**：`Conn` 与 `ConnInner`（本来就是线程安全的，ADR-002）、cork 与 flush 协议、

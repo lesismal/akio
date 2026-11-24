@@ -37,6 +37,9 @@ ADR-104 第二次修订，API 不变：
   接着执行）；通过搜索找到任务的 worker 在还有任务排队时唤醒另一个；只有一个 park 的 worker 每 10 ms 值守
   一次，而不是每个 park 的 worker 都每 10 ms 醒一次。
 - `AKIO_ROUNDS_TRACE=1` 还会报告每秒的 unpark、driver 唤醒和 park 次数。
+- 连接创建时就处于已调度状态，所以注册与第一轮之间的边沿事件不会让它入队两次；关闭开始时被 accept 的连接
+  只执行一次 `on_shutdown`；因有任务被唤醒的值守会把值守交给别的 worker；被对端中止或重置的 accept 不再
+  让监听 socket 暂停。
 - gpu51，服务端 8 个 CPU，与本次修改前的 rounds（以及 loops）对比：短连接 512 x 10 个请求 513k → 703k req/s
   （loops 716k），512 x 1 个请求 103k → 207k 连接/s（loops 205k），2048 x 10 个请求 691k → 905k req/s（loops
   757k~878k）；1024 个连接上 10k 请求/s 时每请求服务端 CPU 16.3 → 11.3 µs（loops 9.1），延迟不变；50k/s 时

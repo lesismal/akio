@@ -55,9 +55,13 @@ handler, write) runs on whichever worker is idle.
      and cancels its timers, so neither an accept nor a close posts a message to the driver or
      writes its eventfd. The driver looks connections up in the table to hand out events and
      fires the table's timers; a worker arming a timer earlier than the driver's current wait
-     interrupts the wait. Accept errors pause that socket for 100 ms (the driver re-arms it);
-     shutdown closes the sockets under their job's lock, so every connection an accept job
-     opened is in the table when `on_shutdown` is sent, and later ones see the drain flag.
+     interrupts the wait. A connection is created already scheduled, so an edge that reaches
+     the driver between its registration and its first round only adds bits: it is queued once.
+     Accept errors pause that socket for 100 ms (the driver re-arms it, under the socket's lock),
+     except a connection aborted or reset before it was accepted, which is skipped. Shutdown
+     closes the sockets under their job's lock, so every connection an accept job opened is in
+     the table when `on_shutdown` is sent, and later ones see the drain flag; a one-shot flag per
+     connection runs `on_shutdown` once whoever asks first.
    - **Workers** (`RoundsConfig::workers`, 0 = auto: one per CPU) run rounds. A round of a
      connection runs `on_open` if it has not run, the `spawn_blocking` completions posted to it,
      flushes its queue, reads until the socket is drained (at most 16 reads, then it yields to
@@ -77,7 +81,9 @@ handler, write) runs on whichever worker is idle.
      round runs with no thread waking another. A worker that found work by searching wakes
      another if more is queued. One parked worker, the *watch*, sleeps at most 10 ms, for a
      driver whose last poller went into a long round; the others sleep until woken (or their
-     loop timer is due).
+     loop timer is due). A watch woken for work hands the watch on by waking another parked
+     worker, and a worker that stops spinning runs what was queued meanwhile (a poster does not
+     wake anyone while a worker spins) before it blocks in a driver.
    - Blocking work still belongs on the logical pool (`spawn_blocking`, `run_on_pool`): a
      blocked worker delays the connections queued behind it, though the others steal them.
 3. **What is the same**: `Conn` and `ConnInner` (already thread-safe, ADR-002), the cork and

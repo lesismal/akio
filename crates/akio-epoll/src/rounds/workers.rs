@@ -317,6 +317,10 @@ impl Workers {
     pub(crate) fn submit(&self, job: Job) {
         if let Job::Round(c) = &job {
             c.queued_ns.store(super::trace::now_ns(), Ordering::Relaxed);
+            #[cfg(test)]
+            if c.in_queue.fetch_add(1, Ordering::SeqCst) != 0 {
+                super::poller::tests::DOUBLE_QUEUED.fetch_add(1, Ordering::SeqCst);
+            }
         }
         let (uid, me) = CURRENT.with(Cell::get);
         let own = uid == self.uid;
@@ -530,6 +534,11 @@ impl Workers {
                 since_poll += 1;
                 continue;
             }
+            // Work queued while we spun was not kicked (we counted as spinning): run it rather
+            // than block in a driver.
+            if self.any_queued() {
+                continue;
+            }
             // Nothing to run: wait for events in a free driver, if there is one.
             if driving && !self.drivers_done() && self.poll_drivers(me, true) {
                 continue;
@@ -562,8 +571,15 @@ impl Workers {
                         Some(t) => std::thread::park_timeout(t),
                         None => std::thread::park(),
                     }
+                    // Woken for work (a waker cleared `parked`), not by the timeout.
+                    let woken = !shard.parked.load(Ordering::SeqCst);
                     if watch {
                         self.watch.store(false, Ordering::SeqCst);
+                        if woken {
+                            // Hand the watch on: the others sleep without a timeout, and with
+                            // this worker gone to a long round nobody would poll the drivers.
+                            self.wake_one(me);
+                        }
                     }
                     shard.parked.store(false, Ordering::SeqCst);
                 }
