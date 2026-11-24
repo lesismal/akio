@@ -68,6 +68,7 @@ pub mod raw;
 mod legacy_re;
 mod router;
 mod session;
+mod tap;
 mod timer;
 pub mod trace;
 // The seam between HTTP transports and services (akio-h3 dispatches through it):
@@ -82,7 +83,8 @@ pub use context::{
     Suspended, WsOptions,
 };
 pub use h2::H2Config;
-pub use message::{FileBody, Headers, Method, Request, Response, Version};
+pub use message::{FileBody, Headers, Method, Request, Response, Version, parse_http_date};
 pub use pool::Executor;
 pub use router::{RouteInfo, RouteMatch, Router};
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};
+pub use tap::{BodyTap, TapEnd};

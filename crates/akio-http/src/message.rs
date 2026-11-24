@@ -562,6 +562,8 @@ pub struct Response {
     /// What [`keep_until_sent`](Response::keep_until_sent) keeps (ADR-112): one pointer, so
     /// that a response without it costs a word.
     pub(crate) kept: Option<Arc<Kept>>,
+    /// What sees a streamed body as it is sent ([`tap_body`](Response::tap_body), ADR-116).
+    pub(crate) tap: Option<crate::tap::TapSlot>,
     /// Trailer fields sent after the body (HTTP/2; ignored on HTTP/1).
     pub trailers: Option<Headers>,
 }
@@ -610,6 +612,7 @@ impl Response {
             streaming: false,
             stream_coding: None,
             kept: None,
+            tap: None,
             trailers: None,
         }
     }
@@ -648,6 +651,16 @@ impl Response {
         self.kept = Some(Arc::new(Kept(std::panic::AssertUnwindSafe(Box::new(
             value,
         )))));
+    }
+
+    /// Sets what sees the body of a streamed response as it is sent (ADR-116): set by a response
+    /// filter on the head of a streamed response, `tap` gets each write of the body as it goes
+    /// to the connection, after any [stream coding](Response::set_stream_coding), then how the
+    /// body ended (see [`BodyTap`](crate::BodyTap)). Ignored, and dropped unused, on a response
+    /// that is not streamed (whose filter sees the whole [`body`](Response::body)) and on a HEAD
+    /// answer. A later call replaces an earlier tap.
+    pub fn tap_body(&mut self, tap: impl crate::BodyTap) {
+        self.tap = Some(crate::tap::TapSlot::new(Box::new(tap)));
     }
 
     /// Takes what [`keep_until_sent`](Response::keep_until_sent) keeps, for the stream.
@@ -828,6 +841,80 @@ pub(crate) fn push_uint(out: &mut Vec<u8>, mut n: u64) {
     out.extend_from_slice(&b[i..]);
 }
 
+/// Parses an HTTP-date to seconds since the Unix epoch, in any of the three formats RFC 9110
+/// section 5.6.7 has recipients accept (ADR-116): the IMF-fixdate senders use
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`), the obsolete RFC 850 format
+/// (`Sunday, 06-Nov-94 08:49:37 GMT`, a two-digit year from 69 in the 1900s and below it in the
+/// 2000s, as Go reads it) and asctime's (`Sun Nov  6 08:49:37 1994`). The day name is not
+/// checked against the date. `None` for anything else, or a date before 1970.
+#[must_use]
+pub fn parse_http_date(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (day, mon, year, time) = if let Some((_, rest)) = s.split_once(", ") {
+        let rest = rest.strip_suffix(" GMT")?;
+        if let Some((date, time)) = rest.split_once(' ').filter(|(d, _)| d.contains('-')) {
+            // RFC 850: 06-Nov-94 08:49:37
+            let mut p = date.split('-');
+            let (d, m, y) = (p.next()?, p.next()?, p.next()?);
+            if p.next().is_some() || y.len() != 2 {
+                return None;
+            }
+            let y: i64 = digits(y)?;
+            (d, m, if y >= 69 { 1900 + y } else { 2000 + y }, time)
+        } else {
+            // IMF-fixdate: 06 Nov 1994 08:49:37
+            let mut p = rest.split(' ');
+            let (d, m, y, t) = (p.next()?, p.next()?, p.next()?, p.next()?);
+            if p.next().is_some() || y.len() != 4 {
+                return None;
+            }
+            (d, m, digits(y)?, t)
+        }
+    } else {
+        // asctime: Sun Nov  6 08:49:37 1994
+        let mut p = s.split(' ').filter(|w| !w.is_empty());
+        let (_, m, d, t, y) = (p.next()?, p.next()?, p.next()?, p.next()?, p.next()?);
+        if p.next().is_some() || y.len() != 4 {
+            return None;
+        }
+        (d, m, digits(y)?, t)
+    };
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let m = MONTHS.iter().position(|&n| n == mon)? as i64 + 1;
+    if day.is_empty() || day.len() > 2 {
+        return None;
+    }
+    let d: i64 = digits(day)?;
+    let mut hms = time.split(':');
+    let (h, mi, sec) = (hms.next()?, hms.next()?, hms.next()?);
+    if hms.next().is_some() || h.len() != 2 || mi.len() != 2 || sec.len() != 2 {
+        return None;
+    }
+    let (h, mi, sec): (i64, i64, i64) = (digits(h)?, digits(mi)?, digits(sec)?);
+    if !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // Days from civil (Howard Hinnant).
+    let y = if m <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + h * 3600 + mi * 60 + sec).ok()
+}
+
+/// A run of ASCII digits (no sign), at most a few, as a number.
+fn digits(s: &str) -> Option<i64> {
+    if s.is_empty() || s.len() > 4 || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
 /// Formats seconds since the Unix epoch as `Sun, 06 Nov 1994 08:49:37 GMT`.
 pub fn format_http_date(secs: u64) -> String {
     const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
@@ -862,6 +949,41 @@ pub fn format_http_date(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three formats RFC 9110 section 5.6.7 has recipients accept (ADR-116).
+    #[test]
+    fn http_dates_in_three_formats() {
+        let t = Some(784_111_777);
+        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"), t);
+        assert_eq!(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT"), t);
+        assert_eq!(parse_http_date("Sun Nov  6 08:49:37 1994"), t);
+        assert_eq!(parse_http_date(" Sun, 06 Nov 1994 08:49:37 GMT "), t);
+        assert_eq!(
+            parse_http_date("Thursday, 01-Jan-26 00:00:00 GMT"),
+            parse_http_date("Thu, 01 Jan 2026 00:00:00 GMT")
+        );
+        for secs in [0u64, 951_782_400, 1_700_000_000, 4_102_444_800] {
+            assert_eq!(parse_http_date(&format_http_date(secs)), Some(secs));
+        }
+        for bad in [
+            "",
+            "garbage",
+            "0",
+            "Sun, 06 Nov 1994 08:49:37 UTC",
+            "Sun, 06 Foo 1994 08:49:37 GMT",
+            "Sun, 32 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1994 24:00:00 GMT",
+            "Sun, 06 Nov 1994 8:49:37 GMT",
+            "Sun, 06 Nov 94 08:49:37 GMT",
+            "Sun, +6 Nov 1994 08:49:37 GMT",
+            "Sun, 06 Nov 1969 08:49:37 GMT",
+            "Sunday, 06-Nov-1994 08:49:37 GMT",
+            "Sun Nov  6 08:49:37",
+            "Sun Nov  6 08:49:37 1994 GMT",
+        ] {
+            assert_eq!(parse_http_date(bad), None, "{bad:?}");
+        }
+    }
 
     /// A head's storage goes back to the thread and comes out empty for the next head, with
     /// its room; storage too large to keep, and an empty one, are not kept (ADR-081).

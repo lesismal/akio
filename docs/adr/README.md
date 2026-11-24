@@ -108,3 +108,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-111: The HTTP/2 client heeds the response header and idle timeouts and `CancelToken`](111-h2-client-header-idle-timeouts-cancel.md) (accepted 2026-11-24)
 - [ADR-112: A stream coding any response filter can set, and compressed copies of cached files](112-stream-coding-for-filters-and-compressed-copies.md) (accepted 2026-11-24)
 - [ADR-113: The HTTP/1 client hands a connection over on `101`, and a streamed `2xx` to an HTTP/2 extended CONNECT is a tunnel](113-client-upgrade-handover-h2-tunnels.md) (accepted 2026-11-24)
+- [ADR-116: Body taps, outer response filters and HTTP-dates in all three formats](116-body-taps-outer-filters-http-dates.md) (accepted 2026-11-24)

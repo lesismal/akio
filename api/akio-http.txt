@@ -642,6 +642,7 @@ pub fn akio_http::message::Response::keep_until_sent(&mut self, impl core::any::
 pub fn akio_http::message::Response::new(u16) -> akio_http::message::Response
 pub fn akio_http::message::Response::set_stream_coding(&mut self, core::option::Option<akio_http::Coding>)
 pub fn akio_http::message::Response::stream_coding(&self) -> core::option::Option<akio_http::Coding>
+pub fn akio_http::message::Response::tap_body(&mut self, impl akio_http::BodyTap)
 pub fn akio_http::message::Response::text(u16, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Response
 pub fn akio_http::message::Response::with_body(u16, &str, alloc::vec::Vec<u8>) -> akio_http::message::Response
 impl core::clone::Clone for akio_http::message::Response
@@ -655,6 +656,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Response
 impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Response
 pub fn akio_http::message::format_http_date(u64) -> alloc::string::String
 pub fn akio_http::message::http_date_now() -> alloc::string::String
+pub fn akio_http::message::parse_http_date(&str) -> core::option::Option<u64>
 pub fn akio_http::message::percent_decode(&str) -> core::option::Option<alloc::string::String>
 pub fn akio_http::message::reason(u16) -> &'static str
 pub mod akio_http::middleware
@@ -937,6 +939,24 @@ impl core::marker::Sync for akio_http::message::Method
 impl core::marker::Unpin for akio_http::message::Method
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Method
 impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Method
+#[non_exhaustive] pub enum akio_http::TapEnd
+pub akio_http::TapEnd::Cut
+pub akio_http::TapEnd::Finished
+pub akio_http::TapEnd::Trailers
+impl core::clone::Clone for akio_http::TapEnd
+pub fn akio_http::TapEnd::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::TapEnd
+impl core::cmp::PartialEq for akio_http::TapEnd
+pub fn akio_http::TapEnd::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::TapEnd
+pub fn akio_http::TapEnd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::TapEnd
+impl core::marker::StructuralPartialEq for akio_http::TapEnd
+impl core::marker::Send for akio_http::TapEnd
+impl core::marker::Sync for akio_http::TapEnd
+impl core::marker::Unpin for akio_http::TapEnd
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::TapEnd
+impl core::panic::unwind_safe::UnwindSafe for akio_http::TapEnd
 #[non_exhaustive] pub enum akio_http::Version
 pub akio_http::Version::Http10
 pub akio_http::Version::Http11
@@ -1005,6 +1025,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_http::Coding
 impl core::panic::unwind_safe::UnwindSafe for akio_http::Coding
 pub struct akio_http::Context
 impl akio_http::Context
+pub fn akio_http::Context::add_outer_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
 pub fn akio_http::Context::add_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
 pub fn akio_http::Context::add_response_header(&mut self, &str, impl core::convert::AsRef<str>)
 pub fn akio_http::Context::body(&self) -> &[u8]
@@ -1209,6 +1230,7 @@ pub fn akio_http::message::Response::keep_until_sent(&mut self, impl core::any::
 pub fn akio_http::message::Response::new(u16) -> akio_http::message::Response
 pub fn akio_http::message::Response::set_stream_coding(&mut self, core::option::Option<akio_http::Coding>)
 pub fn akio_http::message::Response::stream_coding(&self) -> core::option::Option<akio_http::Coding>
+pub fn akio_http::message::Response::tap_body(&mut self, impl akio_http::BodyTap)
 pub fn akio_http::message::Response::text(u16, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Response
 pub fn akio_http::message::Response::with_body(u16, &str, alloc::vec::Vec<u8>) -> akio_http::message::Response
 impl core::clone::Clone for akio_http::message::Response
@@ -1329,6 +1351,9 @@ impl core::marker::Sync for akio_http::WsOptions
 impl core::marker::Unpin for akio_http::WsOptions
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::WsOptions
 impl core::panic::unwind_safe::UnwindSafe for akio_http::WsOptions
+pub trait akio_http::BodyTap: core::marker::Send + 'static
+pub fn akio_http::BodyTap::data(&mut self, &[u8])
+pub fn akio_http::BodyTap::end(&mut self, akio_http::TapEnd)
 pub trait akio_http::Middleware: core::marker::Send + core::marker::Sync + 'static
 pub fn akio_http::Middleware::handle(&self, &mut akio_http::Context, &dyn akio_http::Service)
 impl<F> akio_http::Middleware for F where F: core::ops::function::Fn(&mut akio_http::Context, &dyn akio_http::Service) + core::marker::Send + core::marker::Sync + 'static
@@ -1353,5 +1378,6 @@ impl<S: akio_http::Service> akio_http::Service for akio_http::Streaming<S>
 pub fn akio_http::Streaming<S>::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
 pub fn akio_http::Streaming<S>::call(&self, &mut akio_http::Context)
 pub fn akio_http::Streaming<S>::streams_bodies(&self) -> bool
+pub fn akio_http::parse_http_date(&str) -> core::option::Option<u64>
 pub fn akio_http::serve<S: akio_http::Service>(S) -> akio_http::HttpAcceptor<S>
 pub fn akio_http::serve_with<S: akio_http::Service>(akio_http::HttpConfig, S) -> akio_http::HttpAcceptor<S>

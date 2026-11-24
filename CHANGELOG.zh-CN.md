@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：消息体旁路、外层响应过滤器与 `parse_http_date`（akio-http）
+
+ADR-116，akit 的需求（A111、A112、A113）：
+
+- `Response::tap_body(impl BodyTap)`、`BodyTap`（`data`、`end`）与 `TapEnd`（`Finished`、`Trailers`、
+  `Cut`）：响应过滤器能看到流式消息体在经过流编码后发出的字节，以及它如何结束。
+- `Context::add_outer_response_filter`：在所有普通过滤器之后运行的过滤器，后添加的先运行，外层中间件因此
+  看到内层中间件处理后的响应。
+- `akio_http::parse_http_date`：解析 RFC 9110 三种格式中任意一种的 HTTP 日期。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：
