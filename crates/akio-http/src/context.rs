@@ -553,7 +553,9 @@ impl Context {
         &self.req.body
     }
 
-    /// The peer address.
+    /// The client's address: the source of the PROXY header akio-mux's `ProxyProtocol` layer
+    /// read for the connection, when it read one naming an address, else the socket's peer
+    /// ([`Request::peer`], ADR-118).
     pub fn peer(&self) -> SocketAddr {
         self.req.peer
     }

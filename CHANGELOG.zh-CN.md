@@ -41,6 +41,14 @@ ADR-117，应 akit 请求（A108、A109）：
   不匹配时报 `client certificate: private key does not match the certificate`（以前是每次索要证书的
   握手失败）。
 
+### 变更：请求的对端是受信任 PROXY 头所指的客户端（akio-http）
+
+ADR-118，akit 提出（A105）：
+
+- 在 HTTP/1.1 与 HTTP/2 上，akio-mux 的 `ProxyProtocol` 层若给连接挂上了给出地址的 PROXY 头，
+  `Request::peer` 与 `Context::peer` 就是该头的源地址；否则与以前一样是套接字的对端。
+  `Conn::peer_addr` 不变。akio-http 现在依赖 akio-mux。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：
