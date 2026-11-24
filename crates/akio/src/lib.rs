@@ -68,7 +68,7 @@ pub use akio_core::{
     DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,
     LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, Replies, ResponseSlot,
     ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
-    UdpBinding, UdpStats, fn_acceptor, metrics, telemetry,
+    UNIX_ADDR, UdpBinding, UdpStats, fn_acceptor, metrics, telemetry,
 };
 #[doc(hidden)]
 pub use akio_core::{DynAcceptor, DynHandler};
@@ -1826,6 +1826,37 @@ impl Engine {
                 io::ErrorKind::InvalidInput,
                 "engine has no I/O threads",
             )),
+        }
+    }
+
+    /// Connects to the Unix-domain stream socket at `path`, as the Docker daemon's
+    /// `/var/run/docker.sock`, and serves the connection with `acceptor` on an I/O thread, as
+    /// [`dial`](Self::dial) does a TCP one (ADR-120): `on_open` once connected, `on_error` if the
+    /// connect fails (no such socket, refused, a full backlog as `WouldBlock`, a path too long
+    /// for `sun_path`). The connection's `peer_addr` and `local_addr` are
+    /// [`UNIX_ADDR`]; what is TCP's only (`TCP_NODELAY`, `TCP_INFO`) is not
+    /// set or reported. The engine must have been [`start`](Self::start)ed.
+    pub fn dial_unix<A: Acceptor>(
+        &self,
+        path: &std::path::Path,
+        acceptor: A,
+        on_error: impl FnOnce(io::Error) + Send + 'static,
+    ) {
+        let Some(g) = self.tcp_dial.and_then(|i| self.groups.get(i)) else {
+            return on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no I/O threads",
+            ));
+        };
+        match akio_sys::connect_unix_nonblocking(path) {
+            // The backends hold every stream socket as a `TcpStream`; only what any stream
+            // socket supports is done with this one.
+            Ok(fd) => g.dial_unix(
+                std::net::TcpStream::from(fd),
+                Arc::new(acceptor),
+                Box::new(on_error),
+            ),
+            Err(e) => on_error(e),
         }
     }
 

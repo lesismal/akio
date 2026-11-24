@@ -10,6 +10,17 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：拨号 Unix 域套接字，以及在其上的 HTTP 客户端（akio、akio-http、akio-sys）
+
+ADR-120，由 akit 提出（A135）：
+
+- `Engine::dial_unix(path, acceptor, on_error)`：像拨出的 TCP 连接一样服务的 Unix 域流连接，
+  支持 epoll 和 io_uring；它的 `peer_addr` 和 `local_addr` 是新常量 `UNIX_ADDR`（`0.0.0.0:0`）。
+  `Group::dial_unix`（默认不支持）。
+- `Client::with_unix_socket(Option<PathBuf>)`：该客户端的每个请求都发往这个套接字，URL 的主机
+  仍是 `Host` 字段，也仍是空闲连接的键。
+- `akio_sys::connect_unix_nonblocking`、`ffi::AF_UNIX` 和 `ffi::sockaddr_un`。
+
 ### 新增：正则表达式的匹配位置、分组与 Go 的模板（akio-regex）
 
 ADR-115，应 akit 的请求（A32）：

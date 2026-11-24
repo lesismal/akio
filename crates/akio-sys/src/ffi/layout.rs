@@ -44,6 +44,7 @@ macro_rules! same_value {
 
 #[test]
 fn common_layouts() {
+    same_layout!(super::sockaddr_un, libc::sockaddr_un, sun_family, sun_path);
     same_layout!(super::iovec, libc::iovec, iov_base, iov_len);
     same_layout!(super::in_addr, libc::in_addr, s_addr);
     same_layout!(super::in6_addr, libc::in6_addr, s6_addr);
@@ -127,6 +128,7 @@ fn common_constants() {
         FD_CLOEXEC,
         AF_INET,
         AF_INET6,
+        AF_UNIX,
         SOCK_STREAM,
         SOCK_DGRAM,
         SOL_SOCKET,
@@ -443,6 +445,7 @@ fn cmsg_helpers_match_libc() {
 fn macos_layouts() {
     same_layout!(super::sockaddr_in, libc::sockaddr_in, sin_len);
     same_layout!(super::sockaddr_in6, libc::sockaddr_in6, sin6_len);
+    same_layout!(super::sockaddr_un, libc::sockaddr_un, sun_len);
     same_layout!(super::sockaddr_storage, libc::sockaddr_storage, ss_len);
     same_layout!(super::ifaddrs, libc::ifaddrs; ifa_ifu = ifa_dstaddr);
     same_layout!(

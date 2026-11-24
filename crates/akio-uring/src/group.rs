@@ -718,6 +718,7 @@ impl Group for UringGroup {
             stream,
             acceptor,
             on_error,
+            unix: false,
         });
     }
 
@@ -732,6 +733,21 @@ impl Group for UringGroup {
             stream,
             acceptor,
             on_error,
+            unix: false,
+        });
+    }
+
+    fn dial_unix(
+        &self,
+        stream: std::net::TcpStream,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        self.post_dial(Cmd::Dial {
+            stream,
+            acceptor,
+            on_error,
+            unix: true,
         });
     }
 
@@ -750,6 +766,7 @@ impl Group for UringGroup {
             stream,
             acceptor,
             on_error,
+            unix: false,
         });
     }
 }

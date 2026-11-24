@@ -258,6 +258,23 @@ pub trait Group: Send + Sync {
         ));
     }
 
+    /// Serves `stream`, a Unix-domain stream socket whose non-blocking connect is in progress
+    /// (`akio_sys::connect_unix_nonblocking`, held as a `TcpStream` for the backends' sake: only
+    /// what any stream socket supports is done with it), as a dialed connection (ADR-120):
+    /// `on_open` once it connects, `on_error` if it fails. Its `Conn::peer_addr` and
+    /// `Conn::local_addr` are [`UNIX_ADDR`](crate::UNIX_ADDR). TCP groups implement it.
+    fn dial_unix(
+        &self,
+        _stream: std::net::TcpStream,
+        _acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        on_error(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group cannot dial a Unix-domain socket",
+        ));
+    }
+
     /// Serves the already connected, non-blocking TCP stream `stream` with `acceptor`, as a
     /// dialed connection that has just connected (`on_open` on an I/O thread); `on_error` if
     /// it cannot be registered. TCP groups implement it.
