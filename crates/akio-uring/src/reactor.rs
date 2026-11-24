@@ -2006,11 +2006,14 @@ impl Loop {
         if let Some(t) = lc.hs_timer.take() {
             self.wheel.cancel(t);
         }
-        lc.inner.mark_closed();
         if lc.send_unsent {
-            // Described but never submitted: the kernel never saw its bytes.
-            lc.inner.ring_release();
-        } else if lc.send_armed {
+            // Described but never submitted (a `close` right after a send, in the same batch):
+            // write what is queued now, as the `writev` at the end of the callback would have,
+            // before the shutdown below. The kernel never saw these bytes.
+            lc.inner.ring_write_unsent();
+        }
+        lc.inner.mark_closed();
+        if lc.send_armed && !lc.send_unsent {
             // The kernel still reads its queued bytes (kept by `mark_closed`) and maybe its
             // header: both live until the send completes (the shutdown below ends it).
             self.orphans.insert(

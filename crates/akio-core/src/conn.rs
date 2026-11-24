@@ -1462,6 +1462,15 @@ impl ConnInner {
         })
     }
 
+    /// Backend side, closing a connection whose described ring send was never submitted: the
+    /// send is dropped and what is queued is written straight to the socket, best effort (the
+    /// `writev` an epoll loop makes at the end of the callback, before the close takes effect).
+    pub fn ring_write_unsent(&self) {
+        let mut w = self.lock();
+        w.ring_inflight = 0;
+        let _ = self.write_queue(&mut w, None);
+    }
+
     /// Backend side: a ring send of this connection ended after it was closed
     /// ([`mark_closed`](Self::mark_closed)), or was described but never submitted: frees the
     /// chunks it was reading.

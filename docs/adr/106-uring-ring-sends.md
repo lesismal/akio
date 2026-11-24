@@ -71,7 +71,10 @@ one invariant, and adds from the second the deferral of the submission to the en
 - **Close**: `mark_closed` stops counting the queue but keeps its chunks while a send reads them;
   the loop keeps the connection's `ConnInner` and `msghdr` in `orphans` until the completion
   arrives (the shutdown at close ends the send quickly), then frees them with `ring_release`. A
-  send still waiting in `unsent` was never seen by the kernel and is released at once. At loop
+  send still waiting in `unsent` was never seen by the kernel: what is queued is written to the
+  socket directly first (`ring_write_unsent`, best effort, as the `writev` at the end of the
+  callback would have), so an answer followed by `close()` in the same callback, or in the same
+  batch, still reaches the peer before the shutdown. At loop
   exit the existing cancel-all-and-drain covers sends; if it times out their memory is leaked,
   like the provided buffers.
 - **TLS** needs nothing new: records are sealed into the queue when the application sends, so ring

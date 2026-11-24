@@ -225,6 +225,43 @@ fn close_after_send_waits_for_the_ring_send() {
     stop(&e);
 }
 
+/// Answers, then closes at once, both inside `on_data` (an answer-and-hang-up server): the
+/// send is described but not yet submitted when the close is handled in the same batch.
+struct SendClose;
+impl Handler for SendClose {
+    fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
+        let mut out = b"reply:".to_vec();
+        out.extend_from_slice(d);
+        out.extend_from_slice(&[b'r'; 2000]);
+        let _ = c.send(&out);
+        c.close();
+    }
+}
+
+#[test]
+fn a_reply_sent_then_closed_inside_on_data_arrives_whole() {
+    let Some(e) = engine(cfg(), 1, |_c: &Conn<SendClose>| SendClose) else {
+        return;
+    };
+    for i in 0..50u32 {
+        let mut s = connect(&e);
+        let req = format!("req{i}");
+        s.write_all(req.as_bytes()).unwrap();
+        let mut got = Vec::new();
+        s.read_to_end(&mut got).unwrap();
+        let mut want = b"reply:".to_vec();
+        want.extend_from_slice(req.as_bytes());
+        want.extend_from_slice(&[b'r'; 2000]);
+        assert!(
+            got == want,
+            "round {i}: got {} bytes of {}",
+            got.len(),
+            want.len()
+        );
+    }
+    stop(&e);
+}
+
 /// Sends `BIG` bytes per read; counts closes and records their errors.
 struct Big(Arc<(AtomicUsize, Mutex<Vec<std::io::ErrorKind>>)>);
 const BIG: usize = 8 << 20;
