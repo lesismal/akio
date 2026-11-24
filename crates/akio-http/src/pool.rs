@@ -106,6 +106,24 @@ pub(crate) fn call_on_pool<S: Service + ?Sized>(svc: Arc<S>, mut ctx: Context, e
     );
 }
 
+/// Queues `work` with the suspended request `s` on `exec`; when the pool refuses it, answers
+/// the request `503` ([`Context::suspend_to_pool`]).
+pub(crate) fn queue_suspended(
+    exec: &Executor,
+    s: crate::context::Suspended,
+    work: impl FnOnce(crate::context::Suspended) + Send + 'static,
+) -> bool {
+    queue(
+        exec,
+        Box::new(move || {
+            if REFUSED.get() {
+                return s.resume(|ctx| ctx.respond(busy()));
+            }
+            work(s);
+        }),
+    )
+}
+
 impl Context {
     /// Runs work on the engine's logical pool for this request's connection: detach, then
     /// answer from the pool (or see [`detach_to_pool`](Self::detach_to_pool), which does

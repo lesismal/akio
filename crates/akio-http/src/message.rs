@@ -493,6 +493,14 @@ pub struct Request {
     /// The `:protocol` of an extended CONNECT request (RFC 8441 / RFC 9220: `websocket` for
     /// WebSocket over HTTP/3); `None` for every other request.
     pub protocol: Option<String>,
+    /// The certificate chain the client sent and the TLS handshake verified (DER, leaf first),
+    /// for mutual TLS: set by the HTTP/1.1, HTTP/2 and HTTP/3 servers on a request over TLS
+    /// whose client sent a certificate to a server asking for one (`akio_tls`'s
+    /// `ServerConfigBuilder::client_auth_required` or `client_auth_optional`, which check it
+    /// against their roots). `None` in the clear, without a certificate, and on a request that
+    /// arrived as TLS 1.3 early data, before the client's certificate. Shared by the
+    /// connection's requests (ADR-109).
+    pub peer_certificates: Option<Arc<[Vec<u8>]>>,
 }
 
 impl Request {
@@ -509,6 +517,7 @@ impl Request {
             body: Vec::new(),
             peer: SocketAddr::from(([0, 0, 0, 0], 0)),
             protocol: None,
+            peer_certificates: None,
         }
     }
 
@@ -1010,6 +1019,7 @@ mod tests {
             body: vec![],
             peer: "127.0.0.1:1".parse().unwrap(),
             protocol: None,
+            peer_certificates: None,
         };
         assert_eq!(r.path(), "/a/b");
         assert_eq!(r.query_param("x"), Some("1"));

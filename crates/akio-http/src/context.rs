@@ -925,6 +925,63 @@ impl Context {
         self.detached
     }
 
+    /// Pauses the request, so that work it waits for (a password checked on the logical pool,
+    /// a call to an authorization server) runs after [`Service::call`] returns, and the request
+    /// then goes on where it stopped: [`Suspended::resume`] runs a closure with the request's
+    /// context, from any thread, as `call` would have gone on (the next middleware, the
+    /// handler), and answers `500` if it neither responded nor detached. Responses to
+    /// pipelined HTTP/1.1 requests still go out in request order. For the work itself on the
+    /// pool, see [`suspend_to_pool`](Self::suspend_to_pool) (ADR-109).
+    ///
+    /// The context the server keeps reads as detached once `call` returns. `None` (nothing
+    /// changed) when the response was sent or taken, the request was upgraded, or its body is
+    /// streamed ([`BodyMode::Stream`]): the server feeds such a body to this context after
+    /// `call`, so it cannot move. A service that wants to suspend a request with a body asks
+    /// for it whole in [`Service::body_mode`].
+    ///
+    /// A resumed context may be suspended again (a second check). It cannot take the connection over
+    /// ([`upgrade_websocket`](Self::upgrade_websocket), [`upgrade_raw`](Self::upgrade_raw)), as
+    /// one run on the pool cannot.
+    pub fn suspend(&mut self) -> Option<Suspended> {
+        if self.streamed || self.upgrade.is_some() || self.raw.is_some() || self.detached {
+            return None;
+        }
+        let responder = self.responder.take()?;
+        self.detached = true;
+        let ctx = Context {
+            req: ReqCell::Shared(self.req.share()),
+            params: std::mem::take(&mut self.params),
+            locals: std::mem::take(&mut self.locals),
+            fin: std::mem::replace(&mut self.fin, Finish::new()),
+            responder: Some(responder),
+            status: self.status,
+            detached: false,
+            pooled: true,
+            upgrade: None,
+            raw: None,
+            sink: None,
+            route: self.route,
+            streamed: false,
+            reads: None,
+        };
+        Some(Suspended(Some(Box::new(ctx))))
+    }
+
+    /// Suspends the request ([`suspend`](Self::suspend)) and runs `work` with it on the
+    /// engine's logical pool, which resumes it when done. `false` when it cannot be suspended
+    /// (nothing changed then, and the caller still has the request), or when the pool has no
+    /// room: the request is answered `503` (`Retry-After: 1`) then, as
+    /// [`detach_to_pool`](Self::detach_to_pool) answers it.
+    pub fn suspend_to_pool(&mut self, work: impl FnOnce(Suspended) + Send + 'static) -> bool {
+        let Some(exec) = self.executor() else {
+            return false;
+        };
+        let Some(s) = self.suspend() else {
+            return false;
+        };
+        crate::pool::queue_suspended(&exec, s, work)
+    }
+
     /// Marks the context as run on the logical pool.
     pub(crate) fn set_pooled(&mut self) {
         self.pooled = true;
@@ -1009,6 +1066,54 @@ impl H1Reads {
         }
     }
 }
+
+/// A request paused by [`Context::suspend`], to go on later from any thread with
+/// [`resume`](Self::resume). Dropping it unresumed answers the request `500`.
+pub struct Suspended(Option<Box<Context>>);
+
+impl std::fmt::Debug for Suspended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Suspended").finish_non_exhaustive()
+    }
+}
+
+impl Suspended {
+    /// The request.
+    pub fn req(&self) -> &Request {
+        // Always set until resumed or dropped, which take `self`.
+        match &self.0 {
+            Some(ctx) => ctx.req(),
+            None => &EMPTY_REQUEST,
+        }
+    }
+
+    /// Goes on with the request: runs `f` with its context on this thread, then answers `500`
+    /// if `f` neither responded nor detached it.
+    pub fn resume(mut self, f: impl FnOnce(&mut Context)) {
+        if let Some(mut ctx) = self.0.take() {
+            f(&mut ctx);
+            finish_suspended(&mut ctx);
+        }
+    }
+}
+
+impl Drop for Suspended {
+    fn drop(&mut self) {
+        if let Some(mut ctx) = self.0.take() {
+            finish_suspended(&mut ctx);
+        }
+    }
+}
+
+fn finish_suspended(ctx: &mut Context) {
+    if !ctx.responded() && !ctx.detached {
+        ctx.respond(Response::text(500, "handler did not respond"));
+    }
+}
+
+/// What [`Suspended::req`] gives in a state it cannot be seen in.
+static EMPTY_REQUEST: std::sync::LazyLock<Request> =
+    std::sync::LazyLock::new(|| Request::new(Method::Get, ""));
 
 /// A request whose response will be sent later; see [`Context::detach`]. Dropping it without
 /// responding closes the connection.

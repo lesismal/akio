@@ -1093,6 +1093,10 @@ impl Connection {
         self.tls.server_name().map(str::to_string)
     }
 
+    pub fn peer_certificates(&self) -> Option<Vec<Vec<u8>>> {
+        (!self.is_handshaking()).then(|| self.tls.peer_certificates().to_vec())
+    }
+
     pub fn rtt(&self) -> Duration {
         self.rtt.smoothed
     }
