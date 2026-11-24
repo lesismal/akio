@@ -66,13 +66,21 @@ borrowed slice, so they cannot grow at run time without a breaking change.
    the listener gets `Acceptor::on_shutdown` at once (as in an engine shutdown: an HTTP server
    sends `Connection: close` / GOAWAY), and those still open after `drain` are closed
    (`on_close` runs). `Duration::ZERO` closes them on the next loop iteration.
-9. Both return once the change is posted to the I/O threads, without waiting. A listening socket
-   is closed when its thread handles the command (epoll / kqueue), or when the cancellation of
-   its multishot accept completes (io_uring); connections the kernel had queued on it and not
-   yet accepted are reset, as when any listening socket closes. To replace a listener without a
-   gap, add the new one first: on Linux both share the port (`SO_REUSEPORT`) until the old one
-   is removed. Binding the same address again after a removal succeeds once the old sockets are
-   closed (within a loop iteration).
+9. Both return once every I/O thread of the listener has handled the command, waiting up to a
+   second for a busy one (`Group::await_unlisted`, called with the engine's lock released;
+   called on an I/O thread they do not wait, rule 1). A thread closes its listening socket
+   (epoll / kqueue) or, on io_uring, first takes it out of listening with `shutdown(SHUT_RD)`,
+   since its multishot accept keeps it open until its cancellation completes, and an
+   `SO_REUSEPORT` socket still listening meanwhile would take a share of the new connections,
+   to reset them when it closes. Connections the kernel had queued on it and not yet accepted
+   are reset, as when any listening socket closes. To replace a listener without a gap, add the
+   new one first: on Linux both share the port (`SO_REUSEPORT`) until the old one is removed,
+   and once removal returns new connections go to the new one only. Binding the same address
+   again after a removal succeeds once the old sockets are closed (within a loop iteration).
+   A first version returned once the command was posted, and io_uring kept the old sockets
+   listening until the cancellations completed: akit's reload, replacing a listener at its
+   address, had a first request reset in about one run in four on io_uring (and, more rarely,
+   on epoll).
 10. The threads of a removed listener that also serve `dial` / `adopt_tcp` (the last TCP
     listener of the builder when there are no `client_threads`) stay up for those until the
     engine shuts down; `shutdown_listener` on it drains dialed connections too, since they run
@@ -129,8 +137,7 @@ borrowed slice, so they cannot grow at run time without a breaking change.
 - `wait` on an engine without listeners blocks until `shutdown` (it returned at once).
 
 Not done: run-time UDP and datagram listeners (use `bind_udp`); removing listeners of the DPDK
-backend; a filter on UDP peers; waiting for the listening sockets to be closed before
-`remove_listener` returns.
+backend; a filter on UDP peers.
 
 ## Verification
 
@@ -141,7 +148,8 @@ backend; a filter on UDP peers; waiting for the listening sockets to be closed b
   closes what is left at the drain deadline (and not before); the port of a removed listener can
   be bound again; `max_listeners` just under, at and over the limit, and counting removed
   listeners still draining; ids, `listeners()`, unknown ids; `set_listener_threads` on a runtime
-  listener.
+  listener; a listener replaced at its own address 50 times, each removal followed at once by
+  connections that must all be served (Linux).
 - The filter refusing and accepting by address, swapped and cleared at run time under traffic,
   the `filtered` counter, a panicking filter, a filter on a UDP listener refused.
 - Workspace suite on macOS, Linux arm64 in Docker (epoll and io_uring) and x86_64 (gpu51).

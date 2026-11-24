@@ -24,8 +24,9 @@ TCP 服务端就是一个服务某个 acceptor 的 `Listener::tcp(addr)`；见[�
   其最后一个连接关闭后退出。
 - `Engine::shutdown_listener(id, drain)` 还会对每个打开的连接调用 `on_shutdown`，并在 `drain`
   之后关闭仍打开的连接。
-- 两者都立即返回；socket 在线程的下一次迭代时关闭。要在同一地址上无间隙地替换 listener，先加入
-  新的（Linux 上两者通过 `SO_REUSEPORT` 共享端口），再移除旧的。
+- 两者在该 listener 的线程都已让其 socket 停止监听后返回（对忙碌的线程最多等一秒；在 I/O 线程上
+  调用时立即返回）。要在同一地址上无间隙地替换 listener，先加入新的（Linux 上两者通过
+  `SO_REUSEPORT` 共享端口），再移除旧的：之后发起的连接都到达新的 listener。
 - 会增删 listener 的 engine 应设置 `client_threads`：否则 dial 运行在 builder 最后一个 listener
   的线程上，这些线程在该 listener 被移除后仍会保留。
 

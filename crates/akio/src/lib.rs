@@ -378,6 +378,10 @@ enum Kind {
 /// The default of [`EngineBuilder::max_listeners`].
 const DEFAULT_MAX_LISTENERS: usize = 1024;
 
+/// How long [`Engine::remove_listener`] waits for a busy I/O thread to stop its listening
+/// socket listening.
+const UNLISTEN_WAIT: Duration = Duration::from_secs(1);
+
 /// Binds the group of listener `l` (as `build` and `Engine::add_listener` do) and installs its
 /// filter; returns it with its kind and the acceleration it asks for.
 fn bind_one(
@@ -1248,11 +1252,13 @@ impl Engine {
     /// [`adopt_tcp`](Self::adopt_tcp) (the last TCP listener when there are no
     /// [`client_threads`](EngineBuilder::client_threads)) stay up for them until shutdown.
     ///
-    /// Returns once the change is posted to the I/O threads. Each closes its socket at its next
-    /// loop iteration (io_uring: once the cancellation of its accept completes); connections
-    /// the kernel had queued and not yet accepted are reset, as when any listening socket
-    /// closes. To replace a listener without a gap, add the new one first: on Linux both share
-    /// the port (`SO_REUSEPORT`) until the old one goes. A builder listener stays in
+    /// Returns once every I/O thread of the listener has stopped its socket listening (waiting
+    /// up to a second for a busy one; called on an I/O thread, it does not wait, and the
+    /// threads do so at their next loop iteration): a connection made after that is not
+    /// accepted by the old listener. Connections the kernel had queued and not yet accepted
+    /// are reset, as when any listening socket closes. To replace a listener without a gap,
+    /// add the new one first: on Linux both share the port (`SO_REUSEPORT`) until the old one
+    /// goes, and once this returns new connections go to the new one only. A builder listener stays in
     /// [`local_addrs`](Self::local_addrs) (its index is stable), with no thread in
     /// [`threads`](Self::threads) once they exit.
     ///
@@ -1289,9 +1295,12 @@ impl Engine {
         e.group.stop_listening(drain, !dials_here)?;
         let e = st.entries.remove(pos);
         akio_log::info!(target: "akio", listener = id.0, local:% = e.group.local_addr(), drain:? = drain; "listener removed");
+        let group = Arc::clone(&e.group);
         if e.index.is_none() {
             st.leaving.push(e.group);
         }
+        drop(st);
+        group.await_unlisted(UNLISTEN_WAIT);
         Ok(())
     }
 

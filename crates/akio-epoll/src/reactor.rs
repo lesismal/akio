@@ -39,6 +39,11 @@ thread_local! {
     static CURRENT_LOOP: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Whether the calling thread runs an I/O loop of this backend.
+pub(crate) fn on_loop_thread() -> bool {
+    CURRENT_LOOP.with(Cell::get) != 0
+}
+
 /// Marks the calling thread as the loop of `shared` (posts from it need no wake-up).
 pub(crate) fn set_current_loop(shared: &LoopShared) {
     CURRENT_LOOP.with(|c| c.set(shared.uid));
@@ -101,6 +106,8 @@ pub(crate) enum Cmd {
     StopListening {
         drain: Option<Duration>,
         exit: bool,
+        /// Dropped once the loop's listening sockets are closed (`Group::await_unlisted`).
+        done: Option<akio_core::CountdownToken>,
     },
 }
 
@@ -780,7 +787,10 @@ impl Loop {
                 self.retire_kill = None;
                 self.shared.stats.set_retiring(false);
             }
-            Cmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
+            Cmd::StopListening { drain, exit, done } => {
+                self.stop_listening(drain, exit);
+                drop(done);
+            }
         }
     }
 

@@ -166,6 +166,16 @@ pub fn set_backlog(listener: &TcpListener, backlog: i32) -> io::Result<()> {
     cvt(unsafe { ffi::listen(raw, backlog) }).map(drop)
 }
 
+/// Stops a listening socket listening now, whatever else still holds it open (an io_uring
+/// accept in flight, a clone): `shutdown(SHUT_RD)`, which on Linux takes it out of its
+/// `SO_REUSEPORT` group at once, so new connections go to the group's other sockets, and resets
+/// the connections queued on it, as closing it would. Not for a socket other processes share.
+pub fn stop_listening(listener: &TcpListener) -> io::Result<()> {
+    let raw = std::os::fd::AsRawFd::as_raw_fd(listener);
+    // SAFETY: plain syscall on a descriptor `listener` keeps open.
+    cvt(unsafe { ffi::shutdown(raw, ffi::SHUT_RD) }).map(drop)
+}
+
 /// The accept-queue limit the kernel applies to a listening socket (Linux: `tcpi_sacked` of
 /// `TCP_INFO`, which holds `sk_max_ack_backlog` for listeners). For tests.
 #[cfg(target_os = "linux")]

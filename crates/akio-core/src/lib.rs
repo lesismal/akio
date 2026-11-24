@@ -49,6 +49,8 @@ pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, 
 pub use error::{Error, Result};
 #[doc(hidden)]
 pub use group::{AcceptFilter, FilterCell, FilterView, Group};
+#[doc(hidden)]
+pub use group::{Countdown, CountdownToken};
 pub use group::{IcmpError, IcmpHandler, UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]

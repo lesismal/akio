@@ -51,10 +51,14 @@ acceptor 之间除了 `max_connections` 检查也没有其他逻辑。
 8. **`Engine::shutdown_listener(id, drain: Duration)`**：同上，并且监听器的每个打开连接立即收到 `Acceptor::on_shutdown`
    （与引擎关闭时相同：HTTP 服务器发送 `Connection: close` / GOAWAY），`drain` 之后仍打开的连接被关闭（`on_close` 会运行）。
    `Duration::ZERO` 在下一次循环迭代时关闭它们。
-9. 两者都在命令投递给 I/O 线程后即返回，不等待。监听 socket 在其线程处理该命令时关闭（epoll / kqueue），或在其 multishot
-   accept 的取消完成时关闭（io_uring）；内核已排队但尚未 accept 的连接会被重置，与关闭任何监听 socket 时一样。要无间隙地
-   替换监听器，先加入新的：在 Linux 上两者共享端口（`SO_REUSEPORT`），直到旧的被移除。移除后再次绑定同一地址，在旧 socket
-   关闭后（一次循环迭代之内）即可成功。
+9. 两者在该监听器的每个 I/O 线程都处理完命令后返回，对忙碌的线程最多等待一秒（`Group::await_unlisted`，调用时已释放引擎
+   的锁；在 I/O 线程上调用时不等待，规则 1）。线程关闭其监听 socket（epoll / kqueue）；在 io_uring 上则先用
+   `shutdown(SHUT_RD)` 让它停止监听，因为其 multishot accept 在取消完成前一直持有该 socket，而期间仍在监听的
+   `SO_REUSEPORT` socket 会分走一部分新连接，并在关闭时重置它们。内核已排队但尚未 accept 的连接会被重置，与关闭任何监听
+   socket 时一样。要无间隙地替换监听器，先加入新的：在 Linux 上两者共享端口（`SO_REUSEPORT`），直到旧的被移除；移除返回
+   之后，新连接只会到达新的监听器。移除后再次绑定同一地址，在旧 socket 关闭后（一次循环迭代之内）即可成功。最初的
+   版本在命令投递后即返回，且 io_uring 在取消完成前一直让旧 socket 处于监听：akit 的 reload 在同一地址替换监听器时，在
+   io_uring 上约四次运行中有一次首个请求被重置（epoll 上较少）。
 10. 被移除的监听器若其线程同时服务 `dial` / `adopt_tcp`（没有 `client_threads` 时 builder 的最后一个 TCP 监听器），这些
     线程会为它们一直保留到引擎关闭；对它调用 `shutdown_listener` 也会排空拨出的连接，因为它们运行在同样的线程上。会增删
     监听器的应用应设置 `client_threads`。
@@ -93,8 +97,7 @@ acceptor 之间除了 `max_connections` 检查也没有其他逻辑。
 - 读写路径不变。accept 多一个分支，在监听器组上多一次原子读。
 - 没有监听器的引擎上的 `wait` 会阻塞到 `shutdown`（之前立即返回）。
 
-未做：运行时的 UDP 与数据报监听器（用 `bind_udp`）；移除 DPDK 后端的监听器；UDP 对端的过滤器；在 `remove_listener`
-返回前等待监听 socket 关闭。
+未做：运行时的 UDP 与数据报监听器（用 `bind_udp`）；移除 DPDK 后端的监听器；UDP 对端的过滤器。
 
 ## 验证
 
@@ -102,6 +105,6 @@ acceptor 之间除了 `max_connections` 检查也没有其他逻辑。
   运行中与启动前加入监听器，同时其他监听器上有流量；在流量下移除，已打开的连接继续回显而新连接被拒绝，连接关闭后线程退出；
   `shutdown_listener` 调用 `on_shutdown`，并在排空截止时（而非之前）关闭剩余连接；被移除监听器的端口可以再次绑定；
   `max_listeners` 在上限之下、恰好、之上，以及计入仍在排空的已移除监听器；id、`listeners()`、未知 id；运行时监听器上的
-  `set_listener_threads`。
+  `set_listener_threads`；在同一地址上替换监听器 50 次，每次移除后立即发起的连接都必须得到服务（Linux）。
 - 过滤器按地址拒绝与接受，在流量下于运行时替换和清除，`filtered` 计数器，panic 的过滤器，UDP 监听器上的过滤器被拒绝。
 - 工作区测试套件：macOS、Docker 中的 Linux arm64（epoll 与 io_uring）以及 x86_64（gpu51）。

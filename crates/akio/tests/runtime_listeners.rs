@@ -708,3 +708,35 @@ fn a_panicking_filter_refuses_the_connection_and_the_loop_survives() {
     assert_eq!(e.metrics().total.filtered, refused);
     stop(&e);
 }
+
+/// A listener replaced at its own address (the new one added first, `SO_REUSEPORT`, then the old
+/// one removed): a connection made right after the removal returned is served, never left in
+/// the accept queue of a socket that no longer accepts.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connection_right_after_a_replacement_at_the_same_address_is_served() {
+    let e = Engine::builder().config(quick()).build().unwrap();
+    e.start().unwrap();
+    let mut id = e.add_listener(echo_listener(localhost(), 2)).unwrap();
+    let addr = e.listeners()[0].local_addr;
+    for round in 0..50 {
+        let next = e.add_listener(echo_listener(addr, 2)).unwrap();
+        if round % 2 == 0 {
+            e.remove_listener(id).unwrap();
+        } else {
+            e.shutdown_listener(id, Duration::from_millis(200)).unwrap();
+        }
+        id = next;
+        for _ in 0..4 {
+            let mut s = connect(addr);
+            s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            s.write_all(b"ping").unwrap();
+            let mut b = [0u8; 4];
+            if let Err(err) = s.read_exact(&mut b) {
+                panic!("round {round}: {err}");
+            }
+            assert_eq!(&b, b"ping");
+        }
+    }
+    stop(&e);
+}

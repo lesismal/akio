@@ -164,6 +164,13 @@ pub trait Group: Send + Sync {
             "this group cannot stop listening",
         ))
     }
+    /// After [`stop_listening`](Self::stop_listening), with no lock of the caller held: waits up
+    /// to `limit` until every running I/O thread of the group has stopped its listening sockets
+    /// listening, so a connection made after this returns cannot land on one of them (on Linux
+    /// the `SO_REUSEPORT` group of the address then holds only other listeners' sockets). Does
+    /// not wait on an I/O thread. Backend-facing.
+    #[doc(hidden)]
+    fn await_unlisted(&self, _limit: Duration) {}
     /// Installs (or with `None` removes) the accept filter of a TCP listener group: every
     /// `accept` its threads start after this returns runs it.
     fn set_filter(&self, _filter: Option<AcceptFilter>) -> io::Result<()> {
@@ -634,4 +641,49 @@ pub struct UdpStats {
     /// Datagrams dropped because they came from a new peer while `udp_max_peers` peers were
     /// open.
     pub rejected: u64,
+}
+
+/// Counts the I/O threads still to act on a command posted to them, and lets the poster wait
+/// for them (bounded): each thread gets a [`CountdownToken`] with the command and drops it once
+/// it acted (or the command is dropped unprocessed). Backend-facing.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct Countdown(Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>);
+
+/// One thread's share of a [`Countdown`]; dropping it counts the thread as done.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CountdownToken(Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>);
+
+impl Countdown {
+    /// A new token: the countdown waits for it too.
+    pub fn token(&self) -> CountdownToken {
+        *self
+            .0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        CountdownToken(Arc::clone(&self.0))
+    }
+
+    /// Waits until every token was dropped, or `limit` passed; true in the first case.
+    pub fn wait(&self, limit: Duration) -> bool {
+        let (m, cv) = &*self.0;
+        let g = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (g, _) = cv
+            .wait_timeout_while(g, limit, |n| *n > 0)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *g == 0
+    }
+}
+
+impl Drop for CountdownToken {
+    fn drop(&mut self) {
+        let (m, cv) = &*self.0;
+        let mut n = m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *n = n.saturating_sub(1);
+        if *n == 0 {
+            cv.notify_all();
+        }
+    }
 }

@@ -424,10 +424,12 @@ pub(crate) enum Cmd {
     },
     /// Thread resizing: a retiring loop becomes active again.
     Revive,
-    /// The listener was removed (ADR-099; see the epoll backend).
+    /// The listener was removed (ADR-099; see the epoll backend). `done` is dropped once the
+    /// loop's listening sockets stopped listening (`Group::await_unlisted`).
     StopListening {
         drain: Option<Duration>,
         exit: bool,
+        done: Option<akio_core::CountdownToken>,
     },
 }
 
@@ -501,6 +503,11 @@ impl Roster {
 }
 
 /// The part of a loop other threads can reach: its command queue and eventfd.
+/// Whether the calling thread runs an I/O loop of this backend.
+pub(crate) fn on_loop_thread() -> bool {
+    CURRENT_LOOP.with(Cell::get) != 0
+}
+
 pub(crate) struct LoopShared {
     uid: usize,
     /// `ACTIVE`, `RETIRING` or `EXITED` (thread resizing).
@@ -1214,7 +1221,9 @@ impl Loop {
             }
         }
         if res < 0 {
-            if res != -ffi::ECANCELED && res != -ffi::EINTR {
+            // `EINVAL`: the socket stopped listening (`stop_listening`).
+            let ended = res == -ffi::EINVAL && self.unlisted;
+            if res != -ffi::ECANCELED && res != -ffi::EINTR && !ended {
                 // e.g. EMFILE: retry in a moment instead of spinning.
                 self.shared.stats.accept_errors.add_local(1);
                 let e = io::Error::from_raw_os_error(-res);
@@ -1740,7 +1749,10 @@ impl Loop {
                         self.retire_kill = None;
                         self.shared.stats.set_retiring(false);
                     }
-                    Cmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
+                    Cmd::StopListening { drain, exit, done } => {
+                        self.stop_listening(drain, exit);
+                        drop(done);
+                    }
                 }
             }
         }
@@ -1885,7 +1897,17 @@ impl Loop {
         }
         let idxs: Vec<usize> = self.listeners.iter().map(|l| l.idx).collect();
         for idx in idxs {
-            drop(self.drop_listener(idx));
+            if let Some(l) = self.drop_listener(idx) {
+                // The multishot accept holds the socket open until its cancellation completes,
+                // and meanwhile the kernel would still queue connections on it (it is still in
+                // the address's `SO_REUSEPORT` group), to be reset when it closes: a listener
+                // replaced at its address would refuse some of the first connections after its
+                // removal. Out of the group now. (Clones of an inherited socket are not ours to
+                // shut: another process may share it.)
+                if self.roster.routed {
+                    let _ = akio_sys::stop_listening(&l);
+                }
+            }
         }
         if let Some(d) = drain {
             let at = Instant::now() + d;

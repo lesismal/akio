@@ -10,6 +10,19 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a connection right after a listener's removal no longer lands on its old sockets (akio, akio-uring, akio-epoll)
+
+`Engine::remove_listener` and `shutdown_listener` (ADR-099) returned once the change was posted to
+the I/O threads, and on io_uring a removed listener's `SO_REUSEPORT` sockets kept listening until
+the cancellation of their multishot accepts completed. A listener replaced at its own address (the
+new one added first, then the old one removed, as akit's reload does) thus had some of the
+connections made right after the removal queued on an old socket and reset when it closed: about
+one akit reload test run in four on io_uring, more rarely on epoll. The io_uring threads now take
+the socket out of listening (`shutdown(SHUT_RD)`) as soon as they handle the removal, and both
+calls return once every I/O thread of the listener has handled it (up to a second for a busy
+thread; without waiting when called on an I/O thread). Regression test:
+`tests/runtime_listeners.rs`, a listener replaced at its address 50 times.
+
 ### Added: streamed bodies with linked backpressure (akio-http, akio-h3)
 
 ADR-101, additive, requested by akit (A19, A20, A21):

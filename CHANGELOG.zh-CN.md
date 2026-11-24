@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：监听器移除后立即发起的连接不再落到其旧 socket 上（akio、akio-uring、akio-epoll）
+
+`Engine::remove_listener` 与 `shutdown_listener`（ADR-099）原先在变更投递给 I/O 线程后即返回，并且在 io_uring 上，被移除
+监听器的 `SO_REUSEPORT` socket 在其 multishot accept 的取消完成前一直处于监听。于是在同一地址上替换监听器（先加入新的，再
+移除旧的，akit 的 reload 就是这样做的）时，移除后立即发起的部分连接会排队到旧 socket 上，并在其关闭时被重置：在 io_uring
+上约四次 akit reload 测试运行中有一次，epoll 上较少。现在 io_uring 线程在处理移除时立即让 socket 停止监听
+（`shutdown(SHUT_RD)`），并且两个调用都在该监听器的每个 I/O 线程处理完移除后才返回（对忙碌的线程最多等一秒；在 I/O 线程上
+调用时不等待）。回归测试：`tests/runtime_listeners.rs`，在同一地址上替换监听器 50 次。
+
 ### 新增：带联动背压的流式消息体（akio-http、akio-h3）
 
 ADR-101，均为新增，应 akit 的需求（A19、A20、A21）：
