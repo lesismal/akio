@@ -138,7 +138,8 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             early_len: 0,
             consumed: 0,
             span: crate::trace::connection_span(c.peer_addr(), "1.1"),
-            peer_certs: PeerCerts::default(),
+            peer_chain: None,
+            peer_known: false,
         }
     }
 
@@ -172,8 +173,9 @@ enum State {
         keep_alive: bool,
         scratch: Vec<u8>,
         /// The key of the connection's peer-gone callback that closes it should the client stop
-        /// sending mid-body (`None`: it ran already).
-        gone: Option<u64>,
+        /// sending mid-body; 0 once it ran or when none was set (a key has its top bit set, so it
+        /// is never 0). A plain `u64` keeps an idle `Session` within its size (`size_tests`).
+        gone: u64,
     },
     /// No more requests are read (`Connection: close`, or a protocol error).
     Closed,
@@ -222,8 +224,11 @@ pub struct Session<S> {
     consumed: u64,
     /// The connection span (`crate::trace`), ended on close.
     span: akio_log::span::Span,
-    /// The client's verified certificate chain, for its requests.
-    peer_certs: PeerCerts,
+    /// The client's verified certificate chain, for its requests (see [`PeerCerts`]; kept as
+    /// two fields here so the flag packs with the session's other flags, `size_tests`).
+    peer_chain: Option<Arc<[Vec<u8>]>>,
+    /// Whether `peer_chain` is known: the handshake is done.
+    peer_known: bool,
 }
 
 /// A connection's verified client certificate chain ([`Request::peer_certificates`]), asked of
@@ -237,17 +242,26 @@ pub(crate) struct PeerCerts {
 impl PeerCerts {
     /// The chain the client of `c` sent and the handshake verified, if any.
     pub(crate) fn get(&mut self, c: &akio_core::ConnInner) -> Option<Arc<[Vec<u8>]>> {
-        if !self.known {
-            match akio::tls::peer_chain(c) {
-                // TLS 1.3 early data comes before the client's certificate.
-                akio::tls::PeerChain::Handshaking => return None,
-                akio::tls::PeerChain::Chain(chain) => self.chain = Some(chain),
-                _ => {}
-            }
-            self.known = true;
-        }
-        self.chain.clone()
+        peer_chain(&mut self.known, &mut self.chain, c)
     }
+}
+
+/// [`PeerCerts::get`] on its two parts, `known` and `chain`.
+fn peer_chain(
+    known: &mut bool,
+    chain: &mut Option<Arc<[Vec<u8>]>>,
+    c: &akio_core::ConnInner,
+) -> Option<Arc<[Vec<u8>]>> {
+    if !*known {
+        match akio::tls::peer_chain(c) {
+            // TLS 1.3 early data comes before the client's certificate.
+            akio::tls::PeerChain::Handshaking => return None,
+            akio::tls::PeerChain::Chain(ch) => *chain = Some(ch),
+            _ => {}
+        }
+        *known = true;
+    }
+    chain.clone()
 }
 
 impl<S> std::fmt::Debug for Session<S> {
@@ -646,8 +660,8 @@ impl<S: Service> Session<S> {
                     else {
                         unreachable!()
                     };
-                    if let Some(k) = gone {
-                        c.inner().forget_peer_gone(k);
+                    if gone != 0 {
+                        c.inner().forget_peer_gone(gone);
                     }
                     let trailers = match kind {
                         Kind::Chunked(dec) => dec.trailers(),
@@ -741,7 +755,7 @@ impl<S: Service> Session<S> {
             body: Vec::new(),
             peer: c.peer_addr(),
             protocol: None,
-            peer_certificates: self.peer_certs.get(c.inner()),
+            peer_certificates: peer_chain(&mut self.peer_known, &mut self.peer_chain, c.inner()),
         };
         let Some(kind) = kind else {
             return self.dispatch(c, req, keep_alive);
@@ -779,17 +793,18 @@ impl<S: Service> Session<S> {
         // response it waits for may never come (a detached handler waiting on the body): close
         // the connection, which drops the context and its sink (ADR-108).
         let weak = Arc::downgrade(c.inner());
-        let gone = c
-            .inner()
-            .on_peer_gone(
-                key,
-                Box::new(move || {
-                    if let Some(i) = weak.upgrade() {
-                        i.close();
-                    }
-                }),
-            )
-            .then_some(key);
+        let gone = if c.inner().on_peer_gone(
+            key,
+            Box::new(move || {
+                if let Some(i) = weak.upgrade() {
+                    i.close();
+                }
+            }),
+        ) {
+            key
+        } else {
+            0
+        };
         self.state = State::Stream {
             ctx,
             kind,
