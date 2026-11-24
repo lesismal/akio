@@ -1020,3 +1020,156 @@ fn udp_association_is_not_cut_by_session_timeouts() {
     e.shutdown();
     e.wait();
 }
+
+/// A132: `ProxyConfig::connected` decides each `CONNECT` upstream once it is open, seeing the
+/// destination as asked (a name, or an address), the address connected to and the local one;
+/// a refusal is SOCKS5 reply 2, SOCKS4 0x5b or HTTP 502, and nothing reaches the upstream.
+#[test]
+fn connected_check_sees_the_name_and_both_addresses() {
+    let echo = echo_server();
+    let seen: Arc<Mutex<Vec<(Dest, SocketAddr, SocketAddr)>>> = Arc::default();
+    let s2 = seen.clone();
+    let mut cfg = loopback_ok();
+    // Addresses pass; names do not, whatever they resolve to.
+    cfg.connected = Some(Arc::new(move |d: &Dest, peer, local| {
+        s2.lock().unwrap().push((d.clone(), peer, local));
+        matches!(d, Dest::Addr(_))
+    }));
+    let mut name = vec![3, 9];
+    name.extend_from_slice(b"localhost");
+    name.extend_from_slice(&echo.port().to_be_bytes());
+    for http in [false, true] {
+        seen.lock().unwrap().clear();
+        let er = EngineRef::new();
+        let e = if http {
+            start_with(None, Some(cfg.clone()), &er)
+        } else {
+            start_with(Some(Socks::new(er.clone()).config(cfg.clone())), None, &er)
+        };
+        let proxy = e.local_addrs()[0];
+        // By address: through, and the check saw the address, the echo server and loopback.
+        let s = if http {
+            let mut s = http_connect(proxy, &echo.to_string());
+            assert!(read_head(&mut s).starts_with("HTTP/1.1 200"));
+            s
+        } else {
+            let (s, r) = socks5_connect(proxy, &ipv4(echo), None);
+            assert_eq!(r[1], 0);
+            s
+        };
+        roundtrip(s, 100_000);
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, Dest::Addr(echo));
+            assert_eq!(seen[0].1, echo);
+            assert!(seen[0].2.ip().is_loopback(), "{:?}", seen[0].2);
+        }
+        // By name: refused once connected, with the name asked for.
+        let mut s = if http {
+            let mut s = http_connect(proxy, &format!("localhost:{}", echo.port()));
+            let all = expect_closed(&mut s, Duration::from_secs(5));
+            assert!(
+                String::from_utf8_lossy(&all).starts_with("HTTP/1.1 502"),
+                "{}",
+                String::from_utf8_lossy(&all)
+            );
+            s
+        } else {
+            let (mut s, r) = socks5_connect(proxy, &name, None);
+            assert_eq!(r[1], 2, "not allowed by ruleset");
+            expect_closed(&mut s, Duration::from_secs(5));
+            s
+        };
+        let _ = s.write_all(b"x");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[1].0, Dest::Name("localhost".into(), echo.port()));
+        assert!(seen[1].1.ip().is_loopback());
+        drop(seen);
+        e.shutdown();
+        e.wait();
+    }
+    // SOCKS4: 0x5b.
+    let er = EngineRef::new();
+    let mut deny = loopback_ok();
+    deny.connected = Some(Arc::new(|_: &Dest, _, _| false));
+    let e = start_with(Some(Socks::new(er.clone()).config(deny)), None, &er);
+    let SocketAddr::V4(v4) = echo else {
+        unreachable!()
+    };
+    let mut s = connect(e.local_addrs()[0]);
+    let mut req = vec![4, 1];
+    req.extend_from_slice(&echo.port().to_be_bytes());
+    req.extend_from_slice(&v4.ip().octets());
+    req.push(0);
+    s.write_all(&req).unwrap();
+    assert_eq!(read_n(&mut s, 8)[1], 0x5b);
+    expect_closed(&mut s, Duration::from_secs(5));
+    e.shutdown();
+    e.wait();
+}
+
+/// A133: `ProxyConfig::connect_timeout` fails a `CONNECT` whose upstream does not connect in
+/// time with its reply (SOCKS5 4, HTTP 504) while the handshake timeout is longer; one that
+/// connects in time is not cut by it later. 10.255.255.1 is unroutable on most hosts: where it
+/// is refused at once, the dial's own failure comes first.
+#[test]
+fn connect_timeout_replies() {
+    let echo = echo_server();
+    let mut cfg = timeouts(Some(Duration::from_secs(10)), None);
+    cfg.connect_timeout = Some(Duration::from_millis(300));
+    for http in [false, true] {
+        let er = EngineRef::new();
+        let e = if http {
+            start_with(None, Some(cfg.clone()), &er)
+        } else {
+            start_with(Some(Socks::new(er.clone()).config(cfg.clone())), None, &er)
+        };
+        let proxy = e.local_addrs()[0];
+        let t0 = std::time::Instant::now();
+        if http {
+            let mut s = http_connect(proxy, "10.255.255.1:9");
+            let all = expect_closed(&mut s, Duration::from_secs(5));
+            let all = String::from_utf8_lossy(&all);
+            assert!(
+                all.starts_with("HTTP/1.1 504") || all.starts_with("HTTP/1.1 502"),
+                "{all}"
+            );
+            if all.starts_with("HTTP/1.1 504") {
+                assert!(
+                    t0.elapsed() >= Duration::from_millis(250),
+                    "{:?}",
+                    t0.elapsed()
+                );
+            }
+        } else {
+            let (mut s, r) = socks5_connect(proxy, &[1, 10, 255, 255, 1, 0, 9], None);
+            assert!(r[1] == 4 || r[1] == 5, "{}", r[1]);
+            if r[1] == 4 {
+                assert!(
+                    t0.elapsed() >= Duration::from_millis(250),
+                    "{:?}",
+                    t0.elapsed()
+                );
+            }
+            expect_closed(&mut s, Duration::from_secs(5));
+        }
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        // Connected in time: the tunnel outlives the connect timeout.
+        let mut s = if http {
+            let mut s = http_connect(proxy, &echo.to_string());
+            assert!(read_head(&mut s).starts_with("HTTP/1.1 200"));
+            s
+        } else {
+            let (s, r) = socks5_connect(proxy, &ipv4(echo), None);
+            assert_eq!(r[1], 0);
+            s
+        };
+        thread::sleep(Duration::from_millis(600));
+        s.write_all(b"still here").unwrap();
+        assert_eq!(read_n(&mut s, 10), b"still here");
+        e.shutdown();
+        e.wait();
+    }
+}

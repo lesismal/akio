@@ -112,3 +112,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-116: Body taps, outer response filters and HTTP-dates in all three formats](116-body-taps-outer-filters-http-dates.md) (accepted 2026-11-24)
 - [ADR-117: The HTTP/1 client's TLS server name, and a client certificate's key checked when built](117-client-tls-server-name-and-client-key-check.md) (accepted 2026-11-24)
 - [ADR-118: A request's peer is the client a trusted PROXY header names](118-http-peer-from-proxy-header.md) (accepted 2026-11-24)
+- [ADR-119: A proxy's tunnel checked once connected, and its connect timeout](119-socks-connected-check-and-connect-timeout.md) (accepted 2026-11-24)

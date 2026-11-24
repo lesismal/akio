@@ -2,7 +2,8 @@
 //!
 //! The engine has no per-connection timer, so one watchdog thread per process checks the
 //! sessions that have a timeout: a handshake (greeting through upstream connect) that takes too
-//! long, or a tunnel with no byte in either direction for the idle period, is closed. Sessions
+//! long, or a tunnel with no byte in either direction for the idle period, is closed; a
+//! `CONNECT` whose upstream is not connected within the connect timeout fails with a reply. Sessions
 //! register once, in one of [`SHARDS`] lists picked by connection id.
 //!
 //! A timeout never fires before it has really elapsed: the handshake start is read from the
@@ -79,6 +80,10 @@ fn spawn_watchdog(tick: u64) -> &'static Watchdog {
                             if watch.active.swap(false, Ordering::Relaxed) {
                                 watch.last.store(now, Ordering::Relaxed);
                             }
+                            if watch.connect_expired(now) {
+                                watch.fire_connect();
+                                return false;
+                            }
                             if watch.expired(now) {
                                 watch.fire();
                                 return false;
@@ -123,6 +128,11 @@ pub(crate) struct Watch {
     /// 0 when off.
     handshake_ms: u64,
     idle_ms: u64,
+    connect_ms: u64,
+    /// Real time the `CONNECT` request came ([`Watch::connecting`]); `u64::MAX` before.
+    connect_at: AtomicU64,
+    /// Fails the `CONNECT` when its connect timeout passes.
+    on_connect_timeout: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 fn ms(d: Option<Duration>) -> u64 {
@@ -136,12 +146,13 @@ impl Watch {
         upstream: &UpstreamSlot,
         handshake: Option<Duration>,
         idle: Option<Duration>,
+        connect: Option<Duration>,
     ) -> Option<Arc<Watch>> {
-        let (handshake_ms, idle_ms) = (ms(handshake), ms(idle));
-        if handshake_ms == 0 && idle_ms == 0 {
+        let (handshake_ms, idle_ms, connect_ms) = (ms(handshake), ms(idle), ms(connect));
+        if handshake_ms == 0 && idle_ms == 0 && connect_ms == 0 {
             return None;
         }
-        let shortest = [handshake_ms, idle_ms]
+        let shortest = [handshake_ms, idle_ms, connect_ms]
             .into_iter()
             .filter(|v| *v > 0)
             .min()
@@ -153,8 +164,7 @@ impl Watch {
             tick,
             client,
             upstream,
-            handshake_ms,
-            idle_ms,
+            [handshake_ms, idle_ms, connect_ms],
         ))
     }
 
@@ -163,8 +173,7 @@ impl Watch {
         tick: u64,
         client: &Arc<ConnInner>,
         upstream: &UpstreamSlot,
-        handshake_ms: u64,
-        idle_ms: u64,
+        [handshake_ms, idle_ms, connect_ms]: [u64; 3],
     ) -> Arc<Watch> {
         w.tick_ms.fetch_min(tick, Ordering::Relaxed);
         let now = w.now();
@@ -182,6 +191,9 @@ impl Watch {
             probe_last: AtomicU64::new(0),
             handshake_ms,
             idle_ms,
+            connect_ms,
+            connect_at: AtomicU64::new(u64::MAX),
+            on_connect_timeout: Mutex::new(None),
         });
         let shard = &w.shards[(client.id() as usize) % SHARDS];
         shard
@@ -210,6 +222,20 @@ impl Watch {
         self.relaying.store(true, Ordering::Relaxed);
     }
 
+    /// The `CONNECT` request came now: `on_timeout` runs (on the watchdog thread) when its
+    /// upstream is not connected within the connect timeout, which it fails, unless it settled
+    /// before. Nothing happens when the connect timeout is off.
+    pub(crate) fn connecting(&self, on_timeout: Box<dyn FnOnce() + Send>) {
+        if self.connect_ms == 0 {
+            return;
+        }
+        *self
+            .on_connect_timeout
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(on_timeout);
+        self.connect_at.store(self.dog.now(), Ordering::Relaxed);
+    }
+
     /// Runs `f` when a timeout closes the session.
     pub(crate) fn on_fire(&self, f: Box<dyn FnOnce() + Send>) {
         *self.on_fire.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
@@ -229,6 +255,28 @@ impl Watch {
                 && now.saturating_sub(self.last.load(Ordering::Relaxed)) >= self.idle_ms
         } else {
             self.handshake_ms != 0 && now.saturating_sub(self.opened) >= self.handshake_ms
+        }
+    }
+
+    fn connect_expired(&self, now: u64) -> bool {
+        let at = self.connect_at.load(Ordering::Relaxed);
+        at != u64::MAX
+            && !self.disarmed.load(Ordering::Relaxed)
+            && !self.relaying.load(Ordering::Relaxed)
+            && now.saturating_sub(at) >= self.connect_ms
+    }
+
+    /// The connect timeout passed: the `CONNECT` fails with its reply, which closes the client
+    /// once sent.
+    fn fire_connect(&self) {
+        let f = self
+            .on_connect_timeout
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        match f {
+            Some(f) => f(),
+            None => self.client.close(),
         }
     }
 
@@ -323,7 +371,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(950));
         let c = akio_core::fuzzing::conn_inner();
         let t0 = Instant::now();
-        let _w = Watch::start_on(dog, 75, &c, &slot, 300, 0);
+        let _w = Watch::start_on(dog, 75, &c, &slot, [300, 0, 0]);
         closed_after(&c, Duration::from_secs(3)).expect("closed");
         let t = t0.elapsed();
         assert!(t >= Duration::from_millis(300), "fired after {t:?}");
@@ -332,14 +380,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(phase));
             let c = akio_core::fuzzing::conn_inner();
             let t0 = Instant::now();
-            let _w = Watch::start(&c, &slot, Some(Duration::from_millis(300)), None);
+            let _w = Watch::start(&c, &slot, Some(Duration::from_millis(300)), None, None);
             closed_after(&c, Duration::from_secs(3)).expect("closed");
             let t = t0.elapsed();
             assert!(t >= Duration::from_millis(300), "fired after {t:?}");
         }
         // Idle: busy past the timeout stays open, then quiet closes, never early.
         let c = akio_core::fuzzing::conn_inner();
-        let w = Watch::start(&c, &slot, None, Some(Duration::from_millis(300))).expect("watch");
+        let w =
+            Watch::start(&c, &slot, None, Some(Duration::from_millis(300)), None).expect("watch");
         w.established();
         for _ in 0..10 {
             w.touch();

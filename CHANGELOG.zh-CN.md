@@ -10,6 +10,17 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：代理隧道在连接建立后检查，以及它的连接超时（akio-socks）
+
+ADR-119，应 akit 的请求（A132、A133）：
+
+- `ProxyConfig::connected`（`Connected`）：在每条 `CONNECT` 隧道（SOCKS 与 HTTP）的上游连接打开后、使用
+  之前做出判定，参数是所请求的目的地（名字或地址）、所连接的地址和本地地址；拒绝时应答 SOCKS5 2、SOCKS4
+  `0x5b` 或 HTTP `502`，且不再尝试其他地址。
+- `ProxyConfig::connect_timeout`：从 `CONNECT` 请求到上游连接建立的最长时间；超过后应答 SOCKS5 4、SOCKS4
+  `0x5b` 或 HTTP `504 Gateway Timeout`。
+- 名字解析被逻辑线程池拒绝（已满）的 SOCKS 请求，在关闭前会收到应答 1。
+
 ### 新增：正则表达式的匹配位置、分组与 Go 的模板（akio-regex）
 
 ADR-115，应 akit 的请求（A32）：

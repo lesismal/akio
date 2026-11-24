@@ -10,6 +10,19 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a proxy's tunnel checked once connected, and its connect timeout (akio-socks)
+
+ADR-119, requested by akit (A132, A133):
+
+- `ProxyConfig::connected` (`Connected`): decides each `CONNECT` tunnel's upstream (SOCKS and
+  HTTP) once it opens, before it is used, given the destination as asked (a name or an address),
+  the address connected to and the local one; a refusal is SOCKS5 reply 2, SOCKS4 `0x5b` or HTTP
+  `502`, and no other address is tried.
+- `ProxyConfig::connect_timeout`: the longest time from a `CONNECT` request to its upstream
+  being connected; past it SOCKS5 reply 4, SOCKS4 `0x5b` or HTTP `504 Gateway Timeout`.
+- A SOCKS request whose name resolution the logical pool refuses (full) gets reply 1 before the
+  close.
+
 ### Added: where a regular expression matches, its groups, and Go's templates (akio-regex)
 
 ADR-115, requested by akit (A32):
