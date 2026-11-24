@@ -209,6 +209,22 @@ struct Stream {
     trailers: Option<Headers>,
     /// A pushed stream: it is never used by the peer for requests.
     pushed: bool,
+    /// The handler holds the request body's reads: the window consumed is not given back.
+    held: bool,
+    /// Waits for the queued response bytes to be framed ([`H2Stream::on_drain`]).
+    drain: Option<Waiter>,
+}
+
+/// A drain waiter: runs when it is dropped, so a stream or connection that goes away runs it
+/// too. Only ever dropped outside the core's lock ([`Locked`]), as it runs user code.
+struct Waiter(Option<Box<dyn FnOnce() + Send>>);
+
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
 }
 
 impl Stream {
@@ -240,6 +256,8 @@ impl Stream {
             head_only: false,
             trailers: None,
             pushed: false,
+            held: false,
+            drain: None,
         }
     }
 }
@@ -374,6 +392,8 @@ struct Core {
     open_peer: u32,
     /// Streams removed under the lock, dropped once it is released (see [`Locked`]).
     dropped: Vec<Stream>,
+    /// Drain waiters due, run once the lock is released.
+    waiters: Vec<Waiter>,
     /// While the I/O thread works through one read, frames are only appended to `out`; the
     /// whole batch is handed to the connection once at the end (one write, one TLS record).
     batching: bool,
@@ -453,14 +473,16 @@ thread_local! {
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
         let Some(mut g) = self.0.take() else { return };
-        if g.dropped.is_empty() {
+        if g.dropped.is_empty() && g.waiters.is_empty() {
             return;
         }
+        let waiters = std::mem::take(&mut g.waiters);
         let mut dropped = SPARE_DROPPED.take();
         std::mem::swap(&mut dropped, &mut g.dropped);
         drop(g);
         dropped.clear(); // runs the streams' drops, outside the lock
         SPARE_DROPPED.set(dropped);
+        drop(waiters); // runs them
     }
 }
 
@@ -919,6 +941,13 @@ impl Core {
                 &buf,
             );
         }
+        if let Some(st) = self.streams.get_mut(&sid) {
+            if st.out_bytes == 0 {
+                if let Some(w) = st.drain.take() {
+                    self.waiters.push(w);
+                }
+            }
+        }
         self.finish_if_done(sid);
     }
 
@@ -1327,7 +1356,8 @@ impl Core {
         // a quarter of it is owed.
         if total > 0 && !end {
             st.recv_owed += total;
-            if st.recv_owed >= self.local.initial_window / 4 {
+            // Held by the handler (`BodyReads::hold`): given back when it resumes.
+            if !st.held && st.recv_owed >= self.local.initial_window / 4 {
                 let inc = std::mem::take(&mut st.recv_owed);
                 st.recv_window += inc;
                 self.window_update(sid, inc as u32);
@@ -1738,6 +1768,14 @@ impl H2Responder {
         }
     }
 
+    /// Holds the reads of this stream's request body.
+    pub(crate) fn reads(&self) -> H2Reads {
+        H2Reads {
+            core: self.core.clone(),
+            sid: self.sid,
+        }
+    }
+
     /// The connection, while the session lives.
     pub(crate) fn conn(&self) -> Option<Arc<ConnInner>> {
         self.core.upgrade().map(|c| lock(&c).conn.clone())
@@ -1866,6 +1904,38 @@ impl H2Responder {
     }
 }
 
+/// Holds the reads of a streamed request body on an HTTP/2 stream
+/// ([`BodyReads`](crate::BodyReads)): its flow-control window is not given back meanwhile.
+#[derive(Clone)]
+pub(crate) struct H2Reads {
+    core: Weak<Mutex<Core>>,
+    sid: u32,
+}
+
+impl H2Reads {
+    pub(crate) fn hold(&self, hold: bool) {
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        let mut c = lock(&core);
+        let Some(st) = c.streams.get_mut(&self.sid) else {
+            return;
+        };
+        if st.held == hold {
+            return;
+        }
+        st.held = hold;
+        if hold || st.recv_owed == 0 || !matches!(st.state, SState::Open | SState::HalfClosedLocal)
+        {
+            return;
+        }
+        let inc = std::mem::take(&mut st.recv_owed);
+        st.recv_window += inc;
+        c.window_update(self.sid, inc as u32);
+        c.flush();
+    }
+}
+
 /// A response body being written in pieces on an HTTP/2 stream.
 pub(crate) struct H2Stream {
     core: Weak<Mutex<Core>>,
@@ -1901,6 +1971,25 @@ impl H2Stream {
         self.core.upgrade().map_or(0, |c| {
             lock(&c).streams.get(&self.sid).map_or(0, |s| s.out_bytes)
         })
+    }
+
+    /// Runs `f` once the stream's queued bytes are all framed (at once if they are), or when
+    /// the stream or the connection goes away. Replaces an earlier waiter.
+    pub(crate) fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        let Some(core) = self.core.upgrade() else {
+            return f();
+        };
+        let mut c = lock(&core);
+        let mut f = Some(f);
+        if let Some(st) = c.streams.get_mut(&self.sid).filter(|s| s.out_bytes > 0) {
+            if let Some(mut old) = st.drain.replace(Waiter(f.take())) {
+                old.0 = None; // replaced, not run
+            }
+        }
+        drop(c);
+        if let Some(f) = f {
+            f();
+        }
     }
 
     pub(crate) fn finish(self) {
@@ -2128,6 +2217,7 @@ impl<S: Service> H2Session<S> {
                 pending_rst: None,
                 open_peer: 0,
                 dropped: Vec::new(),
+                waiters: Vec::new(),
                 batching: false,
                 fields: Fields::default(),
                 enc_fields: Fields::default(),
@@ -2290,6 +2380,7 @@ impl<S: Service> H2Session<S> {
                 ctx.recycle_request();
             }
             Action::Start(sid, mut ctx) => {
+                ctx.set_streamed();
                 let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
                 drop(g);

@@ -35,6 +35,10 @@ pub trait ConnSink: Send + Sync + 'static {
     fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
         Err(job)
     }
+    /// Stops (`true`) or resumes (`false`) taking the body of the streamed request tagged
+    /// `tag` ([`BodyReads::hold`](crate::BodyReads::hold), ADR-101): stop extending its
+    /// flow-control window, say. The default does nothing.
+    fn hold_reads(&self, _tag: u64, _hold: bool) {}
 }
 
 /// A connection's [`ConnSink`], shared by its requests: cloning it is one reference count
@@ -83,6 +87,13 @@ pub trait BodySink: Send + 'static {
     fn queued_bytes(&self) -> usize;
     /// Ends the body, with trailer fields if any.
     fn finish(self: Box<Self>, trailers: Option<Headers>);
+    /// Calls `f` once the bytes written are out of the way of more
+    /// ([`BodyStream::on_drain`](crate::BodyStream::on_drain), ADR-101), or when the stream is
+    /// gone; replaces an earlier waiter. The default runs `f` at once: a transport that cannot
+    /// tell paces its writers with [`queued_bytes`](Self::queued_bytes) and `Overloaded`.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        f();
+    }
 }
 
 /// A per-request [`ResponseSink`] served as a [`ConnSink`] (the deprecated path allocates for
@@ -235,6 +246,7 @@ pub fn start<S: Service + ?Sized>(
         req,
         ExtOut(SharedSink::new(Boxed::new(sink)), 0),
     ));
+    ctx.set_streamed();
     let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
     drop(g);
@@ -250,6 +262,7 @@ pub fn start_conn<S: Service + ?Sized>(
     tag: u64,
 ) -> Started {
     let mut ctx = Box::new(Context::new_ext(req, ExtOut(sink.clone(), tag)));
+    ctx.set_streamed();
     let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
     drop(g);

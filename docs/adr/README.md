@@ -100,3 +100,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-098: Server certificates chosen per handshake by a resolver that may answer later](098-tls-cert-resolver.md) (accepted 2026-11-23)
 - [ADR-099: TCP listeners added, removed and drained at run time, and a filter on accepted connections](099-runtime-listeners-accept-filter.md) (accepted 2026-11-23)
 - [ADR-100: Static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings](100-static-files-gateway-settings.md) (accepted 2026-11-24)
+- [ADR-101: Streamed bodies with linked backpressure: client request bodies as produced, client responses as they arrive, a server request's hold on its reads and drain notice](101-streamed-bodies-linked-backpressure.md) (accepted 2026-11-24)

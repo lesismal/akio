@@ -169,6 +169,7 @@ pub fn serve_with<S: Service>(
         let out = H3Out {
             c: c.clone(),
             outs: Arc::default(),
+            drains: Arc::default(),
             enc: None,
         };
         ServerConn {
@@ -1261,10 +1262,12 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     fn on_stream_stopped(&mut self, _c: &Connection, id: StreamId, _code: u64) {
         // The response is not wanted any more: what waits for it is dropped.
         lock(&self.out.outs).remove(&id);
+        run_drain(&self.out.drains, id);
     }
 
     fn on_stream_writable(&mut self, c: &Connection, id: StreamId) {
         pump(c, &self.out.outs, id);
+        run_drain(&self.out.drains, id);
     }
 
     fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {
@@ -1273,6 +1276,10 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         }
         self.uni.clear();
         lock(&self.out.outs).clear();
+        let drains: Vec<_> = lock(&self.out.drains).drain().map(|(_, f)| f).collect();
+        for f in drains {
+            f();
+        }
         if self.span.is_recording() {
             self.span.record("quic.close_reason", format!("{reason:?}"));
             drop(std::mem::take(&mut self.span));
@@ -1500,6 +1507,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// What waits to be sent on response streams of a connection, by stream.
 type Outs = Mutex<StreamMap<Out>>;
 
+/// Drain waiters per stream (`BodySink::on_drain`), run once the stream's send buffer has room.
+type Drains = Mutex<StreamMap<Box<dyn FnOnce() + Send>>>;
+
+/// Runs the drain waiter of stream `id`, if any (outside the lock).
+fn run_drain(drains: &Drains, id: StreamId) {
+    let f = lock(drains).remove(&id);
+    if let Some(f) = f {
+        f();
+    }
+}
+
 /// The rest of a response the stream's send buffer could not take yet, in order: bytes, then
 /// a file's range, then the trailers, then the end of the stream.
 #[derive(Default)]
@@ -1697,6 +1715,8 @@ struct H3Out {
     c: Connection,
     /// Responses waiting for room in their stream's send buffer.
     outs: Arc<Outs>,
+    /// Streamed responses waiting for room to write more (`BodySink::on_drain`).
+    drains: Arc<Drains>,
     /// The connection's QPACK encoder, when it has a dynamic table.
     enc: Option<Arc<EncShared>>,
 }
@@ -1722,6 +1742,13 @@ impl ConnSink for H3Out {
 
     fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
         self.c.execute(job)
+    }
+
+    /// Holds the request stream: what arrives stays in its receive buffer and its window is not
+    /// extended (`Connection::hold_reads`).
+    fn hold_reads(&self, tag: u64, hold: bool) {
+        let id = StreamId::new(akio_quic::Side::Client, Dir::Bi, tag >> 1);
+        let _ = self.c.hold_reads(id, hold);
     }
 }
 
@@ -1966,6 +1993,22 @@ impl BodySink for StreamBody {
             0
         };
         self.o.c.queued_bytes(self.id) + waiting
+    }
+
+    /// Runs `f` once the stream's send buffer has room for more (at once if it has and nothing
+    /// of the response waits), on the connection's I/O thread otherwise, or when the stream is
+    /// stopped or the connection closed.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        // Registered first: a writable event from the I/O thread meanwhile finds it.
+        lock(&self.o.drains).insert(self.id, f);
+        // Part of the response waiting for room means a writable event is due.
+        let now = match self.o.c.send_capacity(self.id) {
+            Ok(room) => room > 0 && !self.waiting(),
+            Err(_) => true, // the stream is gone
+        };
+        if now {
+            run_drain(&self.o.drains, self.id);
+        }
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {

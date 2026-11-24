@@ -10,6 +10,21 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：带联动背压的流式消息体（akio-http、akio-h3）
+
+ADR-101，均为新增，应 akit 的需求（A19、A20、A21）：
+
+- `ClientRequest::streamed(len)` 与 `Client::request_streamed(req, on_ready, done)`：通过 `RequestBody`
+  （`write`、`queued_bytes`、`on_drain`、`finish`、`finish_with_trailers`）边产生边写出的 HTTP/1 请求体，按
+  `Content-Length` 或分块编码。这样的请求从不重试也不跟随重定向；消息体写完前到来的响应照常交付，连接随后关闭。
+- `Client::request_with(req, handler)`：响应边到达边交付给 `ResponseHandler`（`on_request_body`、`on_head`、
+  `on_data`、`on_end`、`on_error`），用 `ResponseBody::hold_reads` 暂停和恢复读取，用 `cancel` 放弃。
+  `max_body_bytes` 不适用；不跟随重定向。
+- `Context::body_reads()` 与 `BodyReads::hold`：暂停和恢复流式请求体的读取（HTTP/1.1 上是连接的读取，HTTP/2 与
+  HTTP/3 上是流的流控窗口）。暂停期间消息体超时不触发。
+- `BodyStream::on_drain(f)`：流式响应排队的字节让开路后运行 `f`。
+- 带默认实现的 `transport::ConnSink::hold_reads` 与 `transport::BodySink::on_drain`，由 akio-h3 实现。
+
 ### 新增：面向网关的静态文件：调用者给出的路径、按 q 值选择副本、候选路径、目录列表（akio-http）
 
 ADR-100，均为新增：

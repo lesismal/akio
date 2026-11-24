@@ -10,6 +10,26 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: streamed bodies with linked backpressure (akio-http, akio-h3)
+
+ADR-101, additive, requested by akit (A19, A20, A21):
+
+- `ClientRequest::streamed(len)` and `Client::request_streamed(req, on_ready, done)`: an HTTP/1
+  request body written as it is produced through a `RequestBody` (`write`, `queued_bytes`,
+  `on_drain`, `finish`, `finish_with_trailers`), framed by `Content-Length` or chunked. Such a
+  request is never retried nor redirected; a response that comes before the body is finished is
+  delivered and the connection closed.
+- `Client::request_with(req, handler)`: the response delivered as it arrives to a
+  `ResponseHandler` (`on_request_body`, `on_head`, `on_data`, `on_end`, `on_error`), its reads held
+  and resumed with `ResponseBody::hold_reads`, abandoned with `cancel`. `max_body_bytes` does not
+  apply; redirects are not followed.
+- `Context::body_reads()` and `BodyReads::hold`: a streamed request body's reads held and resumed
+  (the connection's on HTTP/1.1, the stream's flow-control window on HTTP/2 and HTTP/3). The body
+  timeout does not fire while they are held.
+- `BodyStream::on_drain(f)`: `f` runs once a streamed response's queued bytes are out of the way.
+- `transport::ConnSink::hold_reads` and `transport::BodySink::on_drain`, with defaults, which
+  akio-h3 implements.
+
 ### Added: static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings (akio-http)
 
 ADR-100, additive:

@@ -300,6 +300,12 @@ impl<S: Service> OnDeadline for Session<S> {
                 self.buf = Vec::new();
                 self.fail(c, 408);
             }
+            // The handler holds the body's reads (its consumer is behind): the client is not
+            // the slow one.
+            State::Stream { ctx, .. } if ctx.reads_held() => {
+                self.armed = Phase::Body;
+                w.arm(self.cfg.body_timeout);
+            }
             // The service already runs and owns the response: the request cannot be answered.
             State::Stream { .. } => {
                 self.state = State::Closed;
@@ -603,6 +609,8 @@ impl<S: Service> Session<S> {
                         Kind::Chunked(dec) => dec.trailers(),
                         Kind::Length(_) => Headers::new(),
                     };
+                    // The body is in: the next request's reads are not the handler's to hold.
+                    ctx.end_reads();
                     ctx.deliver(BodyEvent::End(&trailers));
                     if !ctx.responded() && !ctx.is_detached() {
                         ctx.respond(Response::text(500, "handler did not respond"));
@@ -716,6 +724,7 @@ impl<S: Service> Session<S> {
             return;
         };
         let mut ctx = Box::new(Context::new(req, slot, keep_alive));
+        ctx.set_streamed();
         let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
         drop(g);

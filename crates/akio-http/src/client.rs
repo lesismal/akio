@@ -79,6 +79,22 @@ pub struct ClientRequest {
     /// uses the client's ([`Client::with_timeout`]). On expiry the request fails with
     /// [`ClientError::Timeout`] and its connection is closed.
     pub timeout: Option<Duration>,
+    /// A body written after the head, as it is produced ([`Client::request_streamed`],
+    /// [`Client::request_with`]), and how it is framed; [`body`](Self::body) is then not sent.
+    /// [`Client::request`] and [`Client::send`] ignore it and send `body`, as does
+    /// [`H2Client`](crate::h2client::H2Client). `None` by default.
+    pub streamed: Option<StreamedBody>,
+}
+
+/// How a request body written as it is produced is framed ([`ClientRequest::streamed`], ADR-101).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StreamedBody {
+    /// `Content-Length`: exactly this many bytes follow.
+    Length(u64),
+    /// `Transfer-Encoding: chunked`: each write is a chunk, ended by
+    /// [`RequestBody::finish`].
+    Chunked,
 }
 
 impl ClientRequest {
@@ -90,7 +106,19 @@ impl ClientRequest {
             headers: Headers::new(),
             body: Vec::new(),
             timeout: None,
+            streamed: None,
         }
+    }
+
+    /// Marks the body as written later through a [`RequestBody`]: `len` bytes framed by
+    /// `Content-Length` when known, chunked otherwise ([`streamed`](Self::streamed)).
+    #[must_use]
+    pub fn streamed(mut self, len: Option<u64>) -> ClientRequest {
+        self.streamed = Some(match len {
+            Some(n) => StreamedBody::Length(n),
+            None => StreamedBody::Chunked,
+        });
+        self
     }
 
     /// A `GET` request.
@@ -224,6 +252,370 @@ impl std::fmt::Display for ClientError {
 impl std::error::Error for ClientError {}
 
 type Callback = Box<dyn FnOnce(Result<ClientResponse, ClientError>) + Send>;
+
+/// Called with the body of a streamed request once its head is written.
+type Ready = Box<dyn FnOnce(RequestBody) + Send>;
+
+fn lock_or<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The body of a request sent as it is produced ([`Client::request_streamed`],
+/// [`ResponseHandler::on_request_body`], ADR-101). Usable from any thread.
+///
+/// Each [`write`](Self::write) is copied into the connection's send queue (a chunk of its own
+/// when the body is chunked). Pace the producer with [`queued_bytes`](Self::queued_bytes) and
+/// [`on_drain`](Self::on_drain): the client's reads of the response do not pause on this queue
+/// (the connection is a relay end), so nothing else bounds it but
+/// `Config::max_queued_bytes`, past which writes fail.
+///
+/// Dropping it unfinished closes the connection: the request fails with
+/// [`ClientError::Closed`] unless its response was already complete. A response may come
+/// (whole, too) before the body is finished, an early 413 say; the connection is then closed
+/// once the response is in, and later writes fail.
+pub struct RequestBody {
+    shared: Arc<ReqBody>,
+    done: bool,
+}
+
+impl std::fmt::Debug for RequestBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestBody").finish_non_exhaustive()
+    }
+}
+
+/// What a [`RequestBody`] and its connection share.
+struct ReqBody {
+    conn: Arc<ConnInner>,
+    st: Mutex<ReqBodyState>,
+}
+
+struct ReqBodyState {
+    framing: StreamedBody,
+    written: u64,
+    finished: bool,
+    /// The request is over (its response complete, or failed): nothing more is sent.
+    aborted: bool,
+}
+
+impl ReqBody {
+    /// The request ends: whether its body was finished (the connection may be reused). An
+    /// unfinished body can no longer be written.
+    fn settle(&self) -> bool {
+        let mut st = lock_or(&self.st);
+        if !st.finished {
+            st.aborted = true;
+        }
+        st.finished
+    }
+}
+
+impl RequestBody {
+    /// Appends body bytes. `Err(Closed)` when the request is over or its connection gone, or
+    /// when `data` would pass a `Content-Length` body's length (the request is then failed);
+    /// `Err(Overloaded)` past the connection's `max_queued_bytes`.
+    pub fn write(&self, data: &[u8]) -> akio_core::Result<()> {
+        let mut st = lock_or(&self.shared.st);
+        if st.finished || st.aborted {
+            return Err(akio_core::Error::Closed);
+        }
+        if data.is_empty() {
+            return Ok(());
+        }
+        let c = &self.shared.conn;
+        match st.framing {
+            StreamedBody::Length(n) => {
+                if st.written + data.len() as u64 > n {
+                    st.aborted = true;
+                    c.close();
+                    return Err(akio_core::Error::Closed);
+                }
+                c.send(data)?;
+            }
+            StreamedBody::Chunked => {
+                let mut out = Vec::with_capacity(data.len() + 20);
+                crate::context::push_chunk_size(&mut out, data.len());
+                out.extend_from_slice(data);
+                out.extend_from_slice(b"\r\n");
+                c.send_owned(out)?;
+            }
+        }
+        st.written += data.len() as u64;
+        Ok(())
+    }
+
+    /// Bytes written but not yet on the wire (the connection's send queue).
+    pub fn queued_bytes(&self) -> usize {
+        self.shared.conn.queued_bytes()
+    }
+
+    /// Calls `f` once everything queued is written (at once, on this thread, if nothing is),
+    /// or when the connection closes; otherwise on the connection's I/O thread. Replaces an
+    /// earlier waiter.
+    pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
+        self.shared.conn.on_drain(Box::new(f));
+    }
+
+    /// Ends the body: the last chunk, or a check that the `Content-Length` was written in full
+    /// (when it was not, the request fails and `Err(Closed)` is returned).
+    pub fn finish(self) -> akio_core::Result<()> {
+        self.finish_with_trailers(Headers::new())
+    }
+
+    /// Like [`finish`](Self::finish), with trailer fields after a chunked body (dropped for a
+    /// `Content-Length` one, which has nowhere to put them).
+    pub fn finish_with_trailers(mut self, trailers: Headers) -> akio_core::Result<()> {
+        self.done = true;
+        let mut st = lock_or(&self.shared.st);
+        if st.finished || st.aborted {
+            return Err(akio_core::Error::Closed);
+        }
+        let c = &self.shared.conn;
+        match st.framing {
+            StreamedBody::Length(n) => {
+                if st.written != n {
+                    st.aborted = true;
+                    c.close();
+                    return Err(akio_core::Error::Closed);
+                }
+            }
+            StreamedBody::Chunked => {
+                let mut t = Vec::with_capacity(64);
+                t.extend_from_slice(b"0\r\n");
+                for (n, v) in trailers.iter() {
+                    t.extend_from_slice(n.as_bytes());
+                    t.extend_from_slice(b": ");
+                    t.extend(v.bytes().filter(|b| *b != b'\r' && *b != b'\n'));
+                    t.extend_from_slice(b"\r\n");
+                }
+                t.extend_from_slice(b"\r\n");
+                c.send_owned(t)?;
+            }
+        }
+        st.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for RequestBody {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let mut st = lock_or(&self.shared.st);
+        if !st.finished && !st.aborted {
+            st.aborted = true;
+            self.shared.conn.close();
+        }
+    }
+}
+
+/// The head of a response delivered as it arrives ([`ResponseHandler::on_head`]).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct ResponseHead {
+    /// Status code.
+    pub status: u16,
+    /// Reason phrase as sent.
+    pub reason: String,
+    /// Header fields.
+    pub headers: Headers,
+    /// The response's HTTP version (1.0 or 1.1).
+    pub version: Version,
+}
+
+/// Controls the reads of a response delivered as it arrives ([`ResponseHandler::on_head`]).
+/// Cheap to clone and usable from any thread; it does nothing once the response is over.
+#[derive(Clone)]
+pub struct ResponseBody {
+    shared: Arc<RespBody>,
+}
+
+impl std::fmt::Debug for ResponseBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseBody").finish_non_exhaustive()
+    }
+}
+
+struct RespBody {
+    conn: Arc<ConnInner>,
+    /// The response is in progress.
+    live: Mutex<bool>,
+}
+
+impl RespBody {
+    /// The response is over: its reads are no longer held (the connection may be reused).
+    fn settle(&self) {
+        let mut live = lock_or(&self.live);
+        if std::mem::replace(&mut *live, false) {
+            self.conn.hold_reads(false);
+        }
+    }
+}
+
+impl ResponseBody {
+    /// Stops (`true`) or resumes (`false`) reading the connection, so that the server stops
+    /// sending once the socket buffers fill. Bytes already read are still delivered: at most one
+    /// read's worth arrives after holding.
+    pub fn hold_reads(&self, hold: bool) {
+        let live = lock_or(&self.shared.live);
+        if *live {
+            self.shared.conn.hold_reads(hold);
+        }
+    }
+
+    /// Abandons the response: closes the connection. The handler then gets
+    /// [`on_error`](ResponseHandler::on_error) with [`ClientError::Closed`].
+    pub fn cancel(&self) {
+        let live = lock_or(&self.shared.live);
+        if *live {
+            self.shared.conn.close();
+        }
+    }
+}
+
+/// Receives a response as it arrives ([`Client::request_with`], ADR-101). Its methods run on the
+/// connection's I/O thread (or as the module documentation says for a failure before there is
+/// a connection) and must not block. After [`on_head`](Self::on_head), exactly one of
+/// [`on_end`](Self::on_end) and [`on_error`](Self::on_error) follows; a failure before the head
+/// calls `on_error` alone.
+pub trait ResponseHandler: Send + 'static {
+    /// The request's body, when it is streamed ([`ClientRequest::streamed`]), once its head is
+    /// written. The default drops it, which fails the request.
+    fn on_request_body(&mut self, body: RequestBody) {
+        drop(body);
+    }
+    /// The response head (interim 1xx responses are skipped). `body` holds and resumes the
+    /// reads of the body that follows.
+    fn on_head(&mut self, head: ResponseHead, body: ResponseBody);
+    /// A piece of the body, as read (dechunked); valid for the call only.
+    fn on_data(&mut self, chunk: &[u8]);
+    /// The body is complete, with the trailer fields of a chunked one.
+    fn on_end(&mut self, trailers: &Headers);
+    /// The request failed (after the head: the body did not complete).
+    fn on_error(&mut self, e: ClientError);
+}
+
+/// Where a response goes.
+enum Deliver {
+    /// Collected whole, then handed to a callback.
+    Whole(Callback),
+    /// Delivered as it arrives.
+    Stream(Box<dyn ResponseHandler>),
+}
+
+impl Deliver {
+    fn fail(self, e: ClientError) {
+        match self {
+            Deliver::Whole(cb) => cb(Err(e)),
+            Deliver::Stream(mut h) => h.on_error(e),
+        }
+    }
+}
+
+/// A [`ResponseHandler`] that stores the cookies a response sets in the client's jar.
+struct Cookies {
+    inner: Box<dyn ResponseHandler>,
+    jar: CookieJar,
+    url: String,
+}
+
+impl ResponseHandler for Cookies {
+    fn on_request_body(&mut self, body: RequestBody) {
+        self.inner.on_request_body(body);
+    }
+    fn on_head(&mut self, head: ResponseHead, body: ResponseBody) {
+        if let Some(o) = crate::cookie::origin(&self.url) {
+            let now = crate::cookie::now_secs();
+            for v in head.headers.get_all("set-cookie") {
+                self.jar.store_from(&o, v, now);
+            }
+        }
+        self.inner.on_head(head, body);
+    }
+    fn on_data(&mut self, chunk: &[u8]) {
+        self.inner.on_data(chunk);
+    }
+    fn on_end(&mut self, trailers: &Headers) {
+        self.inner.on_end(trailers);
+    }
+    fn on_error(&mut self, e: ClientError) {
+        self.inner.on_error(e);
+    }
+}
+
+/// A [`ResponseHandler`] that collects the response whole for a callback
+/// ([`Client::request_streamed`]).
+struct Collect {
+    ready: Option<Ready>,
+    resp: Option<ClientResponse>,
+    resp_body: Option<ResponseBody>,
+    max: usize,
+    done: Option<Callback>,
+    url: String,
+}
+
+impl Collect {
+    fn finish(&mut self, r: Outcome) {
+        if let Some(cb) = self.done.take() {
+            cb(r);
+        }
+    }
+}
+
+impl ResponseHandler for Collect {
+    fn on_request_body(&mut self, body: RequestBody) {
+        if let Some(f) = self.ready.take() {
+            f(body);
+        }
+    }
+    fn on_head(&mut self, head: ResponseHead, body: ResponseBody) {
+        let len = head
+            .headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok());
+        if len.is_some_and(|n| n > self.max) {
+            body.cancel();
+            return self.finish(Err(ClientError::TooLarge("response body too large")));
+        }
+        self.resp = Some(ClientResponse {
+            status: head.status,
+            reason: head.reason,
+            headers: head.headers,
+            body: Vec::with_capacity(len.unwrap_or(0).min(1 << 20)),
+            trailers: Headers::new(),
+            pushed: Vec::new(),
+            url: std::mem::take(&mut self.url),
+        });
+        self.resp_body = Some(body);
+    }
+    fn on_data(&mut self, chunk: &[u8]) {
+        let over = match &mut self.resp {
+            Some(r) if r.body.len() + chunk.len() <= self.max => {
+                r.body.extend_from_slice(chunk);
+                false
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if over {
+            self.resp = None;
+            if let Some(b) = self.resp_body.take() {
+                b.cancel();
+            }
+            self.finish(Err(ClientError::TooLarge("response body too large")));
+        }
+    }
+    fn on_end(&mut self, trailers: &Headers) {
+        if let Some(mut r) = self.resp.take() {
+            r.trailers = trailers.clone();
+            self.finish(Ok(r));
+        }
+    }
+    fn on_error(&mut self, e: ClientError) {
+        self.finish(Err(e));
+    }
+}
 
 /// The result of [`Client::send`]: wait for it, or `.await` it.
 pub struct ResponseFuture {
@@ -505,7 +897,14 @@ impl Exchange {
         self.expired.load(Ordering::Acquire)
     }
 
-    /// The timeout passed: fail the request and close its connection.
+    /// A response delivered as it arrives ended (its handler was told): a later timeout does
+    /// nothing.
+    fn settle(&self) {
+        self.done.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    /// The timeout passed: fail the request and close its connection. A response delivered as
+    /// it arrives learns it from its connection (or the dial) as [`ClientError::Timeout`].
     fn expire(&self) {
         let cb = self.done.lock().unwrap_or_else(|e| e.into_inner()).take();
         let Some(cb) = cb else { return };
@@ -535,7 +934,9 @@ struct Pending {
     /// The target's address when a SOCKS proxy wants addresses (`socks5://`, `socks4://`).
     tunnel_host: Option<String>,
     ex: Arc<Exchange>,
-    cb: Callback,
+    deliver: Deliver,
+    /// The body is written later through a [`RequestBody`].
+    streamed: Option<StreamedBody>,
 }
 
 #[derive(Clone, Default)]
@@ -690,11 +1091,71 @@ impl Client {
     /// documentation says).
     pub fn request(
         &self,
-        req: ClientRequest,
+        mut req: ClientRequest,
         done: impl FnOnce(Result<ClientResponse, ClientError>) + Send + 'static,
     ) {
+        req.streamed = None;
+        let ex = self.exchange(&req, Box::new(done));
+        self.attempt(ex, req, None);
+    }
+
+    /// Sends `req` with a body written as it is produced (ADR-101): `on_ready` gets the
+    /// [`RequestBody`] on the connection's I/O thread once the head is written, after a connect
+    /// or on a reused connection. The body is framed as [`ClientRequest::streamed`] says
+    /// (chunked when it is `None`); [`ClientRequest::body`] is not sent. `done` gets the
+    /// response whole, as [`request`](Self::request) does, possibly before the body is
+    /// finished.
+    ///
+    /// Such a request is never retried (its body cannot be sent again), nor redirected: on a
+    /// reused connection the server had closed it fails with [`ClientError::Closed`] or
+    /// [`ClientError::Io`], and a 3xx response is returned as it is.
+    pub fn request_streamed(
+        &self,
+        mut req: ClientRequest,
+        on_ready: impl FnOnce(RequestBody) + Send + 'static,
+        done: impl FnOnce(Result<ClientResponse, ClientError>) + Send + 'static,
+    ) {
+        req.streamed.get_or_insert(StreamedBody::Chunked);
+        let collect = Collect {
+            ready: Some(Box::new(on_ready)),
+            resp: None,
+            resp_body: None,
+            max: self.inner.settings.opts.max_body_bytes,
+            done: Some(Box::new(done)),
+            url: req.url.clone(),
+        };
+        self.request_with(req, collect);
+    }
+
+    /// Sends `req` and delivers the response to `handler` as it arrives (ADR-101): the head,
+    /// then each piece of the body, whose reads the handler can hold and resume
+    /// ([`ResponseBody::hold_reads`]). [`ClientOptions::max_body_bytes`] does not apply: the
+    /// handler decides. A body given by [`ClientRequest::streamed`] goes to
+    /// [`ResponseHandler::on_request_body`].
+    ///
+    /// Redirects are not followed (a 3xx response goes to the handler). The request's timeout
+    /// ([`ClientRequest::timeout`], [`Client::with_timeout`]) runs until the body is complete;
+    /// a retry on a fresh connection is made, as for [`request`](Self::request), only for a
+    /// `GET`, `HEAD` or `OPTIONS` without a streamed body and before any byte of the response.
+    /// The keep-alive pool takes the connection back after [`ResponseHandler::on_end`].
+    pub fn request_with(&self, req: ClientRequest, handler: impl ResponseHandler) {
+        let ex = self.exchange(&req, Box::new(|_| {}));
+        let mut h: Box<dyn ResponseHandler> = Box::new(handler);
+        if let Some(jar) = &self.inner.settings.cookies {
+            h = Box::new(Cookies {
+                inner: h,
+                jar: jar.clone(),
+                url: req.url.clone(),
+            });
+        }
+        self.attempt(ex, req, Some(h));
+    }
+
+    /// The exchange of a new request, with its timeout armed. `done` is the callback of a
+    /// whole response, a placeholder for one delivered as it arrives.
+    fn exchange(&self, req: &ClientRequest, done: Callback) -> Arc<Exchange> {
         let ex = Arc::new(Exchange {
-            done: Mutex::new(Some(Box::new(done))),
+            done: Mutex::new(Some(done)),
             site: OnceLock::new(),
             cross_site: AtomicBool::new(false),
             conn: Mutex::new(None),
@@ -709,15 +1170,30 @@ impl Client {
                 }
             });
         }
-        self.attempt(ex, req);
+        ex
     }
 
-    /// Sends `req` (the first one, or a redirect's) as part of `ex`.
-    fn attempt(&self, ex: Arc<Exchange>, req: ClientRequest) {
+    /// Sends `req` (the first one, or a redirect's) as part of `ex`; to `handler` as it
+    /// arrives when there is one, else whole to `ex`'s callback.
+    fn attempt(
+        &self,
+        ex: Arc<Exchange>,
+        req: ClientRequest,
+        handler: Option<Box<dyn ResponseHandler>>,
+    ) {
         let pu = match parse_url(&req.url) {
             Ok(p) => p,
-            Err(e) => return ex.finish(Err(e)),
+            Err(e) => {
+                return match handler {
+                    Some(mut h) => {
+                        ex.settle();
+                        h.on_error(e);
+                    }
+                    None => ex.finish(Err(e)),
+                };
+            }
         };
+        let streamed = req.streamed;
         let proxy = self
             .inner
             .settings
@@ -760,6 +1236,7 @@ impl Client {
                 cookie.push_str(v);
             } else if !n.eq_ignore_ascii_case("host")
                 && !n.eq_ignore_ascii_case("content-length")
+                && !(streamed.is_some() && n.eq_ignore_ascii_case("transfer-encoding"))
                 && !(v.is_empty() && n.eq_ignore_ascii_case("user-agent"))
             {
                 bytes.extend_from_slice(
@@ -791,16 +1268,46 @@ impl Client {
         if req.headers.get("user-agent").is_none() {
             bytes.extend_from_slice(b"User-Agent: akio-http\r\n");
         }
-        if !req.body.is_empty() || matches!(req.method, Method::Post | Method::Put | Method::Patch)
-        {
-            bytes.extend_from_slice(format!("Content-Length: {}\r\n", req.body.len()).as_bytes());
+        match streamed {
+            Some(StreamedBody::Length(n)) => {
+                bytes.extend_from_slice(format!("Content-Length: {n}\r\n").as_bytes());
+            }
+            Some(StreamedBody::Chunked) => {
+                bytes.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
+            }
+            None => {
+                if !req.body.is_empty()
+                    || matches!(req.method, Method::Post | Method::Put | Method::Patch)
+                {
+                    bytes.extend_from_slice(
+                        format!("Content-Length: {}\r\n", req.body.len()).as_bytes(),
+                    );
+                }
+            }
         }
         bytes.extend_from_slice(b"\r\n");
-        bytes.extend_from_slice(&req.body);
+        if streamed.is_none() {
+            bytes.extend_from_slice(&req.body);
+        }
         let mut key = pu.key;
         key.proxy = proxy.as_ref().map(|p| (p.host.clone(), p.port));
         let head_only = req.method == Method::Head;
-        let retryable = matches!(req.method, Method::Get | Method::Head | Method::Options);
+        let retryable = streamed.is_none()
+            && matches!(req.method, Method::Get | Method::Head | Method::Options);
+        if let Some(h) = handler {
+            return self.dispatch(Pending {
+                bytes,
+                head_only,
+                retryable,
+                key,
+                proxy,
+                addrs: Vec::new(),
+                tunnel_host: None,
+                ex,
+                deliver: Deliver::Stream(h),
+                streamed,
+            });
+        }
         // The request is kept only when a redirect may need it again.
         let policy = self.inner.settings.redirects;
         let (url, saved) = if policy.max > 0 {
@@ -826,7 +1333,7 @@ impl Client {
                         Ok(Some(next)) => {
                             ex2.hops.store(hops + 1, Ordering::Relaxed);
                             if !ex2.expired() {
-                                me.attempt(ex2, next);
+                                me.attempt(ex2, next, None);
                             }
                             return;
                         }
@@ -848,7 +1355,8 @@ impl Client {
             addrs: Vec::new(),
             tunnel_host: None,
             ex,
-            cb,
+            deliver: Deliver::Whole(cb),
+            streamed: None,
         });
     }
 
@@ -1002,7 +1510,8 @@ impl Client {
 
     fn dial(&self, mut p: Pending) {
         if p.ex.expired() {
-            return;
+            // A whole response's callback was told already; a handler learns it here.
+            return p.deliver.fail(ClientError::Timeout);
         }
         let local = p.proxy.as_ref().is_some_and(|s| s.resolves_locally())
             && p.tunnel_host.is_none()
@@ -1019,7 +1528,7 @@ impl Client {
                         p.tunnel_host = Some(a.ip().to_string());
                         me.dial(p);
                     }
-                    Err(e) => (p.cb)(Err(ClientError::Io(e))),
+                    Err(e) => p.deliver.fail(ClientError::Io(e)),
                 }
             });
         }
@@ -1035,7 +1544,7 @@ impl Client {
                     p.addrs = a;
                     me.dial(p);
                 }
-                Err(e) => (p.cb)(Err(ClientError::Io(e))),
+                Err(e) => p.deliver.fail(ClientError::Io(e)),
             });
         }
         let key = p.key.clone();
@@ -1053,7 +1562,7 @@ impl Client {
         let fail = move |e: io::Error| {
             let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(p) = taken {
-                (p.cb)(Err(ClientError::Io(e)));
+                p.deliver.fail(ClientError::Io(e));
             }
         };
         let he = self.inner.settings.opts.happy_eyeballs;
@@ -1162,17 +1671,26 @@ enum RState {
 }
 
 struct Active {
-    cb: Callback,
+    deliver: Deliver,
     head_only: bool,
     retry: Option<Pending>,
+    /// The response being collected whole.
     resp: Option<ClientResponse>,
     version: Version,
+    /// The response said `Connection: close`.
+    conn_close: bool,
+    /// The request's body written as it is produced.
+    req_body: Option<Arc<ReqBody>>,
+    /// The reads of a response delivered as it arrives.
+    resp_body: Option<Arc<RespBody>>,
 }
 
 /// The per-connection client handler.
 pub struct ClientConn {
     state: RState,
     buf: Vec<u8>,
+    /// Decoded chunks of a body delivered as it arrives, reused.
+    scratch: Vec<u8>,
     active: Option<Active>,
     client: Option<Client>,
     key: Option<Key>,
@@ -1185,6 +1703,8 @@ pub struct ClientConn {
     ex: Option<Arc<Exchange>>,
     /// Where the proxy tunnel (if any) records a refusal.
     refusal: Option<Refusal>,
+    /// The connection is marked a relay end (a streamed request body is being written).
+    relayed: bool,
 }
 
 impl std::fmt::Debug for ClientConn {
@@ -1198,6 +1718,7 @@ impl ClientConn {
         ClientConn {
             state: RState::Idle,
             buf: Vec::new(),
+            scratch: Vec::new(),
             active: None,
             client: None,
             key: None,
@@ -1206,11 +1727,35 @@ impl ClientConn {
             head_seen: 0,
             ex: None,
             refusal: None,
+            relayed: false,
         }
     }
 
     fn opts(&self) -> Option<&ClientOptions> {
         self.client.as_ref().map(|c| &c.inner.settings.opts)
+    }
+
+    /// Whether the response in flight goes to a [`ResponseHandler`] as it arrives.
+    fn streaming(&self) -> bool {
+        matches!(
+            self.active,
+            Some(Active {
+                deliver: Deliver::Stream(_),
+                ..
+            })
+        )
+    }
+
+    /// Hands a piece of the body to the handler, or appends it to the response collected whole.
+    fn body_data(active: &mut Option<Active>, data: &[u8]) {
+        match active {
+            Some(Active {
+                deliver: Deliver::Stream(h),
+                ..
+            }) => h.on_data(data),
+            Some(Active { resp: Some(r), .. }) => r.body.extend_from_slice(data),
+            _ => {}
+        }
     }
 
     /// Starts `p` on this connection: remember the callback, write the request.
@@ -1224,15 +1769,17 @@ impl ClientConn {
             addrs,
             tunnel_host,
             ex,
-            cb,
+            deliver,
+            streamed,
         } = p;
         {
             let mut slot = ex.conn.lock().unwrap_or_else(|e| e.into_inner());
             if ex.expired() {
-                // Timed out while this connection was being set up: nobody waits any more.
+                // Timed out while this connection was being set up: a whole response's
+                // callback was told already, a handler learns it here.
                 drop(slot);
                 c.close();
-                return;
+                return deliver.fail(ClientError::Timeout);
             }
             *slot = Some(Arc::downgrade(c.inner()));
         }
@@ -1246,7 +1793,8 @@ impl ClientConn {
             addrs,
             tunnel_host,
             ex: ex.clone(),
-            cb: Box::new(|_| {}),
+            deliver: Deliver::Whole(Box::new(|_| {})),
+            streamed: None,
         });
         self.ex = Some(ex);
         self.state = RState::Head;
@@ -1256,16 +1804,63 @@ impl ClientConn {
         self.received_any = false;
         self.client = Some(client);
         self.key = Some(key);
+        let req_body = streamed.map(|framing| {
+            Arc::new(ReqBody {
+                conn: c.inner().clone(),
+                st: Mutex::new(ReqBodyState {
+                    framing,
+                    written: 0,
+                    finished: false,
+                    aborted: false,
+                }),
+            })
+        });
+        // The body's producer paces this connection's queue itself (`RequestBody::on_drain`):
+        // the response must still be read meanwhile (an early 413, say).
+        if self.relayed != req_body.is_some() {
+            self.relayed = req_body.is_some();
+            c.inner().set_relayed(self.relayed);
+        }
         self.active = Some(Active {
-            cb,
+            deliver,
             head_only,
             retry,
             resp: None,
             version: Version::Http11,
+            conn_close: false,
+            req_body: req_body.clone(),
+            resp_body: None,
         });
         if c.send_owned(bytes).is_err() {
-            self.fail(c, ClientError::Closed);
+            return self.fail(c, ClientError::Closed);
         }
+        if let Some(shared) = req_body {
+            let body = RequestBody {
+                shared,
+                done: false,
+            };
+            if let Some(Active {
+                deliver: Deliver::Stream(h),
+                ..
+            }) = &mut self.active
+            {
+                h.on_request_body(body);
+            }
+        }
+    }
+
+    /// The request in flight is over: its body can no longer be written, its reads are no
+    /// longer held, a later timeout does nothing. Whether the body was finished.
+    fn settle(&self, a: &Active) -> bool {
+        if let Some(r) = &a.resp_body {
+            r.settle();
+        }
+        if matches!(a.deliver, Deliver::Stream(_)) {
+            if let Some(ex) = &self.ex {
+                ex.settle();
+            }
+        }
+        a.req_body.as_ref().is_none_or(|b| b.settle())
     }
 
     fn fail(&mut self, c: &Conn<Self>, e: ClientError) {
@@ -1288,30 +1883,39 @@ impl ClientConn {
                 (a.retry, self.client.clone(), self.received_any, expired)
             {
                 if matches!(e, ClientError::Closed | ClientError::Io(_)) {
-                    p.cb = a.cb;
+                    p.deliver = a.deliver;
                     client.dial(p);
                     c.close();
                     return;
                 }
             }
-            (a.cb)(Err(e));
+            let a = Active { retry: None, ..a };
+            self.settle(&a);
+            // The timeout closed the connection: a handler learns why (a whole response's
+            // callback was told already).
+            let e = if expired { ClientError::Timeout } else { e };
+            c.close();
+            return a.deliver.fail(e);
         }
         c.close();
     }
 
     /// Finishes the response in flight.
-    fn complete(&mut self, c: &Conn<Self>, keep_alive: bool) {
+    fn complete(&mut self, c: &Conn<Self>, keep_alive: bool, trailers: Headers) {
         self.state = RState::Idle;
         let Some(a) = self.active.take() else { return };
-        let resp = a.resp.expect("response head parsed");
+        // An unfinished request body: the connection is not reusable (the server answered
+        // early, a 413 say).
+        let body_done = self.settle(&a);
         let shutting_down = self
             .client
             .as_ref()
             .is_some_and(|cl| cl.inner.shutting_down.load(Ordering::Relaxed));
         let reusable = keep_alive
+            && body_done
             && !shutting_down
             && a.version == Version::Http11
-            && !resp.headers.has_token("connection", "close");
+            && !a.conn_close;
         let kept = reusable
             && match (&self.client, &self.key) {
                 (Some(client), Some(key)) => client.put_idle(key, c),
@@ -1320,7 +1924,16 @@ impl ClientConn {
         if !kept {
             c.close();
         }
-        (a.cb)(Ok(resp));
+        match a.deliver {
+            Deliver::Whole(cb) => {
+                let mut resp = a.resp.expect("response head parsed");
+                if !trailers.is_empty() {
+                    resp.trailers = trailers;
+                }
+                cb(Ok(resp));
+            }
+            Deliver::Stream(mut h) => h.on_end(&trailers),
+        }
     }
 
     /// Parses what is buffered. Returns once more bytes are needed.
@@ -1378,7 +1991,12 @@ impl ClientConn {
                     let no_body = head_only || status == 204 || status == 304 || status == 101;
                     let te_chunked = headers.has_token("transfer-encoding", "chunked");
                     let cl = headers.get("content-length").map(str::parse::<usize>);
-                    let max_body = self.opts().map_or(usize::MAX, |o| o.max_body_bytes);
+                    // A handler takes the body as it arrives and decides about its size.
+                    let streaming = self.streaming();
+                    let max_body = match self.opts() {
+                        Some(o) if !streaming => o.max_body_bytes,
+                        _ => usize::MAX,
+                    };
                     let next = if no_body {
                         None
                     } else if te_chunked {
@@ -1397,24 +2015,47 @@ impl ClientConn {
                             None => Some(RState::UntilClose),
                         }
                     };
+                    let conn_close = headers.has_token("connection", "close");
                     if let Some(a) = &mut self.active {
                         a.version = version;
-                        let reserve = match &next {
-                            Some(RState::Body { left }) => (*left).min(1 << 20),
-                            _ => 0,
-                        };
-                        a.resp = Some(ClientResponse {
-                            status,
-                            reason,
-                            headers,
-                            body: Vec::with_capacity(reserve),
-                            trailers: Headers::new(),
-                            pushed: Vec::new(),
-                            url: String::new(),
-                        });
+                        a.conn_close = conn_close;
+                        match &mut a.deliver {
+                            Deliver::Whole(_) => {
+                                let reserve = match &next {
+                                    Some(RState::Body { left }) => (*left).min(1 << 20),
+                                    _ => 0,
+                                };
+                                a.resp = Some(ClientResponse {
+                                    status,
+                                    reason,
+                                    headers,
+                                    body: Vec::with_capacity(reserve),
+                                    trailers: Headers::new(),
+                                    pushed: Vec::new(),
+                                    url: String::new(),
+                                });
+                            }
+                            Deliver::Stream(h) => {
+                                let shared = Arc::new(RespBody {
+                                    conn: c.inner().clone(),
+                                    live: Mutex::new(true),
+                                });
+                                a.resp_body = Some(shared.clone());
+                                let head = ResponseHead {
+                                    status,
+                                    reason,
+                                    headers,
+                                    version,
+                                };
+                                h.on_head(head, ResponseBody { shared });
+                                if !c.is_open() {
+                                    return; // cancelled: `on_close` tells the handler
+                                }
+                            }
+                        }
                     }
                     match next {
-                        None => self.complete(c, true),
+                        None => self.complete(c, true, Headers::new()),
                         Some(s) => self.state = s,
                     }
                 }
@@ -1425,41 +2066,44 @@ impl ClientConn {
                     let n = self.buf.len().min(*left);
                     *left -= n;
                     let done = *left == 0;
-                    if let Some(r) = self.active.as_mut().and_then(|a| a.resp.as_mut()) {
-                        r.body.extend_from_slice(&self.buf[..n]);
-                    }
+                    Self::body_data(&mut self.active, &self.buf[..n]);
                     self.buf.drain(..n);
+                    if !c.is_open() {
+                        return;
+                    }
                     if done {
-                        self.complete(c, true);
+                        self.complete(c, true, Headers::new());
                     }
                 }
                 RState::Chunked(dec) => {
                     if self.buf.is_empty() {
                         return;
                     }
-                    let max_body = self
-                        .client
-                        .as_ref()
-                        .map_or(usize::MAX, |c| c.inner.settings.opts.max_body_bytes);
-                    let have = self
-                        .active
-                        .as_ref()
-                        .and_then(|a| a.resp.as_ref())
-                        .map_or(0, |r| r.body.len());
-                    let mut out = Vec::new();
-                    match dec.feed(&self.buf, &mut out, max_body.saturating_sub(have)) {
+                    let max_body = match &self.active {
+                        Some(Active { resp: Some(r), .. }) => self
+                            .client
+                            .as_ref()
+                            .map_or(usize::MAX, |c| c.inner.settings.opts.max_body_bytes)
+                            .saturating_sub(r.body.len()),
+                        _ => usize::MAX,
+                    };
+                    let mut out = std::mem::take(&mut self.scratch);
+                    out.clear();
+                    let r = dec.feed(&self.buf, &mut out, max_body);
+                    match r {
                         Ok(n) => {
                             self.buf.drain(..n);
                             let done = dec.is_done();
                             let trailers = if done { dec.trailers() } else { Headers::new() };
-                            if let Some(r) = self.active.as_mut().and_then(|a| a.resp.as_mut()) {
-                                r.body.extend_from_slice(&out);
-                                if done {
-                                    r.trailers = trailers;
-                                }
+                            if !out.is_empty() {
+                                Self::body_data(&mut self.active, &out);
+                            }
+                            self.scratch = out;
+                            if !c.is_open() {
+                                return;
                             }
                             if done {
-                                self.complete(c, true);
+                                self.complete(c, true, trailers);
                             }
                         }
                         Err(crate::parse::ChunkError::TooLarge) => {
@@ -1469,16 +2113,17 @@ impl ClientConn {
                     }
                 }
                 RState::UntilClose => {
-                    let max_body = self
-                        .client
-                        .as_ref()
-                        .map_or(usize::MAX, |c| c.inner.settings.opts.max_body_bytes);
-                    let mut over = false;
-                    if let Some(r) = self.active.as_mut().and_then(|a| a.resp.as_mut()) {
-                        over = r.body.len() + self.buf.len() > max_body;
-                        if !over {
-                            r.body.extend_from_slice(&self.buf);
-                        }
+                    let max_body = match &self.active {
+                        Some(Active { resp: Some(r), .. }) => self
+                            .client
+                            .as_ref()
+                            .map_or(usize::MAX, |c| c.inner.settings.opts.max_body_bytes)
+                            .saturating_sub(r.body.len()),
+                        _ => usize::MAX,
+                    };
+                    let over = self.buf.len() > max_body;
+                    if !over {
+                        Self::body_data(&mut self.active, &self.buf);
                     }
                     self.buf.clear();
                     if over {
@@ -1500,11 +2145,14 @@ pub(crate) fn fuzz_responses(pieces: &[&[u8]], head_only: bool) {
     let arm = |h: &mut ClientConn| {
         h.state = RState::Head;
         h.active = Some(Active {
-            cb: Box::new(|_| {}),
+            deliver: Deliver::Whole(Box::new(|_| {})),
             head_only,
             retry: None,
             resp: None,
             version: Version::Http11,
+            conn_close: false,
+            req_body: None,
+            resp_body: None,
         });
     };
     for p in pieces {
@@ -1525,7 +2173,7 @@ impl Handler for ClientConn {
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<akio::Error>) {
         match self.state {
-            RState::UntilClose => self.complete(c, false),
+            RState::UntilClose => self.complete(c, false, Headers::new()),
             RState::Idle => {
                 // Closed while idle (by the server, or expired): leave the pool.
                 if let Some(cl) = &self.client {

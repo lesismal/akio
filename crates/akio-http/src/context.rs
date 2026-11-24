@@ -354,6 +354,11 @@ pub struct Context {
     raw: Option<Box<dyn crate::raw::RawHandler>>,
     sink: Option<Sink>,
     route: Option<&'static RouteInfo>,
+    /// The body arrives after `call` ([`BodyMode::Stream`]): its reads can be held.
+    streamed: bool,
+    /// HTTP/1: the hold on the connection's reads that [`body_reads`](Self::body_reads) gave
+    /// out, released when the body ends.
+    reads: Option<Arc<H1Reads>>,
 }
 
 impl std::fmt::Debug for Context {
@@ -407,6 +412,8 @@ impl Context {
             raw: None,
             sink: None,
             route: None,
+            streamed: false,
+            reads: None,
         }
     }
 
@@ -447,6 +454,8 @@ impl Context {
             raw: None,
             sink: None,
             route: None,
+            streamed: false,
+            reads: None,
             responder: None,
         }
     }
@@ -465,6 +474,8 @@ impl Context {
             raw: None,
             sink: None,
             route: None,
+            streamed: false,
+            reads: None,
             responder: Some(Out::H2(responder)),
         }
     }
@@ -572,6 +583,53 @@ impl Context {
                 self.sink = Some(sink);
             }
         }
+    }
+
+    /// Holds and resumes the reads of a streamed request body ([`BodyMode::Stream`], ADR-101),
+    /// to pace the client by whatever the body is fed to (an upstream, say). `None` when the
+    /// body is not streamed, or the response was already taken ([`detach`](Self::detach),
+    /// [`stream_response`](Self::stream_response)): take it before. It works after `detach`,
+    /// from any thread. See [`BodyReads::hold`].
+    pub fn body_reads(&mut self) -> Option<BodyReads> {
+        if !self.streamed {
+            return None;
+        }
+        let inner = match self.responder.as_ref()? {
+            Out::H1(r) => {
+                let conn = r.slot.conn()?.clone();
+                let reads = self
+                    .reads
+                    .get_or_insert_with(|| {
+                        Arc::new(H1Reads {
+                            conn,
+                            st: Mutex::new((false, false)),
+                        })
+                    })
+                    .clone();
+                ReadsInner::H1(reads)
+            }
+            Out::H2(r) => ReadsInner::H2(r.reads()),
+            Out::Ext(e) => ReadsInner::Ext(e.0.clone(), e.1),
+        };
+        Some(BodyReads(inner))
+    }
+
+    /// Marks the request as one whose body arrives after `call` (see [`body_reads`]).
+    pub(crate) fn set_streamed(&mut self) {
+        self.streamed = true;
+    }
+
+    /// HTTP/1: the streamed body ended; its reads are no longer held (the next request's are
+    /// not the handler's to hold).
+    pub(crate) fn end_reads(&self) {
+        if let Some(r) = &self.reads {
+            r.end();
+        }
+    }
+
+    /// HTTP/1: whether the handler holds the body's reads (the client is then not slow).
+    pub(crate) fn reads_held(&self) -> bool {
+        self.reads.as_ref().is_some_and(|r| lock_reads(&r.st).0)
     }
 
     /// The route the [`Router`](crate::Router) matched (method and pattern, e.g.
@@ -883,6 +941,75 @@ impl Context {
     }
 }
 
+/// Holds the reads of a streamed request body; see [`Context::body_reads`]. Cheap to clone and
+/// usable from any thread.
+#[derive(Clone)]
+pub struct BodyReads(ReadsInner);
+
+#[derive(Clone)]
+enum ReadsInner {
+    H1(Arc<H1Reads>),
+    H2(crate::h2::H2Reads),
+    Ext(crate::transport::SharedSink, u64),
+}
+
+impl std::fmt::Debug for BodyReads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyReads").finish_non_exhaustive()
+    }
+}
+
+impl BodyReads {
+    /// Stops (`true`) or resumes (`false`) taking the body from the client.
+    ///
+    /// - HTTP/1.1 holds the connection's reads, and so the pipelined requests behind this one,
+    ///   as it must. Bytes already read are still delivered (at most one read's worth), and the
+    ///   body's timeout (`HttpConfig::body_timeout`) does not fire while reads are held. The
+    ///   hold ends with the body.
+    /// - HTTP/2 stops giving the stream's flow-control window back, so the client stops once
+    ///   the window it has is used (`H2Config`'s initial window); the other streams go on.
+    /// - HTTP/3 holds the stream as the transport allows ([`ConnSink::hold_reads`]).
+    ///
+    /// [`ConnSink::hold_reads`]: crate::transport::ConnSink::hold_reads
+    pub fn hold(&self, hold: bool) {
+        match &self.0 {
+            ReadsInner::H1(r) => r.hold(hold),
+            ReadsInner::H2(r) => r.hold(hold),
+            ReadsInner::Ext(s, tag) => s.get().hold_reads(*tag, hold),
+        }
+    }
+}
+
+/// HTTP/1: a request body's hold on its connection's reads.
+pub(crate) struct H1Reads {
+    conn: Arc<akio_core::ConnInner>,
+    /// Held; the body ended (no more holding).
+    st: Mutex<(bool, bool)>,
+}
+
+fn lock_reads(m: &Mutex<(bool, bool)>) -> std::sync::MutexGuard<'_, (bool, bool)> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl H1Reads {
+    fn hold(&self, hold: bool) {
+        let mut st = lock_reads(&self.st);
+        if st.1 || st.0 == hold {
+            return;
+        }
+        st.0 = hold;
+        self.conn.hold_reads(hold);
+    }
+
+    fn end(&self) {
+        let mut st = lock_reads(&self.st);
+        st.1 = true;
+        if std::mem::replace(&mut st.0, false) {
+            self.conn.hold_reads(false);
+        }
+    }
+}
+
 /// A request whose response will be sent later; see [`Context::detach`]. Dropping it without
 /// responding closes the connection.
 pub struct Detached {
@@ -953,6 +1080,7 @@ fn start_stream(
             let mut head = Vec::with_capacity(192);
             resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
             Inner::H1 {
+                conn: r.slot.conn().cloned(),
                 stream: r.slot.stream(head),
                 chunked,
                 keep_alive: r.keep_alive,
@@ -981,6 +1109,8 @@ impl std::fmt::Debug for BodyStream {
 
 enum Inner {
     H1 {
+        /// For [`BodyStream::on_drain`].
+        conn: Option<Arc<akio_core::ConnInner>>,
         stream: ResponseStream,
         chunked: bool,
         keep_alive: bool,
@@ -1020,6 +1150,26 @@ impl BodyStream {
             Inner::H1 { stream, .. } => stream.queued_bytes(),
             Inner::H2(s) => s.queued_bytes(),
             Inner::Ext(s) => s.queued_bytes(),
+        }
+    }
+
+    /// Calls `f` once [`queued_bytes`](Self::queued_bytes) is down to nothing (ADR-101), or
+    /// when the connection (or stream) is gone, to resume a producer paused while the client
+    /// was behind. Runs `f` at once, on this thread, when nothing is queued; otherwise on the
+    /// connection's I/O thread. Replaces an earlier waiter.
+    ///
+    /// - HTTP/1.1: the connection's send queue is empty (one waiter per connection, as
+    ///   `akio_core::Conn::on_drain`).
+    /// - HTTP/2: the stream's queued bytes were all framed, as its flow-control window allowed.
+    /// - HTTP/3: as the transport says ([`BodySink::on_drain`]).
+    ///
+    /// [`BodySink::on_drain`]: crate::transport::BodySink::on_drain
+    pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
+        match &self.inner {
+            Inner::H1 { conn: Some(c), .. } => c.on_drain(Box::new(f)),
+            Inner::H1 { conn: None, .. } => f(),
+            Inner::H2(s) => s.on_drain(Box::new(f)),
+            Inner::Ext(s) => s.on_drain(Box::new(f)),
         }
     }
 
@@ -1071,6 +1221,7 @@ impl Inner {
                 chunked,
                 keep_alive,
                 head_only,
+                ..
             } => {
                 if chunked && !head_only {
                     let _ = stream.write(b"0\r\n\r\n".to_vec());
@@ -1089,6 +1240,7 @@ impl Inner {
                 chunked,
                 keep_alive,
                 head_only,
+                ..
             } => {
                 if chunked && !head_only {
                     let mut t = Vec::with_capacity(64);
@@ -1111,7 +1263,7 @@ impl Inner {
 }
 
 /// Appends a chunk-size line (`<hex>\r\n`) for `n` bytes.
-fn push_chunk_size(out: &mut Vec<u8>, n: usize) {
+pub(crate) fn push_chunk_size(out: &mut Vec<u8>, n: usize) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let digits = ((usize::BITS - n.leading_zeros()).div_ceil(4)).max(1) as usize;
     for i in (0..digits).rev() {
