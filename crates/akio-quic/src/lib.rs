@@ -234,6 +234,14 @@ impl Connection {
         lock(&self.0.state).conn.server_name()
     }
 
+    /// The certificate chain the peer sent and the handshake verified (DER, leaf first), as
+    /// `akio_tls::TlsInfo::peer_certificates` describes it: on a server, the client's, which it
+    /// sends only when the server's TLS configuration asks for one. Empty when it sent none;
+    /// `None` while the handshake is under way (data sent in 0-RTT comes before it).
+    pub fn peer_certificates(&self) -> Option<Vec<Vec<u8>>> {
+        lock(&self.0.state).conn.peer_certificates()
+    }
+
     /// The smoothed round-trip time.
     pub fn rtt(&self) -> std::time::Duration {
         lock(&self.0.state).conn.rtt()

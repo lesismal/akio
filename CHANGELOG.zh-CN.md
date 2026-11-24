@@ -28,6 +28,19 @@ ADR-108，纯新增，应 akit 的需求（A36、A37、A38）：
 - `Live::set_write_timeout` / `write_timeout`：`Config::write_timeout` 可热加载（`Engine::reload` 把它列在
   `applied` 中），支持 epoll 与 io_uring。
 
+### 新增：bcrypt、每个请求上的客户端证书，以及请求的挂起与恢复（akio-crypto、akio-tls、akio-quic、akio-http、akio-h3）
+
+ADR-109，新增 API，应 akit 的请求（A63、A64、A65）：
+
+- `akio_crypto::bcrypt`：`Hash::parse` / `verify` / `Display`、`hash` 与 `hash_with_salt`，支持 Go
+  与 `htpasswd -B` 生成的 `$2a$`、`$2b$`、`$2y$` 哈希。
+- `Request::peer_certificates`：客户端发送并经 TLS 握手验证的证书链，出现在每个 HTTP/1.1、HTTP/2 和
+  HTTP/3 请求上，按连接共享；另有 `TlsInfo::peer_certificates`、`akio_tls::peer_chain`（`PeerChain`）
+  和 `akio_quic::Connection::peer_certificates`。
+- `Context::suspend` 与 `Suspended::resume`：暂停请求，之后可在任意线程从暂停处继续（下一个中间件、
+  处理器）；`Context::suspend_to_pool` 用它在逻辑线程池上运行工作（线程池满时回 `503`）。不适用于
+  消息体流式传递的请求。
+
 ### 修复：监听器移除后立即发起的连接不再落到其旧 socket 上（akio、akio-uring、akio-epoll）
 
 `Engine::remove_listener` 与 `shutdown_listener`（ADR-099）原先在变更投递给 I/O 线程后即返回，并且在 io_uring 上，被移除

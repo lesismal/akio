@@ -103,3 +103,4 @@
 - [ADR-101：带联动背压的流式消息体：边产生边发送的客户端请求体、边到达边交付的客户端响应、服务端请求对读取的暂停与排空通知](101-streamed-bodies-linked-backpressure.zh-CN.md)（2026-11-24 采纳）
 - [ADR-107：akio-x509 中的证书签名请求](107-x509-certificate-requests.zh-CN.md)（2026-11-23 采纳）
 - [ADR-108：HTTP/1 客户端的响应头超时、空闲超时与取消，服务端请求得知客户端离开，运行时修改写超时](108-client-timeouts-cancel-client-gone.zh-CN.md)（2026-11-24 采纳）
+- [ADR-109：bcrypt、每个请求上的客户端证书，以及请求的挂起与恢复](109-bcrypt-client-certificates-suspend.zh-CN.md)（2026-11-24 采纳）

@@ -26,6 +26,7 @@
 //!   the [`Hash`](hash::Hash) trait; SHAKE128 and SHAKE256.
 //! - [`mac`]: HMAC over any [`Hash`](hash::Hash).
 //! - [`kdf`]: HKDF (RFC 5869) and PBKDF2-HMAC (RFC 8018).
+//! - [`bcrypt`]: bcrypt password hashes (`$2a$`, `$2b$`, `$2y$`), made and checked.
 //! - [`crc`]: CRC-32 (IEEE 802.3, as zlib / `crc32fast`) and CRC-32C (Castagnoli).
 //! - [`aes`]: AES-128/192/256 on the CPU's AES instructions (AES-NI, ARMv8 AES) when present,
 //!   else a constant-time fixsliced software implementation (no secret-dependent table lookups
@@ -89,6 +90,7 @@
 
 pub mod aes;
 pub mod base64;
+pub mod bcrypt;
 pub mod chacha;
 pub mod crc;
 pub mod der;

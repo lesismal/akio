@@ -184,6 +184,7 @@ pub fn serve_with<S: Service>(
             sink: SharedSink::new(out.clone()),
             out,
             span: akio_http::trace::connection_span(c.remote_addr(), "3"),
+            certs: PeerCerts::new(),
         }
     })
 }
@@ -598,6 +599,24 @@ struct ServerConn<S> {
     sink: SharedSink,
     /// The connection span (`akio_http::trace`), ended on close.
     span: akio::log::span::Span,
+    /// The client's verified certificate chain, once the handshake is done.
+    certs: PeerCerts,
+}
+
+/// A connection's verified client certificate chain (`Request::peer_certificates`), asked of
+/// the QUIC connection until its handshake is done, then kept: each request clones an `Arc`.
+type PeerCerts = std::sync::OnceLock<Option<Arc<[Vec<u8>]>>>;
+
+/// The chain of `c`'s client, for a request; `None` before the handshake is done (a request
+/// sent in 0-RTT comes before the client's certificate).
+fn peer_certs(certs: &PeerCerts, c: &Connection) -> Option<Arc<[Vec<u8>]>> {
+    if let Some(v) = certs.get() {
+        return v.clone();
+    }
+    let chain = c.peer_certificates()?;
+    certs
+        .get_or_init(|| (!chain.is_empty()).then(|| chain.into()))
+        .clone()
 }
 
 /// Why a request stream stopped being read.
@@ -613,6 +632,7 @@ struct ServerHost<'a, S> {
     c: &'a Connection,
     id: StreamId,
     sink: &'a SharedSink,
+    certs: &'a PeerCerts,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -621,6 +641,7 @@ impl<S: Service> Host for ServerHost<'_, S> {
     }
 
     fn start(&mut self, mut request: Request, head_only: bool) -> Body {
+        request.peer_certificates = peer_certs(self.certs, self.c);
         if self.c.is_early(self.id) {
             request.headers.append("early-data", "1");
         }
@@ -672,6 +693,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             sink: &self.sink,
+            certs: &self.certs,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -747,6 +769,7 @@ impl<S: Service> ServerConn<S> {
 
     #[inline(always)]
     fn dispatch(&self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
+        request.peer_certificates = peer_certs(&self.certs, c);
         if c.is_early(id) {
             // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
             // the application can answer 425 Too Early to what is not safe to repeat.
@@ -798,6 +821,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             sink: &self.sink,
+            certs: &self.certs,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,

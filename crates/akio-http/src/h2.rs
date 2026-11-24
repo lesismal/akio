@@ -394,6 +394,8 @@ struct Core {
     dead: bool,
     peer: SocketAddr,
     tls: bool,
+    /// The client's verified certificate chain, for its requests.
+    peer_certs: crate::session::PeerCerts,
     /// The connection began with TLS early data: every request is marked `Early-Data: 1`
     /// (offsets are not followed through the framing, so this errs on the safe side).
     early: bool,
@@ -1671,7 +1673,7 @@ impl Core {
         Some(Action::Dispatch(req, resp))
     }
 
-    fn build_request(&self, fields: &Fields) -> Result<Request, ()> {
+    fn build_request(&mut self, fields: &Fields) -> Result<Request, ()> {
         let (mut method, mut path, mut authority, mut scheme, mut protocol) =
             (None, None, None, None, None);
         // The regular fields fit in one allocation (the pseudo-headers are not kept as fields;
@@ -1754,6 +1756,7 @@ impl Core {
             body: Vec::new(),
             peer: self.peer,
             protocol: protocol.map(str::to_owned),
+            peer_certificates: self.peer_certs.get(&self.conn),
         })
     }
 }
@@ -1918,6 +1921,8 @@ impl H2Responder {
             c.flush();
             let mut headers = Headers::new();
             headers.append("host", authority);
+            let core = &mut *c;
+            let peer_certificates = core.peer_certs.get(&core.conn);
             let req = Request {
                 method: Method::Get,
                 target: path.to_owned(),
@@ -1927,6 +1932,7 @@ impl H2Responder {
                 body: Vec::new(),
                 peer: c.peer,
                 protocol: None,
+                peer_certificates,
             };
             (promised, hook, req)
         };
@@ -2231,6 +2237,7 @@ impl<S: Service> H2Session<S> {
                 dead: false,
                 peer,
                 tls,
+                peer_certs: crate::session::PeerCerts::default(),
                 early,
                 push_hook: Some(Arc::new(move |req: Request, resp: H2Responder| {
                     let mut ctx = Context::new_h2(req, resp);

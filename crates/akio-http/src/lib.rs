@@ -78,7 +78,7 @@ pub mod transport;
 pub use akio_ws as ws;
 pub use context::{
     BodyEvent, BodyMode, BodyReads, BodyStream, Context, Detached, Middleware, Service, Streaming,
-    WsOptions,
+    Suspended, WsOptions,
 };
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version};

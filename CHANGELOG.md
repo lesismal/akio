@@ -32,6 +32,19 @@ ADR-108, additive, requested by akit (A36, A37, A38):
 - `Live::set_write_timeout` / `write_timeout`: `Config::write_timeout` is reloadable
   (`Engine::reload` lists it in `applied`), on epoll and io_uring.
 
+### Added: bcrypt, the client's certificate on each request, and requests suspended and resumed (akio-crypto, akio-tls, akio-quic, akio-http, akio-h3)
+
+ADR-109, additive, requested by akit (A63, A64, A65):
+
+- `akio_crypto::bcrypt`: `Hash::parse` / `verify` / `Display`, `hash` and `hash_with_salt`, for
+  `$2a$`, `$2b$` and `$2y$` hashes as Go and `htpasswd -B` make them.
+- `Request::peer_certificates`: the chain the client sent and the TLS handshake verified, on every
+  HTTP/1.1, HTTP/2 and HTTP/3 request, shared per connection; `TlsInfo::peer_certificates`,
+  `akio_tls::peer_chain` (`PeerChain`) and `akio_quic::Connection::peer_certificates`.
+- `Context::suspend` and `Suspended::resume`: a request paused, then gone on with from any thread
+  where it stopped (the next middleware, the handler); `Context::suspend_to_pool` runs work on the
+  logical pool with it (`503` when the pool is full). Not for a request whose body is streamed.
+
 ### Fixed: a connection right after a listener's removal no longer lands on its old sockets (akio, akio-uring, akio-epoll)
 
 `Engine::remove_listener` and `shutdown_listener` (ADR-099) returned once the change was posted to

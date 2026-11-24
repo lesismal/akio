@@ -138,6 +138,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             early_len: 0,
             consumed: 0,
             span: crate::trace::connection_span(c.peer_addr(), "1.1"),
+            peer_certs: PeerCerts::default(),
         }
     }
 
@@ -221,6 +222,32 @@ pub struct Session<S> {
     consumed: u64,
     /// The connection span (`crate::trace`), ended on close.
     span: akio_log::span::Span,
+    /// The client's verified certificate chain, for its requests.
+    peer_certs: PeerCerts,
+}
+
+/// A connection's verified client certificate chain ([`Request::peer_certificates`]), asked of
+/// its TLS transport until the handshake is done, then kept: each request clones an `Arc`.
+#[derive(Debug, Default)]
+pub(crate) struct PeerCerts {
+    known: bool,
+    chain: Option<Arc<[Vec<u8>]>>,
+}
+
+impl PeerCerts {
+    /// The chain the client of `c` sent and the handshake verified, if any.
+    pub(crate) fn get(&mut self, c: &akio_core::ConnInner) -> Option<Arc<[Vec<u8>]>> {
+        if !self.known {
+            match akio::tls::peer_chain(c) {
+                // TLS 1.3 early data comes before the client's certificate.
+                akio::tls::PeerChain::Handshaking => return None,
+                akio::tls::PeerChain::Chain(chain) => self.chain = Some(chain),
+                _ => {}
+            }
+            self.known = true;
+        }
+        self.chain.clone()
+    }
 }
 
 impl<S> std::fmt::Debug for Session<S> {
@@ -714,6 +741,7 @@ impl<S: Service> Session<S> {
             body: Vec::new(),
             peer: c.peer_addr(),
             protocol: None,
+            peer_certificates: self.peer_certs.get(c.inner()),
         };
         let Some(kind) = kind else {
             return self.dispatch(c, req, keep_alive);
