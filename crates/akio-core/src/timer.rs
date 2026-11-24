@@ -1,4 +1,4 @@
-//! Timers that run on the I/O loop that set them (ADR-099).
+//! Timers that run on the I/O loop that set them (ADR-103).
 //!
 //! [`after`] schedules a closure on the **calling** I/O thread's own timer wheel: no lock, no
 //! other thread, no wakeup. When it is due, the loop runs it on that same thread, between two

@@ -23,10 +23,17 @@
 //! (中文: [核心概念](https://lesismal.github.io/akio/zh-CN/concepts/index.html)、[快速上手](https://lesismal.github.io/akio/zh-CN/getting-started.html)).
 #![warn(clippy::unwrap_used)]
 
-use std::{io, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
+};
 
 pub mod dns;
 pub mod numa;
+#[cfg(all(feature = "tun", any(target_os = "linux", target_os = "macos")))]
+mod tun_engine;
 
 /// TLS: wrap an acceptor in [`tls::Tls`] to serve or dial over TLS (configs: [`tls::ServerConfig`],
 /// [`tls::ClientConfig`]).
@@ -48,6 +55,14 @@ pub use akio_log as log;
 #[cfg(feature = "dpdk")]
 pub use akio_dpdk as dpdk;
 
+use akio_core::{
+    AcceptFilter, DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr,
+};
+/// TUN devices (cargo feature `tun`, Linux and macOS): layer-3 virtual interfaces served on I/O
+/// threads, one IP packet per `on_data` and per `send`; see [`Engine::serve_tun`].
+#[cfg(all(feature = "tun", any(target_os = "linux", target_os = "macos")))]
+pub use akio_tun as tun;
+
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
     DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,
@@ -55,7 +70,6 @@ pub use akio_core::{
     ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
     UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
 };
-use akio_core::{DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr};
 #[doc(hidden)]
 pub use akio_core::{DynAcceptor, DynHandler};
 pub use numa::{NumaConfig, NumaPlacement, NumaReport, NumaStatus, ThreadPlacement};
@@ -130,19 +144,6 @@ impl RoundsConfig {
     }
 }
 
-/// Acceleration/steering layer, orthogonal to [`Backend`] (ADR-006).
-#[derive(Clone, Debug, Default)]
-#[non_exhaustive]
-pub enum Accel {
-    /// No acceleration: plain `SO_REUSEPORT` hashing.
-    #[default]
-    None,
-    /// BPF steering of new connections / UDP peers to I/O threads (Linux). Attaches what the
-    /// kernel and privileges allow and otherwise keeps the kernel's default distribution; see
-    /// [`Engine::accel_status`] for what was attached.
-    Ebpf(EbpfConfig),
-}
-
 /// How a TCP listener spreads new connections over its I/O threads ([`Listener::balance`],
 /// ADR-100). Either way a connection stays on one thread for its whole life (ADR-001).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -163,6 +164,19 @@ pub enum Balance {
     /// is kept ([`Kernel`](Self::Kernel)).
     #[default]
     LeastConnections,
+}
+
+/// Acceleration/steering layer, orthogonal to [`Backend`] (ADR-006).
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub enum Accel {
+    /// No acceleration: plain `SO_REUSEPORT` hashing.
+    #[default]
+    None,
+    /// BPF steering of new connections / UDP peers to I/O threads (Linux). Attaches what the
+    /// kernel and privileges allow and otherwise keeps the kernel's default distribution; see
+    /// [`Engine::accel_status`] for what was attached.
+    Ebpf(EbpfConfig),
 }
 
 /// Configuration of [`Accel::Ebpf`]. `#[non_exhaustive]`: start from
@@ -223,7 +237,6 @@ pub struct Listener {
     /// Set by [`Listener::backend`]; `AKIO_DEFAULT_BACKEND` applies only when it is not.
     backend_explicit: bool,
     accel: Accel,
-    balance: Balance,
     threads: usize,
     acceptor: Option<Arc<dyn DynAcceptor>>,
     /// The handler factory of a connectionless datagram listener (ADR-065).
@@ -232,6 +245,9 @@ pub struct Listener {
     inherited: Option<std::net::TcpListener>,
     /// Set by [`Listener::scheduling`]; `AKIO_DEFAULT_SCHEDULING` applies when it is not.
     scheduling: Option<Scheduling>,
+    balance: Balance,
+    /// Run on every accepted connection before the acceptor (ADR-099).
+    filter: Option<AcceptFilter>,
 }
 
 impl std::fmt::Debug for Listener {
@@ -249,12 +265,13 @@ impl Listener {
             backend: Backend::default(),
             backend_explicit: false,
             accel: Accel::default(),
-            balance: Balance::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             acceptor: None,
             datagrams: None,
             inherited: None,
+            filter: None,
             scheduling: None,
+            balance: Balance::default(),
         }
     }
 
@@ -373,6 +390,300 @@ impl Listener {
         self.acceptor = Some(acceptor.into().into_dyn());
         self
     }
+
+    /// Filters this TCP listener's connections (ADR-099): `filter` is called on the I/O thread
+    /// with the peer's address right after `accept`, before the `max_connections` check, the
+    /// acceptor's `on_open` and any transport (TLS) work; `false` closes the connection at once.
+    /// Allow / deny lists go here. It runs for every connection, on the hot path of accepting:
+    /// keep it to a lookup, never block (rules 1, 12). A filter that panics refuses the
+    /// connection. Refused connections are counted in [`LoopCounters::filtered`]
+    /// (`akio_connections_filtered_total`). Swap or clear it while the engine runs with
+    /// [`Engine::set_listener_filter`] / [`Engine::clear_listener_filter`].
+    ///
+    /// TCP listeners on epoll, kqueue and io_uring: on a UDP or datagram listener `build` /
+    /// [`Engine::add_listener`] fail with `InvalidInput`, on the DPDK backend with
+    /// `Unsupported`.
+    #[must_use]
+    pub fn filter(mut self, filter: impl Fn(&SocketAddr) -> bool + Send + Sync + 'static) -> Self {
+        self.filter = Some(Arc::new(filter));
+        self
+    }
+}
+
+/// Identifies one listener of an [`Engine`] (ADR-099). The listeners given to the builder have
+/// ids `0..n` in the order they were added (their index in [`Engine::local_addrs`]); those added
+/// with [`Engine::add_listener`] get the following ones. Never reused within an engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ListenerId(u64);
+
+impl ListenerId {
+    /// The id as a number.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ListenerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "listener#{}", self.0)
+    }
+}
+
+/// One listener of a running engine ([`Engine::listeners`]).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct ListenerInfo {
+    /// Its id.
+    pub id: ListenerId,
+    /// The bound address (port 0 resolved).
+    pub local_addr: SocketAddr,
+    /// Active I/O threads.
+    pub threads: usize,
+    /// What [`Accel`] it got.
+    pub accel: AccelStatus,
+    /// A UDP or datagram listener (which cannot be removed or filtered at run time).
+    pub udp: bool,
+}
+
+/// What kind of group a listener became.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Tcp,
+    /// Per-peer UDP on the epoll UDP loop.
+    Udp,
+    /// Connectionless datagrams (ADR-065).
+    Datagrams,
+    /// The DPDK backend (`udp`: a UDP listener).
+    #[cfg_attr(not(feature = "dpdk"), allow(dead_code))]
+    Dpdk {
+        udp: bool,
+    },
+}
+
+/// The default of [`EngineBuilder::max_listeners`].
+const DEFAULT_MAX_LISTENERS: usize = 1024;
+
+/// Binds the group of listener `l` (as `build` and `Engine::add_listener` do) and installs its
+/// filter; returns it with its kind, the acceleration it asks for and whether it asked for
+/// accept-time balancing (ADR-100).
+fn bind_one(
+    mut l: Listener,
+    env_backend: Option<&Backend>,
+    env_scheduling: Option<&Scheduling>,
+    cfg: &Config,
+    pool: &Arc<Pool>,
+) -> io::Result<(Box<dyn Group>, Kind, Accel, bool)> {
+    let explicit_scheduling = l.scheduling.is_some();
+    // The environment's default never overrides what the listener asked for explicitly
+    // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s), BPF steering and accept filters
+    // need per-thread loops.
+    let env_applies = matches!(l.backend, Backend::Epoll)
+        && (l.backend_explicit || env_backend.is_none())
+        && matches!(l.accel, Accel::None)
+        && l.filter.is_none();
+    let scheduling = l
+        .scheduling
+        .take()
+        .or_else(|| env_scheduling.cloned().filter(|_| env_applies))
+        .unwrap_or_default();
+    let balance = !l.udp && l.balance == Balance::LeastConnections;
+    if let Some(b) = env_backend {
+        // Per-peer UDP listeners always run on the epoll UDP loop; datagram listeners
+        // follow the default like TCP.
+        if !l.backend_explicit && (!l.udp || l.datagrams.is_some()) {
+            l.backend = b.clone();
+        }
+    }
+    let accel = l.accel.clone();
+    let filter = l.filter.take();
+    if filter.is_some() {
+        #[cfg(feature = "dpdk")]
+        if matches!(l.backend, Backend::Dpdk(_)) {
+            return Err(unsupported("an accept filter on the DPDK backend"));
+        }
+        if l.udp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "an accept filter applies to TCP listeners",
+            ));
+        }
+    }
+    if l.udp && explicit_scheduling && scheduling != Scheduling::Loops {
+        log_or_stderr(
+            akio_log::Level::Warn,
+            format_args!(
+                "rounds scheduling is TCP-only; UDP listener {} keeps its loops",
+                l.addr
+            ),
+        );
+    }
+    let (group, kind) = match &scheduling {
+        Scheduling::Rounds(rc) if !l.udp && l.datagrams.is_none() => {
+            (bind_rounds(l, *rc, cfg, pool)?, Kind::Tcp)
+        }
+        _ => bind_group(l, cfg, pool)?,
+    };
+    if filter.is_some() {
+        group.set_filter(filter)?;
+    }
+    Ok((group, kind, accel, balance))
+}
+
+/// Binds a TCP listener with [`Scheduling::Rounds`] (ADR-104).
+fn bind_rounds(
+    l: Listener,
+    rc: RoundsConfig,
+    cfg: &Config,
+    pool: &Arc<Pool>,
+) -> io::Result<Box<dyn Group>> {
+    if let Backend::IoUring(_) = &l.backend {
+        if l.backend_explicit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rounds scheduling runs on epoll/kqueue, not io_uring",
+            ));
+        }
+    }
+    #[cfg(feature = "dpdk")]
+    if matches!(l.backend, Backend::Dpdk(_)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rounds scheduling runs on epoll/kqueue, not DPDK",
+        ));
+    }
+    let acceptor = l.acceptor.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
+    })?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let rc = rc.epoll();
+        Ok(Box::new(match l.inherited {
+            Some(listener) => akio_epoll::RoundsGroup::bind_listener(
+                listener,
+                acceptor,
+                rc,
+                cfg.clone(),
+                pool.clone(),
+            )?,
+            None => akio_epoll::RoundsGroup::bind(
+                Some((l.addr, acceptor)),
+                rc,
+                cfg.clone(),
+                pool.clone(),
+            )?,
+        }))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (rc, acceptor, cfg, pool);
+        Err(unsupported("rounds scheduling on this platform"))
+    }
+}
+
+fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dyn Group>, Kind)> {
+    if let Some(factory) = l.datagrams {
+        if !l.udp || l.acceptor.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "serve_datagrams needs a UDP listener without .serve(..)",
+            ));
+        }
+        let g = bind_datagrams(l.addr, factory, &l.backend, l.threads, cfg, pool)?;
+        return Ok((g, Kind::Datagrams));
+    }
+    let acceptor = l.acceptor.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
+    })?;
+    #[cfg(feature = "dpdk")]
+    if let Backend::Dpdk(d) = &l.backend {
+        let g = akio_dpdk::DpdkGroup::bind(
+            Some((l.addr, acceptor)),
+            l.udp,
+            d,
+            cfg.clone(),
+            pool.clone(),
+        )?;
+        return Ok((Box::new(g), Kind::Dpdk { udp: l.udp }));
+    }
+    if l.udp {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            if let Backend::IoUring(u) = &l.backend {
+                if u.strict {
+                    return Err(unsupported("UDP on the io_uring backend"));
+                }
+            }
+            let g = akio_epoll::UdpGroup::bind(
+                Some((l.addr, acceptor)),
+                l.threads,
+                cfg.clone(),
+                pool.clone(),
+            )?;
+            return Ok((Box::new(g), Kind::Udp));
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        return Err(unsupported("UDP on this platform"));
+    }
+    if let Some(listener) = l.inherited {
+        let g = bind_inherited(listener, acceptor, &l.backend, l.threads, cfg, pool)?;
+        return Ok((g, Kind::Tcp));
+    }
+    let epoll = |acceptor| -> io::Result<Box<dyn Group>> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        return Ok(Box::new(akio_epoll::EpollGroup::bind(
+            Some((l.addr, acceptor)),
+            l.threads,
+            cfg.clone(),
+            pool.clone(),
+        )?));
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = acceptor;
+            Err(unsupported("the epoll/kqueue backend on this platform"))
+        }
+    };
+    let g = match &l.backend {
+        Backend::Epoll => epoll(acceptor)?,
+        #[cfg(feature = "dpdk")]
+        Backend::Dpdk(_) => unreachable!("served above"),
+        Backend::IoUring(u) => {
+            #[cfg(target_os = "linux")]
+            match akio_uring::probe() {
+                Ok(()) => Box::new(akio_uring::UringGroup::bind(
+                    Some((l.addr, acceptor)),
+                    l.threads,
+                    cfg.clone(),
+                    pool.clone(),
+                    akio_uring::UringOptions {
+                        entries: u.entries,
+                        sqpoll: u.sqpoll,
+                    },
+                )?),
+                Err(why) if u.strict => {
+                    return Err(unsupported(&format!("the io_uring backend ({why})")));
+                }
+                Err(why) => {
+                    log_or_stderr(
+                        akio_log::Level::Warn,
+                        format_args!("io_uring unavailable ({why}); using epoll"),
+                    );
+                    epoll(acceptor)?
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                if u.strict {
+                    return Err(unsupported("the io_uring backend on this platform"));
+                }
+                log_or_stderr(
+                    akio_log::Level::Warn,
+                    format_args!("io_uring is Linux-only; using epoll/kqueue"),
+                );
+                epoll(acceptor)?
+            }
+        }
+    };
+    Ok((g, Kind::Tcp))
 }
 
 /// Builds an [`Engine`].
@@ -384,6 +695,7 @@ pub struct EngineBuilder {
     cfg: Config,
     pool: PoolConfig,
     numa: Option<NumaConfig>,
+    max_listeners: Option<usize>,
 }
 
 impl EngineBuilder {
@@ -434,6 +746,18 @@ impl EngineBuilder {
         self
     }
 
+    /// The most listeners the engine may have at once (default 1024, at least 1; ADR-099):
+    /// listeners accepting connections, of every kind, plus those removed with
+    /// [`Engine::remove_listener`] / [`Engine::shutdown_listener`] whose threads still serve
+    /// connections. [`Engine::add_listener`] past it fails with
+    /// [`io::ErrorKind::QuotaExceeded`]. The listeners given to the builder count, but the
+    /// builder itself is not limited.
+    #[must_use]
+    pub fn max_listeners(mut self, n: usize) -> Self {
+        self.max_listeners = Some(n.max(1));
+        self
+    }
+
     /// Validates the configuration, binds every listener and prepares the I/O threads.
     pub fn build(mut self) -> io::Result<Engine> {
         let numa_cfg = self
@@ -456,206 +780,48 @@ impl EngineBuilder {
         }
         let telemetry = self.cfg.telemetry.clone();
         telemetry.bind(&self.cfg);
-        let mut groups: Vec<Box<dyn Group>> = Vec::new();
+        let mut groups: Vec<Arc<dyn Group>> = Vec::new();
         let pool = Pool::new(self.pool.clone());
         telemetry.set_pool(&pool);
         let mut udp_last: Option<usize> = None;
         let mut udp_listeners: Vec<usize> = Vec::new();
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
+        let mut kinds: Vec<Kind> = Vec::new();
         // Per listener: accept-time balancing asked for (ADR-100).
         let mut balances: Vec<bool> = Vec::new();
         // Groups whose threads NUMA placement leaves alone (DPDK places its own lcores).
-        #[cfg_attr(not(feature = "dpdk"), allow(unused_mut))]
         let mut unplaced: Vec<usize> = Vec::new();
         let env_backend = env_default_backend(); // read once per build (ADR-029)
         let env_scheduling = env_default_scheduling(); // likewise (ADR-104)
-        for mut l in self.listeners {
-            let explicit_scheduling = l.scheduling.is_some();
-            // The environment's default never overrides what the listener asked for explicitly
-            // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s) and BPF steering need
-            // per-thread loops.
-            let env_applies = matches!(l.backend, Backend::Epoll)
-                && (l.backend_explicit || env_backend.is_none())
-                && matches!(l.accel, Accel::None);
-            let scheduling = l
-                .scheduling
-                .take()
-                .or_else(|| env_scheduling.clone().filter(|_| env_applies))
-                .unwrap_or_default();
-            if let Some(b) = &env_backend {
-                // Per-peer UDP listeners always run on the epoll UDP loop; datagram listeners
-                // follow the default like TCP.
-                if !l.backend_explicit && (!l.udp || l.datagrams.is_some()) {
-                    l.backend = b.clone();
-                }
-            }
-            accels.push(l.accel.clone());
-            balances.push(!l.udp && l.balance == Balance::LeastConnections);
-            if let Some(factory) = l.datagrams.take() {
-                if !l.udp || l.acceptor.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "serve_datagrams needs a UDP listener without .serve(..)",
-                    ));
-                }
+        let rt_cfg = self.cfg.clone();
+        for l in self.listeners {
+            let (g, kind, accel, balance) = bind_one(
+                l,
+                env_backend.as_ref(),
+                env_scheduling.as_ref(),
+                &self.cfg,
+                &pool,
+            )?;
+            balances.push(balance);
+            match kind {
                 // Never a target of `dial` (TCP) or of `dial_udp` / `bind_udp`.
-                udp_listeners.push(groups.len());
-                groups.push(bind_datagrams(
-                    l.addr, factory, &l.backend, l.threads, &self.cfg, &pool,
-                )?);
-                continue;
-            }
-            let acceptor = l.acceptor.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
-            })?;
-            #[cfg(feature = "dpdk")]
-            if let Backend::Dpdk(d) = &l.backend {
-                if l.udp {
-                    udp_last = Some(groups.len());
-                }
-                unplaced.push(groups.len());
-                groups.push(Box::new(akio_dpdk::DpdkGroup::bind(
-                    Some((l.addr, acceptor)),
-                    l.udp,
-                    d,
-                    self.cfg.clone(),
-                    pool.clone(),
-                )?));
-                continue;
-            }
-            if l.udp && explicit_scheduling && scheduling != Scheduling::Loops {
-                log_or_stderr(
-                    akio_log::Level::Warn,
-                    format_args!(
-                        "rounds scheduling is TCP-only; UDP listener {} keeps its loops",
-                        l.addr
-                    ),
-                );
-            }
-            if l.udp {
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                {
-                    if let Backend::IoUring(u) = &l.backend {
-                        if u.strict {
-                            return Err(unsupported("UDP on the io_uring backend"));
-                        }
-                    }
+                Kind::Datagrams => udp_listeners.push(groups.len()),
+                Kind::Udp => {
                     udp_last = Some(groups.len());
                     udp_listeners.push(groups.len());
-                    groups.push(Box::new(akio_epoll::UdpGroup::bind(
-                        Some((l.addr, acceptor)),
-                        l.threads,
-                        self.cfg.clone(),
-                        pool.clone(),
-                    )?));
-                    continue;
                 }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                return Err(unsupported("UDP on this platform"));
-            }
-            if let Scheduling::Rounds(rc) = &scheduling {
-                if let Backend::IoUring(_) = &l.backend {
-                    if l.backend_explicit {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "rounds scheduling runs on epoll/kqueue, not io_uring",
-                        ));
+                Kind::Dpdk { udp } => {
+                    if udp {
+                        udp_last = Some(groups.len());
                     }
+                    unplaced.push(groups.len());
                 }
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                {
-                    let rc = rc.epoll();
-                    groups.push(Box::new(match l.inherited {
-                        Some(listener) => akio_epoll::RoundsGroup::bind_listener(
-                            listener,
-                            acceptor,
-                            rc,
-                            self.cfg.clone(),
-                            pool.clone(),
-                        )?,
-                        None => akio_epoll::RoundsGroup::bind(
-                            Some((l.addr, acceptor)),
-                            rc,
-                            self.cfg.clone(),
-                            pool.clone(),
-                        )?,
-                    }));
-                    continue;
-                }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                {
-                    let _ = rc;
-                    return Err(unsupported("rounds scheduling on this platform"));
-                }
+                Kind::Tcp => {}
             }
-            if let Some(listener) = l.inherited {
-                groups.push(bind_inherited(
-                    listener, acceptor, &l.backend, l.threads, &self.cfg, &pool,
-                )?);
-                continue;
-            }
-            match l.backend {
-                Backend::Epoll => {
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    groups.push(Box::new(akio_epoll::EpollGroup::bind(
-                        Some((l.addr, acceptor)),
-                        l.threads,
-                        self.cfg.clone(),
-                        pool.clone(),
-                    )?));
-                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                    return Err(unsupported("the epoll/kqueue backend on this platform"));
-                }
-                #[cfg(feature = "dpdk")]
-                Backend::Dpdk(_) => {} // served above
-                Backend::IoUring(u) => {
-                    #[cfg(target_os = "linux")]
-                    match akio_uring::probe() {
-                        Ok(()) => groups.push(Box::new(akio_uring::UringGroup::bind(
-                            Some((l.addr, acceptor)),
-                            l.threads,
-                            self.cfg.clone(),
-                            pool.clone(),
-                            akio_uring::UringOptions {
-                                entries: u.entries,
-                                sqpoll: u.sqpoll,
-                            },
-                        )?)),
-                        Err(why) if u.strict => {
-                            return Err(unsupported(&format!("the io_uring backend ({why})")));
-                        }
-                        Err(why) => {
-                            log_or_stderr(
-                                akio_log::Level::Warn,
-                                format_args!("io_uring unavailable ({why}); using epoll"),
-                            );
-                            groups.push(Box::new(akio_epoll::EpollGroup::bind(
-                                Some((l.addr, acceptor)),
-                                l.threads,
-                                self.cfg.clone(),
-                                pool.clone(),
-                            )?));
-                        }
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        if u.strict {
-                            return Err(unsupported("the io_uring backend on this platform"));
-                        }
-                        log_or_stderr(
-                            akio_log::Level::Warn,
-                            format_args!("io_uring is Linux-only; using epoll/kqueue"),
-                        );
-                        groups.push(Box::new(akio_epoll::EpollGroup::bind(
-                            Some((l.addr, acceptor)),
-                            l.threads,
-                            self.cfg.clone(),
-                            pool.clone(),
-                        )?));
-                    }
-                }
-            }
+            accels.push(accel);
+            kinds.push(kind);
+            groups.push(Arc::from(g));
         }
         let accel = accels
             .iter()
@@ -674,7 +840,7 @@ impl EngineBuilder {
         if self.client_threads > 0 {
             tcp_dial = Some(groups.len());
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            groups.push(Box::new(akio_epoll::EpollGroup::bind(
+            groups.push(Arc::new(akio_epoll::EpollGroup::bind(
                 None,
                 self.client_threads,
                 self.cfg.clone(),
@@ -686,7 +852,7 @@ impl EngineBuilder {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 udp_client = Some(groups.len());
-                groups.push(Box::new(akio_epoll::UdpGroup::bind(
+                groups.push(Arc::new(akio_epoll::UdpGroup::bind(
                     None,
                     self.udp_client_threads,
                     self.cfg,
@@ -694,7 +860,20 @@ impl EngineBuilder {
                 )?));
             }
         }
+        let rt_nodes = numa_nodes.as_ref().ok().cloned().unwrap_or_default();
         let numa = place_threads(&numa_cfg, numa_nodes, &groups, &accel, &unplaced, pool_cpus);
+        let entries = kinds
+            .iter()
+            .enumerate()
+            .map(|(i, &kind)| Entry {
+                id: ListenerId(i as u64),
+                group: groups[i].clone(),
+                accel: accel[i].clone(),
+                kind,
+                index: Some(i),
+            })
+            .collect::<Vec<_>>();
+        let next_id = entries.len() as u64;
         Ok(Engine {
             groups,
             pool,
@@ -704,6 +883,22 @@ impl EngineBuilder {
             accel,
             telemetry,
             numa: Box::new(numa),
+            rt: Box::new(Runtime {
+                state: Mutex::new(RtState {
+                    entries,
+                    leaving: Vec::new(),
+                    next_id,
+                    started: false,
+                    stopped: false,
+                }),
+                stopped: Condvar::new(),
+                cfg: rt_cfg,
+                env_backend,
+                env_scheduling,
+                numa_cfg,
+                numa_nodes: rt_nodes,
+                max_listeners: self.max_listeners.unwrap_or(DEFAULT_MAX_LISTENERS),
+            }),
         })
     }
 }
@@ -964,7 +1159,7 @@ fn akio_pool_hook(cpus: Vec<usize>) -> akio_core::ThreadHook {
 fn place_threads(
     cfg: &NumaConfig,
     nodes: std::result::Result<Vec<numa::UsableNode>, String>,
-    groups: &[Box<dyn Group>],
+    groups: &[Arc<dyn Group>],
     accel: &[AccelStatus],
     unplaced: &[usize],
     pool_cpus: Vec<usize>,
@@ -1073,7 +1268,7 @@ fn parse_default_backend(v: Option<&str>) -> Option<Backend> {
 /// `Engine` is `Send + Sync`: share it in an `Arc` to call [`shutdown`](Engine::shutdown) or
 /// [`dial`](Engine::dial) from other threads while [`run`](Engine::run) blocks.
 pub struct Engine {
-    groups: Vec<Box<dyn Group>>,
+    groups: Vec<Arc<dyn Group>>,
     pool: Arc<Pool>,
     udp_client: Option<usize>,
     /// Indices into `groups` of the UDP listeners.
@@ -1084,6 +1279,50 @@ pub struct Engine {
     telemetry: Arc<Telemetry>,
     /// Boxed: `Engine` is embedded by value in clients, keep it small.
     numa: Box<NumaStatus>,
+    /// Listeners by id, added and removed at run time (ADR-099).
+    rt: Box<Runtime>,
+}
+
+/// What the engine needs to add and remove listeners at run time (ADR-099).
+struct Runtime {
+    state: Mutex<RtState>,
+    /// Signalled when `shutdown` is called (`wait`).
+    stopped: Condvar,
+    /// The configuration listeners added later are bound with (live settings from telemetry).
+    cfg: Config,
+    env_backend: Option<Backend>,
+    env_scheduling: Option<Scheduling>,
+    numa_cfg: NumaConfig,
+    /// The nodes the engine places threads on (empty: no placement).
+    numa_nodes: Vec<numa::UsableNode>,
+    max_listeners: usize,
+}
+
+struct RtState {
+    /// The listeners still accepting, by id (build-time ones first).
+    entries: Vec<Entry>,
+    /// Groups of listeners added at run time and removed since, until their threads exit.
+    leaving: Vec<Arc<dyn Group>>,
+    next_id: u64,
+    started: bool,
+    stopped: bool,
+}
+
+struct Entry {
+    id: ListenerId,
+    group: Arc<dyn Group>,
+    accel: AccelStatus,
+    kind: Kind,
+    /// Index in `Engine::groups` of a listener given to the builder.
+    index: Option<usize>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn not_found(id: ListenerId) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, format!("no {id}"))
 }
 
 impl std::fmt::Debug for Engine {
@@ -1115,9 +1354,248 @@ impl Engine {
 
     /// Spawns the I/O threads and returns immediately. Idempotent.
     pub fn start(&self) -> io::Result<()> {
+        // Held throughout: a listener added meanwhile is started here or by `add_listener`.
+        let mut st = lock(&self.rt.state);
         self.groups.iter().try_for_each(|g| g.start())?;
+        for e in st.entries.iter().filter(|e| e.index.is_none()) {
+            e.group.start()?;
+        }
+        st.started = true;
+        drop(st);
         akio_log::info!(target: "akio", listeners:? = self.local_addrs(); "engine started");
         Ok(())
+    }
+
+    /// Adds a TCP listener to the engine, running or not (ADR-099): it is bound as
+    /// [`EngineBuilder::build`] binds the builder's listeners, with its own backend, thread
+    /// count (one `SO_REUSEPORT` socket per thread on Linux), [`Accel`], inherited socket
+    /// ([`Listener::tcp_from_std`]) and [`filter`](Listener::filter), the engine's [`Config`]
+    /// (with the live settings in force), pool and telemetry, and NUMA placement when the
+    /// engine places its threads. Its I/O threads start at once when the engine has started,
+    /// else with [`start`](Self::start). Returns its id; [`listeners`](Self::listeners) reports
+    /// its address (port 0 resolved).
+    ///
+    /// Errors: bind errors as from `build`; `InvalidInput` for a UDP or datagram listener
+    /// ([`bind_udp`](Self::bind_udp) binds UDP at run time) or one without `serve`;
+    /// `Unsupported` for the DPDK backend; `QuotaExceeded` at
+    /// [`EngineBuilder::max_listeners`]; `NotConnected` after [`shutdown`](Self::shutdown).
+    /// Do not call it from an I/O thread's callback (it binds sockets and may start threads).
+    pub fn add_listener(&self, listener: Listener) -> io::Result<ListenerId> {
+        self.reap();
+        if listener.udp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "add_listener takes TCP listeners (bind_udp binds UDP sockets at run time)",
+            ));
+        }
+        #[cfg(feature = "dpdk")]
+        if matches!(listener.backend, Backend::Dpdk(_)) {
+            return Err(unsupported("adding a DPDK listener at run time"));
+        }
+        let rt = &self.rt;
+        let mut st = lock(&rt.state);
+        if st.stopped {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the engine is shutting down",
+            ));
+        }
+        if st.entries.len() + st.leaving.len() >= rt.max_listeners {
+            return Err(io::Error::new(
+                io::ErrorKind::QuotaExceeded,
+                format!(
+                    "the engine has max_listeners ({}) listeners",
+                    rt.max_listeners
+                ),
+            ));
+        }
+        let mut cfg = rt.cfg.clone();
+        cfg.backlog = self.telemetry.live().backlog();
+        let (g, kind, accel, balance) = bind_one(
+            listener,
+            rt.env_backend.as_ref(),
+            rt.env_scheduling.as_ref(),
+            &cfg,
+            &self.pool,
+        )?;
+        let g: Arc<dyn Group> = Arc::from(g);
+        let accel = apply_accel(&accel, g.as_ref())?;
+        let placed = matches!(accel, AccelStatus::Steering(_)) || rt.numa_cfg.incoming_cpu;
+        g.set_balance(balance && !placed);
+        if !rt.numa_nodes.is_empty() {
+            // The report keeps describing the build.
+            let _ = place_threads(
+                &rt.numa_cfg,
+                Ok(rt.numa_nodes.clone()),
+                std::slice::from_ref(&g),
+                std::slice::from_ref(&accel),
+                &[],
+                Vec::new(),
+            );
+        }
+        if st.started {
+            if let Err(e) = g.start() {
+                g.shutdown();
+                st.leaving.push(g);
+                return Err(e);
+            }
+        }
+        let id = ListenerId(st.next_id);
+        st.next_id += 1;
+        akio_log::info!(target: "akio", listener = id.0, local:% = g.local_addr(), threads = g.threads(); "listener added");
+        st.entries.push(Entry {
+            id,
+            group: g,
+            accel,
+            kind,
+            index: None,
+        });
+        Ok(id)
+    }
+
+    /// Removes listener `id` (ADR-099): it stops accepting and its listening sockets are
+    /// closed, while its open connections keep running on the threads that own them
+    /// (connections never move). Each of its I/O threads exits once its last connection is
+    /// closed; those of a builder listener that also serve [`dial`](Self::dial) and
+    /// [`adopt_tcp`](Self::adopt_tcp) (the last TCP listener when there are no
+    /// [`client_threads`](EngineBuilder::client_threads)) stay up for them until shutdown.
+    ///
+    /// Returns once the change is posted to the I/O threads. Each closes its socket at its next
+    /// loop iteration (io_uring: once the cancellation of its accept completes); connections
+    /// the kernel had queued and not yet accepted are reset, as when any listening socket
+    /// closes. To replace a listener without a gap, add the new one first: on Linux both share
+    /// the port (`SO_REUSEPORT`) until the old one goes. A builder listener stays in
+    /// [`local_addrs`](Self::local_addrs) (its index is stable), with no thread in
+    /// [`threads`](Self::threads) once they exit.
+    ///
+    /// Errors: `NotFound` for an unknown or removed id; `Unsupported` for UDP, datagram and
+    /// DPDK listeners.
+    pub fn remove_listener(&self, id: ListenerId) -> io::Result<()> {
+        self.unlisten(id, None)
+    }
+
+    /// [`remove_listener`](Self::remove_listener), and drains its connections (ADR-099): each
+    /// gets [`Acceptor::on_shutdown`] at once, as in an engine [`shutdown`](Self::shutdown) (an
+    /// HTTP server answers with `Connection: close` or GOAWAY), and those still open after
+    /// `drain` are closed (`on_close` runs). `Duration::ZERO` closes them at the threads' next
+    /// loop iteration. A builder listener whose threads also serve `dial` drains the dialed
+    /// connections too. Errors as for `remove_listener`.
+    pub fn shutdown_listener(&self, id: ListenerId, drain: Duration) -> io::Result<()> {
+        self.unlisten(id, Some(drain))
+    }
+
+    fn unlisten(&self, id: ListenerId, drain: Option<Duration>) -> io::Result<()> {
+        self.reap();
+        let mut st = lock(&self.rt.state);
+        let pos = st
+            .entries
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or_else(|| not_found(id))?;
+        let e = &st.entries[pos];
+        if e.kind != Kind::Tcp {
+            return Err(unsupported("removing a UDP, datagram or DPDK listener"));
+        }
+        // The threads of the group `dial` uses stay for dials.
+        let dials_here = e.index.is_some() && e.index == self.tcp_dial;
+        e.group.stop_listening(drain, !dials_here)?;
+        let e = st.entries.remove(pos);
+        akio_log::info!(target: "akio", listener = id.0, local:% = e.group.local_addr(), drain:? = drain; "listener removed");
+        if e.index.is_none() {
+            st.leaving.push(e.group);
+        }
+        Ok(())
+    }
+
+    /// Joins the groups of removed listeners whose threads have all exited, and takes their
+    /// threads out of the metrics (their counts stay in the totals).
+    fn reap(&self) {
+        let done: Vec<Arc<dyn Group>> = {
+            let mut st = lock(&self.rt.state);
+            let (done, keep) = std::mem::take(&mut st.leaving)
+                .into_iter()
+                .partition(|g| g.finished());
+            st.leaving = keep;
+            done
+        };
+        for g in done {
+            g.join();
+            self.telemetry.unregister_loops(&g.loop_stats());
+        }
+    }
+
+    /// The listeners still accepting connections (ADR-099): the builder's first, in the order
+    /// they were added, then those added with [`add_listener`](Self::add_listener).
+    pub fn listeners(&self) -> Vec<ListenerInfo> {
+        self.reap();
+        lock(&self.rt.state)
+            .entries
+            .iter()
+            .map(|e| ListenerInfo {
+                id: e.id,
+                local_addr: e.group.local_addr(),
+                threads: e.group.threads(),
+                accel: e.accel.clone(),
+                udp: matches!(
+                    e.kind,
+                    Kind::Udp | Kind::Datagrams | Kind::Dpdk { udp: true }
+                ),
+            })
+            .collect()
+    }
+
+    /// The group of listener `id` (still accepting) and its acceleration.
+    fn entry_group(&self, id: ListenerId) -> io::Result<(Arc<dyn Group>, AccelStatus, Kind)> {
+        let st = lock(&self.rt.state);
+        let e = st
+            .entries
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| not_found(id))?;
+        Ok((e.group.clone(), e.accel.clone(), e.kind))
+    }
+
+    /// [`set_threads`](Self::set_threads) for listener `id`, a builder listener or one added
+    /// at run time (ADR-099). Same rules and errors, and `NotFound` for an unknown or removed
+    /// id.
+    pub fn set_listener_threads(&self, id: ListenerId, threads: usize) -> io::Result<()> {
+        let (g, accel, _) = self.entry_group(id)?;
+        if matches!(accel, AccelStatus::Steering(_)) {
+            return Err(unsupported(
+                "changing the thread count of a listener with BPF steering",
+            ));
+        }
+        let before = g.threads();
+        g.set_threads(threads)?;
+        akio_log::info!(target: "akio", listener = id.0, local:% = g.local_addr(), from = before, to = threads.max(1); "I/O threads changed");
+        Ok(())
+    }
+
+    /// Installs or replaces the accept filter of TCP listener `id` (see [`Listener::filter`]):
+    /// every `accept` that starts after this returns runs it, on every I/O thread. `NotFound` for an unknown
+    /// or removed id, `Unsupported` for UDP, datagram and DPDK listeners.
+    pub fn set_listener_filter(
+        &self,
+        id: ListenerId,
+        filter: impl Fn(&SocketAddr) -> bool + Send + Sync + 'static,
+    ) -> io::Result<()> {
+        self.swap_filter(id, Some(Arc::new(filter)))
+    }
+
+    /// Removes the accept filter of TCP listener `id`: every connection is accepted again.
+    /// Errors as for [`set_listener_filter`](Self::set_listener_filter).
+    pub fn clear_listener_filter(&self, id: ListenerId) -> io::Result<()> {
+        self.swap_filter(id, None)
+    }
+
+    fn swap_filter(&self, id: ListenerId, filter: Option<AcceptFilter>) -> io::Result<()> {
+        let (g, _, kind) = self.entry_group(id)?;
+        if kind != Kind::Tcp {
+            return Err(unsupported(
+                "an accept filter on a UDP, datagram or DPDK listener",
+            ));
+        }
+        g.set_filter(filter)
     }
 
     /// Metrics, debug snapshots and live settings of this engine.
@@ -1206,9 +1684,26 @@ impl Engine {
         Ok(())
     }
 
-    /// Blocks until [`shutdown`](Self::shutdown) has completed.
+    /// Blocks until [`shutdown`](Self::shutdown) has completed: it was called and every I/O
+    /// thread has exited, those of listeners added at run time included.
     pub fn wait(&self) {
         self.groups.iter().for_each(|g| g.join());
+        let mut st = lock(&self.rt.state);
+        while !st.stopped {
+            st = self.rt.stopped.wait(st).unwrap_or_else(|p| p.into_inner());
+        }
+        // No listener is added any more.
+        let mut rest: Vec<Arc<dyn Group>> = std::mem::take(&mut st.leaving);
+        rest.extend(
+            st.entries
+                .iter()
+                .filter(|e| e.index.is_none())
+                .map(|e| e.group.clone()),
+        );
+        drop(st);
+        for g in &rest {
+            g.join();
+        }
         // I/O threads are gone, so no completion can be delivered any more: stop the pool.
         self.pool.shutdown();
         self.pool.join();
@@ -1260,7 +1755,15 @@ impl Engine {
     /// close before forcing the rest. Returns immediately; use [`wait`](Self::wait) to block.
     pub fn shutdown(&self) {
         akio_log::info!(target: "akio", open_connections = self.telemetry.open_connections(); "engine shutting down");
+        let mut st = lock(&self.rt.state);
+        st.stopped = true;
+        self.rt.stopped.notify_all();
         self.groups.iter().for_each(|g| g.shutdown());
+        st.entries
+            .iter()
+            .filter(|e| e.index.is_none())
+            .for_each(|e| e.group.shutdown());
+        st.leaving.iter().for_each(|g| g.shutdown());
     }
 
     /// Starts a UDP "connection" to `addr`: a socket of its own (so its own local port) that only

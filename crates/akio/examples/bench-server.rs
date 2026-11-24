@@ -14,6 +14,9 @@
 //! `AKIO_ACCEL=cpu|cpu-pin|hash` attaches `SO_REUSEPORT` steering (`Accel::Ebpf`; `cpu-pin` also
 //! pins I/O thread `i` to the CPUs `c % threads == i`), for the eBPF benchmark.
 //!
+//! `AKIO_FILTER=allow` installs an accept filter that allows every connection (TCP), to measure
+//! the filter's cost.
+//!
 //! `AKIO_KTLS=off|hardware|software|software-tx` sets `tls`'s kernel TLS mode (`Ktls`; takes
 //! effect with the `ktls` feature on Linux), for the kernel TLS benchmark.
 
@@ -139,6 +142,12 @@ fn main() -> std::io::Result<()> {
         Listener::tcp(addr).backend(backend)
     }
     .threads(threads);
+    // An accept filter that allows everyone, to measure its cost (ADR-099).
+    let l = if std::env::var("AKIO_FILTER").as_deref() == Ok("allow") {
+        l.filter(|_| true)
+    } else {
+        l
+    };
     let l = match std::env::var("AKIO_ACCEL").as_deref() {
         Ok(mode @ ("cpu" | "cpu-pin" | "hash")) => l.accel(Accel::Ebpf({
             let mut v = EbpfConfig::default();

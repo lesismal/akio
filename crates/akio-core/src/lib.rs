@@ -51,7 +51,7 @@ pub use datagrams::{DatagramPort, DatagramsFactory, datagrams_factory};
 pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, Replies};
 pub use error::{Error, Result};
 #[doc(hidden)]
-pub use group::Group;
+pub use group::{AcceptFilter, FilterCell, FilterView, Group};
 pub use group::{IcmpError, IcmpHandler, UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]

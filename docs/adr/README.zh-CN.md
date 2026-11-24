@@ -94,8 +94,13 @@
 - [ADR-092：视频播放缓冲，E-model 时延敏感度等级与房间噪声，VoIP 包长与迟到丢弃](092-video-playout-emodel-classes.zh-CN.md)（2026-11-23 采纳）
 - [ADR-093：UDP 数据报的到达接口，按已绑定套接字选择开启；mDNS 据此确定查询所在链路](093-udp-arrival-interface.zh-CN.md)（2026-11-23 采纳；了结 ADR-078 更新 4 的遗留项）
 - [ADR-094：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭](094-handlers-on-the-logical-pool.zh-CN.md)（2026-11-23 采纳）
-- [ADR-101：借用的 WebSocket 消息与无锁发送路径](101-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
+- [ADR-095：不终止 TLS 按 SNI 路由，以及 PROXY 协议（akio-mux）](095-mux-sni-routing-proxy-protocol.zh-CN.md)（2026-11-23 采纳）
+- [ADR-096：在 I/O 线程上服务 TUN 设备，独立成 crate](096-tun-devices.zh-CN.md)（2026-11-23 采纳）
+- [ADR-097：无 I/O 的 MP4 文件读取器与 HLS 分段规划](097-mp4-file-reader-segment-planner.zh-CN.md)（2026-11-23 采纳）
+- [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
+- [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）
 - [ADR-100：在监听器的各线程之间于 accept 时均衡连接](100-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
-- [ADR-099：I/O 循环上的定时器](099-loop-timers.zh-CN.md)（2026-11-23 采纳）
+- [ADR-101：借用的 WebSocket 消息与无锁发送路径](101-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
 - [ADR-102：按 UDP 对端记住 QUIC 路由，HTTP/3 服务端默认开启 QPACK 动态表](102-quic-peer-routes-qpack-server-default.zh-CN.md)（2026-11-24 采纳）
+- [ADR-103：I/O 循环上的定时器](103-loop-timers.zh-CN.md)（2026-11-23 采纳）
 - [ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次](104-rounds-scheduling.zh-CN.md)（2026-11-23 提议）

@@ -338,3 +338,50 @@ fn client_hello_transport_params_peek() {
     s.read_handshake(Level::Initial, &hello).unwrap();
     assert_eq!(s.peer_transport_params(), Some(&b"client params"[..]));
 }
+
+/// A certificate resolver answering from another thread (ADR-098): the QUIC handshake suspends
+/// after the ClientHello, the waker is called with the answer, and `resume` goes on.
+#[test]
+fn cert_resolver_answers_later() {
+    use crate::proto::resolver_tests::{Mode, TestResolver};
+    let p = pki(Kind::P256, &["localhost"]);
+    let a = pki(Kind::P384, &["a.test"]);
+    let r = TestResolver::new(Mode::Thread(std::time::Duration::from_millis(10)));
+    r.store.insert(
+        "a.test",
+        crate::CertifiedKey::new(a.chain.clone(), a.key.clone()).unwrap(),
+    );
+    let scfg = ServerConfig::builder(p.chain, p.key)
+        .alpn(["h3"])
+        .cert_resolver(r.clone())
+        .build()
+        .unwrap();
+    let ccfg = ClientConfig::builder()
+        .roots(a.roots.clone())
+        .alpn(["h3"])
+        .build()
+        .unwrap();
+    let mut c = QuicTls::client(&ccfg, "a.test", vec![1]).unwrap();
+    let mut s = QuicTls::server(&scfg, vec![2]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.set_waker(std::sync::Arc::new(move || {
+        let _ = tx.send(());
+    }));
+    while let Some(e) = c.poll_event() {
+        if let Event::Data(l, b) = e {
+            s.read_handshake(l, &b).unwrap();
+        }
+    }
+    assert!(s.suspended());
+    assert!(s.poll_event().is_none(), "nothing goes out while waiting");
+    assert!(!s.resume().unwrap());
+    rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(s.resume().unwrap());
+    assert!(!s.suspended());
+    let (sc, ss) = run(&mut c, &mut s).unwrap();
+    assert!(sc.done && ss.done);
+    assert_eq!(c.peer_certificates()[0], a.chain[0].as_der());
+    let seen = r.seen.lock().unwrap().clone();
+    assert!(seen.len() == 1 && seen[0].quic && seen[0].version == "TLSv1_3");
+    assert_eq!(seen[0].alpn, vec![b"h3".to_vec()]);
+}

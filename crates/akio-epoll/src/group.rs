@@ -7,9 +7,10 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
+    time::Duration,
 };
 
-use akio_core::{Config, DynAcceptor, Group, LoopMeta, LoopStats, Pool};
+use akio_core::{AcceptFilter, Config, DynAcceptor, FilterCell, Group, LoopMeta, LoopStats, Pool};
 use akio_sys::Poller;
 
 use crate::reactor::{Cmd, Loop, LoopShared, Roster};
@@ -60,6 +61,10 @@ struct State {
     active: usize,
     listening: Listening,
     stopping: bool,
+    /// The listener was removed (`Group::stop_listening`, ADR-099).
+    unlisted: bool,
+    /// The accept filter every loop runs (ADR-099).
+    filter: Arc<FilterCell>,
 }
 
 impl std::fmt::Debug for EpollGroup {
@@ -164,6 +169,14 @@ impl EpollGroup {
                 thread, None, ls, &acceptor, &roster, addr, &cfg, &pool,
             )?);
         }
+        let filter = Arc::new(FilterCell::default());
+        if !matches!(listening, Listening::None) {
+            for s in &mut slots {
+                if let Some(lp) = s.pending.as_mut() {
+                    lp.set_filter(&filter);
+                }
+            }
+        }
         roster.set(slots.iter().map(|s| s.shared.clone()).collect());
         Ok(EpollGroup {
             addr,
@@ -174,6 +187,8 @@ impl EpollGroup {
                 active: n,
                 listening,
                 stopping: false,
+                unlisted: false,
+                filter,
             }),
             started: AtomicBool::new(false),
             pins: Mutex::new(Vec::new()),
@@ -292,6 +307,9 @@ impl EpollGroup {
                     &self.cfg,
                     &self.pool,
                 )?;
+                if let Some(lp) = slot.pending.as_mut() {
+                    lp.set_filter(&st.filter);
+                }
                 Self::spawn(i, &mut slot, self.pin_of(i))?;
                 if existed {
                     st.slots[i] = slot;
@@ -382,6 +400,12 @@ impl Group for EpollGroup {
     fn set_threads(&self, n: usize) -> io::Result<()> {
         let n = n.max(1);
         let mut st = lock(&self.state);
+        if st.unlisted {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the listener was removed",
+            ));
+        }
         if st.stopping {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -402,6 +426,62 @@ impl Group for EpollGroup {
             }
             std::cmp::Ordering::Equal => Ok(()),
         }
+    }
+
+    fn stop_listening(&self, drain: Option<Duration>, exit_when_idle: bool) -> io::Result<()> {
+        let mut st = lock(&self.state);
+        if matches!(st.listening, Listening::None) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "not a listener group",
+            ));
+        }
+        if st.stopping || st.unlisted {
+            return Ok(());
+        }
+        st.unlisted = true;
+        if let Listening::Shared(base) = &mut st.listening {
+            *base = None;
+        }
+        if exit_when_idle {
+            // Nothing is dialed here; an empty roster also closes a socket on its way between
+            // loops (`Roster::forward_listener`).
+            self.roster.set(Vec::new());
+        }
+        for s in &st.slots {
+            s.shared.post(Cmd::StopListening {
+                drain,
+                exit: exit_when_idle,
+            });
+        }
+        Ok(())
+    }
+
+    fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
+        let st = lock(&self.state);
+        if matches!(st.listening, Listening::None) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "not a listener group",
+            ));
+        }
+        st.filter.set(filter);
+        Ok(())
+    }
+
+    fn finished(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+            && lock(&self.state).slots.iter().all(|s| {
+                s.pending.is_none() && s.handle.as_ref().is_none_or(JoinHandle::is_finished)
+            })
+    }
+
+    fn loop_stats(&self) -> Vec<Arc<LoopStats>> {
+        lock(&self.state)
+            .slots
+            .iter()
+            .map(|s| s.shared.stats.clone())
+            .collect()
     }
 
     fn shutdown(&self) {

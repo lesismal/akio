@@ -3,7 +3,7 @@
 //! non-blocking connect, `sendfile`), file change notification ([`FsWatcher`]: inotify / kqueue
 //! `EVFILT_VNODE`), the kernel CSPRNG (`getrandom` / `getentropy`, for
 //! `akio-crypto`), the host's network interfaces ([`interfaces`], `getifaddrs`) and sending a
-//! datagram out of one of them ([`send_to_on`]), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
+//! datagram out of one of them ([`send_to_on`]), process plumbing for multi-process serving ([`process`]), TUN devices and their interface settings ([`tun_open`] on Linux, [`utun_open`] on macOS) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO, traffic class bytes (DSCP and ECN) in control messages, and
 //! the ICMP errors of unconnected sockets through `IP_RECVERR`; on macOS one datagram per
 //! `sendmsg` / `recvmsg` with its traffic class, and the ICMP errors of unconnected sockets
@@ -34,6 +34,7 @@ pub mod numa;
 mod poller;
 pub mod process;
 mod random;
+mod tun;
 #[cfg(target_os = "linux")]
 mod udp;
 #[cfg(target_os = "macos")]
@@ -58,6 +59,14 @@ pub use net::{
 pub use poller::{Event, Poller, Registry};
 #[doc(hidden)]
 pub use random::fill_random;
+pub use tun::{
+    if_add_addr, if_del_addr, if_index, if_is_up, if_mtu, if_set_mtu, if_set_up, read_packet,
+    tun_gone, write_packet,
+};
+#[cfg(target_os = "linux")]
+pub use tun::{tun_is_multi_queue, tun_open};
+#[cfg(target_os = "macos")]
+pub use tun::{utun_name, utun_open};
 #[cfg(target_os = "linux")]
 pub use udp::{
     Batch, MAX_GSO_BYTES, MAX_GSO_SEGMENTS, RecvBatch, SEND_BATCH, SendBatch, disable_gso,

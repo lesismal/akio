@@ -648,7 +648,7 @@ impl Context {
     }
 
     /// Answers later: [detaches](Self::detach) the request and calls `f` with it once `delay`
-    /// has passed, **on this I/O thread** (a loop timer, ADR-099): no lock, no other thread, no
+    /// has passed, **on this I/O thread** (a loop timer, ADR-103): no lock, no other thread, no
     /// wakeup, and the response is written by the thread that owns the connection. `f` never
     /// runs early. `false` (and `f` is dropped) if a response was already sent.
     ///

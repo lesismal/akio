@@ -752,6 +752,7 @@ pub fn akio_media::fmp4::Muxer::has_tracks(&self) -> bool
 pub fn akio_media::fmp4::Muxer::init_segment(&self) -> &[u8]
 pub fn akio_media::fmp4::Muxer::new(&[akio_media::av::Track]) -> akio_media::fmp4::Muxer
 pub fn akio_media::fmp4::Muxer::pending_bytes(&self) -> usize
+pub fn akio_media::fmp4::Muxer::set_next_sequence(&mut self, u32)
 pub fn akio_media::fmp4::Muxer::write_packet(&mut self, &akio_media::av::Packet) -> bool
 impl core::fmt::Debug for akio_media::fmp4::Muxer
 pub fn akio_media::fmp4::Muxer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1227,6 +1228,274 @@ pub fn akio_media::hub::Dropper<S>::on_tracks(&mut self, &akio_media::av::Tracks
 pub type akio_media::hub::AuthHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &akio_media::hub::PeerInfo) -> core::result::Result<(), alloc::string::String> + core::marker::Send + core::marker::Sync)>
 pub type akio_media::hub::KeyframeHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn() + core::marker::Send + core::marker::Sync)>
 pub type akio_media::hub::PathHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str) + core::marker::Send + core::marker::Sync)>
+pub mod akio_media::mp4
+#[non_exhaustive] pub enum akio_media::mp4::Mp4Error
+pub akio_media::mp4::Mp4Error::Fragmented
+pub akio_media::mp4::Mp4Error::Invalid(&'static str)
+pub akio_media::mp4::Mp4Error::Limit(&'static str)
+pub akio_media::mp4::Mp4Error::MissingData
+pub akio_media::mp4::Mp4Error::NoMoov
+pub akio_media::mp4::Mp4Error::Truncated
+impl core::clone::Clone for akio_media::mp4::Mp4Error
+pub fn akio_media::mp4::Mp4Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_media::mp4::Mp4Error
+impl core::cmp::PartialEq for akio_media::mp4::Mp4Error
+pub fn akio_media::mp4::Mp4Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_media::mp4::Mp4Error
+impl core::fmt::Debug for akio_media::mp4::Mp4Error
+pub fn akio_media::mp4::Mp4Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_media::mp4::Mp4Error
+pub fn akio_media::mp4::Mp4Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_media::mp4::Mp4Error
+impl core::marker::Send for akio_media::mp4::Mp4Error
+impl core::marker::Sync for akio_media::mp4::Mp4Error
+impl core::marker::Unpin for akio_media::mp4::Mp4Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Mp4Error
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Mp4Error
+#[non_exhaustive] pub struct akio_media::mp4::Edit
+pub akio_media::mp4::Edit::duration: u64
+pub akio_media::mp4::Edit::media_time: i64
+pub akio_media::mp4::Edit::rate: i32
+impl core::clone::Clone for akio_media::mp4::Edit
+pub fn akio_media::mp4::Edit::clone(&self) -> Self
+impl core::cmp::Eq for akio_media::mp4::Edit
+impl core::cmp::PartialEq for akio_media::mp4::Edit
+pub fn akio_media::mp4::Edit::eq(&self, &Self) -> bool
+impl core::default::Default for akio_media::mp4::Edit
+pub fn akio_media::mp4::Edit::default() -> Self
+impl core::fmt::Debug for akio_media::mp4::Edit
+pub fn akio_media::mp4::Edit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_media::mp4::Edit
+impl core::marker::StructuralPartialEq for akio_media::mp4::Edit
+impl core::marker::Send for akio_media::mp4::Edit
+impl core::marker::Sync for akio_media::mp4::Edit
+impl core::marker::Unpin for akio_media::mp4::Edit
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Edit
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Edit
+#[non_exhaustive] pub struct akio_media::mp4::Limits
+pub akio_media::mp4::Limits::max_boxes: usize
+pub akio_media::mp4::Limits::max_edits: usize
+pub akio_media::mp4::Limits::max_moov_bytes: u64
+pub akio_media::mp4::Limits::max_samples: u32
+pub akio_media::mp4::Limits::max_segments: usize
+pub akio_media::mp4::Limits::max_tracks: usize
+impl core::clone::Clone for akio_media::mp4::Limits
+pub fn akio_media::mp4::Limits::clone(&self) -> Self
+impl core::cmp::Eq for akio_media::mp4::Limits
+impl core::cmp::PartialEq for akio_media::mp4::Limits
+pub fn akio_media::mp4::Limits::eq(&self, &Self) -> bool
+impl core::default::Default for akio_media::mp4::Limits
+pub fn akio_media::mp4::Limits::default() -> akio_media::mp4::Limits
+impl core::fmt::Debug for akio_media::mp4::Limits
+pub fn akio_media::mp4::Limits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_media::mp4::Limits
+impl core::marker::StructuralPartialEq for akio_media::mp4::Limits
+impl core::marker::Send for akio_media::mp4::Limits
+impl core::marker::Sync for akio_media::mp4::Limits
+impl core::marker::Unpin for akio_media::mp4::Limits
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Limits
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Limits
+pub struct akio_media::mp4::Locator
+impl akio_media::mp4::Locator
+pub fn akio_media::mp4::Locator::feed(&mut self, &[u8]) -> core::result::Result<core::option::Option<akio_media::mp4::MoovLocation>, akio_media::mp4::Mp4Error>
+pub fn akio_media::mp4::Locator::new(u64, &akio_media::mp4::Limits) -> akio_media::mp4::Locator
+pub fn akio_media::mp4::Locator::next_read(&self) -> (u64, usize)
+impl core::clone::Clone for akio_media::mp4::Locator
+pub fn akio_media::mp4::Locator::clone(&self) -> Self
+impl core::fmt::Debug for akio_media::mp4::Locator
+pub fn akio_media::mp4::Locator::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_media::mp4::Locator
+impl core::marker::Sync for akio_media::mp4::Locator
+impl core::marker::Unpin for akio_media::mp4::Locator
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Locator
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Locator
+#[non_exhaustive] pub struct akio_media::mp4::MoovLocation
+pub akio_media::mp4::MoovLocation::file_size: u64
+pub akio_media::mp4::MoovLocation::major_brand: core::option::Option<[u8; 4]>
+pub akio_media::mp4::MoovLocation::offset: u64
+pub akio_media::mp4::MoovLocation::size: u64
+impl akio_media::mp4::MoovLocation
+pub fn akio_media::mp4::MoovLocation::new(u64, u64, u64) -> akio_media::mp4::MoovLocation
+impl core::clone::Clone for akio_media::mp4::MoovLocation
+pub fn akio_media::mp4::MoovLocation::clone(&self) -> Self
+impl core::cmp::Eq for akio_media::mp4::MoovLocation
+impl core::cmp::PartialEq for akio_media::mp4::MoovLocation
+pub fn akio_media::mp4::MoovLocation::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_media::mp4::MoovLocation
+pub fn akio_media::mp4::MoovLocation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_media::mp4::MoovLocation
+impl core::marker::StructuralPartialEq for akio_media::mp4::MoovLocation
+impl core::marker::Send for akio_media::mp4::MoovLocation
+impl core::marker::Sync for akio_media::mp4::MoovLocation
+impl core::marker::Unpin for akio_media::mp4::MoovLocation
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::MoovLocation
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::MoovLocation
+#[non_exhaustive] pub struct akio_media::mp4::Movie
+pub akio_media::mp4::Movie::duration: u64
+pub akio_media::mp4::Movie::file_size: u64
+pub akio_media::mp4::Movie::major_brand: core::option::Option<[u8; 4]>
+pub akio_media::mp4::Movie::moov_offset: u64
+pub akio_media::mp4::Movie::moov_size: u64
+pub akio_media::mp4::Movie::timescale: u32
+pub akio_media::mp4::Movie::tracks: alloc::vec::Vec<akio_media::mp4::Mp4Track>
+impl akio_media::mp4::Movie
+pub fn akio_media::mp4::Movie::av_tracks(&self) -> alloc::vec::Vec<akio_media::av::Track>
+pub fn akio_media::mp4::Movie::duration_time(&self) -> akio_media::av::Time
+pub fn akio_media::mp4::Movie::from_bytes(&[u8], &akio_media::mp4::Limits) -> core::result::Result<akio_media::mp4::Movie, akio_media::mp4::Mp4Error>
+pub fn akio_media::mp4::Movie::index_bytes(&self) -> usize
+pub fn akio_media::mp4::Movie::parse(&[u8], &akio_media::mp4::MoovLocation, &akio_media::mp4::Limits) -> core::result::Result<akio_media::mp4::Movie, akio_media::mp4::Mp4Error>
+impl core::clone::Clone for akio_media::mp4::Movie
+pub fn akio_media::mp4::Movie::clone(&self) -> Self
+impl core::fmt::Debug for akio_media::mp4::Movie
+pub fn akio_media::mp4::Movie::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_media::mp4::Movie
+impl core::marker::Sync for akio_media::mp4::Movie
+impl core::marker::Unpin for akio_media::mp4::Movie
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Movie
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Movie
+#[non_exhaustive] pub struct akio_media::mp4::Mp4Track
+pub akio_media::mp4::Mp4Track::duration: u64
+pub akio_media::mp4::Mp4Track::edits: alloc::vec::Vec<akio_media::mp4::Edit>
+pub akio_media::mp4::Mp4Track::format: [u8; 4]
+pub akio_media::mp4::Mp4Track::handler: [u8; 4]
+pub akio_media::mp4::Mp4Track::id: u32
+pub akio_media::mp4::Mp4Track::index: akio_media::mp4::SampleIndex
+pub akio_media::mp4::Mp4Track::language: alloc::string::String
+pub akio_media::mp4::Mp4Track::name: alloc::string::String
+pub akio_media::mp4::Mp4Track::shift: i64
+pub akio_media::mp4::Mp4Track::timescale: u32
+pub akio_media::mp4::Mp4Track::track: akio_media::av::Track
+impl akio_media::mp4::Mp4Track
+pub fn akio_media::mp4::Mp4Track::dts(&self, &akio_media::mp4::Sample) -> akio_media::av::Time
+pub fn akio_media::mp4::Mp4Track::is_video(&self) -> bool
+pub fn akio_media::mp4::Mp4Track::keyframe_at(&self, akio_media::av::Time) -> core::option::Option<u32>
+pub fn akio_media::mp4::Mp4Track::pts(&self, &akio_media::mp4::Sample) -> akio_media::av::Time
+pub fn akio_media::mp4::Mp4Track::sample_duration(&self) -> akio_media::av::Time
+pub fn akio_media::mp4::Mp4Track::ticks(&self, akio_media::av::Time) -> i64
+pub fn akio_media::mp4::Mp4Track::time(&self, i64) -> akio_media::av::Time
+impl core::clone::Clone for akio_media::mp4::Mp4Track
+pub fn akio_media::mp4::Mp4Track::clone(&self) -> Self
+impl core::fmt::Debug for akio_media::mp4::Mp4Track
+pub fn akio_media::mp4::Mp4Track::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_media::mp4::Mp4Track
+impl core::marker::Sync for akio_media::mp4::Mp4Track
+impl core::marker::Unpin for akio_media::mp4::Mp4Track
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Mp4Track
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Mp4Track
+pub struct akio_media::mp4::Plan
+impl akio_media::mp4::Plan
+pub fn akio_media::mp4::Plan::delay(&self) -> akio_media::av::Time
+pub fn akio_media::mp4::Plan::duration(&self, usize) -> akio_media::av::Time
+pub fn akio_media::mp4::Plan::end(&self) -> akio_media::av::Time
+pub fn akio_media::mp4::Plan::is_empty(&self) -> bool
+pub fn akio_media::mp4::Plan::len(&self) -> usize
+pub fn akio_media::mp4::Plan::new(&akio_media::mp4::Movie, akio_media::av::Time) -> core::result::Result<akio_media::mp4::Plan, akio_media::mp4::Mp4Error>
+pub fn akio_media::mp4::Plan::reference_track(&self) -> core::option::Option<usize>
+pub fn akio_media::mp4::Plan::segment(&self, &akio_media::mp4::Movie, usize) -> akio_media::mp4::Segment
+pub fn akio_media::mp4::Plan::segment_at(&self, akio_media::av::Time) -> core::option::Option<usize>
+pub fn akio_media::mp4::Plan::start(&self, usize) -> akio_media::av::Time
+pub fn akio_media::mp4::Plan::target_duration(&self) -> u64
+pub fn akio_media::mp4::Plan::vod_playlist(&self, core::option::Option<&str>, impl core::ops::function::FnMut(usize) -> alloc::string::String) -> alloc::string::String
+pub fn akio_media::mp4::Plan::with_limit(&akio_media::mp4::Movie, akio_media::av::Time, usize) -> core::result::Result<akio_media::mp4::Plan, akio_media::mp4::Mp4Error>
+impl core::clone::Clone for akio_media::mp4::Plan
+pub fn akio_media::mp4::Plan::clone(&self) -> Self
+impl core::fmt::Debug for akio_media::mp4::Plan
+pub fn akio_media::mp4::Plan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_media::mp4::Plan
+impl core::marker::Sync for akio_media::mp4::Plan
+impl core::marker::Unpin for akio_media::mp4::Plan
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Plan
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Plan
+#[non_exhaustive] pub struct akio_media::mp4::Sample
+pub akio_media::mp4::Sample::cts: i32
+pub akio_media::mp4::Sample::dts: u64
+pub akio_media::mp4::Sample::duration: u32
+pub akio_media::mp4::Sample::index: u32
+pub akio_media::mp4::Sample::keyframe: bool
+pub akio_media::mp4::Sample::offset: u64
+pub akio_media::mp4::Sample::size: u32
+impl core::clone::Clone for akio_media::mp4::Sample
+pub fn akio_media::mp4::Sample::clone(&self) -> Self
+impl core::cmp::Eq for akio_media::mp4::Sample
+impl core::cmp::PartialEq for akio_media::mp4::Sample
+pub fn akio_media::mp4::Sample::eq(&self, &Self) -> bool
+impl core::default::Default for akio_media::mp4::Sample
+pub fn akio_media::mp4::Sample::default() -> Self
+impl core::fmt::Debug for akio_media::mp4::Sample
+pub fn akio_media::mp4::Sample::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_media::mp4::Sample
+impl core::marker::StructuralPartialEq for akio_media::mp4::Sample
+impl core::marker::Send for akio_media::mp4::Sample
+impl core::marker::Sync for akio_media::mp4::Sample
+impl core::marker::Unpin for akio_media::mp4::Sample
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Sample
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Sample
+pub struct akio_media::mp4::SampleIndex
+impl akio_media::mp4::SampleIndex
+pub fn akio_media::mp4::SampleIndex::data_bytes(&self) -> u64
+pub fn akio_media::mp4::SampleIndex::end_dts(&self) -> u64
+pub fn akio_media::mp4::SampleIndex::first_at_or_after_dts(&self, u64) -> u32
+pub fn akio_media::mp4::SampleIndex::first_dts(&self) -> u64
+pub fn akio_media::mp4::SampleIndex::heap_bytes(&self) -> usize
+pub fn akio_media::mp4::SampleIndex::is_empty(&self) -> bool
+pub fn akio_media::mp4::SampleIndex::is_keyframe(&self, u32) -> bool
+pub fn akio_media::mp4::SampleIndex::iter(&self, u32) -> akio_media::mp4::Samples<'_>
+pub fn akio_media::mp4::SampleIndex::keyframe_at_or_after(&self, u32) -> core::option::Option<u32>
+pub fn akio_media::mp4::SampleIndex::keyframe_at_or_before(&self, u32) -> core::option::Option<u32>
+pub fn akio_media::mp4::SampleIndex::len(&self) -> u32
+pub fn akio_media::mp4::SampleIndex::min_cts(&self) -> i32
+pub fn akio_media::mp4::SampleIndex::range(&self, u32, u32) -> akio_media::mp4::Samples<'_>
+pub fn akio_media::mp4::SampleIndex::sample(&self, u32) -> core::option::Option<akio_media::mp4::Sample>
+pub fn akio_media::mp4::SampleIndex::sync_samples(&self) -> core::option::Option<&[u32]>
+impl core::clone::Clone for akio_media::mp4::SampleIndex
+pub fn akio_media::mp4::SampleIndex::clone(&self) -> Self
+impl core::fmt::Debug for akio_media::mp4::SampleIndex
+pub fn akio_media::mp4::SampleIndex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_media::mp4::SampleIndex
+impl core::marker::Sync for akio_media::mp4::SampleIndex
+impl core::marker::Unpin for akio_media::mp4::SampleIndex
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::SampleIndex
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::SampleIndex
+pub struct akio_media::mp4::Samples<'a>
+impl core::iter::traits::exact_size::ExactSizeIterator for akio_media::mp4::Samples<'_>
+impl core::iter::traits::iterator::Iterator for akio_media::mp4::Samples<'_>
+pub type akio_media::mp4::Samples<'_>::Item = akio_media::mp4::Sample
+pub fn akio_media::mp4::Samples<'_>::next(&mut self) -> core::option::Option<akio_media::mp4::Sample>
+pub fn akio_media::mp4::Samples<'_>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::clone::Clone for akio_media::mp4::Samples<'a>
+pub fn akio_media::mp4::Samples<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for akio_media::mp4::Samples<'a>
+pub fn akio_media::mp4::Samples<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for akio_media::mp4::Samples<'a>
+impl<'a> core::marker::Sync for akio_media::mp4::Samples<'a>
+impl<'a> core::marker::Unpin for akio_media::mp4::Samples<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Samples<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Samples<'a>
+#[non_exhaustive] pub struct akio_media::mp4::Segment
+pub akio_media::mp4::Segment::end: akio_media::av::Time
+pub akio_media::mp4::Segment::index: usize
+pub akio_media::mp4::Segment::samples: alloc::vec::Vec<core::ops::range::Range<u32>>
+pub akio_media::mp4::Segment::start: akio_media::av::Time
+impl akio_media::mp4::Segment
+pub fn akio_media::mp4::Segment::byte_ranges(&self, &akio_media::mp4::Movie, u64) -> alloc::vec::Vec<core::ops::range::Range<u64>>
+pub fn akio_media::mp4::Segment::packets(&self, &akio_media::mp4::Movie, &[(u64, &[u8])]) -> core::result::Result<alloc::vec::Vec<akio_media::av::Packet>, akio_media::mp4::Mp4Error>
+pub fn akio_media::mp4::Segment::sample_count(&self) -> usize
+pub fn akio_media::mp4::Segment::write_fmp4(&self, &akio_media::mp4::Movie, &[(u64, &[u8])], &mut akio_media::fmp4::Muxer, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_media::mp4::Mp4Error>
+pub fn akio_media::mp4::Segment::write_ts(&self, &akio_media::mp4::Movie, &[(u64, &[u8])], &mut akio_media::mpegts::Muxer, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_media::mp4::Mp4Error>
+impl core::clone::Clone for akio_media::mp4::Segment
+pub fn akio_media::mp4::Segment::clone(&self) -> Self
+impl core::cmp::Eq for akio_media::mp4::Segment
+impl core::cmp::PartialEq for akio_media::mp4::Segment
+pub fn akio_media::mp4::Segment::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_media::mp4::Segment
+pub fn akio_media::mp4::Segment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_media::mp4::Segment
+impl core::marker::Send for akio_media::mp4::Segment
+impl core::marker::Sync for akio_media::mp4::Segment
+impl core::marker::Unpin for akio_media::mp4::Segment
+impl core::panic::unwind_safe::RefUnwindSafe for akio_media::mp4::Segment
+impl core::panic::unwind_safe::UnwindSafe for akio_media::mp4::Segment
+pub const akio_media::mp4::HEADER_BYTES: usize
 pub mod akio_media::mpegts
 pub mod akio_media::mpegts::demux
 #[non_exhaustive] pub enum akio_media::mpegts::demux::DemuxError

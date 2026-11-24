@@ -23,6 +23,108 @@ ADR-104，均为新增：
 - 只支持 epoll/kqueue 和 TCP（UDP listener 继续使用事件循环）；`Engine::set_threads` 会被拒绝。
 - `akio_sys::Registry`（可在任意线程做边沿触发注册）与 `Event::hup`。
 - 示例 `skew-bench`：CPU 密集的请求、连接少或负载不均，用于对比两种模式。
+### 新增：不做 I/O 地读取 MP4 文件并切成 HLS 分段（akio-media）
+
+ADR-097，均为新增（akit 的请求 A7）：
+
+- `akio_media::mp4`：非分片 MP4 文件的读取器，本身不做 I/O。`Locator` 指出为找到 `moov`（在开头或末尾，支持
+  64 位大小）所需的头读取，`Movie::parse` 解析 `moov`。轨道包含 handler、语言、名字、时间刻度、编辑列表、格式码
+  与编解码器（`avc1` / `avc3`、`hvc1` / `hev1`、`av01`、`vp08` / `vp09`、`mp4a`、`Opus`；`ac-3` 等其他格式保留
+  为 `Codec::Unknown`）。
+- `SampleIndex`：`stts`、`ctts`、`stss`、`stsc`、`stsz` / `stz2` 与 `stco` / `co64` 的紧凑索引（一小时 60 fps
+  含 B 帧加 AAC 为 1.6 MB），可按序号、解码时间与关键帧查询，并以每采样常数代价遍历。`Mp4Track::keyframe_at`
+  找出某时刻对应的关键帧。
+- `Plan` 在视频关键帧处把影片切成分段。`Segment` 给出要读取的字节范围与规范包（`Segment::packets`），并把它们
+  复用为 fMP4（`write_fmp4`）或 MPEG-TS（`write_ts`）；`Plan::vod_playlist` 写出点播播放列表。
+- `Limits` 限制 `moov` 字节数、box、轨道、每轨采样、编辑与分段的数量；各表与其 box、彼此以及文件大小核对。
+  模糊测试目标 `mp4_read`；ffmpeg 互通测试 `tests/mp4_interop.rs`。
+- `fmp4::Muxer::set_next_sequence`：下一个分片的 `mfhd` 序号，用于不按顺序生成的分段。
+
+### 新增：TUN 设备（akio-tun、akio、akio-sys）
+
+ADR-096，纯新增；akit 请求 A8（fit 的 VPN 路线）：
+
+- 新 crate `akio-tun`（启用 cargo feature `tun` 后为 `akio::tun`）：`TunDevice::create(&TunConfig)` 打开并配置 TUN 接口
+  （Linux 上以 `IFF_TUN | IFF_NO_PI` 打开 `/dev/net/tun`，可选多队列；macOS 上为 `utun`）：名字、MTU、IPv4 / IPv6 地址、
+  up / down，之后可经 `TunControl` 修改。`TunServer::start` 或 `Engine::serve_tun` 服务它：每个队列一个 I/O 线程（任何后端上
+  都是 epoll / kqueue）和一个连接；handler 在 `on_data` 中以借用的 `&[u8]` 拿到每个包，`Conn::send` 与可克隆的 `TunWriter`
+  可从任意线程非阻塞地写包，经由以 `max_queued_bytes` 为上限的队列（`Overloaded`），并有 `on_drain` 与 `hold_reads`。
+  设备被删除时以该错误关闭连接。需要 `CAP_NET_ADMIN`（Linux）或 root（macOS）；没有时其测试会跳过，除非设置
+  `AKIO_TEST_EXPECT_TUN=1`。
+- akio-sys：`tun_open`、`tun_is_multi_queue`、`utun_open`、`utun_name`、`read_packet`、`write_packet`、`tun_gone`，以及
+  基于 ioctl 的接口设置：`if_mtu`、`if_set_mtu`、`if_is_up`、`if_set_up`、`if_index`、`if_add_addr`、`if_del_addr`。
+
+### 新增：不终止 TLS 按 SNI 路由，以及 PROXY 协议（akio-mux、akio-core）
+
+ADR-095，用于 akit 的 TLS 透传和负载均衡后的监听器：
+
+- `Rule::TlsSni(SniMatcher)`（精确名和单标签 `*.` 通配，不区分大小写）和
+  `Rule::TlsHello(Arc<dyn Fn(&ClientHello) -> bool>)`（服务器名、ALPN）：按 ClientHello 路由连接而
+  不终止 TLS，hello 会重放给选中的路由。hello 可以跨多次读取和多个 TLS 记录。带有这类路由的 mux
+  默认嗅探到 `TLS_SNIFF_BYTES`（16 KiB + 5），除非设置过 `max_sniff_bytes`。
+- `akio_mux::tls`：`parse_client_hello`、`ClientHello`（`server_name`、`alpn`、`offers_alpn`、
+  `legacy_version`、`consumed`）、`HelloError`、`SniMatcher`；独立解析器（akio-mux 不依赖 akio-tls）。
+- `akio_mux::proxy`：PROXY 协议 v1 和 v2（TLV、校验 CRC32C、LOCAL、IPv4 / IPv6 / Unix）。
+  `ProxyProtocol::new(next)` / `new_any(next)` 在 `next` 运行前读取头部（`header_timeout` 5 秒、
+  `max_header_bytes` 4096、`versions`、`allow_missing`、`trusted`），并把它附加到连接上：
+  `proxy::header(&conn)`、`proxy::client_addr(&conn)`。拨号侧：`ProxyHeader::proxy` / `local` /
+  `with_tlv`、`encode_v1` / `encode_v2`、`proxy::send_header`。
+- akio-core：`Conn::attachment::<T>()` 和隐藏的 `ConnInner::attach`，每个连接一个只写一次的值，
+  由监听侧的层在处理器运行前设置。
+- 模糊测试目标 `mux_tls_hello` 和 `proxy_header`。
+
+### 变更：`Mux` 严格按顺序尝试路由（akio-mux）
+
+匹配的路由现在会在更早的路由仍未决定（`NeedMore`）时等待，而不是立即接手连接；到达嗅探上限时仍由
+第一个匹配者胜出。这正是"路由按顺序尝试"所承诺的，也是放在 `Rule::Tls` 之前的 SNI 路由所需要的。
+
+### 新增：运行时增加、移除和排空 TCP listener；accept 过滤器（akio、akio-core、akio-epoll、akio-uring）
+
+ADR-099（2026-11-23），增量：
+
+- `Engine::add_listener(Listener) -> io::Result<ListenerId>` 在运行中（或尚未启动）的 engine 上像
+  `build` 一样绑定 TCP listener：它的后端（epoll / kqueue / io_uring，含回退与 `strict`）、线程数
+  （Linux 上每线程一个 `SO_REUSEPORT`）、`Accel`、继承的 socket、过滤器、engine 的配置与实时设置、
+  NUMA 放置。UDP / 数据报 listener 被拒绝（`InvalidInput`），DPDK 返回 `Unsupported`。
+- `Engine::remove_listener(id)`：停止接受连接并关闭监听 socket；已打开的连接继续运行，每个线程在
+  最后一个连接关闭后退出。`Engine::shutdown_listener(id, drain)`：还会立即对每个打开的连接调用
+  `on_shutdown`，并在 `drain` 之后关闭剩余连接。
+- `ListenerId`（builder 的 listener 为 `0..n`，之后是加入的）、`Engine::listeners() ->
+  Vec<ListenerInfo>`（id、地址、线程数、accel、udp）、`Engine::set_listener_threads(id, n)`。
+- `EngineBuilder::max_listeners(n)`（默认 1024）：同时存在的 listener 数，包括已移除但仍在服务的；
+  超过时 `add_listener` 以 `QuotaExceeded` 失败。
+- `Listener::filter(Fn(&SocketAddr) -> bool)`：在 `accept` 之后立即在 I/O 线程上运行，早于
+  `max_connections`、acceptor 与 TLS；被拒绝的连接计入新的 `LoopCounters::filtered`
+  （`akio_connections_filtered_total`）。`Engine::set_listener_filter` / `clear_listener_filter`
+  在运行时替换它，对调用之后的每次 accept 生效（每次 accept 一次原子读，不加锁）。
+- 被移除 listener 已退出线程的每线程计数器离开 `Metrics::loops`；其计数保留在 `Metrics::total` 中。
+
+### 变更：`Engine::wait` 等待 `shutdown`（akio）
+
+`wait`（因此 `run`）现在只在 `shutdown` 被调用且所有 I/O 线程（包括运行时加入的 listener 的线程）
+都已退出后才返回。没有 listener 也没有 client 线程的 engine 以前会立即返回。
+
+### 新增：由可稍后应答的解析器按握手选择服务端证书（akio-tls）
+
+ADR-098，均为新增（akit 的 A2：服务期间续期证书，以及按需 TLS）：
+
+- `CertResolver::resolve(&ClientHelloInfo, CertDone)`，用 `ServerConfigBuilder::cert_resolver` 或
+  `ServerConfig::builder_with_resolver`（没有默认证书链）设置。`ClientHelloInfo` 给出 SNI 名称、客户端
+  提供的 ALPN 协议、签名算法、密码套件、版本以及是否为 QUIC。`CertDone`（`Send`）可在任意线程上应答一次：
+  `complete(CertifiedKey)`、`use_default()`（配置自身的证书链）、`fail(CertAlert)`；不应答就丢弃则以
+  `internal_error` 失败；`is_abandoned()` 表示已无人等待。
+- 在调用内应答，握手在同一次调用中继续（不挂起、不唤醒）。稍后应答只挂起这一个握手，与 ADR-062 的异步
+  防重放存储相同：I/O 线程继续服务其他连接，应答后握手在该线程上继续。适用于 TCP（引擎与阻塞式 stream）
+  和 QUIC、TLS 1.2 与 1.3；会话恢复的握手不调用解析器，HelloRetryRequest 之后只调用一次。
+- `cert_resolver_timeout`（10 s，超时则 `internal_error`）与 `max_pending_cert_resolutions`（每个配置
+  1024 个等待中的握手；超过后需要等待的握手失败）。
+- `CertifiedKey`（只校验一次的证书链与私钥，`from_pem`、`with_ocsp_response`、`chain_der`）以及
+  `CertStore`：在调用内按名称（精确名称或一层子域的 `*.`）应答的解析器，名称随时可用
+  `insert` / `remove` / `set_default` 替换。
+- 静态证书路径不变（每次完整握手多一次 `Option` 判断）。在安静的 x86_64 主机上同轮 A/B（`tls-bench
+  handshakes`，内存中的 TLS 1.3 完整握手，单核，10 轮交替、每轮 2 s，取中位数，main 50a82315 → 本分支）：
+  X25519 5526 → 5551/s（+0.5%），secp256r1 5663 → 5655/s（−0.1%），X25519 加 RSA-2048 3280 → 3284/s
+  （+0.1%），均在各轮的波动范围内。
 
 ### 新增：协议 handler 在逻辑线程池上执行，按协议配置，默认关闭（akio-core、akio-http、akio-h3、akio-grpc、akio-arpc、akio-quic）
 
@@ -124,7 +226,7 @@ ADR-100。`SO_REUSEPORT` 的哈希把 1024 个等负载连接分到 8 个线程�
   把它传给 epoll/kqueue 与 io_uring 后端。
 ### 新增：I/O 循环上的定时器（akio-core、akio、akio-http、akio-epoll、akio-uring、akio-dpdk）
 
-ADR-099，仅新增：
+ADR-103，仅新增：
 
 - `akio::timer`（`akio_core::timer`）：`after(delay, f)` 在 `delay` 之后于调用它的 I/O 线程上执行 `f`，
   用该循环自己的时间轮：不加锁，不经过别的线程，不唤醒；`f` 不需要 `Send`。绝不提前（毫秒时间轮）；

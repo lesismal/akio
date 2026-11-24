@@ -23,18 +23,26 @@
 //! A client that has not sent enough bytes to decide within the sniff timeout (default 5 s,
 //! [`Mux::sniff_timeout`]) is closed, so silent or trickling connections cannot pile up.
 //!
+//! [`Rule::TlsSni`] and [`Rule::TlsHello`] route TLS by its ClientHello (server name, ALPN)
+//! without terminating it, for passthrough to an upstream ([`tls`]). [`proxy::ProxyProtocol`]
+//! reads a PROXY protocol v1/v2 header before the next acceptor (a `Mux` or any other) runs and
+//! exposes the original addresses; [`proxy::send_header`] writes one on an outgoing connection.
+//!
 //! Guide: [Protocol multiplexing](https://lesismal.github.io/akio/en/protocols/mux.html)
 //! (中文: [协议复用](https://lesismal.github.io/akio/zh-CN/protocols/mux.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 mod deadline;
 use deadline::Pending;
+
+pub mod proxy;
+pub mod tls;
+pub use tls::{ClientHello, SniMatcher, TLS_SNIFF_BYTES};
 
 /// Default [`Mux::sniff_timeout`].
 pub const DEFAULT_SNIFF_TIMEOUT: Duration = Duration::from_secs(5);
@@ -53,6 +61,7 @@ pub enum Decision {
 }
 
 type Matcher = Arc<dyn Fn(&[u8]) -> Decision + Send + Sync>;
+type HelloMatcher = Arc<dyn Fn(&ClientHello<'_>) -> bool + Send + Sync>;
 
 /// How a protocol is recognised.
 #[derive(Clone)]
@@ -60,6 +69,13 @@ type Matcher = Arc<dyn Fn(&[u8]) -> Decision + Send + Sync>;
 pub enum Rule {
     /// A TLS ClientHello (`0x16 0x03 ..`).
     Tls,
+    /// A complete TLS ClientHello whose server name matches; the TLS is not terminated, so the
+    /// route can relay it (passthrough). The hello may span several reads and records; a mux
+    /// with this rule sniffs up to [`TLS_SNIFF_BYTES`] unless told otherwise. A hello without
+    /// a server name, or a malformed one, does not match.
+    TlsSni(SniMatcher),
+    /// A complete TLS ClientHello for which the function returns true (server name, ALPN...).
+    TlsHello(HelloMatcher),
     /// An HTTP/1.x request line starting with a known method.
     Http1,
     /// The HTTP/2 connection preface (cleartext HTTP/2 with prior knowledge).
@@ -106,6 +122,15 @@ fn prefix(b: &[u8], p: &[u8]) -> Decision {
     }
 }
 
+fn hello_decision(b: &[u8], f: impl FnOnce(&ClientHello<'_>) -> bool) -> Decision {
+    match tls::parse_client_hello(b) {
+        Ok(h) if f(&h) => Decision::Yes,
+        Ok(_) => Decision::No,
+        Err(tls::HelloError::Incomplete) => Decision::NeedMore,
+        Err(_) => Decision::No,
+    }
+}
+
 impl Rule {
     /// Applies the rule to the bytes seen so far (never empty).
     pub fn decide(&self, b: &[u8]) -> Decision {
@@ -115,6 +140,8 @@ impl Rule {
                 [0x16, 0x03, ..] => Decision::Yes,
                 _ => Decision::No,
             },
+            Rule::TlsSni(m) => hello_decision(b, |h| h.server_name().is_some_and(|n| m.matches(n))),
+            Rule::TlsHello(f) => hello_decision(b, |h| f(h)),
             Rule::Http1 => {
                 let mut need = false;
                 for m in METHODS {
@@ -164,9 +191,11 @@ struct Inner {
     routes: Vec<(Rule, Arc<dyn DynAcceptor>)>,
     fallback: Option<Arc<dyn DynAcceptor>>,
     max_sniff_bytes: usize,
+    /// `max_sniff_bytes` was set: routes do not raise it.
+    sniff_bytes_set: bool,
     sniff_timeout: Option<Duration>,
     /// Which acceptor each connection went to (for graceful shutdown).
-    chosen: Mutex<HashMap<u64, Arc<dyn DynAcceptor>>>,
+    chosen: Mutex<akio_core::IdMap<Arc<dyn DynAcceptor>>>,
 }
 
 /// The multiplexer: an acceptor that hands each connection to the first matching route.
@@ -192,8 +221,9 @@ impl Mux {
             routes: Vec::new(),
             fallback: None,
             max_sniff_bytes: 64,
+            sniff_bytes_set: false,
             sniff_timeout: Some(DEFAULT_SNIFF_TIMEOUT),
-            chosen: Mutex::new(HashMap::new()),
+            chosen: Mutex::new(akio_core::IdMap::default()),
         }))
     }
 
@@ -203,17 +233,22 @@ impl Mux {
 
     /// Adds a route; routes are tried in order.
     #[must_use]
-    pub fn route<A: Acceptor>(mut self, rule: Rule, acceptor: A) -> Mux {
-        self.inner_mut().routes.push((rule, Arc::new(acceptor)));
-        self
+    pub fn route<A: Acceptor>(self, rule: Rule, acceptor: A) -> Mux {
+        self.push(rule, Arc::new(acceptor))
     }
 
     /// Adds a route to a type-erased acceptor (another `Mux`, for instance).
     #[must_use]
-    pub fn route_any(mut self, rule: Rule, acceptor: impl Into<AnyAcceptor>) -> Mux {
-        self.inner_mut()
-            .routes
-            .push((rule, acceptor.into().into_dyn()));
+    pub fn route_any(self, rule: Rule, acceptor: impl Into<AnyAcceptor>) -> Mux {
+        self.push(rule, acceptor.into().into_dyn())
+    }
+
+    fn push(mut self, rule: Rule, acc: Arc<dyn DynAcceptor>) -> Mux {
+        let inner = self.inner_mut();
+        if matches!(rule, Rule::TlsSni(_) | Rule::TlsHello(_)) && !inner.sniff_bytes_set {
+            inner.max_sniff_bytes = inner.max_sniff_bytes.max(TLS_SNIFF_BYTES);
+        }
+        inner.routes.push((rule, acc));
         self
     }
 
@@ -225,10 +260,13 @@ impl Mux {
         self
     }
 
-    /// How many bytes to look at before giving up and using the fallback (default 64).
+    /// How many bytes to look at before giving up and using the fallback (default 64, or
+    /// [`TLS_SNIFF_BYTES`] once a [`Rule::TlsSni`] or [`Rule::TlsHello`] route is added).
     #[must_use]
     pub fn max_sniff_bytes(mut self, n: usize) -> Mux {
-        self.inner_mut().max_sniff_bytes = n.max(1);
+        let inner = self.inner_mut();
+        inner.max_sniff_bytes = n.max(1);
+        inner.sniff_bytes_set = true;
         self
     }
 
@@ -246,11 +284,18 @@ impl Mux {
         AnyAcceptor::from_dyn(Arc::new(self))
     }
 
+    /// Routes are tried in order: a match waits while an earlier route is still undecided (an
+    /// SNI rule before `Rule::Tls`), unless the sniff limit is reached.
     fn pick(&self, b: &[u8]) -> Option<Option<Arc<dyn DynAcceptor>>> {
         let mut undecided = false;
+        let mut matched = None;
         for (rule, acc) in &self.0.routes {
             match rule.decide(b) {
-                Decision::Yes => return Some(Some(acc.clone())),
+                Decision::Yes if !undecided => return Some(Some(acc.clone())),
+                Decision::Yes => {
+                    matched = Some(acc.clone());
+                    break;
+                }
                 Decision::NeedMore => undecided = true,
                 Decision::No => {}
             }
@@ -258,7 +303,7 @@ impl Mux {
         if undecided && b.len() < self.0.max_sniff_bytes {
             return None; // wait for more bytes
         }
-        Some(self.0.fallback.clone())
+        Some(matched.or_else(|| self.0.fallback.clone()))
     }
 }
 

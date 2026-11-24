@@ -276,7 +276,10 @@ impl std::fmt::Debug for CertKey {
 /// What a server runs with.
 #[derive(Debug)]
 pub(crate) struct ServerSettings {
-    pub(crate) cert: Arc<CertKey>,
+    /// The default chain (`None`: `builder_with_resolver`).
+    pub(crate) cert: Option<Arc<CertKey>>,
+    /// Chooses the certificate per handshake (ADR-098).
+    pub(crate) resolver: Option<crate::resolver::ResolverSettings>,
     pub(crate) sni: HashMap<String, Arc<CertKey>>,
     pub(crate) alpn: Vec<Vec<u8>>,
     pub(crate) client_auth: Option<(Arc<RootStore>, bool)>,

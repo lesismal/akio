@@ -36,6 +36,7 @@ members = [
     "crates/akio-ebpf",
     "crates/akio-prefork",
     "crates/akio-dpdk",
+    "crates/akio-tun",
     "crates/akio-turn",
     "crates/akio-webrtc",
     "crates/akio-media",
@@ -93,6 +94,7 @@ akio-protobuf = { path = "crates/akio-protobuf", version = "=1.0.0-rc.1" }
 akio-protobuf-build = { path = "crates/akio-protobuf-build", version = "=1.0.0-rc.1" }
 akio-ebpf = { path = "crates/akio-ebpf", version = "=1.0.0-rc.1" }
 akio-dpdk = { path = "crates/akio-dpdk", version = "=1.0.0-rc.1" }
+akio-tun = { path = "crates/akio-tun", version = "=1.0.0-rc.1" }
 akio-turn = { path = "crates/akio-turn", version = "=1.0.0-rc.1" }
 akio-webrtc = { path = "crates/akio-webrtc", version = "=1.0.0-rc.1" }
 akio = { path = "crates/akio", version = "=1.0.0-rc.1" }

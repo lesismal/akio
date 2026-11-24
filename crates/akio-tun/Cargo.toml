@@ -1,0 +1,27 @@
+[package]
+name = "akio-tun"
+description = "akio TUN devices: layer-3 virtual interfaces (Linux /dev/net/tun with multi-queue, macOS utun) served on akio I/O threads, one IP packet per callback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-tun"
+keywords = ["tun", "vpn", "network", "packet", "utun"]
+categories = ["network-programming", "os::unix-apis"]
+
+[dependencies]
+akio-core = { workspace = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+akio-sys = { workspace = true }
+
+[dev-dependencies]
+akio = { workspace = true, features = ["tun"] }
+# tests/device.rs lists the interface's addresses.
+akio-sys = { workspace = true }
+
+[lints]
+workspace = true

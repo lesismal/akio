@@ -1,6 +1,6 @@
-# ADR-099：I/O 循环上的定时器
+# ADR-103：I/O 循环上的定时器
 
-[English](099-loop-timers.md) | 简体中文
+[English](103-loop-timers.md) | 简体中文
 
 状态：已采纳（2026-11-23）
 

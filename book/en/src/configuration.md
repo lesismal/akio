@@ -48,6 +48,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `pool(PoolConfig)` | see below | the logical pool for `spawn_blocking` |
 | `client_threads(n)` | 0 | I/O threads only for `Engine::dial`; without them dials use the last listener's threads |
 | `udp_client_threads(n)` | 0 | I/O threads for `Engine::dial_udp`; without them the last UDP listener's threads (or an error) |
+| `max_listeners(n)` | 1024 | listeners at once, removed ones still serving included; `Engine::add_listener` past it fails with `QuotaExceeded` |
 | `build()` | – | binds and validates; returns `io::Result<Engine>` |
 
 ## `Listener`
@@ -60,9 +61,16 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `backend(Backend)` | `Epoll` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | `Ebpf(EbpfConfig)` for steering |
 | `balance(Balance)` | `LeastConnections` | accept-time balancing over the threads (ADR-100); `Kernel` keeps the kernel's `SO_REUSEPORT` distribution |
+| `filter(Fn(&SocketAddr) -> bool)` | none | TCP: refuse a connection right after `accept`, before the acceptor and TLS (allow / deny lists) |
 
-Listeners and backends are fixed when the engine is built. Thread counts change at runtime with
-`Engine::set_threads(index, n)` (TCP listeners and client groups; see
+TCP listeners can be added and removed while the engine runs (ADR-099): `Engine::add_listener`
+binds one as `build` does (same backend, threads, accel and filter choices) and returns its
+`ListenerId`; `remove_listener(id)` stops accepting and leaves its connections running;
+`shutdown_listener(id, drain)` also calls `on_shutdown` on them and closes those left after
+`drain`; `listeners()` lists them; `set_listener_filter` / `clear_listener_filter` swap the
+filter. See [TCP servers](protocols/tcp-udp.md#listeners-at-run-time). Thread counts change at
+runtime with `Engine::set_threads(index, n)` (builder listeners and client groups) or
+`set_listener_threads(id, n)` (see
 [Observability and hot reload](observability.md#io-thread-counts)).
 
 `UringConfig`: `entries` (SQ depth, 0 = default), `sqpoll` (kernel SQ polling thread, false),

@@ -15,6 +15,7 @@ HTTP-FLV、WS-FLV、HLS 以及 WHIP/WHEP。每个协议都与 `akio_media::av` �
 | `httpflv`、`hls`、`http` | HTTP-FLV 与 WS-FLV；MPEG-TS 或 fMP4（CMAF）分段的 HLS，LL-HLS 分片、预加载提示与阻塞式刷新，以及由分别发布的多路流组成的多码率播放列表（含 I 帧播放列表（AES-128 下亦可）、带请求 query string 的 rendition report 与会话密钥），带密钥轮换与密钥提供者钩子的 AES-128 或 SAMPLE-AES 加密（MPEG-TS 中为 Apple 的样本加密，用于 H.264 与 AAC；fMP4 中为 `cbcs`，用于 H.264、H.265 与 AAC）；同时分发二者的 `MediaHttp` |
 | `record` | 把 hub 中的流录制为 fMP4、FLV 或 MPEG-TS 文件：按时长或大小在关键帧处切换文件、轮换、开始 / 结束钩子，由独立线程（从不是 I/O 线程）在有界队列之后写入 |
 | `whip`、`webrtc` | WHIP / WHEP HTTP 信令与 `WebRtcEngine` trait；开启 `webrtc` feature 后，`webrtc::RtcMedia` 经 akio-webrtc 承载 H.264 / H.265 / VP8 / VP9 / AV1 / Opus / G.711，观众的 PLI 会到达推流者 |
+| `mp4` | 非分片的 MP4 文件，读取器本身不做 I/O（调用方在 I/O 线程之外读取它指出的字节范围）：`moov` 在开头或末尾，紧凑的采样索引，按时间查找关键帧，以及不转码、在关键帧处切出的 HLS 分段，复用为 fMP4 或 MPEG-TS，并给出点播播放列表 |
 | `flv`、`mpegts`、`fmp4`、`amf`、`codec` | FLV 封装/解封装（传统与 Enhanced RTMP tag）、MPEG-TS 封装/解封装（H.264、H.265、AV1、AAC、Opus、MP3）、分片 MP4 封装/解封装、AMF0/AMF3、H.264 / H.265 / VP8 / VP9 / AV1 / AAC / Opus 工具 |
 
 ```rust,no_run

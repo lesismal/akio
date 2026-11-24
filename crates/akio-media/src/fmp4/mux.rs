@@ -337,6 +337,13 @@ impl Muxer {
         &self.init
     }
 
+    /// Sets the sequence number (`mfhd`) of the next fragment; later ones follow it. A muxer
+    /// starts at 1. For segments made out of order (a VOD file cut on demand), where segment
+    /// `i` carries `i + 1`.
+    pub fn set_next_sequence(&mut self, seq: u32) {
+        self.seq = seq.wrapping_sub(1);
+    }
+
     /// Bytes buffered for the next fragment: sample data plus their `trun` entries.
     pub fn pending_bytes(&self) -> usize {
         self.pending

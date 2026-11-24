@@ -1,6 +1,6 @@
-# ADR-099: Timers on the I/O loop
+# ADR-103: Timers on the I/O loop
 
-English | [简体中文](099-loop-timers.zh-CN.md)
+English | [简体中文](103-loop-timers.zh-CN.md)
 
 Status: accepted (2026-11-23)
 

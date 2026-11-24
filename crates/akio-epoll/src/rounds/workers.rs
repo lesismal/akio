@@ -390,7 +390,7 @@ impl Workers {
 
     fn run(self: Arc<Self>, me: usize, cfg: &Arc<Config>) {
         CURRENT.with(|c| c.set((self.uid, me)));
-        // Loop timers (ADR-099): a timer set from a round runs later on the same worker.
+        // Loop timers (ADR-103): a timer set from a round runs later on the same worker.
         akio_core::timer::install();
         let shard = &self.shards[me];
         let _ = shard.thread.set(std::thread::current());
@@ -458,8 +458,9 @@ impl Workers {
                 // driver before it parks, so a driver is not normally left unpolled; the timeout
                 // bounds the case where its last poller went into a long handler meanwhile.
                 if shard.parked.load(Ordering::SeqCst) {
-                    let t = akio_core::timer::next_wait()
-                        .map_or(Duration::from_millis(10), |w| w.min(Duration::from_millis(10)));
+                    let t = akio_core::timer::next_wait().map_or(Duration::from_millis(10), |w| {
+                        w.min(Duration::from_millis(10))
+                    });
                     std::thread::park_timeout(t);
                     shard.parked.store(false, Ordering::SeqCst);
                 }

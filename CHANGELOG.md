@@ -24,6 +24,129 @@ ADR-104, additive:
 - epoll/kqueue only; TCP only (UDP listeners keep their loops); `Engine::set_threads` is refused.
 - `akio_sys::Registry` (edge-triggered registration from any thread) and `Event::hup`.
 - Example `skew-bench`: CPU-bound requests with few or uneven connections, for comparing the modes.
+### Added: MP4 files read without I/O and cut into HLS segments (akio-media)
+
+ADR-097, additive (akit's request A7):
+
+- `akio_media::mp4`, a reader of MP4 files that are not fragmented, which does no I/O of its
+  own: `Locator` names the header reads that find the `moov` (front or back, 64-bit sizes), and
+  `Movie::parse` reads the `moov`. A track has its handler, language, name, timescale, edit
+  list, format code and codec (`avc1` / `avc3`, `hvc1` / `hev1`, `av01`, `vp08` / `vp09`, `mp4a`,
+  `Opus`; others such as `ac-3` are kept as `Codec::Unknown`).
+- `SampleIndex`: a compact index of `stts`, `ctts`, `stss`, `stsc`, `stsz` / `stz2` and
+  `stco` / `co64` (1.6 MB for an hour at 60 fps with B-frames and AAC), with lookups by index,
+  decode time and keyframe, and walks at constant cost a sample. `Mp4Track::keyframe_at` finds
+  the keyframe for a time.
+- `Plan` cuts a movie into segments at video keyframes. A `Segment` gives the byte ranges to
+  read, its canonical packets (`Segment::packets`), and muxes them as fMP4 (`write_fmp4`) or
+  MPEG-TS (`write_ts`); `Plan::vod_playlist` writes the VOD playlist.
+- `Limits` bounds the `moov` bytes, boxes, tracks, samples a track, edits and segments; tables
+  are checked against their boxes, each other and the file size. Fuzz target `mp4_read`; ffmpeg
+  interop test `tests/mp4_interop.rs`.
+- `fmp4::Muxer::set_next_sequence`: the `mfhd` sequence number of the next fragment, for
+  segments made out of order.
+
+### Added: TUN devices (akio-tun, akio, akio-sys)
+
+ADR-096, additive; akit request A8 (fit's VPN track):
+
+- New crate `akio-tun` (`akio::tun` with the cargo feature `tun`): `TunDevice::create(&TunConfig)`
+  opens and configures a TUN interface (Linux `/dev/net/tun` with `IFF_TUN | IFF_NO_PI`, optionally
+  multi-queue; macOS `utun`): name, MTU, IPv4 / IPv6 addresses, up / down, later through
+  `TunControl`. `TunServer::start` or `Engine::serve_tun` serves it: one I/O thread (epoll /
+  kqueue, on every backend) and one connection per queue; the handler gets each packet as a
+  borrowed `&[u8]` in `on_data`, `Conn::send` and the cloneable `TunWriter` write packets from any
+  thread without blocking, through a queue bounded by `max_queued_bytes` (`Overloaded`), with
+  `on_drain` and `hold_reads`. A device deleted underneath closes the connection with the error.
+  Needs `CAP_NET_ADMIN` (Linux) or root (macOS); its tests skip without them unless
+  `AKIO_TEST_EXPECT_TUN=1`.
+- akio-sys: `tun_open`, `tun_is_multi_queue`, `utun_open`, `utun_name`, `read_packet`,
+  `write_packet`, `tun_gone`, and interface settings by ioctl: `if_mtu`, `if_set_mtu`, `if_is_up`,
+  `if_set_up`, `if_index`, `if_add_addr`, `if_del_addr`.
+
+### Added: TLS routing by SNI without terminating it, and the PROXY protocol (akio-mux, akio-core)
+
+ADR-095, for akit's TLS passthrough and load-balanced listeners:
+
+- `Rule::TlsSni(SniMatcher)` (exact names and one-label `*.` wildcards, without case) and
+  `Rule::TlsHello(Arc<dyn Fn(&ClientHello) -> bool>)` (server name, ALPN): route a connection by
+  its ClientHello without terminating TLS, the hello being replayed to the route. The hello may
+  span several reads and TLS records. A mux with one of these routes sniffs up to
+  `TLS_SNIFF_BYTES` (16 KiB + 5) unless `max_sniff_bytes` was set.
+- `akio_mux::tls`: `parse_client_hello`, `ClientHello` (`server_name`, `alpn`, `offers_alpn`,
+  `legacy_version`, `consumed`), `HelloError`, `SniMatcher`; a standalone parser (akio-mux does
+  not depend on akio-tls).
+- `akio_mux::proxy`: PROXY protocol v1 and v2 (TLVs, CRC32C checked, LOCAL, IPv4 / IPv6 / Unix).
+  `ProxyProtocol::new(next)` / `new_any(next)` reads the header before `next` runs
+  (`header_timeout` 5 s, `max_header_bytes` 4096, `versions`, `allow_missing`, `trusted`) and
+  attaches it to the connection: `proxy::header(&conn)`, `proxy::client_addr(&conn)`. Dial side:
+  `ProxyHeader::proxy` / `local` / `with_tlv`, `encode_v1` / `encode_v2`, `proxy::send_header`.
+- akio-core: `Conn::attachment::<T>()` and the hidden `ConnInner::attach`, one write-once value
+  per connection set by a listener-side layer before the handler runs.
+- Fuzz targets `mux_tls_hello` and `proxy_header`.
+
+### Changed: `Mux` tries routes strictly in order (akio-mux)
+
+A route that matches now waits while an earlier route is still undecided (`NeedMore`), instead
+of taking the connection at once; at the sniff limit the first match still wins. This is what
+"routes are tried in order" promised, and what an SNI route before `Rule::Tls` needs.
+
+### Added: TCP listeners added, removed and drained at run time; accept filters (akio, akio-core, akio-epoll, akio-uring)
+
+ADR-099 (2026-11-23), additive:
+
+- `Engine::add_listener(Listener) -> io::Result<ListenerId>` binds a TCP listener on a running
+  (or not yet started) engine as `build` does: its backend (epoll / kqueue / io_uring with the
+  fallback and `strict`), threads (`SO_REUSEPORT` per thread on Linux), `Accel`, inherited
+  socket, filter, the engine's config with the live settings, NUMA placement. UDP / datagram
+  listeners are refused (`InvalidInput`), DPDK ones `Unsupported`.
+- `Engine::remove_listener(id)`: stops accepting and closes the listening sockets; open
+  connections keep running and each thread exits after its last one.
+  `Engine::shutdown_listener(id, drain)`: also `on_shutdown` for every open connection now, and
+  those left after `drain` are closed.
+- `ListenerId` (builder listeners `0..n`, then the added ones), `Engine::listeners() ->
+  Vec<ListenerInfo>` (id, address, threads, accel, udp), `Engine::set_listener_threads(id, n)`.
+- `EngineBuilder::max_listeners(n)` (default 1024): listeners at once, removed ones still
+  serving included; `add_listener` past it fails with `QuotaExceeded`.
+- `Listener::filter(Fn(&SocketAddr) -> bool)`: runs on the I/O thread right after `accept`,
+  before `max_connections`, the acceptor and TLS; refused connections are counted in the new
+  `LoopCounters::filtered` (`akio_connections_filtered_total`). `Engine::set_listener_filter` /
+  `clear_listener_filter` swap it at run time, in force for every accept after the call (one
+  atomic load per accept, no lock).
+- The per-thread counters of a removed listener's exited threads leave `Metrics::loops`; their
+  counts stay in `Metrics::total`.
+
+### Changed: `Engine::wait` waits for `shutdown` (akio)
+
+`wait` (and so `run`) now returns only after `shutdown` was called and every I/O thread, those
+of listeners added at run time included, has exited. An engine with no listener and no client
+threads used to return at once.
+
+### Added: server certificates chosen per handshake by a resolver that may answer later (akio-tls)
+
+ADR-098, additive (akit's A2: certificates renewed while serving, and on-demand TLS):
+
+- `CertResolver::resolve(&ClientHelloInfo, CertDone)`, set with
+  `ServerConfigBuilder::cert_resolver` or `ServerConfig::builder_with_resolver` (no default
+  chain). `ClientHelloInfo` gives the SNI name, offered ALPN protocols, signature schemes, cipher
+  suites, version and whether it is QUIC. `CertDone` (`Send`) is answered once from any thread:
+  `complete(CertifiedKey)`, `use_default()` (the configuration's own chains), `fail(CertAlert)`;
+  dropped unanswered it fails with `internal_error`; `is_abandoned()` says nobody waits.
+- An answer inside the call goes on in the same call (no suspension, no wake-up). A later one
+  suspends that handshake only, as ADR-062's asynchronous anti-replay store does: the I/O thread
+  serves its other connections, and the handshake resumes on it when answered. TCP (engine and
+  the blocking stream) and QUIC, TLS 1.2 and 1.3; resumed handshakes do not call the resolver,
+  and after a HelloRetryRequest it is called once.
+- `cert_resolver_timeout` (10 s, then `internal_error`) and `max_pending_cert_resolutions` (1024
+  waiting handshakes per configuration; beyond it a handshake that would wait fails).
+- `CertifiedKey` (a chain and key checked once, `from_pem`, `with_ocsp_response`, `chain_der`)
+  and `CertStore`, a resolver answering inline from names (exact or `*.` one label deep) that are
+  replaced at any time with `insert` / `remove` / `set_default`.
+- The static-certificate path is unchanged (one `Option` check per full handshake). Same-run A/B
+  on the quiet x86_64 host (`tls-bench handshakes`, in-memory full TLS 1.3 handshakes on one
+  core, 10 alternating rounds of 2 s, medians, main 50a82315 → branch): X25519 5526 → 5551/s
+  (+0.5%), secp256r1 5663 → 5655/s (−0.1%), X25519 with RSA-2048 3280 → 3284/s (+0.1%), all
+  within the rounds' spread.
 
 ### Added: protocol handlers on the logical pool, per protocol, off by default (akio-core, akio-http, akio-h3, akio-grpc, akio-arpc, akio-quic)
 
@@ -147,7 +270,7 @@ at a fixed 1M requests/s (HttpArena `latency-1m`) the busiest thread saturated a
   `Group::set_balance` carry it to the epoll/kqueue and io_uring backends.
 ### Added: timers on the I/O loop (akio-core, akio, akio-http, akio-epoll, akio-uring, akio-dpdk)
 
-ADR-099, additive:
+ADR-103, additive:
 
 - `akio::timer` (`akio_core::timer`): `after(delay, f)` runs `f` on the calling I/O thread once
   `delay` has passed, from that loop's own timer wheel: no lock, no other thread, no wakeup; `f`

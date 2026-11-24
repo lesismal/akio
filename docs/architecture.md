@@ -33,6 +33,7 @@ flowchart BT
     uring["akio-uring<br/>io_uring groups"]
     ebpf["akio-ebpf<br/>reuseport steering, sockmap relay"]
     dpdk["akio-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
+    tun["akio-tun<br/>TUN devices (Linux, macOS utun)"]
     tls["akio-tls<br/>own TLS 1.3/1.2 Transport"]
     facade["akio<br/>Engine, Listener, Backend, Accel"]
     http["akio-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
@@ -67,6 +68,9 @@ flowchart BT
     uring --> facade
     ebpf --> facade
     dpdk -.->|feature dpdk| facade
+    core --> tun
+    sys --> tun
+    tun -.->|feature tun| facade
     tls --> facade
     facade --> ws
     deflate --> ws
@@ -410,6 +414,11 @@ sequenceDiagram
   `close_after_send` moves to CLOSING and the loop finalizes once the queue is empty; `close`,
   errors, EOF after the drain, the idle timeout and panics finalize directly. `on_close` runs
   exactly once on the owning thread; pending completions for the connection are dropped.
+- One listener can go while the engine runs (ADR-099): `remove_listener` posts
+  `StopListening` to its loops, which close their listening sockets and keep their connections
+  until they close, then exit; `shutdown_listener` also runs `on_shutdown` on them and closes
+  the rest at its drain deadline. `add_listener` binds and starts a new group as `build` would.
+  `wait` joins those groups too, and returns only after `shutdown`.
 - The pool is stopped only after the I/O threads exit, because completions need a loop to run
   on.
 

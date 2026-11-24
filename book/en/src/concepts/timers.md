@@ -65,4 +65,4 @@ falls back to akio-http's shared timer thread.
 A timer thread of your own still works, but each reply then crosses threads: a lock to queue
 it, a write from the wrong thread, a wakeup of the loop. On HttpArena's `async` profile
 (32,000 connections each waiting 10 ms per request) that path cost about a fifth of the
-throughput; see ADR-099 for the measurements.
+throughput; see ADR-103 for the measurements.
