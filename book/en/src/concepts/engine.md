@@ -29,7 +29,7 @@ shared logical pool and a telemetry hub. You build it with `Engine::builder()`:
 | `.threads(n)` | I/O threads of this listener | one per core |
 | `.backend(Backend::..)` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` | `Epoll` |
 | `.accel(Accel::..)` | `None` or `Ebpf(EbpfConfig)` steering | `None` |
-| `.balance(Balance::..)` | `LeastConnections`: a thread holding more than its share hands a new connection, before its first read, to the thread with the fewest (ADR-100); `Kernel`: keep what the socket accepted | `LeastConnections` (`Kernel` under steering or NUMA `incoming_cpu`) |
+| `.balance(Balance::..)` | `LeastConnections`: a thread holding more than its share hands a new connection, before its first read, to the thread with the fewest (ADR-105); `Kernel`: keep what the socket accepted | `LeastConnections` (`Kernel` under steering or NUMA `incoming_cpu`) |
 
 Each listener gets its own threads; listeners never share an I/O thread. Several listeners with
 different handler types, backends and thread counts can live in one engine.

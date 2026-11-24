@@ -97,7 +97,7 @@ macro_rules! loop_counters {
             meta: LoopMeta,
             running: AtomicBool,
             retiring: AtomicBool,
-            /// Connections handed to this thread by another one at accept time (ADR-100) and
+            /// Connections handed to this thread by another one at accept time (ADR-105) and
             /// not opened here yet.
             incoming: AtomicU64,
             $( #[doc(hidden)] pub $field: Counter, )*
@@ -223,7 +223,7 @@ impl LoopStats {
     }
 
     /// Connections open on this thread now, plus those handed to it and not opened yet: what
-    /// accept-time balancing (ADR-100) compares. Readable from any thread.
+    /// accept-time balancing (ADR-105) compares. Readable from any thread.
     pub fn load(&self) -> u64 {
         (self.accepted.get() + self.dialed.get())
             .saturating_sub(self.closed.get())

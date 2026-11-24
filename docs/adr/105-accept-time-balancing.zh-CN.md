@@ -1,6 +1,6 @@
-# ADR-100：在监听器的各线程之间于 accept 时均衡连接
+# ADR-105：在监听器的各线程之间于 accept 时均衡连接
 
-[English](100-accept-time-balancing.md) | 简体中文
+[English](105-accept-time-balancing.md) | 简体中文
 
 状态：已采纳（2026-11-23）
 

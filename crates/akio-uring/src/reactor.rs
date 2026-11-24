@@ -404,7 +404,7 @@ pub(crate) enum Cmd {
     Shutdown,
     /// From the engine's telemetry hub (connection table, live-settings reload).
     Core(LoopCmd),
-    /// Accept-time balancing (ADR-100): a connection another loop of the group accepted, to be
+    /// Accept-time balancing (ADR-105): a connection another loop of the group accepted, to be
     /// served here. Counted in this loop's `LoopStats::load` until it arrives.
     Adopt {
         stream: TcpStream,
@@ -453,7 +453,7 @@ pub(crate) struct Roster {
     /// Listener `idx` has a home: active loop `idx % active` (`SO_REUSEPORT` groups, one socket
     /// per loop index). Otherwise the loops hold clones of one socket and nothing is routed.
     routed: bool,
-    /// Accept-time balancing (ADR-100, `Group::set_balance`).
+    /// Accept-time balancing (ADR-105, `Group::set_balance`).
     balance: AtomicBool,
 }
 
@@ -513,7 +513,7 @@ impl Roster {
         self.balance.store(on, Ordering::Relaxed);
     }
 
-    /// Accept-time balancing (ADR-100): the active loop a connection just accepted by `me`
+    /// Accept-time balancing (ADR-105): the active loop a connection just accepted by `me`
     /// should go to instead, if `me` holds more than its share (`akio_core::balance`). The
     /// target's load already counts the connection when this returns.
     fn handoff_target(&self, me: &LoopShared) -> Option<Arc<LoopShared>> {
@@ -1302,7 +1302,7 @@ impl Loop {
         let Some(acceptor) = self.acceptor.clone() else {
             return;
         };
-        // Accept-time balancing (ADR-100): a loop holding more than its share hands the
+        // Accept-time balancing (ADR-105): a loop holding more than its share hands the
         // connection over before reading from it.
         if !self.retiring {
             if let Some(to) = self.roster.handoff_target(&self.shared) {
@@ -1317,7 +1317,7 @@ impl Loop {
         self.open(stream, peer, acceptor, false);
     }
 
-    /// A connection another loop accepted and handed here (ADR-100).
+    /// A connection another loop accepted and handed here (ADR-105).
     fn adopt_accepted(
         &mut self,
         stream: TcpStream,

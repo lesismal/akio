@@ -60,7 +60,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `threads(n)` | one per core | I/O threads of this listener (at least 1) |
 | `backend(Backend)` | `Epoll` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | `Ebpf(EbpfConfig)` for steering |
-| `balance(Balance)` | `LeastConnections` | accept-time balancing over the threads (ADR-100); `Kernel` keeps the kernel's `SO_REUSEPORT` distribution |
+| `balance(Balance)` | `LeastConnections` | accept-time balancing over the threads (ADR-105); `Kernel` keeps the kernel's `SO_REUSEPORT` distribution |
 | `filter(Fn(&SocketAddr) -> bool)` | none | TCP: refuse a connection right after `accept`, before the acceptor and TLS (allow / deny lists) |
 
 TCP listeners can be added and removed while the engine runs (ADR-099): `Engine::add_listener`

@@ -99,8 +99,9 @@
 - [ADR-097：无 I/O 的 MP4 文件读取器与 HLS 分段规划](097-mp4-file-reader-segment-planner.zh-CN.md)（2026-11-23 采纳）
 - [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
 - [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）
-- [ADR-100：在监听器的各线程之间于 accept 时均衡连接](100-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
+- [ADR-100：面向网关的静态文件：调用者给出的路径、按 q 值选择压缩副本、候选路径、目录列表](100-static-files-gateway-settings.zh-CN.md)（2026-11-24 采纳）
 - [ADR-101：借用的 WebSocket 消息与无锁发送路径](101-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
 - [ADR-102：按 UDP 对端记住 QUIC 路由，HTTP/3 服务端默认开启 QPACK 动态表](102-quic-peer-routes-qpack-server-default.zh-CN.md)（2026-11-24 采纳）
 - [ADR-103：I/O 循环上的定时器](103-loop-timers.zh-CN.md)（2026-11-23 采纳）
 - [ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次](104-rounds-scheduling.zh-CN.md)（2026-11-23 提议）
+- [ADR-105：在监听器的各线程之间于 accept 时均衡连接](105-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）

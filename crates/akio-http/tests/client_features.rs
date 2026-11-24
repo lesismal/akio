@@ -108,6 +108,14 @@ fn app(loops: Arc<AtomicUsize>) -> Router {
                 });
             }
             "/hello" => ctx.text(200, "hello"),
+            "/host" => {
+                let r = format!(
+                    "{} ua={}",
+                    ctx.header("host").unwrap_or("-"),
+                    ctx.header("user-agent").unwrap_or("-"),
+                );
+                ctx.text(200, r);
+            }
             "/cookie/set" => {
                 // `/cookie/set?<location>`: sets cookies, then redirects there.
                 let mut r = Response::new(302).header("Location", &query);
@@ -276,6 +284,40 @@ fn credentials_do_not_follow_a_redirect_to_another_origin() {
         ),
         "GET 0 ct=false auth=- cookie=-"
     );
+    stop(&a);
+    stop(&b);
+}
+
+/// A11: a request's own `Host` field is sent in place of the URL's, kept on a redirect to the
+/// same origin and dropped on one to another; an empty `User-Agent` sends none.
+#[test]
+fn a_request_keeps_its_own_host_and_user_agent() {
+    let (a, base_a, _) = server();
+    let (b, base_b, _) = server();
+    let host_a = base_a.trim_start_matches("http://").to_owned();
+    let host_b = base_b.trim_start_matches("http://").to_owned();
+    let c = Client::new(a.clone()).with_redirects(RedirectPolicy::limit(3));
+    let get = |url: &str| ClientRequest::get(url);
+    // No `Host` field: the URL's, and the default `User-Agent`.
+    assert_eq!(
+        body(c.send(get(&format!("{base_a}/host"))).wait()),
+        format!("{host_a} ua=akio-http")
+    );
+    // The request's own, whatever its case; an empty one is not a host.
+    let own = get(&format!("{base_a}/host")).header("host", "app.example:8080");
+    assert_eq!(body(c.send(own).wait()), "app.example:8080 ua=akio-http");
+    let empty = get(&format!("{base_a}/host")).header("Host", "");
+    assert_eq!(body(c.send(empty).wait()), format!("{host_a} ua=akio-http"));
+    // A `User-Agent` of the request's own, and an empty one, which sends none.
+    let ua = get(&format!("{base_a}/host")).header("User-Agent", "curl/8");
+    assert_eq!(body(c.send(ua).wait()), format!("{host_a} ua=curl/8"));
+    let none = get(&format!("{base_a}/host")).header("User-Agent", "");
+    assert_eq!(body(c.send(none).wait()), format!("{host_a} ua=-"));
+    // A redirect to the same origin keeps the request's `Host`; one to another drops it.
+    let same = get(&format!("{base_a}/to?302&/host")).header("Host", "app.example");
+    assert_eq!(body(c.send(same).wait()), "app.example ua=akio-http");
+    let other = get(&format!("{base_a}/to?302&{base_b}/host")).header("Host", "app.example");
+    assert_eq!(body(c.send(other).wait()), format!("{host_b} ua=akio-http"));
     stop(&a);
     stop(&b);
 }

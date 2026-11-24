@@ -145,7 +145,7 @@ impl RoundsConfig {
 }
 
 /// How a TCP listener spreads new connections over its I/O threads ([`Listener::balance`],
-/// ADR-100). Either way a connection stays on one thread for its whole life (ADR-001).
+/// ADR-105). Either way a connection stays on one thread for its whole life (ADR-001).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Balance {
@@ -465,7 +465,7 @@ const DEFAULT_MAX_LISTENERS: usize = 1024;
 
 /// Binds the group of listener `l` (as `build` and `Engine::add_listener` do) and installs its
 /// filter; returns it with its kind, the acceleration it asks for and whether it asked for
-/// accept-time balancing (ADR-100).
+/// accept-time balancing (ADR-105).
 fn bind_one(
     mut l: Listener,
     env_backend: Option<&Backend>,
@@ -788,7 +788,7 @@ impl EngineBuilder {
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
         let mut kinds: Vec<Kind> = Vec::new();
-        // Per listener: accept-time balancing asked for (ADR-100).
+        // Per listener: accept-time balancing asked for (ADR-105).
         let mut balances: Vec<bool> = Vec::new();
         // Groups whose threads NUMA placement leaves alone (DPDK places its own lcores).
         let mut unplaced: Vec<usize> = Vec::new();

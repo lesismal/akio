@@ -1,4 +1,4 @@
-//! Accept-time balancing of a listener's connections over its I/O threads (ADR-100).
+//! Accept-time balancing of a listener's connections over its I/O threads (ADR-105).
 //!
 //! `SO_REUSEPORT` hashes new connections over a listener's sockets (one per I/O thread). The
 //! hash is uniform only on average: 1024 connections over 8 threads land 119..141 per thread

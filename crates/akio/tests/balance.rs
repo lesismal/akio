@@ -1,4 +1,4 @@
-//! Accept-time balancing of TCP connections over a listener's I/O threads (ADR-100), on the
+//! Accept-time balancing of TCP connections over a listener's I/O threads (ADR-105), on the
 //! backend under test (`AKIO_TEST_BACKEND=uring` for io_uring).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
@@ -84,7 +84,7 @@ fn open_per_thread(e: &Engine, n: u64) -> Vec<u64> {
 #[test]
 fn connections_are_spread_evenly() {
     if common::rounds() {
-        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+        return; // per-thread connection balance is a loops matter (ADR-105, ADR-104)
     }
     let moved = Arc::new(Mutex::new(0));
     let e = engine(4, Balance::LeastConnections, moved.clone());
@@ -126,7 +126,7 @@ fn connections_are_spread_evenly() {
 #[test]
 fn closed_connections_leave_the_count() {
     if common::rounds() {
-        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+        return; // per-thread connection balance is a loops matter (ADR-105, ADR-104)
     }
     let moved = Arc::new(Mutex::new(0));
     let e = engine(3, Balance::LeastConnections, moved.clone());
@@ -151,7 +151,7 @@ fn closed_connections_leave_the_count() {
 #[test]
 fn kernel_balance_serves() {
     if common::rounds() {
-        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+        return; // per-thread connection balance is a loops matter (ADR-105, ADR-104)
     }
     let moved = Arc::new(Mutex::new(0));
     let e = engine(2, Balance::Kernel, moved.clone());
@@ -171,7 +171,7 @@ fn kernel_balance_serves() {
 #[test]
 fn balancing_survives_resizing() {
     if common::rounds() {
-        return; // per-thread connection balance is a loops matter (ADR-100, ADR-104)
+        return; // per-thread connection balance is a loops matter (ADR-105, ADR-104)
     }
     let moved = Arc::new(Mutex::new(0));
     let e = Arc::new(engine(4, Balance::LeastConnections, moved.clone()));

@@ -1,6 +1,6 @@
-# ADR-100: Accept-time balancing of connections over a listener's threads
+# ADR-105: Accept-time balancing of connections over a listener's threads
 
-English | [简体中文](100-accept-time-balancing.zh-CN.md)
+English | [简体中文](105-accept-time-balancing.zh-CN.md)
 
 Status: accepted (2026-11-23)
 

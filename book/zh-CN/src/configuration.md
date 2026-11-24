@@ -60,7 +60,7 @@
 | `threads(n)` | 每核一个 | 该 listener 的 I/O 线程数（至少 1） |
 | `backend(Backend)` | `Epoll` | `Epoll`（macOS 上为 kqueue）或 `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | 用于分流的 `Ebpf(EbpfConfig)` |
-| `balance(Balance)` | `LeastConnections` | 接受连接时在线程间均衡（ADR-100）；`Kernel` 保持内核 `SO_REUSEPORT` 的分配 |
+| `balance(Balance)` | `LeastConnections` | 接受连接时在线程间均衡（ADR-105）；`Kernel` 保持内核 `SO_REUSEPORT` 的分配 |
 | `filter(Fn(&SocketAddr) -> bool)` | 无 | TCP：在 `accept` 之后、acceptor 与 TLS 之前拒绝连接（允许 / 拒绝列表） |
 
 TCP listener 可以在 engine 运行时增加和移除（ADR-099）：`Engine::add_listener` 像 `build` 一样绑定

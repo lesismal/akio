@@ -11,13 +11,13 @@ ADR-001 made every connection belong to one I/O thread for its whole life: the k
 lock-free and is the fastest arrangement when there are many connections of similar cost, but
 the load of a thread is whatever its connections happen to bring:
 
-- with few connections per thread the hash is uneven (ADR-100 measured 95 to 150 connections
+- with few connections per thread the hash is uneven (ADR-105 measured 95 to 150 connections
   per thread for 1024 connections on 8 threads);
 - a few heavy connections (a multiplexed HTTP/2 or gRPC client, a proxy upstream) saturate
   their thread while the others idle, and nothing can move them;
 - a slow callback stalls every other connection of its thread.
 
-ADR-100 balances connection *counts* at accept time and ADR-094 moves handlers onto the pool
+ADR-105 balances connection *counts* at accept time and ADR-094 moves handlers onto the pool
 per protocol. Neither spreads the work of a connection that is already open. fib (Go) and
 the Go runtime do: a few pollers only report readiness, and each *round* of a connection (read,
 handler, write) runs on whichever worker is idle.
@@ -151,7 +151,7 @@ Fixed-rate profiles:
 - latency-10k: same p99 (about 0.05 ms), but 17.2 µs of CPU per request against 9.5 µs. The likely cause: an idle
   worker parks for at most 10 ms and the driver wakes it through the eventfd, so a light load pays
   for wakeups that loops do not have.
-- latency-1m: p99 7.8-10.4 ms against 3.3-4.4 ms for `akio-all` (loops with the ADR-100 tail
+- latency-1m: p99 7.8-10.4 ms against 3.3-4.4 ms for `akio-all` (loops with the ADR-105 tail
   fixes), with slightly less CPU per request (7.5 against 7.7 µs). Main without those fixes had
   0.9-1.1 s.
 - 8gbit: same throughput, 24 µs of CPU per request against 18 µs.

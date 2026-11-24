@@ -24,6 +24,37 @@ ADR-104, additive:
 - epoll/kqueue only; TCP only (UDP listeners keep their loops); `Engine::set_threads` is refused.
 - `akio_sys::Registry` (edge-triggered registration from any thread) and `Event::hup`.
 - Example `skew-bench`: CPU-bound requests with few or uneven connections, for comparing the modes.
+### Added: static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings (akio-http)
+
+ADR-100, additive:
+
+- `Files::serve(ctx, path)` serves a path the caller names (percent-encoded, checked as the route
+  parameter is), for a caller that routes by a path of its own.
+- `Files::twins(&[&str])`: the compressed twins served (`br`, `zstd`, `gzip`), in order of
+  preference among equal q values; `&[]` looks none up and sends no `Vary: Accept-Encoding`.
+- `Files::try_paths(&[&str])`: candidate paths tried in turn (nginx's `try_files`), `{path}`
+  standing for the path asked for and a trailing `/` for a directory. What a path resolved to is
+  kept (at most 4096 paths) for `check_interval`.
+- `Files::hide(f)`: paths for which `f` returns true are answered 404, and candidates passed over.
+- `Files::list_directories(max_entries)`: an HTML listing of a directory without an index file,
+  asked for with its slash (off by default).
+
+### Changed: `Files` picks a compressed twin by the client's q values (akio-http)
+
+ADR-100: the twin served is the one `Accept-Encoding` ranks highest by q value (RFC 9110
+section 12.5.3), among equals the first of `br`, `zstd`, `gzip`. `br;q=0` no longer gets the `br`
+twin; `*` gets the first twin; coding names match in any case.
+
+### Added: an HTTP/1 client request's own `Host` and `User-Agent` (akio-http)
+
+Requested by akit (A11), for a reverse proxy that passes its client's fields on. Additive:
+
+- A `Host` field in `ClientRequest::headers` is sent in place of the one taken from the URL; the
+  URL still says where to connect and which name TLS asks for. It is kept on a redirect to the
+  same origin and dropped on one to another, as credentials are. Before, the field was dropped.
+- An empty `User-Agent` field sends none, and no `User-Agent: akio-http` is added, as Go's client
+  takes it. Before, an empty field was sent as it was.
+
 ### Added: MP4 files read without I/O and cut into HLS segments (akio-media)
 
 ADR-097, additive (akit's request A7):
@@ -256,7 +287,7 @@ ADR-101, additive:
 - The `ws-echo` example (the Autobahn target) uses `on_message_ref`.
 ### Changed: TCP listeners balance connections over their threads at accept time (akio, akio-core, akio-epoll, akio-uring)
 
-ADR-100. `SO_REUSEPORT`'s hash left 1024 equal connections at 119..141 per thread on 8 threads;
+ADR-105. `SO_REUSEPORT`'s hash left 1024 equal connections at 119..141 per thread on 8 threads;
 at a fixed 1M requests/s (HttpArena `latency-1m`) the busiest thread saturated and p99 reached
 1.35 s while the others had room.
 

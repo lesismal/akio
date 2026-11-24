@@ -23,6 +23,33 @@ ADR-104，均为新增：
 - 只支持 epoll/kqueue 和 TCP（UDP listener 继续使用事件循环）；`Engine::set_threads` 会被拒绝。
 - `akio_sys::Registry`（可在任意线程做边沿触发注册）与 `Event::hup`。
 - 示例 `skew-bench`：CPU 密集的请求、连接少或负载不均，用于对比两种模式。
+### 新增：面向网关的静态文件：调用者给出的路径、按 q 值选择副本、候选路径、目录列表（akio-http）
+
+ADR-100，均为新增：
+
+- `Files::serve(ctx, path)` 提供调用者给出的路径（百分号编码，像路由参数一样检查），供按自己的路径路由的调用者
+  使用。
+- `Files::twins(&[&str])`：提供的压缩副本（`br`、`zstd`、`gzip`），按 q 值相同时的偏好排列；`&[]` 不查找副本，
+  也不发送 `Vary: Accept-Encoding`。
+- `Files::try_paths(&[&str])`：依次尝试的候选路径（nginx 的 `try_files`），`{path}` 代表请求的路径，结尾的 `/`
+  表示目录。路径解析的结果保存（最多 4096 个路径）`check_interval` 那么久。
+- `Files::hide(f)`：`f` 返回 true 的路径答 404，候选被跳过。
+- `Files::list_directories(max_entries)`：为带斜杠请求、没有索引文件的目录生成 HTML 列表（默认关闭）。
+
+### 变更：`Files` 按客户端的 q 值选择压缩副本（akio-http）
+
+ADR-100：提供的副本是 `Accept-Encoding` 按 q 值（RFC 9110 第 12.5.3 节）排得最高的那个，相同时取 `br`、`zstd`、
+`gzip` 中靠前的。`br;q=0` 不再得到 `br` 副本；`*` 得到第一个副本；编码名不区分大小写。
+
+### 新增：HTTP/1 客户端请求自带的 `Host` 与 `User-Agent`（akio-http）
+
+应 akit 的请求（A11），供反向代理把客户端的字段转发出去。均为新增：
+
+- `ClientRequest::headers` 中的 `Host` 字段代替从 URL 取得的 `Host` 发出；连接的地址与 TLS 请求的
+  名称仍由 URL 决定。重定向到同源时保留，重定向到别的源时与凭据一样被去掉。此前该字段会被丢弃。
+- 值为空的 `User-Agent` 字段表示不发送 `User-Agent`，也不再补上 `User-Agent: akio-http`，与 Go 的
+  客户端一致。此前空字段会原样发出。
+
 ### 新增：不做 I/O 地读取 MP4 文件并切成 HLS 分段（akio-media）
 
 ADR-097，均为新增（akit 的请求 A7）：
@@ -214,7 +241,7 @@ ADR-101，均为新增：
 - `ws-echo` 示例（Autobahn 的测试目标）改用 `on_message_ref`。
 ### 变更：TCP 监听器在 accept 时把连接均衡到各线程（akio、akio-core、akio-epoll、akio-uring）
 
-ADR-100。`SO_REUSEPORT` 的哈希把 1024 个等负载连接分到 8 个线程上时每线程 119..141 个；在固定 100 万请求/秒
+ADR-105。`SO_REUSEPORT` 的哈希把 1024 个等负载连接分到 8 个线程上时每线程 119..141 个；在固定 100 万请求/秒
 （HttpArena `latency-1m`）下，最忙的线程饱和，p99 达到 1.35 s，而其他线程尚有余力。
 
 - `akio::Balance { Kernel, LeastConnections }`（`#[non_exhaustive]`）与 `Listener::balance`。默认是
