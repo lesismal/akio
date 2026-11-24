@@ -2,7 +2,8 @@
 
 English | [简体中文](104-rounds-scheduling.zh-CN.md)
 
-Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements)
+Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements;
+second revision 2026-11-24: accepts and closes on the workers, fewer wake-ups at light load)
 
 ## Context
 
@@ -37,11 +38,26 @@ handler, write) runs on whichever worker is idle.
      `epoll_wait`; the connections it finds ready go to its own queue, and parked workers are
      woken to steal them. A busy worker polls the drivers without blocking every 61 rounds
      (Tokio's `event_interval`), so under load events are collected with no thread waking
-     another. A driver also accepts and runs the control path (dials, timers, telemetry,
-     shutdown); it never reads, writes or runs user code. A connection is registered once,
+     another. A driver runs the control path (dials, timers, telemetry, shutdown); it never
+     accepts, reads, writes or runs user code. A connection is registered once,
      edge-triggered for reads and writes (`EPOLLET` / `EV_CLEAR`), so a round makes no
      `epoll_ctl`. Dedicated poller threads (the first prototype) remain behind
      `AKIO_ROUNDS_POLLERS=dedicated` for comparison; they lose (see Measurements).
+   - **Accepting and closing are spread over the workers** (2026-11-24, second revision). On
+     Linux a listener has one `SO_REUSEPORT` socket per worker (elsewhere one, cloned per
+     driver), registered edge-triggered with a driver. Its readiness queues an *accept job* on
+     the workers, scheduled like a connection (a pending flag and a `scheduled` flag, so one
+     worker at a time accepts from a socket): the worker accepts up to 64 connections, creates
+     them, registers them with the thread-safe `Registry` and queues their first rounds. The
+     connections of a driver and their idle, write and handshake timers are in a *connection
+     table* sharded by id (`2 x workers` shards, 4 to 64, each a mutex around a map and a timer
+     wheel): a worker adds what it accepts, and the round that finalizes a connection removes it
+     and cancels its timers, so neither an accept nor a close posts a message to the driver or
+     writes its eventfd. The driver looks connections up in the table to hand out events and
+     fires the table's timers; a worker arming a timer earlier than the driver's current wait
+     interrupts the wait. Accept errors pause that socket for 100 ms (the driver re-arms it);
+     shutdown closes the sockets under their job's lock, so every connection an accept job
+     opened is in the table when `on_shutdown` is sent, and later ones see the drain flag.
    - **Workers** (`RoundsConfig::workers`, 0 = auto: one per CPU) run rounds. A round of a
      connection runs `on_open` if it has not run, the `spawn_blocking` completions posted to it,
      flushes its queue, reads until the socket is drained (at most 16 reads, then it yields to
@@ -55,7 +71,13 @@ handler, write) runs on whichever worker is idle.
      each worker has its own queue, an idle worker steals half of another's queue, spins 64
      times and parks; a poster wakes a parked worker only when none is spinning (and, when every
      idle worker is in `epoll_wait`, interrupts one through the driver's eventfd). Rounds started from a worker (a send from another connection's handler
-     that needs a flush) go to that worker's own queue.
+     that needs a flush) go to that worker's own queue. When every other worker is parked, a
+     poll wakes no one for the first job it queued, which its worker runs next, and one parked
+     worker per job after that (Tokio's rule): at light load a poll finds one connection and its
+     round runs with no thread waking another. A worker that found work by searching wakes
+     another if more is queued. One parked worker, the *watch*, sleeps at most 10 ms, for a
+     driver whose last poller went into a long round; the others sleep until woken (or their
+     loop timer is due).
    - Blocking work still belongs on the logical pool (`spawn_blocking`, `run_on_pool`): a
      blocked worker delays the connections queued behind it, though the others steal them.
 3. **What is the same**: `Conn` and `ConnInner` (already thread-safe, ADR-002), the cork and
@@ -150,7 +172,8 @@ Fixed-rate profiles:
 
 - latency-10k: same p99 (about 0.05 ms), but 17.2 µs of CPU per request against 9.5 µs. The likely cause: an idle
   worker parks for at most 10 ms and the driver wakes it through the eventfd, so a light load pays
-  for wakeups that loops do not have.
+  for wakeups that loops do not have. (Measured later: the cause was a worker woken per request,
+  not the parking; see the second revision.)
 - latency-1m: p99 7.8-10.4 ms against 3.3-4.4 ms for `akio-all` (loops with the ADR-105 tail
   fixes), with slightly less CPU per request (7.5 against 7.7 µs). Main without those fixes had
   0.9-1.1 s.
@@ -166,5 +189,74 @@ So, on real HTTP traffic with evenly spread connections:
   on h2c and gRPC.
 - They lose 3-10% on many small requests over many connections, up to 32% when connections are
   short-lived, and spend more CPU at light load.
-- Loops stay the default. Next for rounds: spread accept and close over more than one driver, and
-  cut the wakeups at light load.
+- Loops stay the default. Next for rounds: take accept and close off the driver, and cut the
+  wake-ups at light load (done in the second revision below; HttpArena not rerun yet).
+
+### Second revision: accepts and closes on the workers, fewer wake-ups (2026-11-24)
+
+gpu51 as above (server on 8 CPUs; loops 8 threads; rounds 8 workers, 1 driver), two rounds of
+every case, `skew-bench` and `echo-bench`. "main" is rounds before this revision, "new" after it.
+Server CPU is read from `/proc` around each run. The short-lived cases run 5 s each and wait
+until the kernel's conntrack table has room first: at 200k connections a second it fills up
+(2M entries, 120 s each in TIME_WAIT) and then drops SYNs, which had made earlier churn runs
+meaningless for whichever mode ran next.
+
+**Short-lived connections** (`skew-bench churn`: each client connects, sends N 16-byte requests
+one at a time, closes, starts over):
+
+| Case | Loops | Rounds main | Rounds new | Server CPU s: loops / main / new |
+|---|---|---|---|---|
+| 512 clients x 10 requests | 713k-720k req/s | 513k-519k (-28%) | **693k-712k** (-2%) | 46-47 / 36 / 47-48 |
+| 512 clients x 1 request | 205k-206k conn/s | 102k-103k (-50%) | **207k-208k** (+1%) | 43 / 22 / 47-48 |
+| 2048 clients x 10 requests | 757k-878k req/s | 689k-693k | **900k-909k** (+3% to +19%) | 49-55 / 46-47 / 58 |
+
+**Fixed low rate** (`skew-bench rate`: 1024 open connections, requests at a fixed total rate,
+16-byte echo; CPU per request = server CPU / requests sent):
+
+| Case | Loops | Rounds main | Rounds new |
+|---|---|---|---|
+| 10k req/s: CPU per request | 9.1 µs | 16.3 µs | **11.3 µs** |
+| 10k req/s: context switches per request | 1.11 | 2.27 | **1.18** |
+| 10k req/s: p50 / p99 | 17 / 20 µs | 18 / 20 µs | 17 / 19-20 µs |
+| 50k req/s: CPU per request | 8.7 µs | 15.6 µs | **9.9 µs** |
+
+Where the light-load CPU went (main, 10k req/s, `AKIO_ROUNDS_TRACE=1` and `perf stat` on the
+server): per second 10,001 rounds, **10,001 unparks and 10,001 parks**, 19.1k futex calls, 25.2k
+`epoll_wait` calls, 19.5k context switches (loops: 9.5k context switches, 9.5k `epoll_wait`, no
+futex). Every request woke a second worker: the worker blocked in `epoll_wait` found one
+connection, queued it on its own queue, and the submit woke a parked worker "to steal it"; then it
+ran the round itself, the woken worker found nothing, spun, took the driver and blocked in
+`epoll_wait`, and the first one parked. Two context switches and four extra syscalls per
+request; the 10 ms park timeouts (700 wake-ups a second for 7 idle workers) were a small part.
+
+With only the first fix (a poll wakes no one for the job its worker runs next): 0 unparks, 700
+parks a second (the 10 ms timeouts), 10.7k context switches, 1.10 s of server CPU over 9 s against
+1.57 s. Toggling the parts on one build (server CPU over 11 s at 10k req/s; echo with 64
+connections), from a build without the non-blocking poll before spinning (1.19 s; 904k req/s):
+that poll back, as committed, 1.25-1.28 s and 969k-979k; waking a worker for every job a poll
+finds (main's rule) 1.75-1.76 s and 907k-909k; every parked worker on a 10 ms timeout (main's
+parking) 1.26 s and 901k-903k; all three, about main's worker loop, 1.84-1.87 s and 976k (main
+itself: 1.79-1.83 s, 981k-983k). So the wake-up per request is the cost; the poll before spinning
+costs about 0.6 µs per request at light load and is worth 7% on echo, so it stays.
+
+**Regression checks** (same runs):
+
+| Case | Loops | Rounds main | Rounds new |
+|---|---|---|---|
+| skew 12 conns, depth 4, 50 µs | 114k-132k/s, p99 0.84 ms | 151k/s, p99 0.39 ms | 151k/s, p99 0.39 ms |
+| skew 8 conns, depth 8, 100 µs | 30k-49k/s, p99 3.2 ms | 78.4k/s, p99 0.82 ms | 78.4k/s, p99 0.82 ms |
+| skew 64 conns (4 at 500 µs), depth 2 | 209k-231k/s, p99 2.6-2.7 ms | 217k/s, p99 1.5 ms | 217k/s, p99 1.5 ms |
+| skew 256 conns, depth 1, 10 µs | 482k/s, p99 1.04 ms | 450k-451k/s, p99 0.92 ms | 442k-444k/s (-1.7%), p99 0.89 ms |
+| echo 64 conns x 64 B | 1.06M-1.10M/s | 980k-989k/s | 980k-988k/s |
+| echo 1024 conns x 64 B | 1.19M-1.22M/s | 1.017M-1.022M/s | 992k-998k/s (-2.4%) |
+| echo 256 conns x 1 KiB | 1.09M-1.17M/s | 952k-957k/s | 927k-933k/s (-2.6%) |
+
+Conclusions of the revision:
+
+- With accepts and closes off the driver, short-lived connections use every CPU and match loops
+  (-2% to +19%) instead of losing 28-50%.
+- At light load a round no longer wakes a second thread: 11.3 µs of CPU per request at 10k req/s
+  instead of 16.3 (loops 9.1), with the same latency. The rest of the gap is the non-blocking
+  poll before spinning, the spin itself, and the queue and table locks.
+- Few or uneven connections and h2c-like work are unchanged; echo over many connections loses
+  another 2-3%.

@@ -22,7 +22,25 @@ ADR-104，均为新增：
 - `AKIO_DEFAULT_SCHEDULING=rounds|loops` 为没有显式选择的 listener 指定调度方式（测试开关）。
 - 只支持 epoll/kqueue 和 TCP（UDP listener 继续使用事件循环）；`Engine::set_threads` 会被拒绝。
 - `akio_sys::Registry`（可在任意线程做边沿触发注册）与 `Event::hup`。
-- 示例 `skew-bench`：CPU 密集的请求、连接少或负载不均，用于对比两种模式。
+- 示例 `skew-bench`：CPU 密集的请求、连接少或负载不均，用于对比两种模式；另有 `churn`（短连接）和
+  `rate`（固定的低请求速率）两种客户端。
+
+### 变更：轮次调度在 worker 上 accept 和关闭连接，轻负载时唤醒更少的线程（akio-epoll）
+
+ADR-104 第二次修订，API 不变：
+
+- accept 不再在 driver 上执行：在 Linux 上，轮次模式的 listener 每个 worker 一个 `SO_REUSEPORT`
+  socket，socket 就绪时投递一个 accept 任务，由某个 worker 执行（accept、创建、注册、第一轮）。连接
+  及其空闲 / 写 / 握手定时器从 driver 移到一张按 id 分片的表中，由 worker 直接更新：关闭连接时把它从表中
+  移除，不再向 driver 发消息，也不写 eventfd。
+- 轻负载时（其它 worker 都在 park），一次轮询为它发现的第一个连接不唤醒其它 worker（由轮询的 worker
+  接着执行）；通过搜索找到任务的 worker 在还有任务排队时唤醒另一个；只有一个 park 的 worker 每 10 ms 值守
+  一次，而不是每个 park 的 worker 都每 10 ms 醒一次。
+- `AKIO_ROUNDS_TRACE=1` 还会报告每秒的 unpark、driver 唤醒和 park 次数。
+- gpu51，服务端 8 个 CPU，与本次修改前的 rounds（以及 loops）对比：短连接 512 x 10 个请求 513k → 703k req/s
+  （loops 716k），512 x 1 个请求 103k → 207k 连接/s（loops 205k），2048 x 10 个请求 691k → 905k req/s（loops
+  757k~878k）；1024 个连接上 10k 请求/s 时每请求服务端 CPU 16.3 → 11.3 µs（loops 9.1），延迟不变；50k/s 时
+  15.6 → 9.9 µs。skew 场景和 64 个连接的 echo 不变，256~1024 个连接的 echo -2.5%。
 ### 新增：面向网关的静态文件：调用者给出的路径、按 q 值选择副本、候选路径、目录列表（akio-http）
 
 ADR-100，均为新增：

@@ -2,7 +2,8 @@
 
 [English](104-rounds-scheduling.md) | 简体中文
 
-状态：提议中（2026-11-23；2026-11-24 更新：由 worker 驱动 poller，补充测量）
+状态：提议中（2026-11-23；2026-11-24 更新：由 worker 驱动 poller，补充测量；2026-11-24 第二次修订：
+accept 与关闭改在 worker 上进行，轻负载时减少唤醒）
 
 ## 背景
 
@@ -32,10 +33,22 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      epoll/kqueue 实例（`RoundsConfig::pollers`，默认 1）是一个由锁保护的 *driver*。没有任务可执行
      的 worker 拿到一个空闲的 driver，在它的 `epoll_wait` 中等待；它发现的就绪连接进入自己的队列，并
      唤醒 park 的 worker 来偷。忙碌的 worker 每执行 61 轮就不阻塞地轮询一次 driver（Tokio 的
-     `event_interval`），所以满载时收集事件不需要任何线程唤醒另一个线程。driver 也负责 accept 和
-     控制路径（dial、定时器、遥测、关闭），从不读写，也不执行用户代码。连接只注册一次，读写都用边沿
+     `event_interval`），所以满载时收集事件不需要任何线程唤醒另一个线程。driver 负责控制路径（dial、
+     定时器、遥测、关闭），从不 accept、读写，也不执行用户代码。连接只注册一次，读写都用边沿
      触发（`EPOLLET` / `EV_CLEAR`），所以一轮不需要调用 `epoll_ctl`。专门的 poller 线程（第一版
      原型）保留在 `AKIO_ROUNDS_POLLERS=dedicated` 之后，仅供对比；它表现更差（见"测量"）。
+   - **accept 与关闭分散到各个 worker**（2026-11-24 第二次修订）。在 Linux 上，一个 listener 每个
+     worker 有一个 `SO_REUSEPORT` socket（其它平台一个，为每个 driver 复制一份），以边沿触发注册到某个
+     driver。它就绪时向 worker 投递一个 *accept 任务*，调度方式与连接相同（一个待处理标志和一个
+     `scheduled` 标志，所以同一时刻只有一个 worker 从一个 socket accept）：该 worker 最多 accept 64
+     个连接，创建它们，用线程安全的 `Registry` 注册，并把它们的第一轮放进队列。一个 driver 的连接及其
+     空闲、写、握手定时器放在一张按 id 分片的 *连接表* 中（`2 x workers` 个分片，4 到 64 个，每个分片
+     是一个互斥锁保护的 map 加一个时间轮）：worker 把自己 accept 的连接加进去，结束连接的那一轮把它移除
+     并取消其定时器，所以 accept 和关闭都不再向 driver 投递消息，也不写它的 eventfd。driver 在表中查找
+     连接以分发事件，并触发表中的定时器；worker 设置的定时器若早于 driver 当前等待的截止时间，就打断
+     这次等待。accept 出错时暂停该 socket 100 ms（由 driver 重新注册）；关闭时在 accept 任务的锁下关闭
+     socket，所以发送 `on_shutdown` 时 accept 任务打开的每个连接都已在表中，之后打开的连接会看到排空
+     标志。
    - **Worker**（`RoundsConfig::workers`，0 = 自动：每个 CPU 一个）执行轮次。连接的一轮依次：
      若 `on_open` 还没执行则执行它；执行投递给它的 `spawn_blocking` 完成回调；刷出发送队列；读到
      socket 读空为止（最多 16 次读，之后让出、排到队尾）；每次读到数据就在 cork 状态下调用
@@ -47,7 +60,12 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      的队列，空闲 worker 从别的 worker 的队列偷走一半，自旋 64 次后 park；投递方只在没有 worker 自旋
      时才唤醒一个 park 的 worker（如果空闲 worker 都在 `epoll_wait` 中，就通过 driver 的 eventfd
      打断其中一个）。从 worker 上发起的轮次（另一个连接的
-     handler 中的 send 需要刷出时）进入该 worker 自己的队列。
+     handler 中的 send 需要刷出时）进入该 worker 自己的队列。其它 worker 都在 park 时，一次轮询为它
+     放进队列的第一个任务不唤醒任何线程（由轮询的 worker 接着执行），之后每多一个任务唤醒一个 park 的
+     worker（Tokio 的规则）：轻负载时一次轮询只发现一个连接，它的一轮执行时没有任何线程唤醒另一个线程。
+     通过搜索找到任务的 worker 在还有任务排队时唤醒另一个。一个 park 的 worker 担任 *值守*，最多睡
+     10 ms，以防 driver 的最后一个轮询者进入了很长的一轮；其它 worker 一直睡到被唤醒（或它们的循环定时器
+     到期）。
    - 阻塞任务仍然应该放到逻辑线程池（`spawn_blocking`、`run_on_pool`）：阻塞的 worker 会推迟排在
      它后面的连接，虽然其它 worker 会把它们偷走。
 3. **保持不变的部分**：`Conn` 与 `ConnInner`（本来就是线程安全的，ADR-002）、cork 与 flush 协议、
@@ -133,7 +151,8 @@ gpu51 统一批次，2026-11-24 09:16~11:43，已包含停止和 panic 的修复
 固定速率场景：
 
 - latency-10k：p99 相同（约 0.05 ms），但每请求 CPU 17.2 µs 对 9.5 µs。可能的原因：空闲的 worker 最多 park 10 ms，
-  由 driver 通过 eventfd 唤醒，负载轻时要为 loops 没有的唤醒付出代价。
+  由 driver 通过 eventfd 唤醒，负载轻时要为 loops 没有的唤醒付出代价。（后来测得：原因是每个请求唤醒一个
+  worker，而不是 park；见第二次修订。）
 - latency-1m：p99 7.8~10.4 ms，`akio-all`（loops，带 ADR-105 尾延迟修复）是 3.3~4.4 ms；每请求 CPU 略少
   （7.5 对 7.7 µs）。没有这些修复的 main 是 0.9~1.1 s。
 - 8gbit：吞吐相同，每请求 CPU 24 µs 对 18 µs。
@@ -145,4 +164,64 @@ echo-ws-limited 512 个连接时，rounds 只用了 8 个 CPU 中的 5.7 个。�
 
 - 请求占用线程时间长、负载不均时 rounds 占优（async +12%），h2c 和 gRPC 持平。
 - 大量连接上的小请求慢 3%~10%，连接寿命短时最多慢 32%，负载轻时更费 CPU。
-- 默认仍是 loops。rounds 下一步：把 accept 和关闭分散到多个 driver，减少轻负载时的唤醒。
+- 默认仍是 loops。rounds 下一步：把 accept 和关闭移出 driver，减少轻负载时的唤醒（已在下面的第二次修订中
+  完成；HttpArena 尚未重测）。
+
+### 第二次修订：在 worker 上 accept 和关闭，减少唤醒（2026-11-24）
+
+gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 worker、1 个 driver），每个场景跑两轮，
+使用 `skew-bench` 和 `echo-bench`。"main" 是本次修订之前的 rounds，"new" 是之后的。服务端 CPU 在每次运行前后
+从 `/proc` 读取。短连接场景每次跑 5 s，并先等内核的 conntrack 表有空间：每秒 20 万个连接时它会被填满（200 万个
+条目，每个在 TIME_WAIT 中停留 120 s），之后丢弃 SYN，这曾让之前的短连接测试对接下来运行的模式失去意义。
+
+**短连接**（`skew-bench churn`：每个客户端建立连接，逐个发送 N 个 16 字节请求，关闭，再重来）：
+
+| 场景 | Loops | Rounds main | Rounds new | 服务端 CPU 秒：loops / main / new |
+|---|---|---|---|---|
+| 512 个客户端 x 10 个请求 | 713k~720k req/s | 513k~519k（-28%） | **693k~712k**（-2%） | 46~47 / 36 / 47~48 |
+| 512 个客户端 x 1 个请求 | 205k~206k conn/s | 102k~103k（-50%） | **207k~208k**（+1%） | 43 / 22 / 47~48 |
+| 2048 个客户端 x 10 个请求 | 757k~878k req/s | 689k~693k | **900k~909k**（+3% 到 +19%） | 49~55 / 46~47 / 58 |
+
+**固定低速率**（`skew-bench rate`：1024 个已打开的连接，以固定的总速率发送请求，16 字节回显；每请求 CPU =
+服务端 CPU / 发送的请求数）：
+
+| 场景 | Loops | Rounds main | Rounds new |
+|---|---|---|---|
+| 10k req/s：每请求 CPU | 9.1 µs | 16.3 µs | **11.3 µs** |
+| 10k req/s：每请求上下文切换 | 1.11 | 2.27 | **1.18** |
+| 10k req/s：p50 / p99 | 17 / 20 µs | 18 / 20 µs | 17 / 19~20 µs |
+| 50k req/s：每请求 CPU | 8.7 µs | 15.6 µs | **9.9 µs** |
+
+轻负载时的 CPU 花在哪里（main，10k req/s，服务端开 `AKIO_ROUNDS_TRACE=1` 并用 `perf stat`）：每秒 10,001
+轮，**10,001 次 unpark 和 10,001 次 park**，1.91 万次 futex 调用，2.52 万次 `epoll_wait`，1.95 万次上下文
+切换（loops：0.95 万次上下文切换、0.95 万次 `epoll_wait`，没有 futex）。每个请求都唤醒了第二个 worker：阻塞在
+`epoll_wait` 中的 worker 发现一个连接，放进自己的队列，入队时唤醒一个 park 的 worker"来偷"；然后它自己执行了
+这一轮，被唤醒的 worker 什么也没找到，自旋后拿到 driver 阻塞在 `epoll_wait` 中，第一个 worker 则去 park。每个
+请求多两次上下文切换和四次系统调用；10 ms 的 park 超时（7 个空闲 worker 每秒 700 次唤醒）只占一小部分。
+
+只做第一项修复（一次轮询不为它的 worker 接着执行的任务唤醒任何线程）后：0 次 unpark，每秒 700 次 park（10 ms
+超时），1.07 万次上下文切换，9 s 内服务端 CPU 1.10 s，修复前 1.57 s。在同一个构建上逐项切换（10k req/s 下
+11 s 的服务端 CPU；64 个连接的 echo），以不做自旋前非阻塞轮询的构建为起点（1.19 s；904k req/s）：加回这次轮询
+（即提交的版本）1.25~1.28 s、969k~979k；对一次轮询发现的每个任务都唤醒一个 worker（main 的规则）
+1.75~1.76 s、907k~909k；每个 park 的 worker 都用 10 ms 超时（main 的 park 方式）1.26 s、901k~903k；三者都
+用，约等于 main 的 worker 循环，1.84~1.87 s、976k（main 本身：1.79~1.83 s、981k~983k）。所以代价在于每个
+请求的那次唤醒；自旋前的非阻塞轮询在轻负载时每请求约多 0.6 µs，但让 echo 快 7%，所以保留。
+
+**回归检查**（同一批运行）：
+
+| 场景 | Loops | Rounds main | Rounds new |
+|---|---|---|---|
+| skew 12 个连接，深度 4，50 µs | 114k~132k/s，p99 0.84 ms | 151k/s，p99 0.39 ms | 151k/s，p99 0.39 ms |
+| skew 8 个连接，深度 8，100 µs | 30k~49k/s，p99 3.2 ms | 78.4k/s，p99 0.82 ms | 78.4k/s，p99 0.82 ms |
+| skew 64 个连接（4 个 500 µs），深度 2 | 209k~231k/s，p99 2.6~2.7 ms | 217k/s，p99 1.5 ms | 217k/s，p99 1.5 ms |
+| skew 256 个连接，深度 1，10 µs | 482k/s，p99 1.04 ms | 450k~451k/s，p99 0.92 ms | 442k~444k/s（-1.7%），p99 0.89 ms |
+| echo 64 个连接 x 64 B | 1.06M~1.10M/s | 980k~989k/s | 980k~988k/s |
+| echo 1024 个连接 x 64 B | 1.19M~1.22M/s | 1.017M~1.022M/s | 992k~998k/s（-2.4%） |
+| echo 256 个连接 x 1 KiB | 1.09M~1.17M/s | 952k~957k/s | 927k~933k/s（-2.6%） |
+
+本次修订的结论：
+
+- accept 和关闭移出 driver 之后，短连接场景用满所有 CPU，与 loops 相当（-2% 到 +19%），而不再慢 28%~50%。
+- 轻负载时一轮不再唤醒第二个线程：10k req/s 下每请求 CPU 11.3 µs，修复前 16.3 µs（loops 9.1），延迟不变。
+  剩下的差距来自自旋前的非阻塞轮询、自旋本身，以及队列锁和连接表的锁。
+- 连接少或不均、类似 h2c 的负载不变；大量连接上的 echo 再慢 2%~3%。

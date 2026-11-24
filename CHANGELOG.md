@@ -23,7 +23,29 @@ ADR-104, additive:
 - `AKIO_DEFAULT_SCHEDULING=rounds|loops` picks it for listeners that do not choose (a test knob).
 - epoll/kqueue only; TCP only (UDP listeners keep their loops); `Engine::set_threads` is refused.
 - `akio_sys::Registry` (edge-triggered registration from any thread) and `Event::hup`.
-- Example `skew-bench`: CPU-bound requests with few or uneven connections, for comparing the modes.
+- Example `skew-bench`: CPU-bound requests with few or uneven connections, for comparing the modes;
+  `churn` (short-lived connections) and `rate` (a fixed low request rate) clients.
+
+### Changed: rounds scheduling accepts and closes on the workers, and wakes fewer threads at light load (akio-epoll)
+
+ADR-104, second revision; no API change:
+
+- Accepting no longer runs on the driver: on Linux a rounds listener has one `SO_REUSEPORT`
+  socket per worker, and a socket's readiness queues an accept job that a worker runs (accept,
+  create, register, first round). The connections and their idle / write / handshake timers moved
+  from the driver into a table sharded by id, which workers update directly: a close removes its
+  connection with no message to the driver and no eventfd write.
+- At light load (every other worker parked) a poll wakes no other worker for the first connection
+  it found, which its worker runs next; a worker that found work by searching wakes another if more
+  is queued; one parked worker keeps a 10 ms watch instead of every parked worker waking every
+  10 ms.
+- `AKIO_ROUNDS_TRACE=1` also reports unparks, driver wake-ups and parks per second.
+- gpu51, 8 server CPUs, against rounds before this change (and loops): short-lived connections
+  512 x 10 requests 513k → 703k req/s (loops 716k), 512 x 1 request 103k → 207k connections/s
+  (loops 205k), 2048 x 10 requests 691k → 905k req/s (loops 757k-878k); at 10k requests/s over
+  1024 connections 16.3 → 11.3 µs of server CPU per request (loops 9.1) with the same latency; at
+  50k/s 15.6 → 9.9 µs. Skew cases and echo with 64 connections unchanged, echo with 256-1024
+  connections -2.5%.
 ### Added: static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings (akio-http)
 
 ADR-100, additive:
