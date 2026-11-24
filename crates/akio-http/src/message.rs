@@ -559,8 +559,25 @@ pub struct Response {
     /// The coding a streamed body is compressed with, set by the `compress` middleware's
     /// filter when the head goes out (ADR-074).
     pub(crate) stream_coding: Option<crate::coding::StreamCoding>,
+    /// What [`keep_until_sent`](Response::keep_until_sent) keeps (ADR-112): one pointer, so
+    /// that a response without it costs a word.
+    pub(crate) kept: Option<Arc<Kept>>,
     /// Trailer fields sent after the body (HTTP/2; ignored on HTTP/1).
     pub trailers: Option<Headers>,
+}
+
+/// A value [`Response::keep_until_sent`] keeps alive. It is never looked at, only dropped, so
+/// it cannot be seen half-changed after a panic: asserting unwind safety keeps `Response`
+/// `UnwindSafe`.
+pub(crate) struct Kept(
+    #[allow(dead_code, reason = "kept for its drop")]
+    std::panic::AssertUnwindSafe<Box<dyn std::any::Any + Send + Sync>>,
+);
+
+impl std::fmt::Debug for Kept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Kept")
+    }
 }
 
 /// A byte range of an open file used as a response body.
@@ -592,8 +609,50 @@ impl Response {
             file: None,
             streaming: false,
             stream_coding: None,
+            kept: None,
             trailers: None,
         }
+    }
+
+    /// Whether this is the head of a streamed response ([`Context::stream_response`],
+    /// [`Detached::stream_response`]), as a response filter sees it: its body is written later,
+    /// in pieces, and [`body`](Response::body) is empty.
+    ///
+    /// [`Context::stream_response`]: crate::Context::stream_response
+    /// [`Detached::stream_response`]: crate::Detached::stream_response
+    pub fn is_streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// The content coding a streamed body is compressed with (ADR-112): set by a response
+    /// filter on the head of a streamed response, every write of the body then goes through
+    /// the coding's encoder and is flushed, so that the client can decode what was written so
+    /// far. The filter sets `Content-Encoding` (the coding's [`name`](crate::Coding::name)) and
+    /// `Vary` itself, and removes `Content-Length`. A HEAD answer keeps the fields and encodes
+    /// nothing. Ignored on a response that is not streamed; `None` sends the body as written.
+    pub fn set_stream_coding(&mut self, coding: Option<crate::Coding>) {
+        self.stream_coding = coding.map(|c| c.0);
+    }
+
+    /// The coding [`set_stream_coding`](Response::set_stream_coding) set.
+    pub fn stream_coding(&self) -> Option<crate::Coding> {
+        self.stream_coding.map(crate::Coding)
+    }
+
+    /// Keeps `value` until the response is sent (ADR-112): for a streamed response, until its
+    /// [`BodyStream`](crate::BodyStream) is finished or dropped; for any other, until the
+    /// response is handed to the connection. A response filter that bounds the responses under
+    /// way (encoders at once, say) keeps a guard here and gives its place back when the guard
+    /// drops. A later call replaces (and drops) an earlier value.
+    pub fn keep_until_sent(&mut self, value: impl std::any::Any + Send + Sync) {
+        self.kept = Some(Arc::new(Kept(std::panic::AssertUnwindSafe(Box::new(
+            value,
+        )))));
+    }
+
+    /// Takes what [`keep_until_sent`](Response::keep_until_sent) keeps, for the stream.
+    pub(crate) fn take_kept(&mut self) -> Option<Arc<Kept>> {
+        self.kept.take()
     }
 
     /// A response whose body is `len` bytes of `file` from `offset`.

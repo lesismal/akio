@@ -21,6 +21,20 @@ ADR-111, requested by akit (A66):
   dropped unsent, and the request fails once with `ClientError::HeaderTimeout`, `IdleTimeout` or
   `Cancelled`, the connection left to its other streams.
 
+### Added: a stream coding any response filter can set, and compressed copies of cached files (akio-http)
+
+ADR-112, requested by akit (A90, A91):
+
+- `akio_http::Coding` (`gzip`, `deflate`, `br`, `zstd`, `name`), `Response::set_stream_coding` /
+  `stream_coding` and `Response::is_streaming`: a response filter of the caller's own picks the
+  coding a streamed body is encoded with, as the `compress` middleware does.
+- `Response::keep_until_sent(value)`: a value kept until the response is sent (a streamed one:
+  until its `BodyStream` is finished or dropped), for filters that bound responses under way.
+- `Files::compress(&[...])`: a file cached in memory is also kept compressed, one copy per coding,
+  made once on the disk pool and served to the clients that prefer it.
+- `middleware::compressible` is public; it now also takes fonts, icons, BMP and
+  `application/ecmascript`, which the `compress` middleware compresses too.
+
 ### Added: the HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN (akio-http)
 
 ADR-110, requested by akit (A51, A52, A53):

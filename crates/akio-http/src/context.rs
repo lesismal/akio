@@ -1235,6 +1235,8 @@ fn start_stream(
         .take()
         .filter(|_| req.method != Method::Head)
         .map(|c| Box::new(Mutex::new(StreamEncoder::new(c))));
+    // Kept by the stream until it ends (`Response::keep_until_sent`).
+    let kept = resp.take_kept();
     let inner = match out {
         Out::H1(r) => {
             let mut head = Vec::with_capacity(192);
@@ -1251,7 +1253,7 @@ fn start_stream(
         Out::H2(r) => Inner::H2(r.start_stream(resp)?),
         Out::Ext(r) => Inner::Ext(r.start_stream(resp)?),
     };
-    Some(BodyStream { inner, coder })
+    Some(BodyStream { inner, coder, kept })
 }
 
 /// A response body being written in pieces; see [`Context::stream_response`].
@@ -1260,6 +1262,9 @@ pub struct BodyStream {
     /// The content coding's encoder (ADR-074); the lock also keeps concurrent writes in the
     /// order they are encoded.
     coder: Option<Box<Mutex<StreamEncoder>>>,
+    /// What a response filter kept until the body is sent (ADR-112), dropped with the stream.
+    #[allow(dead_code, reason = "kept for its drop")]
+    kept: Option<Arc<crate::message::Kept>>,
 }
 
 impl std::fmt::Debug for BodyStream {

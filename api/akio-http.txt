@@ -344,6 +344,7 @@ pub struct akio_http::files::Files
 impl akio_http::files::Files
 pub fn akio_http::files::Files::cache_control(self, &str) -> akio_http::files::Files
 pub fn akio_http::files::Files::check_interval(self, core::time::Duration) -> akio_http::files::Files
+pub fn akio_http::files::Files::compress(self, &[&str]) -> akio_http::files::Files
 pub fn akio_http::files::Files::hide(self, impl core::ops::function::Fn(&str) -> bool + core::marker::Send + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe + 'static) -> akio_http::files::Files
 pub fn akio_http::files::Files::index(self, &str) -> akio_http::files::Files
 pub fn akio_http::files::Files::list_directories(self, usize) -> akio_http::files::Files
@@ -634,7 +635,11 @@ impl akio_http::message::Response
 pub fn akio_http::message::Response::body_len(&self) -> u64
 pub fn akio_http::message::Response::from_file(u16, &str, akio_http::message::FileBody) -> akio_http::message::Response
 pub fn akio_http::message::Response::header(self, &str, impl core::convert::AsRef<str>) -> akio_http::message::Response
+pub fn akio_http::message::Response::is_streaming(&self) -> bool
+pub fn akio_http::message::Response::keep_until_sent(&mut self, impl core::any::Any + core::marker::Send + core::marker::Sync)
 pub fn akio_http::message::Response::new(u16) -> akio_http::message::Response
+pub fn akio_http::message::Response::set_stream_coding(&mut self, core::option::Option<akio_http::Coding>)
+pub fn akio_http::message::Response::stream_coding(&self) -> core::option::Option<akio_http::Coding>
 pub fn akio_http::message::Response::text(u16, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Response
 pub fn akio_http::message::Response::with_body(u16, &str, alloc::vec::Vec<u8>) -> akio_http::message::Response
 impl core::clone::Clone for akio_http::message::Response
@@ -717,6 +722,7 @@ impl core::marker::Unpin for akio_http::middleware::StreamCompress
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::middleware::StreamCompress
 impl core::panic::unwind_safe::UnwindSafe for akio_http::middleware::StreamCompress
 pub fn akio_http::middleware::compress(akio_http::middleware::Compress) -> impl akio_http::Middleware
+pub fn akio_http::middleware::compressible(&str) -> bool
 pub fn akio_http::middleware::cors(akio_http::middleware::Cors) -> impl akio_http::Middleware
 pub fn akio_http::middleware::csrf() -> impl akio_http::Middleware
 pub fn akio_http::middleware::etag() -> impl akio_http::Middleware
@@ -974,6 +980,27 @@ impl !core::marker::Sync for akio_http::BodyStream
 impl core::marker::Unpin for akio_http::BodyStream
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_http::BodyStream
 impl !core::panic::unwind_safe::UnwindSafe for akio_http::BodyStream
+pub struct akio_http::Coding(_)
+impl akio_http::Coding
+pub fn akio_http::Coding::br(u32, u32) -> akio_http::Coding
+pub fn akio_http::Coding::deflate(u32) -> akio_http::Coding
+pub fn akio_http::Coding::gzip(u32) -> akio_http::Coding
+pub fn akio_http::Coding::name(self) -> &'static str
+pub fn akio_http::Coding::zstd(u32, u32) -> akio_http::Coding
+impl core::clone::Clone for akio_http::Coding
+pub fn akio_http::Coding::clone(&self) -> Self
+impl core::cmp::Eq for akio_http::Coding
+impl core::cmp::PartialEq for akio_http::Coding
+pub fn akio_http::Coding::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_http::Coding
+pub fn akio_http::Coding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_http::Coding
+impl core::marker::StructuralPartialEq for akio_http::Coding
+impl core::marker::Send for akio_http::Coding
+impl core::marker::Sync for akio_http::Coding
+impl core::marker::Unpin for akio_http::Coding
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::Coding
+impl core::panic::unwind_safe::UnwindSafe for akio_http::Coding
 pub struct akio_http::Context
 impl akio_http::Context
 pub fn akio_http::Context::add_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
@@ -1175,7 +1202,11 @@ impl akio_http::message::Response
 pub fn akio_http::message::Response::body_len(&self) -> u64
 pub fn akio_http::message::Response::from_file(u16, &str, akio_http::message::FileBody) -> akio_http::message::Response
 pub fn akio_http::message::Response::header(self, &str, impl core::convert::AsRef<str>) -> akio_http::message::Response
+pub fn akio_http::message::Response::is_streaming(&self) -> bool
+pub fn akio_http::message::Response::keep_until_sent(&mut self, impl core::any::Any + core::marker::Send + core::marker::Sync)
 pub fn akio_http::message::Response::new(u16) -> akio_http::message::Response
+pub fn akio_http::message::Response::set_stream_coding(&mut self, core::option::Option<akio_http::Coding>)
+pub fn akio_http::message::Response::stream_coding(&self) -> core::option::Option<akio_http::Coding>
 pub fn akio_http::message::Response::text(u16, impl core::convert::Into<alloc::string::String>) -> akio_http::message::Response
 pub fn akio_http::message::Response::with_body(u16, &str, alloc::vec::Vec<u8>) -> akio_http::message::Response
 impl core::clone::Clone for akio_http::message::Response
