@@ -10,7 +10,9 @@ use std::{
     time::Duration,
 };
 
-use akio_core::{AcceptFilter, Config, DynAcceptor, FilterCell, Group, LoopMeta, LoopStats, Pool};
+use akio_core::{
+    AcceptFilter, Config, Countdown, DynAcceptor, FilterCell, Group, LoopMeta, LoopStats, Pool,
+};
 use akio_sys::Poller;
 
 use crate::reactor::{Cmd, Loop, LoopShared, Roster};
@@ -63,6 +65,9 @@ struct State {
     stopping: bool,
     /// The listener was removed (`Group::stop_listening`, ADR-099).
     unlisted: bool,
+    /// The loops still to stop their listening sockets after `stop_listening`, for
+    /// `Group::await_unlisted`.
+    unlisting: Option<Countdown>,
     /// The accept filter every loop runs (ADR-099).
     filter: Arc<FilterCell>,
 }
@@ -188,6 +193,7 @@ impl EpollGroup {
                 listening,
                 stopping: false,
                 unlisted: false,
+                unlisting: None,
                 filter,
             }),
             started: AtomicBool::new(false),
@@ -448,13 +454,31 @@ impl Group for EpollGroup {
             // loops (`Roster::forward_listener`).
             self.roster.set(Vec::new());
         }
-        for s in &st.slots {
+        // The running active loops hold the listening sockets (and those on their way between
+        // loops, posted to them ahead of this); a retiring loop handed its own on, and an exited
+        // one acts on nothing, so `await_unlisted` waits for the former only.
+        let done = Countdown::default();
+        let active = st.active;
+        for (i, s) in st.slots.iter().enumerate() {
+            let running = i < active && s.handle.is_some();
             s.shared.post(Cmd::StopListening {
                 drain,
                 exit: exit_when_idle,
+                done: running.then(|| done.token()),
             });
         }
+        st.unlisting = Some(done);
         Ok(())
+    }
+
+    fn await_unlisted(&self, limit: Duration) {
+        let done = lock(&self.state).unlisting.take();
+        // On an I/O thread (its own loop's among those waited for, perhaps): no waiting (rule 1).
+        if let Some(done) = done {
+            if !crate::reactor::on_loop_thread() {
+                done.wait(limit);
+            }
+        }
     }
 
     fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {

@@ -124,6 +124,9 @@ struct Responder {
     version: Version,
     keep_alive: bool,
     head_only: bool,
+    /// [`Context::on_gone`] registered a peer-gone callback under this slot's number (it fits
+    /// in the padding: `Out` stays 24 bytes), forgotten once the response is sent.
+    gone: bool,
 }
 
 /// Where a response goes: an HTTP/1 ordered slot, or an HTTP/2 stream.
@@ -150,6 +153,14 @@ impl ExtOut {
 }
 
 impl Out {
+    fn on_gone(&mut self, f: Box<dyn FnOnce() + Send>) {
+        match self {
+            Out::H1(r) => r.set_gone(f),
+            Out::H2(r) => r.on_gone(f),
+            Out::Ext(e) => e.0.get().on_gone(e.1, f),
+        }
+    }
+
     fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
         match self {
             Out::H1(r) => r.send(resp, fin, req),
@@ -258,7 +269,23 @@ impl Finish {
 }
 
 impl Responder {
-    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+    /// Runs `f` when the connection closes before the response is sent ([`Context::on_gone`]).
+    fn set_gone(&mut self, f: Box<dyn FnOnce() + Send>) {
+        if let Some(c) = self.slot.conn() {
+            self.gone = c.on_peer_gone(self.slot.seq(), f);
+        }
+    }
+
+    fn forget_gone(&mut self) {
+        if std::mem::take(&mut self.gone) {
+            if let Some(c) = self.slot.conn() {
+                c.forget_peer_gone(self.slot.seq());
+            }
+        }
+    }
+
+    fn send(mut self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+        self.forget_gone();
         fin.apply(&mut resp, req);
         let status = resp.status;
         // From the I/O thread's buffer pool: the connection gives it back there once written.
@@ -354,6 +381,11 @@ pub struct Context {
     raw: Option<Box<dyn crate::raw::RawHandler>>,
     sink: Option<Sink>,
     route: Option<&'static RouteInfo>,
+    /// The body arrives after `call` ([`BodyMode::Stream`]): its reads can be held.
+    streamed: bool,
+    /// HTTP/1: the hold on the connection's reads that [`body_reads`](Self::body_reads) gave
+    /// out, released when the body ends.
+    reads: Option<Arc<H1Reads>>,
 }
 
 impl std::fmt::Debug for Context {
@@ -395,6 +427,7 @@ impl Context {
                 version: req.version,
                 keep_alive,
                 head_only,
+                gone: false,
             })),
             fin: Finish::new(),
             req: ReqCell::Own(req),
@@ -407,6 +440,8 @@ impl Context {
             raw: None,
             sink: None,
             route: None,
+            streamed: false,
+            reads: None,
         }
     }
 
@@ -447,6 +482,8 @@ impl Context {
             raw: None,
             sink: None,
             route: None,
+            streamed: false,
+            reads: None,
             responder: None,
         }
     }
@@ -465,6 +502,8 @@ impl Context {
             raw: None,
             sink: None,
             route: None,
+            streamed: false,
+            reads: None,
             responder: Some(Out::H2(responder)),
         }
     }
@@ -572,6 +611,72 @@ impl Context {
                 self.sink = Some(sink);
             }
         }
+    }
+
+    /// Holds and resumes the reads of a streamed request body ([`BodyMode::Stream`], ADR-101),
+    /// to pace the client by whatever the body is fed to (an upstream, say). `None` when the
+    /// body is not streamed, or the response was already taken ([`detach`](Self::detach),
+    /// [`stream_response`](Self::stream_response)): take it before. It works after `detach`,
+    /// from any thread. See [`BodyReads::hold`].
+    pub fn body_reads(&mut self) -> Option<BodyReads> {
+        if !self.streamed {
+            return None;
+        }
+        let inner = match self.responder.as_ref()? {
+            Out::H1(r) => {
+                let conn = r.slot.conn()?.clone();
+                let reads = self
+                    .reads
+                    .get_or_insert_with(|| {
+                        Arc::new(H1Reads {
+                            conn,
+                            st: Mutex::new((false, false)),
+                        })
+                    })
+                    .clone();
+                ReadsInner::H1(reads)
+            }
+            Out::H2(r) => ReadsInner::H2(r.reads()),
+            Out::Ext(e) => ReadsInner::Ext(e.0.clone(), e.1),
+        };
+        Some(BodyReads(inner))
+    }
+
+    /// Calls `f` once if the client goes before the response is finished (ADR-108): on
+    /// HTTP/1 its connection closes or it finishes sending (EOF: a client that half-closes after
+    /// its request counts as gone, as Go's server takes it); on HTTP/2 and HTTP/3 the connection
+    /// closes or the client resets the request's stream or stops its response. `f` runs on the
+    /// connection's I/O thread (HTTP/2: the thread that drops the stream, usually that one), or
+    /// at once on this thread when that already happened. It
+    /// replaces an earlier `f`, carries over to [`detach`](Self::detach) and to a streamed
+    /// response ([`BodyStream`]) until it is finished, and is dropped unrun once the response
+    /// is sent whole or finished. A transport outside this crate runs it as its
+    /// [`ConnSink::on_gone`](crate::transport::ConnSink::on_gone) says. Nothing when a response
+    /// was already sent.
+    ///
+    /// A proxy cancels its upstream request from it ([`CancelToken`](crate::client::CancelToken)).
+    pub fn on_gone(&mut self, f: impl FnOnce() + Send + 'static) {
+        if let Some(out) = self.responder.as_mut() {
+            out.on_gone(Box::new(f));
+        }
+    }
+
+    /// Marks the request as one whose body arrives after `call` (see [`body_reads`]).
+    pub(crate) fn set_streamed(&mut self) {
+        self.streamed = true;
+    }
+
+    /// HTTP/1: the streamed body ended; its reads are no longer held (the next request's are
+    /// not the handler's to hold).
+    pub(crate) fn end_reads(&self) {
+        if let Some(r) = &self.reads {
+            r.end();
+        }
+    }
+
+    /// HTTP/1: whether the handler holds the body's reads (the client is then not slow).
+    pub(crate) fn reads_held(&self) -> bool {
+        self.reads.as_ref().is_some_and(|r| lock_reads(&r.st).0)
     }
 
     /// The route the [`Router`](crate::Router) matched (method and pattern, e.g.
@@ -686,6 +791,12 @@ impl Context {
     /// middleware compresses the body when [`Compress::stream`](crate::middleware::Compress)
     /// is set, flushing the encoder on every write. `None` if a response was already started. Write from any thread; dropping the stream
     /// without [`BodyStream::finish`] closes the connection.
+    ///
+    /// On HTTP/2 and HTTP/3, a `2xx` streamed to an extended CONNECT (RFC 8441, RFC 9220) that
+    /// the handler did not [`upgrade_websocket`](Self::upgrade_websocket) opens a tunnel
+    /// (ADR-113): the stream's bytes arrive as the streamed request body ([`on_body`](Self::on_body),
+    /// held with [`body_reads`](Self::body_reads)), the stream's halves close separately, and a
+    /// peer that never ends its half after [`BodyStream::finish`] is reset after a few seconds.
     pub fn stream_response(&mut self, status: u16, headers: Headers) -> Option<BodyStream> {
         let out = self.responder.take()?;
         self.detached = true;
@@ -872,7 +983,9 @@ impl Context {
             return false;
         }
         match self.responder.take() {
-            Some(Out::H1(r)) => {
+            Some(Out::H1(mut r)) => {
+                // The connection is the handler's now: its close is not a client gone early.
+                r.forget_gone();
                 // Keep the response order: earlier pipelined answers still go out first.
                 r.slot.fill(Vec::new());
                 self.detached = true;
@@ -899,6 +1012,63 @@ impl Context {
         self.detached
     }
 
+    /// Pauses the request, so that work it waits for (a password checked on the logical pool,
+    /// a call to an authorization server) runs after [`Service::call`] returns, and the request
+    /// then goes on where it stopped: [`Suspended::resume`] runs a closure with the request's
+    /// context, from any thread, as `call` would have gone on (the next middleware, the
+    /// handler), and answers `500` if it neither responded nor detached. Responses to
+    /// pipelined HTTP/1.1 requests still go out in request order. For the work itself on the
+    /// pool, see [`suspend_to_pool`](Self::suspend_to_pool) (ADR-109).
+    ///
+    /// The context the server keeps reads as detached once `call` returns. `None` (nothing
+    /// changed) when the response was sent or taken, the request was upgraded, or its body is
+    /// streamed ([`BodyMode::Stream`]): the server feeds such a body to this context after
+    /// `call`, so it cannot move. A service that wants to suspend a request with a body asks
+    /// for it whole in [`Service::body_mode`].
+    ///
+    /// A resumed context may be suspended again (a second check). It cannot take the connection over
+    /// ([`upgrade_websocket`](Self::upgrade_websocket), [`upgrade_raw`](Self::upgrade_raw)), as
+    /// one run on the pool cannot.
+    pub fn suspend(&mut self) -> Option<Suspended> {
+        if self.streamed || self.upgrade.is_some() || self.raw.is_some() || self.detached {
+            return None;
+        }
+        let responder = self.responder.take()?;
+        self.detached = true;
+        let ctx = Context {
+            req: ReqCell::Shared(self.req.share()),
+            params: std::mem::take(&mut self.params),
+            locals: std::mem::take(&mut self.locals),
+            fin: std::mem::replace(&mut self.fin, Finish::new()),
+            responder: Some(responder),
+            status: self.status,
+            detached: false,
+            pooled: true,
+            upgrade: None,
+            raw: None,
+            sink: None,
+            route: self.route,
+            streamed: false,
+            reads: None,
+        };
+        Some(Suspended(Some(Box::new(ctx))))
+    }
+
+    /// Suspends the request ([`suspend`](Self::suspend)) and runs `work` with it on the
+    /// engine's logical pool, which resumes it when done. `false` when it cannot be suspended
+    /// (nothing changed then, and the caller still has the request), or when the pool has no
+    /// room: the request is answered `503` (`Retry-After: 1`) then, as
+    /// [`detach_to_pool`](Self::detach_to_pool) answers it.
+    pub fn suspend_to_pool(&mut self, work: impl FnOnce(Suspended) + Send + 'static) -> bool {
+        let Some(exec) = self.executor() else {
+            return false;
+        };
+        let Some(s) = self.suspend() else {
+            return false;
+        };
+        crate::pool::queue_suspended(&exec, s, work)
+    }
+
     /// Marks the context as run on the logical pool.
     pub(crate) fn set_pooled(&mut self) {
         self.pooled = true;
@@ -914,6 +1084,123 @@ impl Context {
         }
     }
 }
+
+/// Holds the reads of a streamed request body; see [`Context::body_reads`]. Cheap to clone and
+/// usable from any thread.
+#[derive(Clone)]
+pub struct BodyReads(ReadsInner);
+
+#[derive(Clone)]
+enum ReadsInner {
+    H1(Arc<H1Reads>),
+    H2(crate::h2::H2Reads),
+    Ext(crate::transport::SharedSink, u64),
+}
+
+impl std::fmt::Debug for BodyReads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyReads").finish_non_exhaustive()
+    }
+}
+
+impl BodyReads {
+    /// Stops (`true`) or resumes (`false`) taking the body from the client.
+    ///
+    /// - HTTP/1.1 holds the connection's reads, and so the pipelined requests behind this one,
+    ///   as it must. Bytes already read are still delivered (at most one read's worth), and the
+    ///   body's timeout (`HttpConfig::body_timeout`) does not fire while reads are held. The
+    ///   hold ends with the body.
+    /// - HTTP/2 stops giving the stream's flow-control window back, so the client stops once
+    ///   the window it has is used (`H2Config`'s initial window); the other streams go on.
+    /// - HTTP/3 holds the stream as the transport allows ([`ConnSink::hold_reads`]).
+    ///
+    /// [`ConnSink::hold_reads`]: crate::transport::ConnSink::hold_reads
+    pub fn hold(&self, hold: bool) {
+        match &self.0 {
+            ReadsInner::H1(r) => r.hold(hold),
+            ReadsInner::H2(r) => r.hold(hold),
+            ReadsInner::Ext(s, tag) => s.get().hold_reads(*tag, hold),
+        }
+    }
+}
+
+/// HTTP/1: a request body's hold on its connection's reads.
+pub(crate) struct H1Reads {
+    conn: Arc<akio_core::ConnInner>,
+    /// Held; the body ended (no more holding).
+    st: Mutex<(bool, bool)>,
+}
+
+fn lock_reads(m: &Mutex<(bool, bool)>) -> std::sync::MutexGuard<'_, (bool, bool)> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl H1Reads {
+    fn hold(&self, hold: bool) {
+        let mut st = lock_reads(&self.st);
+        if st.1 || st.0 == hold {
+            return;
+        }
+        st.0 = hold;
+        self.conn.hold_reads(hold);
+    }
+
+    fn end(&self) {
+        let mut st = lock_reads(&self.st);
+        st.1 = true;
+        if std::mem::replace(&mut st.0, false) {
+            self.conn.hold_reads(false);
+        }
+    }
+}
+
+/// A request paused by [`Context::suspend`], to go on later from any thread with
+/// [`resume`](Self::resume). Dropping it unresumed answers the request `500`.
+pub struct Suspended(Option<Box<Context>>);
+
+impl std::fmt::Debug for Suspended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Suspended").finish_non_exhaustive()
+    }
+}
+
+impl Suspended {
+    /// The request.
+    pub fn req(&self) -> &Request {
+        // Always set until resumed or dropped, which take `self`.
+        match &self.0 {
+            Some(ctx) => ctx.req(),
+            None => &EMPTY_REQUEST,
+        }
+    }
+
+    /// Goes on with the request: runs `f` with its context on this thread, then answers `500`
+    /// if `f` neither responded nor detached it.
+    pub fn resume(mut self, f: impl FnOnce(&mut Context)) {
+        if let Some(mut ctx) = self.0.take() {
+            f(&mut ctx);
+            finish_suspended(&mut ctx);
+        }
+    }
+}
+
+impl Drop for Suspended {
+    fn drop(&mut self) {
+        if let Some(mut ctx) = self.0.take() {
+            finish_suspended(&mut ctx);
+        }
+    }
+}
+
+fn finish_suspended(ctx: &mut Context) {
+    if !ctx.responded() && !ctx.detached {
+        ctx.respond(Response::text(500, "handler did not respond"));
+    }
+}
+
+/// What [`Suspended::req`] gives in a state it cannot be seen in.
+static EMPTY_REQUEST: std::sync::LazyLock<Request> =
+    std::sync::LazyLock::new(|| Request::new(Method::Get, ""));
 
 /// A request whose response will be sent later; see [`Context::detach`]. Dropping it without
 /// responding closes the connection.
@@ -945,6 +1232,12 @@ impl Detached {
     /// A route parameter as sent (see [`Context::param_raw`]).
     pub fn param_raw(&self, name: &str) -> Option<&str> {
         self.params.as_ref()?.raw(name, self.req.path())
+    }
+
+    /// Calls `f` once if the client goes before the response is finished, as
+    /// [`Context::on_gone`] says; replaces an earlier `f` (one registered on the context too).
+    pub fn on_gone(&mut self, f: impl FnOnce() + Send + 'static) {
+        self.responder.on_gone(Box::new(f));
     }
 
     /// Sends the response. Safe from any thread.
@@ -980,11 +1273,15 @@ fn start_stream(
         .take()
         .filter(|_| req.method != Method::Head)
         .map(|c| Box::new(Mutex::new(StreamEncoder::new(c))));
+    // Kept by the stream until it ends (`Response::keep_until_sent`).
+    let kept = resp.take_kept();
     let inner = match out {
         Out::H1(r) => {
             let mut head = Vec::with_capacity(192);
             resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
             Inner::H1 {
+                conn: r.slot.conn().cloned(),
+                gone: r.gone,
                 stream: r.slot.stream(head),
                 chunked,
                 keep_alive: r.keep_alive,
@@ -994,7 +1291,7 @@ fn start_stream(
         Out::H2(r) => Inner::H2(r.start_stream(resp)?),
         Out::Ext(r) => Inner::Ext(r.start_stream(resp)?),
     };
-    Some(BodyStream { inner, coder })
+    Some(BodyStream { inner, coder, kept })
 }
 
 /// A response body being written in pieces; see [`Context::stream_response`].
@@ -1003,6 +1300,9 @@ pub struct BodyStream {
     /// The content coding's encoder (ADR-074); the lock also keeps concurrent writes in the
     /// order they are encoded.
     coder: Option<Box<Mutex<StreamEncoder>>>,
+    /// What a response filter kept until the body is sent (ADR-112), dropped with the stream.
+    #[allow(dead_code, reason = "kept for its drop")]
+    kept: Option<Arc<crate::message::Kept>>,
 }
 
 impl std::fmt::Debug for BodyStream {
@@ -1013,6 +1313,11 @@ impl std::fmt::Debug for BodyStream {
 
 enum Inner {
     H1 {
+        /// For [`BodyStream::on_drain`].
+        conn: Option<Arc<akio_core::ConnInner>>,
+        /// [`Context::on_gone`]'s callback is registered (under the response's number),
+        /// forgotten when finished.
+        gone: bool,
         stream: ResponseStream,
         chunked: bool,
         keep_alive: bool,
@@ -1052,6 +1357,26 @@ impl BodyStream {
             Inner::H1 { stream, .. } => stream.queued_bytes(),
             Inner::H2(s) => s.queued_bytes(),
             Inner::Ext(s) => s.queued_bytes(),
+        }
+    }
+
+    /// Calls `f` once [`queued_bytes`](Self::queued_bytes) is down to nothing (ADR-101), or
+    /// when the connection (or stream) is gone, to resume a producer paused while the client
+    /// was behind. Runs `f` at once, on this thread, when nothing is queued; otherwise on the
+    /// connection's I/O thread. Replaces an earlier waiter.
+    ///
+    /// - HTTP/1.1: the connection's send queue is empty (one waiter per connection, as
+    ///   `akio_core::Conn::on_drain`).
+    /// - HTTP/2: the stream's queued bytes were all framed, as its flow-control window allowed.
+    /// - HTTP/3: as the transport says ([`BodySink::on_drain`]).
+    ///
+    /// [`BodySink::on_drain`]: crate::transport::BodySink::on_drain
+    pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
+        match &self.inner {
+            Inner::H1 { conn: Some(c), .. } => c.on_drain(Box::new(f)),
+            Inner::H1 { conn: None, .. } => f(),
+            Inner::H2(s) => s.on_drain(Box::new(f)),
+            Inner::Ext(s) => s.on_drain(Box::new(f)),
         }
     }
 
@@ -1099,11 +1424,14 @@ impl Inner {
     fn finish(self) {
         match self {
             Inner::H1 {
+                conn,
+                gone,
                 stream,
                 chunked,
                 keep_alive,
                 head_only,
             } => {
+                forget_gone(conn.as_ref(), gone, stream.seq());
                 if chunked && !head_only {
                     let _ = stream.write(b"0\r\n\r\n".to_vec());
                 }
@@ -1117,11 +1445,14 @@ impl Inner {
     fn finish_with_trailers(self, trailers: Headers) {
         match self {
             Inner::H1 {
+                conn,
+                gone,
                 stream,
                 chunked,
                 keep_alive,
                 head_only,
             } => {
+                forget_gone(conn.as_ref(), gone, stream.seq());
                 if chunked && !head_only {
                     let mut t = Vec::with_capacity(64);
                     t.extend_from_slice(b"0\r\n");
@@ -1142,8 +1473,15 @@ impl Inner {
     }
 }
 
+/// The response is finished: the connection's close no longer means the client went early.
+fn forget_gone(conn: Option<&Arc<akio_core::ConnInner>>, gone: bool, seq: u64) {
+    if let (Some(c), true) = (conn, gone) {
+        c.forget_peer_gone(seq);
+    }
+}
+
 /// Appends a chunk-size line (`<hex>\r\n`) for `n` bytes.
-fn push_chunk_size(out: &mut Vec<u8>, n: usize) {
+pub(crate) fn push_chunk_size(out: &mut Vec<u8>, n: usize) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let digits = ((usize::BITS - n.leading_zeros()).div_ceil(4)).max(1) as usize;
     for i in (0..digits).rev() {

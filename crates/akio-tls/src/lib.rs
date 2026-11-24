@@ -58,7 +58,7 @@ use std::{
 };
 
 use akio_core::{
-    Acceptor, Conn, Transport,
+    Acceptor, Conn, ConnInner, Transport,
     metrics::{Collector, Families},
 };
 
@@ -365,6 +365,7 @@ impl<A: Acceptor> Acceptor for Tls<A> {
                         Box::new(ktls::KtlsState::new(ktls, self.stats.clone()))
                     }),
                     conn,
+                    peer: None,
                     stats: Some(self.stats.clone()),
                     timeout,
                 }))
@@ -413,6 +414,8 @@ struct TlsTransport {
     /// Kernel TLS ([`Ktls`] other than `Off`).
     #[cfg(all(target_os = "linux", feature = "ktls"))]
     ktls: Option<Box<ktls::KtlsState>>,
+    /// The peer's chain, shared, once the handshake is done ([`peer_chain`]).
+    peer: Option<PeerChain>,
 }
 
 impl TlsTransport {
@@ -564,6 +567,56 @@ pub struct TlsInfo {
     pub ktls_tx: Option<KtlsPath>,
     /// Where the receive direction's record protection is, once moved into the kernel.
     pub ktls_rx: Option<KtlsPath>,
+    /// The certificate chain the peer sent (DER, leaf first), which the handshake verified:
+    /// the server's, on the client side (unless verification was turned off); on the server
+    /// side the client's, which it sends only to a server with client authentication
+    /// ([`ServerConfigBuilder::client_auth_required`] or
+    /// [`client_auth_optional`](ServerConfigBuilder::client_auth_optional)), checked against its
+    /// roots. Empty when the peer sent none, and while handshaking. A resumed session has the
+    /// chain of the session it resumes. [`peer_chain`] gives it without a copy.
+    pub peer_certificates: Vec<Vec<u8>>,
+}
+
+/// What [`peer_chain`] knows of a connection's peer certificates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerChain {
+    /// The connection is not TLS.
+    NotTls,
+    /// The handshake is not done: the peer may still send a chain (a TLS 1.3 client sends its
+    /// certificate after the server's Finished, so a request that came as early data comes
+    /// before it).
+    Handshaking,
+    /// The handshake is done, and the peer sent no certificate.
+    None,
+    /// The handshake is done, and verified this chain (DER, leaf first), as
+    /// [`TlsInfo::peer_certificates`] describes it. Shared: each call clones an `Arc`.
+    Chain(Arc<[Vec<u8>]>),
+}
+
+/// The certificate chain the peer of connection `c` sent and the handshake verified, as
+/// [`TlsInfo::peer_certificates`], for a server that hands it to each request (akio-http's
+/// `Request::peer_certificates`). Copied once per connection; later calls clone an `Arc`.
+pub fn peer_chain(c: &ConnInner) -> PeerChain {
+    c.with_transport(|t| {
+        let Some(t) = t.as_any().downcast_mut::<TlsTransport>() else {
+            return PeerChain::NotTls;
+        };
+        if let Some(p) = &t.peer {
+            return p.clone();
+        }
+        if t.conn.handshaking() {
+            return PeerChain::Handshaking;
+        }
+        let chain = t.conn.peer_certificates();
+        let p = if chain.is_empty() {
+            PeerChain::None
+        } else {
+            PeerChain::Chain(chain.to_vec().into())
+        };
+        t.peer = Some(p.clone());
+        p
+    })
+    .unwrap_or(PeerChain::NotTls)
 }
 
 /// TLS details of `c`, or `None` if it is not a TLS connection.
@@ -581,6 +634,11 @@ pub fn tls_info<H>(c: &Conn<H>) -> Option<TlsInfo> {
             early_data: t.conn.early_data(),
             early_data_len: t.conn.early_data_len(),
             ocsp_response: t.conn.ocsp_response().map(<[u8]>::to_vec),
+            peer_certificates: if t.conn.handshaking() {
+                Vec::new()
+            } else {
+                t.conn.peer_certificates().to_vec()
+            },
         })
     })
     .flatten()

@@ -1,5 +1,58 @@
 //! Content codings of streamed responses: the encoder a [`BodyStream`](crate::BodyStream)
-//! runs its writes through when the `compress` middleware chose a coding for it (ADR-074).
+//! runs its writes through when the `compress` middleware, or a response filter of the
+//! caller's own ([`Response::set_stream_coding`](crate::Response::set_stream_coding)), chose a
+//! coding for it (ADR-074, ADR-112).
+
+/// A content coding a streamed response's body is compressed with, write by write: set by a
+/// response filter on the head of a streamed response
+/// ([`Response::set_stream_coding`](crate::Response::set_stream_coding)), which also sets the
+/// `Content-Encoding` it names (ADR-112). Levels and windows are clamped to what each encoder
+/// takes when it is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Coding(pub(crate) StreamCoding);
+
+impl Coding {
+    /// `gzip` at a zlib level, 0 to 9.
+    #[must_use]
+    pub fn gzip(level: u32) -> Coding {
+        Coding(StreamCoding::Gzip(akio_deflate::Level::new(level).get()))
+    }
+
+    /// `deflate` (the zlib format) at a zlib level, 0 to 9.
+    #[must_use]
+    pub fn deflate(level: u32) -> Coding {
+        Coding(StreamCoding::Deflate(akio_deflate::Level::new(level).get()))
+    }
+
+    /// `br` at a quality, 0 to 11, with a window of `2^window_bits` bytes, 10 to 24.
+    #[must_use]
+    pub fn br(quality: u32, window_bits: u32) -> Coding {
+        Coding(StreamCoding::Br {
+            quality: akio_brotli::Level::new(quality).get(),
+            window_bits: window_bits.clamp(10, 24) as u8,
+        })
+    }
+
+    /// `zstd` at a level, 1 to 22, with a window of `2^window_log` bytes, 10 to 23.
+    #[must_use]
+    pub fn zstd(level: u32, window_log: u32) -> Coding {
+        Coding(StreamCoding::Zstd {
+            level: akio_zstd::Level::new(level).get(),
+            window_log: window_log.clamp(10, 23) as u8,
+        })
+    }
+
+    /// The name `Content-Encoding` gives it: `gzip`, `deflate`, `br` or `zstd`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self.0 {
+            StreamCoding::Gzip(_) => "gzip",
+            StreamCoding::Deflate(_) => "deflate",
+            StreamCoding::Br { .. } => "br",
+            StreamCoding::Zstd { .. } => "zstd",
+        }
+    }
+}
 
 /// The coding of a streamed response, chosen by the `compress` middleware when the head goes
 /// out (small and `Copy`, so a [`Response`](crate::Response) carries it at no cost).
@@ -159,6 +212,34 @@ mod tests {
     fn the_coding_fits_in_a_response_padding() {
         // With the status (2 bytes) and the streaming flag (1), within one 8-byte slot.
         assert_eq!(size_of::<Option<StreamCoding>>(), 3);
+    }
+
+    #[test]
+    fn public_codings_clamp_and_name_themselves() {
+        assert_eq!(Coding::gzip(12).0, StreamCoding::Gzip(9));
+        assert_eq!(Coding::deflate(1).name(), "deflate");
+        assert_eq!(
+            Coding::br(30, 40).0,
+            StreamCoding::Br {
+                quality: 11,
+                window_bits: 24
+            }
+        );
+        assert_eq!(
+            Coding::zstd(0, 2).0,
+            StreamCoding::Zstd {
+                level: 1,
+                window_log: 10
+            }
+        );
+        assert_eq!(
+            [
+                Coding::gzip(1).name(),
+                Coding::br(1, 18).name(),
+                Coding::zstd(1, 17).name()
+            ],
+            ["gzip", "br", "zstd"]
+        );
     }
 
     #[test]

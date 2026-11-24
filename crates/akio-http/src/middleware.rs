@@ -225,14 +225,35 @@ impl Default for StreamCompress {
     }
 }
 
-fn compressible(content_type: &str) -> bool {
+/// Whether a body of `content_type` is worth compressing: text, JSON, JavaScript, XML, SVG,
+/// WebAssembly, uncompressed fonts and icons; not images, video, archives and the like, which
+/// are compressed already (ADR-112). Parameters (`; charset=...`) and case are ignored.
+pub fn compressible(content_type: &str) -> bool {
     let t = content_type.split(';').next().unwrap_or("").trim();
+    let lower;
+    let t = if t.bytes().any(|b| b.is_ascii_uppercase()) {
+        lower = t.to_ascii_lowercase();
+        lower.as_str()
+    } else {
+        t
+    };
     t.starts_with("text/")
         || t.ends_with("json")
         || t.ends_with("javascript")
         || t.ends_with("xml")
-        || t == "image/svg+xml"
-        || t == "application/wasm"
+        || matches!(
+            t,
+            "image/svg+xml"
+                | "application/wasm"
+                | "application/ecmascript"
+                | "application/vnd.ms-fontobject"
+                | "application/x-font-ttf"
+                | "font/ttf"
+                | "font/otf"
+                | "image/x-icon"
+                | "image/vnd.microsoft.icon"
+                | "image/bmp"
+        )
 }
 
 /// The first of `encodings` the client accepts (honouring `q=0`).

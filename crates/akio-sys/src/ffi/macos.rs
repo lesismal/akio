@@ -48,6 +48,7 @@ pub const SOCK_DGRAM: c_int = 2;
 pub const SOL_SOCKET: c_int = 0xffff;
 pub const SO_REUSEADDR: c_int = 0x0004;
 pub const SO_REUSEPORT: c_int = 0x0200;
+pub const SHUT_RD: c_int = 0;
 pub const IPPROTO_IP: c_int = 0;
 pub const IPPROTO_IPV6: c_int = 41;
 pub const IPV6_V6ONLY: c_int = 27;
@@ -210,6 +211,7 @@ unsafe extern "C" {
     pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
     pub fn bind(fd: c_int, addr: *const sockaddr, len: socklen_t) -> c_int;
     pub fn listen(fd: c_int, backlog: c_int) -> c_int;
+    pub fn shutdown(fd: c_int, how: c_int) -> c_int;
     pub fn connect(fd: c_int, addr: *const sockaddr, len: socklen_t) -> c_int;
     pub fn setsockopt(
         fd: c_int,

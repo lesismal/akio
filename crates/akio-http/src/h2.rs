@@ -195,6 +195,8 @@ struct Stream {
     /// An accepted extended CONNECT (RFC 8441): the stream is a tunnel, half-closed in each
     /// direction on its own (END_STREAM from us does not cancel the peer's half).
     tunnel: bool,
+    /// The request is an extended CONNECT (RFC 8441): a `2xx` answer makes it a tunnel.
+    connect: bool,
     /// The context of a streamed request, or the WebSocket of a tunnel, parked here between
     /// body events.
     parked: Option<Parked>,
@@ -209,6 +211,25 @@ struct Stream {
     trailers: Option<Headers>,
     /// A pushed stream: it is never used by the peer for requests.
     pushed: bool,
+    /// The handler holds the request body's reads: the window consumed is not given back.
+    held: bool,
+    /// Waits for the queued response bytes to be framed ([`H2Stream::on_drain`]).
+    drain: Option<Waiter>,
+    /// Runs if the stream goes before its response ended ([`H2Responder::on_gone`], ADR-108):
+    /// dropped with the stream, unless disarmed once the response ended.
+    gone: Option<Waiter>,
+}
+
+/// A drain waiter: runs when it is dropped, so a stream or connection that goes away runs it
+/// too. Only ever dropped outside the core's lock ([`Locked`]), as it runs user code.
+struct Waiter(Option<Box<dyn FnOnce() + Send>>);
+
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
 }
 
 impl Stream {
@@ -231,6 +252,7 @@ impl Stream {
             received: 0,
             streaming: false,
             tunnel: false,
+            connect: false,
             parked: None,
             out: VecDeque::new(),
             out_bytes: 0,
@@ -240,6 +262,19 @@ impl Stream {
             head_only: false,
             trailers: None,
             pushed: false,
+            held: false,
+            drain: None,
+            gone: None,
+        }
+    }
+
+    /// The response ended (our END_STREAM went out): the stream going away is no longer the
+    /// client going early.
+    fn disarm_gone(&mut self) {
+        if self.sent_end {
+            if let Some(mut w) = self.gone.take() {
+                w.0 = None;
+            }
         }
     }
 }
@@ -362,6 +397,8 @@ struct Core {
     dead: bool,
     peer: SocketAddr,
     tls: bool,
+    /// The client's verified certificate chain, for its requests.
+    peer_certs: crate::session::PeerCerts,
     /// The connection began with TLS early data: every request is marked `Early-Data: 1`
     /// (offsets are not followed through the framing, so this errs on the safe side).
     early: bool,
@@ -374,6 +411,8 @@ struct Core {
     open_peer: u32,
     /// Streams removed under the lock, dropped once it is released (see [`Locked`]).
     dropped: Vec<Stream>,
+    /// Drain waiters due, run once the lock is released.
+    waiters: Vec<Waiter>,
     /// While the I/O thread works through one read, frames are only appended to `out`; the
     /// whole batch is handed to the connection once at the end (one write, one TLS record).
     batching: bool,
@@ -453,14 +492,16 @@ thread_local! {
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
         let Some(mut g) = self.0.take() else { return };
-        if g.dropped.is_empty() {
+        if g.dropped.is_empty() && g.waiters.is_empty() {
             return;
         }
+        let waiters = std::mem::take(&mut g.waiters);
         let mut dropped = SPARE_DROPPED.take();
         std::mem::swap(&mut dropped, &mut g.dropped);
         drop(g);
         dropped.clear(); // runs the streams' drops, outside the lock
         SPARE_DROPPED.set(dropped);
+        drop(waiters); // runs them
     }
 }
 
@@ -571,7 +612,8 @@ impl Core {
     }
 
     fn close_stream(&mut self, sid: u32) {
-        if let Some(s) = self.streams.remove(&sid) {
+        if let Some(mut s) = self.streams.remove(&sid) {
+            s.disarm_gone();
             if !self.stats_closed {
                 self.stat(|s| &s.streams_closed);
             }
@@ -919,6 +961,13 @@ impl Core {
                 &buf,
             );
         }
+        if let Some(st) = self.streams.get_mut(&sid) {
+            if st.out_bytes == 0 {
+                if let Some(w) = st.drain.take() {
+                    self.waiters.push(w);
+                }
+            }
+        }
         self.finish_if_done(sid);
     }
 
@@ -936,8 +985,19 @@ impl Core {
             SState::HalfClosedRemote | SState::HalfClosedLocal => self.close_stream(sid),
             SState::Open if st.tunnel => {
                 // A tunnel's halves close separately: the peer may still send (its close frame,
-                // say) until it ends its own half.
+                // say) until it ends its own half. A peer that never ends it does not keep the
+                // stream: it is reset (`CANCEL`) after `TUNNEL_LINGER`.
                 st.state = SState::HalfClosedLocal;
+                let weak = self.me.clone();
+                crate::timer::after(TUNNEL_LINGER, move || {
+                    if let Some(core) = weak.upgrade() {
+                        let mut c = lock(&core);
+                        if c.streams.contains_key(&sid) {
+                            c.rst(sid, err::CANCEL);
+                            c.flush();
+                        }
+                    }
+                });
             }
             SState::Open => {
                 // Answered before the request ended: ask the peer to stop sending.
@@ -1327,7 +1387,8 @@ impl Core {
         // a quarter of it is owed.
         if total > 0 && !end {
             st.recv_owed += total;
-            if st.recv_owed >= self.local.initial_window / 4 {
+            // Held by the handler (`BodyReads::hold`): given back when it resumes.
+            if !st.held && st.recv_owed >= self.local.initial_window / 4 {
                 let inc = std::mem::take(&mut st.recv_owed);
                 st.recv_window += inc;
                 self.window_update(sid, inc as u32);
@@ -1520,6 +1581,7 @@ impl Core {
             // Extended CONNECT (RFC 8441): dispatched now; the stream's DATA follows as the
             // body of a streamed request, or to the WebSocket the handler accepts.
             st.streaming = true;
+            st.connect = true;
             let resp = H2Responder::new(self.me.clone(), sid, false);
             self.insert_stream(sid, st);
             actions.push(Action::Start(sid, Box::new(Context::new_h2(req, resp))));
@@ -1626,7 +1688,7 @@ impl Core {
         Some(Action::Dispatch(req, resp))
     }
 
-    fn build_request(&self, fields: &Fields) -> Result<Request, ()> {
+    fn build_request(&mut self, fields: &Fields) -> Result<Request, ()> {
         let (mut method, mut path, mut authority, mut scheme, mut protocol) =
             (None, None, None, None, None);
         // The regular fields fit in one allocation (the pseudo-headers are not kept as fields;
@@ -1709,6 +1771,7 @@ impl Core {
             body: Vec::new(),
             peer: self.peer,
             protocol: protocol.map(str::to_owned),
+            peer_certificates: self.peer_certs.get(&self.conn),
         })
     }
 }
@@ -1738,6 +1801,30 @@ impl H2Responder {
         }
     }
 
+    /// Holds the reads of this stream's request body.
+    pub(crate) fn reads(&self) -> H2Reads {
+        H2Reads {
+            core: self.core.clone(),
+            sid: self.sid,
+        }
+    }
+
+    /// Runs `f` if the stream goes (reset by the peer, the connection closed) before its
+    /// response ended; at once when it is gone already. Replaces an earlier one.
+    pub(crate) fn on_gone(&self, f: Box<dyn FnOnce() + Send>) {
+        let Some(core) = self.core.upgrade() else {
+            return f();
+        };
+        let mut c = lock(&core);
+        let Some(st) = c.streams.get_mut(&self.sid) else {
+            drop(c);
+            return f();
+        };
+        if let Some(mut old) = st.gone.replace(Waiter(Some(f))) {
+            old.0 = None;
+        }
+    }
+
     /// The connection, while the session lives.
     pub(crate) fn conn(&self) -> Option<Arc<ConnInner>> {
         self.core.upgrade().map(|c| lock(&c).conn.clone())
@@ -1755,6 +1842,11 @@ impl H2Responder {
             c.write_headers(self.sid, Some(resp.status), &resp.headers, true, None, end);
             if let Some(st) = c.streams.get_mut(&self.sid) {
                 st.head_sent = true;
+                // A `2xx` streamed to an extended CONNECT opens the tunnel (RFC 8441 section 5,
+                // ADR-113): the stream's halves close separately from now on.
+                if st.connect && (200..300).contains(&resp.status) {
+                    st.tunnel = true;
+                }
                 if end {
                     st.sent_end = true;
                 }
@@ -1849,6 +1941,8 @@ impl H2Responder {
             c.flush();
             let mut headers = Headers::new();
             headers.append("host", authority);
+            let core = &mut *c;
+            let peer_certificates = core.peer_certs.get(&core.conn);
             let req = Request {
                 method: Method::Get,
                 target: path.to_owned(),
@@ -1858,11 +1952,44 @@ impl H2Responder {
                 body: Vec::new(),
                 peer: c.peer,
                 protocol: None,
+                peer_certificates,
             };
             (promised, hook, req)
         };
         hook(req, H2Responder::new(self.core.clone(), promised, false));
         true
+    }
+}
+
+/// Holds the reads of a streamed request body on an HTTP/2 stream
+/// ([`BodyReads`](crate::BodyReads)): its flow-control window is not given back meanwhile.
+#[derive(Clone)]
+pub(crate) struct H2Reads {
+    core: Weak<Mutex<Core>>,
+    sid: u32,
+}
+
+impl H2Reads {
+    pub(crate) fn hold(&self, hold: bool) {
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        let mut c = lock(&core);
+        let Some(st) = c.streams.get_mut(&self.sid) else {
+            return;
+        };
+        if st.held == hold {
+            return;
+        }
+        st.held = hold;
+        if hold || st.recv_owed == 0 || !matches!(st.state, SState::Open | SState::HalfClosedLocal)
+        {
+            return;
+        }
+        let inc = std::mem::take(&mut st.recv_owed);
+        st.recv_window += inc;
+        c.window_update(self.sid, inc as u32);
+        c.flush();
     }
 }
 
@@ -1901,6 +2028,25 @@ impl H2Stream {
         self.core.upgrade().map_or(0, |c| {
             lock(&c).streams.get(&self.sid).map_or(0, |s| s.out_bytes)
         })
+    }
+
+    /// Runs `f` once the stream's queued bytes are all framed (at once if they are), or when
+    /// the stream or the connection goes away. Replaces an earlier waiter.
+    pub(crate) fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        let Some(core) = self.core.upgrade() else {
+            return f();
+        };
+        let mut c = lock(&core);
+        let mut f = Some(f);
+        if let Some(st) = c.streams.get_mut(&self.sid).filter(|s| s.out_bytes > 0) {
+            if let Some(mut old) = st.drain.replace(Waiter(f.take())) {
+                old.0 = None; // replaced, not run
+            }
+        }
+        drop(c);
+        if let Some(f) = f {
+            f();
+        }
     }
 
     pub(crate) fn finish(self) {
@@ -1949,8 +2095,9 @@ struct H2WsLink {
     sid: u32,
 }
 
-/// How long a tunnel whose WebSocket ended our half (END_STREAM after its close frame) waits
-/// for the peer to end its own before resetting the stream (`CANCEL`).
+/// How long a tunnel that ended our half (END_STREAM: after its WebSocket's close frame, or its
+/// streamed response finished) waits for the peer to end its own before resetting the stream
+/// (`CANCEL`).
 const TUNNEL_LINGER: Duration = Duration::from_secs(5);
 
 impl WsLink for H2WsLink {
@@ -1993,19 +2140,9 @@ impl WsLink for H2WsLink {
         if std::mem::replace(&mut st.end_pending, !st.sent_end) || st.sent_end {
             return; // already ending
         }
+        // A peer that never ends its half does not keep the stream (`finish_if_done`).
         c.flush_stream(self.sid);
         c.flush();
-        // A peer that never ends its half does not keep the stream.
-        let (weak, sid) = (self.core.clone(), self.sid);
-        crate::timer::after(TUNNEL_LINGER, move || {
-            if let Some(core) = weak.upgrade() {
-                let mut c = lock(&core);
-                if c.streams.contains_key(&sid) {
-                    c.rst(sid, err::CANCEL);
-                    c.flush();
-                }
-            }
-        });
     }
 
     fn close(&self) {
@@ -2111,6 +2248,7 @@ impl<S: Service> H2Session<S> {
                 dead: false,
                 peer,
                 tls,
+                peer_certs: crate::session::PeerCerts::default(),
                 early,
                 push_hook: Some(Arc::new(move |req: Request, resp: H2Responder| {
                     let mut ctx = Context::new_h2(req, resp);
@@ -2128,6 +2266,7 @@ impl<S: Service> H2Session<S> {
                 pending_rst: None,
                 open_peer: 0,
                 dropped: Vec::new(),
+                waiters: Vec::new(),
                 batching: false,
                 fields: Fields::default(),
                 enc_fields: Fields::default(),
@@ -2290,6 +2429,7 @@ impl<S: Service> H2Session<S> {
                 ctx.recycle_request();
             }
             Action::Start(sid, mut ctx) => {
+                ctx.set_streamed();
                 let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
                 drop(g);
@@ -2389,7 +2529,14 @@ impl<S: Service> H2Session<S> {
         let mut c = lock(&self.core);
         c.dead = true;
         c.count_close();
-        let all: Vec<Stream> = c.streams.drain().map(|(_, s)| s).collect();
+        let all: Vec<Stream> = c
+            .streams
+            .drain()
+            .map(|(_, mut s)| {
+                s.disarm_gone();
+                s
+            })
+            .collect();
         c.dropped.extend(all);
     }
 }

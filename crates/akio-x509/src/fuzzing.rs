@@ -4,8 +4,8 @@
 use akio_crypto::der::Reader;
 
 use crate::{
-    Certificate, Crl, CrlSet, OcspResponse, OcspValidation, PolicyOptions, RootStore, ServerName,
-    Usage, Verifier, ext, matches_server_name,
+    Certificate, CertificateRequest, Crl, CrlSet, OcspResponse, OcspValidation, PolicyOptions,
+    RootStore, ServerName, Usage, Verifier, ext, matches_server_name,
 };
 
 /// The OpenSSL-made CA and leaf of tests/data/revocation, for the revocation targets.
@@ -191,6 +191,30 @@ pub fn parse(data: &[u8]) {
         .verify_path(&c, &[], None);
 }
 
+/// `x509_csr`: arbitrary bytes as a DER certificate signing request (and a PEM text). Never
+/// panics; a parsed request re-parses identically, survives a PEM round trip, and its
+/// signature check and public key extraction run.
+pub fn csr(data: &[u8]) {
+    let _ = CertificateRequest::from_pem(data);
+    let Ok(r) = CertificateRequest::from_der(data) else {
+        return;
+    };
+    assert!(CertificateRequest::from_der(r.as_der()).ok().as_ref() == Some(&r));
+    assert!(
+        CertificateRequest::from_pem(r.to_pem().as_bytes())
+            .ok()
+            .as_ref()
+            == Some(&r)
+    );
+    let _ = r.verify_signature();
+    let _ = r.public_key();
+    let _ = (
+        r.subject().common_name(),
+        r.subject_alt_names(),
+        r.attributes(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     fn corpus(target: &str) -> Vec<Vec<u8>> {
@@ -218,6 +242,11 @@ mod tests {
                 f(&g);
             }
         }
+    }
+
+    #[test]
+    fn replay_x509_csr() {
+        replay("x509_csr", super::csr);
     }
 
     #[test]

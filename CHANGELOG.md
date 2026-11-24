@@ -70,6 +70,154 @@ ADR-104, second revision; no API change:
   1024 connections 16.3 → 11.3 µs of server CPU per request (loops 9.1) with the same latency; at
   50k/s 15.6 → 9.9 µs. Skew cases and echo with 64 connections unchanged, echo with 256-1024
   connections -2.5%.
+
+### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
+
+ADR-111, requested by akit (A66):
+
+- `H2Client::request` and `open` heed `ClientRequest::response_header_timeout` (from the
+  request's END_STREAM to the final response's HEADERS), `response_idle_timeout` (the longest gap
+  between DATA frames from the head on, held reads not counted) and `cancel` (`CancelToken`, which
+  now covers HTTP/2 requests too): the stream is reset (`CANCEL`), or a request waiting for a stream
+  dropped unsent, and the request fails once with `ClientError::HeaderTimeout`, `IdleTimeout` or
+  `Cancelled`, the connection left to its other streams.
+
+### Added: a stream coding any response filter can set, and compressed copies of cached files (akio-http)
+
+ADR-112, requested by akit (A90, A91):
+
+- `akio_http::Coding` (`gzip`, `deflate`, `br`, `zstd`, `name`), `Response::set_stream_coding` /
+  `stream_coding` and `Response::is_streaming`: a response filter of the caller's own picks the
+  coding a streamed body is encoded with, as the `compress` middleware does.
+- `Response::keep_until_sent(value)`: a value kept until the response is sent (a streamed one:
+  until its `BodyStream` is finished or dropped), for filters that bound responses under way.
+- `Files::compress(&[...])`: a file cached in memory is also kept compressed, one copy per coding,
+  made once on the disk pool and served to the clients that prefer it.
+- `middleware::compressible` is public; it now also takes fonts, icons, BMP and
+  `application/ecmascript`, which the `compress` middleware compresses too.
+
+### Added: the HTTP/1 client hands a connection over on `101 Switching Protocols`; a streamed `2xx` to an HTTP/2 extended CONNECT is a tunnel (akio-http)
+
+ADR-113, requested by akit (A93, A94):
+
+- `ClientRequest::upgrade(protocol)` (`Connection: Upgrade`, `Upgrade: <protocol>`) and
+  `ResponseHandler::on_upgrade(&ResponseHead, &RawConn) -> Option<Box<dyn RawHandler>>`: a `101`
+  to a request that asked to upgrade settles it (its timeouts and token no longer apply) and hands
+  its connection to the returned `RawHandler` as a byte stream, with the bytes that followed the
+  head; the default (`None`) delivers the `101` as a bodyless response and closes the connection.
+- Changed: a `101` no longer returns its connection to the keep-alive pool; a `101` to a request
+  that did not ask to upgrade fails it with `ClientError::Protocol`.
+- HTTP/2: a streamed `2xx` answer to an extended CONNECT (`Context::stream_response`,
+  `Detached::stream_response`) makes the stream a tunnel, as `upgrade_websocket` does: its halves
+  close separately (our END_STREAM no longer resets a peer still sending), and a peer that never
+  ends its half is reset (`CANCEL`) 5 s after ours ended. HTTP/3 already behaved so (tested).
+
+### Added: the HTTP/2 client's streamed requests reset, timed and ended with trailers; backpressure per stream; the server's stream limit, `GOAWAY`, the connect timeout and ALPN (akio-http)
+
+ADR-110, requested by akit (A51, A52, A53):
+
+- `H2Upload::stream()` gives an `H2Stream` (`Clone`): `cancel()` resets the stream (`CANCEL`) and
+  fails `on_event` once with `ClientError::Cancelled` (also `H2Upload::cancel`); `hold_reads(bool)`
+  stops giving the stream's receive window back while held, and gives back what is owed on resume;
+  `id()`.
+- `H2Client::open` applies `ClientRequest::timeout`: the stream is reset and `on_event` gets
+  `ClientError::Timeout`.
+- `H2Upload::finish_with_trailers(Headers)`; `H2Upload::try_write` (`Err(Closed)` /
+  `Err(Overloaded)`), `queued_bytes` and `on_drain`; writes are bounded by the new
+  `H2Options::max_queued_bytes` (64 MiB) and batched per post to the I/O thread.
+- `H2Client::max_concurrent_streams`, `open_streams` and `waiting_streams`: the client heeds the
+  server's `SETTINGS_MAX_CONCURRENT_STREAMS`; a request past it waits, within the new
+  `H2Options::max_pending_streams` (1024), else fails with the new `ClientError::Busy`.
+- The new `ClientError::Refused`: the streams above a `GOAWAY`'s last stream id (a streamed
+  request's `on_event` is now told), requests made after a `GOAWAY` or waiting when it came, and
+  streams reset with `REFUSED_STREAM` (were `Protocol("stream refused")` and `Closed`).
+  `H2Client::is_open` is `false` once a `GOAWAY` came or was sent.
+- `H2Options::happy_eyeballs`: `H2Client::connect`'s race and connect timeout.
+- Over TLS, `dial` and `connect` call `ready` once the server's first frame came, and fail with an
+  `io::Error` carrying the new `NotH2 { alpn }` (`NotH2::of`) when ALPN did not choose `h2`.
+- Changed: a stream whose response ends before its request body is reset (`CANCEL`) rather than
+  left half-open; `H2Upload::write` and `finish` return `false` once the stream is over.
+
+### Added: the HTTP/1 client's response header and idle timeouts and its cancellation, a server request that hears its client go, a write timeout changed at run time (akio-http, akio-h3, akio-core, akio-epoll, akio-uring)
+
+ADR-108, additive, requested by akit (A36, A37, A38):
+
+- `ClientRequest::response_header_timeout` and `response_idle_timeout` (defaults in
+  `ClientOptions`): the wait for the response's head once the request is written whole (a
+  streamed body: from `RequestBody::finish`), and the longest gap between body reads, stopped
+  while `ResponseBody::hold_reads` holds them. They fail the request with the new
+  `ClientError::HeaderTimeout` / `IdleTimeout` and close its connection; `ClientError::is_timeout`.
+- `CancelToken` with `ClientRequest::cancel_with`: cancels a request at any point (dropped before
+  it is sent, its connection closed after), failing it once with the new `ClientError::Cancelled`;
+  one token may cover several requests.
+- `Context::on_gone` and `Detached::on_gone`: run once if the client goes before the response is
+  finished: on HTTP/1 the connection closes or the client's EOF comes (akio-core's new
+  `ConnInner::on_peer_gone`), on HTTP/2 the stream is reset or the connection closes, on HTTP/3
+  through the new `ConnSink::on_gone` (default: never called), which akio-h3 implements.
+- Fixed: an HTTP/1 request whose body streams no longer keeps its context and body sink after its
+  client went: the session drops them when the connection closes, and closes the connection when
+  the client's EOF comes mid-body.
+- `Live::set_write_timeout` / `write_timeout`: `Config::write_timeout` is reloadable
+  (`Engine::reload` lists it in `applied`), on epoll and io_uring.
+- Fixed: the HTTP deadlines' coarse clock lagged by up to a second when a shorter timeout lowered
+  the sweeper's tick while it slept (a client's 300 ms header timeout armed then fired after
+  about 40 ms). A registration that shortens the tick now updates the clock and wakes the
+  sweeper. Test: `akio-http/tests/deadline_clock.rs`.
+
+### Added: bcrypt, the client's certificate on each request, and requests suspended and resumed (akio-crypto, akio-tls, akio-quic, akio-http, akio-h3)
+
+ADR-109, additive, requested by akit (A63, A64, A65):
+
+- `akio_crypto::bcrypt`: `Hash::parse` / `verify` / `Display`, `hash` and `hash_with_salt`, for
+  `$2a$`, `$2b$` and `$2y$` hashes as Go and `htpasswd -B` make them.
+- `Request::peer_certificates`: the chain the client sent and the TLS handshake verified, on every
+  HTTP/1.1, HTTP/2 and HTTP/3 request, shared per connection; `TlsInfo::peer_certificates`,
+  `akio_tls::peer_chain` (`PeerChain`) and `akio_quic::Connection::peer_certificates`.
+- `Context::suspend` and `Suspended::resume`: a request paused, then gone on with from any thread
+  where it stopped (the next middleware, the handler); `Context::suspend_to_pool` runs work on the
+  logical pool with it (`503` when the pool is full). Not for a request whose body is streamed.
+
+### Fixed: a connection right after a listener's removal no longer lands on its old sockets (akio, akio-uring, akio-epoll)
+
+`Engine::remove_listener` and `shutdown_listener` (ADR-099) returned once the change was posted to
+the I/O threads, and on io_uring a removed listener's `SO_REUSEPORT` sockets kept listening until
+the cancellation of their multishot accepts completed. A listener replaced at its own address (the
+new one added first, then the old one removed, as akit's reload does) thus had some of the
+connections made right after the removal queued on an old socket and reset when it closed: about
+one akit reload test run in four on io_uring, more rarely on epoll. The io_uring threads now take
+the socket out of listening (`shutdown(SHUT_RD)`) as soon as they handle the removal, and both
+calls return once every I/O thread of the listener has handled it (up to a second for a busy
+thread; without waiting when called on an I/O thread). Regression test:
+`tests/runtime_listeners.rs`, a listener replaced at its address 50 times.
+
+### Added: certificate signing requests (akio-x509)
+
+ADR-107, additive: `CsrParams` makes a PKCS#10 request (RFC 2986) for a key, with
+subjectAltNames, extKeyUsage and further extensions in an `extensionRequest`, as an ACME client
+sends to finalize an order (RFC 8555); `CertificateRequest` parses one strictly from DER or PEM and
+checks its signature (`verify_signature`), within `MAX_REQUEST_LEN` and `MAX_ATTRIBUTES`. Fuzz
+target `x509_csr`; interop with rcgen and OpenSSL.
+
+### Added: streamed bodies with linked backpressure (akio-http, akio-h3)
+
+ADR-101, additive, requested by akit (A19, A20, A21):
+
+- `ClientRequest::streamed(len)` and `Client::request_streamed(req, on_ready, done)`: an HTTP/1
+  request body written as it is produced through a `RequestBody` (`write`, `queued_bytes`,
+  `on_drain`, `finish`, `finish_with_trailers`), framed by `Content-Length` or chunked. Such a
+  request is never retried nor redirected; a response that comes before the body is finished is
+  delivered and the connection closed.
+- `Client::request_with(req, handler)`: the response delivered as it arrives to a
+  `ResponseHandler` (`on_request_body`, `on_head`, `on_data`, `on_end`, `on_error`), its reads held
+  and resumed with `ResponseBody::hold_reads`, abandoned with `cancel`. `max_body_bytes` does not
+  apply; redirects are not followed.
+- `Context::body_reads()` and `BodyReads::hold`: a streamed request body's reads held and resumed
+  (the connection's on HTTP/1.1, the stream's flow-control window on HTTP/2 and HTTP/3). The body
+  timeout does not fire while they are held.
+- `BodyStream::on_drain(f)`: `f` runs once a streamed response's queued bytes are out of the way.
+- `transport::ConnSink::hold_reads` and `transport::BodySink::on_drain`, with defaults, which
+  akio-h3 implements.
+
 ### Added: static files for a gateway: a path the caller names, twins by q value, candidate paths, directory listings (akio-http)
 
 ADR-100, additive:
@@ -314,7 +462,7 @@ ADR-091's second update (2026-11-23), the items its first update left:
 - `tools/interop/webrtc/turn-ttl-df.sh` checks both reports against akio-turn.
 ### Added: borrowed WebSocket messages; faster WebSocket echo (akio-ws, akio-core)
 
-ADR-101, additive:
+ADR-114, additive:
 
 - `WsHandler::on_message_ref(&WsSender, MessageRef<'_>)` hands a message borrowed from the
   connection's buffers (`MessageRef::Text(&str)` | `Binary(&[u8])`), valid for the call: no

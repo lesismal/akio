@@ -45,6 +45,9 @@ crate (docs/api-stability.md): its API follows those stacks and may change in an
   delegated responder with id-kp-OCSPSigning, CertID with SHA-1/256/384/512, nonce compared in
   constant time, thisUpdate / nextUpdate with clock skew) and `OcspRequest`; `CrlParams` and
   `OcspResponseParams` build signed CRLs and responses for tests and development CAs.
+- `CsrParams` and `CertificateRequest` (ADR-107): PKCS#10 certificate signing requests (RFC 2986)
+  made for a key, with SANs, EKU and further extensions requested, as an ACME client finalizes an
+  order; strict DER/PEM parsing and the signature (proof of possession) checked.
 
 Supported signature algorithms: ECDSA with SHA-256/384/512 (P-256, P-384, P-521 keys), Ed25519,
 Ed448, RSA PKCS#1 v1.5 with SHA-256/384/512 (SHA-1 for verifying legacy certificates), RSA-PSS with

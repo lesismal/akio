@@ -39,6 +39,11 @@ thread_local! {
     static CURRENT_LOOP: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Whether the calling thread runs an I/O loop of this backend.
+pub(crate) fn on_loop_thread() -> bool {
+    CURRENT_LOOP.with(Cell::get) != 0
+}
+
 /// Marks the calling thread as the loop of `shared` (posts from it need no wake-up).
 pub(crate) fn set_current_loop(shared: &LoopShared) {
     CURRENT_LOOP.with(|c| c.set(shared.uid));
@@ -108,6 +113,8 @@ pub(crate) enum Cmd {
     StopListening {
         drain: Option<Duration>,
         exit: bool,
+        /// Dropped once the loop's listening sockets are closed (`Group::await_unlisted`).
+        done: Option<akio_core::CountdownToken>,
     },
 }
 
@@ -628,7 +635,7 @@ impl Loop {
     /// Arms the write-timeout check of a connection that has output queued (if the timeout is
     /// set and no check is pending). `now` comes from the cached loop clock.
     fn arm_write(&mut self, id: u64) {
-        let Some(wt) = self.cfg.write_timeout else {
+        let Some(wt) = self.cfg.telemetry.live().write_timeout() else {
             return;
         };
         let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
@@ -714,13 +721,16 @@ impl Loop {
     /// A write-timeout check is due: close the connection if output is still queued and nothing
     /// was written since the last check, else check again later.
     fn on_write_timer(&mut self, id: u64, now: u64) {
-        let Some(wt) = self.cfg.write_timeout else {
-            return;
-        };
+        let wt = self.cfg.telemetry.live().write_timeout();
         let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
             return;
         };
         lc.write_timer = None;
+        // Turned off at run time (`Live::set_write_timeout`): no more checks until it is set
+        // again and a write arms one.
+        let Some(wt) = wt else {
+            return;
+        };
         let (sent, pending, ..) = lc.inner.debug_state();
         if pending == 0 {
             return; // drained: the next blocked write arms a new check
@@ -846,7 +856,10 @@ impl Loop {
                 self.retire_kill = None;
                 self.shared.stats.set_retiring(false);
             }
-            Cmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
+            Cmd::StopListening { drain, exit, done } => {
+                self.stop_listening(drain, exit);
+                drop(done);
+            }
         }
     }
 
@@ -1459,7 +1472,7 @@ impl Loop {
         }
         let read = !lc.inner.read_held() && !lc.bp && !lc.eof;
         let write = q > 0;
-        let arm = write && lc.write_timer.is_none() && self.cfg.write_timeout.is_some();
+        let arm = write && lc.write_timer.is_none() && self.cfg.telemetry.live().write_ms() != 0;
         if (read, write) != (lc.reg_read, lc.reg_write) {
             lc.reg_read = read;
             lc.reg_write = write;

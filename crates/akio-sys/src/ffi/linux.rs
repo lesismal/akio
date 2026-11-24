@@ -74,6 +74,7 @@ pub const SOL_SOCKET: c_int = 1;
 pub const SO_REUSEADDR: c_int = 2;
 pub const SO_RCVBUF: c_int = 8;
 pub const SO_REUSEPORT: c_int = 15;
+pub const SHUT_RD: c_int = 0;
 pub const SO_RCVBUFFORCE: c_int = 33;
 pub const SO_INCOMING_CPU: c_int = 49;
 pub const SO_ATTACH_REUSEPORT_CBPF: c_int = 51;
@@ -531,6 +532,7 @@ unsafe extern "C" {
     pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
     pub fn bind(fd: c_int, addr: *const sockaddr, len: socklen_t) -> c_int;
     pub fn listen(fd: c_int, backlog: c_int) -> c_int;
+    pub fn shutdown(fd: c_int, how: c_int) -> c_int;
     pub fn connect(fd: c_int, addr: *const sockaddr, len: socklen_t) -> c_int;
     pub fn setsockopt(
         fd: c_int,

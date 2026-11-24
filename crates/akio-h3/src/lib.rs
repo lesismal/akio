@@ -172,6 +172,8 @@ pub fn serve_with<S: Service>(
         let out = H3Out {
             c: c.clone(),
             outs: Arc::default(),
+            drains: Arc::default(),
+            gones: Arc::default(),
             enc: None,
         };
         ServerConn {
@@ -185,6 +187,7 @@ pub fn serve_with<S: Service>(
             sink: SharedSink::new(out.clone()),
             out,
             span: akio_http::trace::connection_span(c.remote_addr(), "3"),
+            certs: PeerCerts::new(),
         }
     })
 }
@@ -602,6 +605,24 @@ struct ServerConn<S> {
     sink: SharedSink,
     /// The connection span (`akio_http::trace`), ended on close.
     span: akio::log::span::Span,
+    /// The client's verified certificate chain, once the handshake is done.
+    certs: PeerCerts,
+}
+
+/// A connection's verified client certificate chain (`Request::peer_certificates`), asked of
+/// the QUIC connection until its handshake is done, then kept: each request clones an `Arc`.
+type PeerCerts = std::sync::OnceLock<Option<Arc<[Vec<u8>]>>>;
+
+/// The chain of `c`'s client, for a request; `None` before the handshake is done (a request
+/// sent in 0-RTT comes before the client's certificate).
+fn peer_certs(certs: &PeerCerts, c: &Connection) -> Option<Arc<[Vec<u8>]>> {
+    if let Some(v) = certs.get() {
+        return v.clone();
+    }
+    let chain = c.peer_certificates()?;
+    certs
+        .get_or_init(|| (!chain.is_empty()).then(|| chain.into()))
+        .clone()
 }
 
 /// Why a request stream stopped being read.
@@ -617,6 +638,7 @@ struct ServerHost<'a, S> {
     c: &'a Connection,
     id: StreamId,
     sink: &'a SharedSink,
+    certs: &'a PeerCerts,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -625,6 +647,7 @@ impl<S: Service> Host for ServerHost<'_, S> {
     }
 
     fn start(&mut self, mut request: Request, head_only: bool) -> Body {
+        request.peer_certificates = peer_certs(self.certs, self.c);
         if self.c.is_early(self.id) {
             request.headers.append("early-data", "1");
         }
@@ -676,6 +699,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             sink: &self.sink,
+            certs: &self.certs,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -751,6 +775,7 @@ impl<S: Service> ServerConn<S> {
 
     #[inline(always)]
     fn dispatch(&self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
+        request.peer_certificates = peer_certs(&self.certs, c);
         if c.is_early(id) {
             // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
             // the application can answer 425 Too Early to what is not safe to repeat.
@@ -802,6 +827,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             sink: &self.sink,
+            certs: &self.certs,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -1258,6 +1284,8 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     }
 
     fn on_stream_reset(&mut self, c: &Connection, id: StreamId, _code: u64) {
+        // The client gave up the request (`Context::on_gone`).
+        self.out.gones.run(id);
         if let Some(mut r) = self.reqs.remove(&id) {
             self.forget(id, &mut r);
             self.conn.flush(c);
@@ -1267,10 +1295,13 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     fn on_stream_stopped(&mut self, _c: &Connection, id: StreamId, _code: u64) {
         // The response is not wanted any more: what waits for it is dropped.
         lock(&self.out.outs).remove(&id);
+        run_drain(&self.out.drains, id);
+        self.out.gones.run(id);
     }
 
     fn on_stream_writable(&mut self, c: &Connection, id: StreamId) {
         pump(c, &self.out.outs, id);
+        run_drain(&self.out.drains, id);
     }
 
     fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {
@@ -1279,6 +1310,14 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         }
         self.uni.clear();
         lock(&self.out.outs).clear();
+        let drains: Vec<_> = lock(&self.out.drains).drain().map(|(_, f)| f).collect();
+        for f in drains {
+            f();
+        }
+        let gones: Vec<_> = lock(&self.out.gones.map).drain().map(|(_, f)| f).collect();
+        for f in gones {
+            f();
+        }
         if self.span.is_recording() {
             self.span.record("quic.close_reason", format!("{reason:?}"));
             drop(std::mem::take(&mut self.span));
@@ -1517,6 +1556,44 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// What waits to be sent on response streams of a connection, by stream.
 type Outs = Mutex<StreamMap<Out>>;
 
+/// Drain waiters per stream (`BodySink::on_drain`), run once the stream's send buffer has room.
+type Drains = Mutex<StreamMap<Box<dyn FnOnce() + Send>>>;
+
+/// What runs if a request's client goes before its response is finished
+/// (`ConnSink::on_gone`, ADR-108), by stream.
+#[derive(Default)]
+struct Gones {
+    /// Some were ever registered: responses check the map only then.
+    any: AtomicBool,
+    map: Drains,
+}
+
+impl Gones {
+    /// The response of stream `id` is finished: its callback is dropped unrun.
+    #[inline]
+    fn forget(&self, id: StreamId) {
+        if self.any.load(Ordering::Acquire) {
+            let f = lock(&self.map).remove(&id);
+            drop(f);
+        }
+    }
+
+    /// The client went: runs the callback of stream `id`, if any (outside the lock).
+    fn run(&self, id: StreamId) {
+        if self.any.load(Ordering::Acquire) {
+            run_drain(&self.map, id);
+        }
+    }
+}
+
+/// Runs the drain waiter of stream `id`, if any (outside the lock).
+fn run_drain(drains: &Drains, id: StreamId) {
+    let f = lock(drains).remove(&id);
+    if let Some(f) = f {
+        f();
+    }
+}
+
 /// The rest of a response the stream's send buffer could not take yet, in order: bytes, then
 /// a file's range, then the trailers, then the end of the stream.
 #[derive(Default)]
@@ -1714,6 +1791,10 @@ struct H3Out {
     c: Connection,
     /// Responses waiting for room in their stream's send buffer.
     outs: Arc<Outs>,
+    /// Streamed responses waiting for room to write more (`BodySink::on_drain`).
+    drains: Arc<Drains>,
+    /// What runs if a request's client goes early (`ConnSink::on_gone`).
+    gones: Arc<Gones>,
     /// The connection's QPACK encoder, when it has a dynamic table.
     enc: Option<Arc<EncShared>>,
 }
@@ -1730,15 +1811,36 @@ fn tag(id: StreamId, head_only: bool) -> u64 {
 impl ConnSink for H3Out {
     #[inline]
     fn send(&self, tag: u64, resp: Response) {
-        Sink::of(self, tag).send(resp);
+        let s = Sink::of(self, tag);
+        self.gones.forget(s.id);
+        s.send(resp);
     }
 
     fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>> {
         Sink::of(self, tag).start_stream(resp)
     }
 
+    /// Runs `f` when the client resets the request stream, stops the response, or the
+    /// connection closes, unless the response was finished before.
+    fn on_gone(&self, tag: u64, f: Box<dyn FnOnce() + Send>) {
+        let id = Sink::of(self, tag).id;
+        self.gones.any.store(true, Ordering::Release);
+        // Registered first: a reset handled on the I/O thread meanwhile finds it.
+        lock(&self.gones.map).insert(id, f);
+        if self.c.is_closed() || self.c.send_capacity(id).is_err() {
+            self.gones.run(id); // gone already
+        }
+    }
+
     fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
         self.c.execute(job)
+    }
+
+    /// Holds the request stream: what arrives stays in its receive buffer and its window is not
+    /// extended (`Connection::hold_reads`).
+    fn hold_reads(&self, tag: u64, hold: bool) {
+        let id = StreamId::new(akio_quic::Side::Client, Dir::Bi, tag >> 1);
+        let _ = self.c.hold_reads(id, hold);
     }
 }
 
@@ -1985,7 +2087,24 @@ impl BodySink for StreamBody {
         self.o.c.queued_bytes(self.id) + waiting
     }
 
+    /// Runs `f` once the stream's send buffer has room for more (at once if it has and nothing
+    /// of the response waits), on the connection's I/O thread otherwise, or when the stream is
+    /// stopped or the connection closed.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        // Registered first: a writable event from the I/O thread meanwhile finds it.
+        lock(&self.o.drains).insert(self.id, f);
+        // Part of the response waiting for room means a writable event is due.
+        let now = match self.o.c.send_capacity(self.id) {
+            Ok(room) => room > 0 && !self.waiting(),
+            Err(_) => true, // the stream is gone
+        };
+        if now {
+            run_drain(&self.o.drains, self.id);
+        }
+    }
+
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
+        self.o.gones.forget(self.id);
         let mut out = Vec::new();
         self.sink().put_trailers(&mut out, trailers.as_ref());
         if self.waiting() {

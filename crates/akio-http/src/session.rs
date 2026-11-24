@@ -138,6 +138,8 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             early_len: 0,
             consumed: 0,
             span: crate::trace::connection_span(c.peer_addr(), "1.1"),
+            peer_chain: None,
+            peer_known: false,
         }
     }
 
@@ -170,6 +172,10 @@ enum State {
         kind: Kind,
         keep_alive: bool,
         scratch: Vec<u8>,
+        /// The key of the connection's peer-gone callback that closes it should the client stop
+        /// sending mid-body; 0 once it ran or when none was set (a key has its top bit set, so it
+        /// is never 0). A plain `u64` keeps an idle `Session` within its size (`size_tests`).
+        gone: u64,
     },
     /// No more requests are read (`Connection: close`, or a protocol error).
     Closed,
@@ -218,6 +224,44 @@ pub struct Session<S> {
     consumed: u64,
     /// The connection span (`crate::trace`), ended on close.
     span: akio_log::span::Span,
+    /// The client's verified certificate chain, for its requests (see [`PeerCerts`]; kept as
+    /// two fields here so the flag packs with the session's other flags, `size_tests`).
+    peer_chain: Option<Arc<[Vec<u8>]>>,
+    /// Whether `peer_chain` is known: the handshake is done.
+    peer_known: bool,
+}
+
+/// A connection's verified client certificate chain ([`Request::peer_certificates`]), asked of
+/// its TLS transport until the handshake is done, then kept: each request clones an `Arc`.
+#[derive(Debug, Default)]
+pub(crate) struct PeerCerts {
+    known: bool,
+    chain: Option<Arc<[Vec<u8>]>>,
+}
+
+impl PeerCerts {
+    /// The chain the client of `c` sent and the handshake verified, if any.
+    pub(crate) fn get(&mut self, c: &akio_core::ConnInner) -> Option<Arc<[Vec<u8>]>> {
+        peer_chain(&mut self.known, &mut self.chain, c)
+    }
+}
+
+/// [`PeerCerts::get`] on its two parts, `known` and `chain`.
+fn peer_chain(
+    known: &mut bool,
+    chain: &mut Option<Arc<[Vec<u8>]>>,
+    c: &akio_core::ConnInner,
+) -> Option<Arc<[Vec<u8>]>> {
+    if !*known {
+        match akio::tls::peer_chain(c) {
+            // TLS 1.3 early data comes before the client's certificate.
+            akio::tls::PeerChain::Handshaking => return None,
+            akio::tls::PeerChain::Chain(ch) => *chain = Some(ch),
+            _ => {}
+        }
+        *known = true;
+    }
+    chain.clone()
 }
 
 impl<S> std::fmt::Debug for Session<S> {
@@ -246,6 +290,16 @@ impl<S: Service> Handler for Session<S> {
     fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
         if let Some(w) = &self.watch {
             w.release();
+        }
+        // A streamed request body cut short: its context, and with it the body's sink, goes now
+        // (ADR-108), as HTTP/2 drops a closed connection's streams. The session itself may live
+        // on while a detached response holds the connection.
+        if matches!(self.state, State::Stream { .. }) {
+            let st = std::mem::replace(&mut self.state, State::Closed);
+            if let State::Stream { ctx, .. } = st {
+                ctx.end_reads();
+                drop(ctx);
+            }
         }
         if self.span.is_recording() {
             if let Some(e) = &err {
@@ -299,6 +353,12 @@ impl<S: Service> OnDeadline for Session<S> {
             State::Head | State::Body { .. } => {
                 self.buf = Vec::new();
                 self.fail(c, 408);
+            }
+            // The handler holds the body's reads (its consumer is behind): the client is not
+            // the slow one.
+            State::Stream { ctx, .. } if ctx.reads_held() => {
+                self.armed = Phase::Body;
+                w.arm(self.cfg.body_timeout);
             }
             // The service already runs and owns the response: the request cannot be answered.
             State::Stream { .. } => {
@@ -594,15 +654,21 @@ impl<S: Service> Session<S> {
                         mut ctx,
                         kind,
                         keep_alive,
+                        gone,
                         ..
                     } = std::mem::replace(&mut self.state, State::Head)
                     else {
                         unreachable!()
                     };
+                    if gone != 0 {
+                        c.inner().forget_peer_gone(gone);
+                    }
                     let trailers = match kind {
                         Kind::Chunked(dec) => dec.trailers(),
                         Kind::Length(_) => Headers::new(),
                     };
+                    // The body is in: the next request's reads are not the handler's to hold.
+                    ctx.end_reads();
                     ctx.deliver(BodyEvent::End(&trailers));
                     if !ctx.responded() && !ctx.is_detached() {
                         ctx.respond(Response::text(500, "handler did not respond"));
@@ -689,6 +755,7 @@ impl<S: Service> Session<S> {
             body: Vec::new(),
             peer: c.peer_addr(),
             protocol: None,
+            peer_certificates: peer_chain(&mut self.peer_known, &mut self.peer_chain, c.inner()),
         };
         let Some(kind) = kind else {
             return self.dispatch(c, req, keep_alive);
@@ -715,15 +782,35 @@ impl<S: Service> Session<S> {
             self.state = State::Closed;
             return;
         };
+        // The peer-gone key below, apart from the responses' numbers (`Context::on_gone`'s).
+        let key = slot.seq() | 1 << 63;
         let mut ctx = Box::new(Context::new(req, slot, keep_alive));
+        ctx.set_streamed();
         let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
         drop(g);
+        // A client that stops sending (EOF) mid-body cannot complete the request, and the
+        // response it waits for may never come (a detached handler waiting on the body): close
+        // the connection, which drops the context and its sink (ADR-108).
+        let weak = Arc::downgrade(c.inner());
+        let gone = if c.inner().on_peer_gone(
+            key,
+            Box::new(move || {
+                if let Some(i) = weak.upgrade() {
+                    i.close();
+                }
+            }),
+        ) {
+            key
+        } else {
+            0
+        };
         self.state = State::Stream {
             ctx,
             kind,
             keep_alive,
             scratch: Vec::new(),
+            gone,
         };
     }
 

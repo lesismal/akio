@@ -36,6 +36,8 @@ TLS 1.2/1.3、DTLS 与 QUIC 协议栈的证书层（也将替代测试证书用�
   id-kp-OCSPSigning 的委托响应者、SHA-1/256/384/512 的 CertID、常数时间比较 nonce、带时钟偏差的
   thisUpdate / nextUpdate）与 `OcspRequest`；`CrlParams` 与 `OcspResponseParams` 为测试和开发用 CA 生成
   已签名的 CRL 与响应。
+- `CsrParams` 与 `CertificateRequest`（ADR-107）：为密钥生成 PKCS#10 证书签名请求（RFC 2986），可请求 SAN、EKU
+  和其他扩展，即 ACME 客户端完成订单时所用；严格的 DER/PEM 解析，并检查签名（持有证明）。
 
 支持的签名算法：ECDSA 配 SHA-256/384/512（P-256、P-384、P-521 密钥）、Ed25519、Ed448、RSA PKCS#1 v1.5 配
 SHA-256/384/512（SHA-1 仅用于验证旧证书）、RSA-PSS 配 SHA-256/384/512（`rsaEncryption` 密钥，以及在其

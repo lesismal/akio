@@ -2807,7 +2807,7 @@ alone, same binaries, same alternation, once the host was free.
 median moved the other way in the rerun (0.829, then 1.128), and the total's per-round
 ratio medians, 0.967 and 1.048, both sit inside ranges spanning 1: the difference is the
 benchmark's round-to-round noise. The code on that path adds only a branch on `Err`.
-### WebSocket echo hot path (ADR-101, same-run A/B, 2026-11-23)
+### WebSocket echo hot path (ADR-114, same-run A/B, 2026-11-23)
 
 Measured on gpu51 with HttpArena (`lbench.sh`, gcannon `--ws`, 3 rounds rotated through the
 frameworks under `quiet.sh`; each cell is the median of the rounds' best runs, messages/s).

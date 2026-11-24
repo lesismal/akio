@@ -60,6 +60,127 @@ ADR-104 第二次修订，API 不变：
   （loops 716k），512 x 1 个请求 103k → 207k 连接/s（loops 205k），2048 x 10 个请求 691k → 905k req/s（loops
   757k~878k）；1024 个连接上 10k 请求/s 时每请求服务端 CPU 16.3 → 11.3 µs（loops 9.1），延迟不变；50k/s 时
   15.6 → 9.9 µs。skew 场景和 64 个连接的 echo 不变，256~1024 个连接的 echo -2.5%。
+
+### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
+
+ADR-111，akit 的需求（A66）：
+
+- `H2Client::request` 与 `open` 遵循 `ClientRequest::response_header_timeout`（从请求的 END_STREAM 到最终
+  响应的 HEADERS）、`response_idle_timeout`（从响应头起 DATA 帧之间的最长间隔，暂停读取的时间不计）和
+  `cancel`（`CancelToken`，现在也覆盖 HTTP/2 请求）：流被重置（`CANCEL`），或仍在等待流的请求不发送即丢弃，
+  请求以 `ClientError::HeaderTimeout`、`IdleTimeout` 或 `Cancelled` 失败一次，连接留给其他流。
+
+### 新增：任何响应过滤器都能设置的流编码，以及缓存文件的压缩副本（akio-http）
+
+ADR-112，akit 的需求（A90、A91）：
+
+- `akio_http::Coding`（`gzip`、`deflate`、`br`、`zstd`、`name`）、`Response::set_stream_coding` /
+  `stream_coding` 与 `Response::is_streaming`：调用方自己的响应过滤器像 `compress` 中间件一样选择流式消息体的编码。
+- `Response::keep_until_sent(value)`：把一个值保留到响应发出为止（流式响应：到它的 `BodyStream`
+  结束或被丢弃），供限制同时进行的响应数的过滤器使用。
+- `Files::compress(&[...])`：内存中缓存的文件也按每种编码各保存一份压缩副本，在磁盘线程池上做一次，
+  提供给首选它的客户端。
+- `middleware::compressible` 公开；现在也包括字体、图标、BMP 和 `application/ecmascript`，
+  `compress` 中间件也会压缩它们。
+
+### 新增：HTTP/1 客户端在 `101 Switching Protocols` 时交出连接；对 HTTP/2 扩展 CONNECT 的流式 `2xx` 应答即隧道（akio-http）
+
+ADR-113，akit 的需求（A93、A94）：
+
+- `ClientRequest::upgrade(protocol)`（`Connection: Upgrade`、`Upgrade: <protocol>`）与
+  `ResponseHandler::on_upgrade(&ResponseHead, &RawConn) -> Option<Box<dyn RawHandler>>`：对请求升级的请求返回的
+  `101` 结束该请求（其超时与令牌不再生效），把连接连同头部之后的字节作为字节流交给返回的 `RawHandler`；默认
+  （`None`）把 `101` 作为无响应体的响应交付并关闭连接。
+- 变更：`101` 的连接不再回到 keep-alive 池；对未请求升级的请求返回的 `101` 以 `ClientError::Protocol` 失败。
+- HTTP/2：对扩展 CONNECT 的流式 `2xx` 应答（`Context::stream_response`、`Detached::stream_response`）使该流成为
+  隧道，与 `upgrade_websocket` 相同：两半各自关闭（我方 END_STREAM 不再重置仍在发送的对端），对端一直不结束其一半
+  时在我方结束 5 秒后以 `CANCEL` 重置。HTTP/3 本就如此（已补测试）。
+
+### 新增：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN（akio-http）
+
+ADR-110，akit 的需求（A51、A52、A53）：
+
+- `H2Upload::stream()` 返回 `H2Stream`（`Clone`）：`cancel()` 重置流（`CANCEL`），`on_event` 以
+  `ClientError::Cancelled` 失败一次（另有 `H2Upload::cancel`）；`hold_reads(bool)` 暂停期间不归还流的接收窗口，恢复时
+  归还欠账；`id()`。
+- `H2Client::open` 启用 `ClientRequest::timeout`：超时后重置流，`on_event` 收到 `ClientError::Timeout`。
+- `H2Upload::finish_with_trailers(Headers)`；`H2Upload::try_write`（`Err(Closed)` / `Err(Overloaded)`）、
+  `queued_bytes` 和 `on_drain`；写入受新的 `H2Options::max_queued_bytes`（64 MiB）限制，并成批投递到 I/O 线程。
+- `H2Client::max_concurrent_streams`、`open_streams` 和 `waiting_streams`：客户端遵守服务端的
+  `SETTINGS_MAX_CONCURRENT_STREAMS`；超过上限的请求在新的 `H2Options::max_pending_streams`（1024）以内等待，否则以新
+  的 `ClientError::Busy` 失败。
+- 新的 `ClientError::Refused`：高于 `GOAWAY` 最后流 id 的流（流式请求的 `on_event` 现在会得到通知）、`GOAWAY` 之后发起
+  或当时仍在等待的请求、被 `REFUSED_STREAM` 重置的流（原为 `Protocol("stream refused")` 和 `Closed`）。收到或发出
+  `GOAWAY` 后 `H2Client::is_open` 为 `false`。
+- `H2Options::happy_eyeballs`：`H2Client::connect` 的竞速与连接超时。
+- TLS 上 `dial` 和 `connect` 在服务端第一帧到达后才调用 `ready`；ALPN 未选择 `h2` 时以携带新的 `NotH2 { alpn }`
+  （`NotH2::of`）的 `io::Error` 失败。
+- 变更：响应先于请求体结束的流被重置（`CANCEL`），不再半开；流结束后 `H2Upload::write` 和 `finish` 返回 `false`。
+
+### 新增：HTTP/1 客户端的响应头超时、空闲超时与取消，服务端请求得知客户端离开，运行时修改写超时（akio-http、akio-h3、akio-core、akio-epoll、akio-uring）
+
+ADR-108，纯新增，应 akit 的需求（A36、A37、A38）：
+
+- `ClientRequest::response_header_timeout` 与 `response_idle_timeout`（默认值在 `ClientOptions` 中）：请求完整写出后
+  （流式请求体：从 `RequestBody::finish` 起）等待响应头的时长，以及两次读取消息体之间的最长间隔，在
+  `ResponseBody::hold_reads` 暂停读取期间停表。超时后请求以新的 `ClientError::HeaderTimeout` / `IdleTimeout` 失败并
+  关闭连接；`ClientError::is_timeout`。
+- `CancelToken` 与 `ClientRequest::cancel_with`：在任意时刻取消请求（发送前直接丢弃，发送后关闭其连接），请求以新的
+  `ClientError::Cancelled` 失败一次；一个令牌可覆盖多个请求。
+- `Context::on_gone` 与 `Detached::on_gone`：客户端在响应完成前离开时运行一次：HTTP/1 上连接关闭或客户端 EOF 到来
+  （akio-core 新增的 `ConnInner::on_peer_gone`），HTTP/2 上流被重置或连接关闭，HTTP/3 上通过新的
+  `ConnSink::on_gone`（默认从不调用），akio-h3 实现了它。
+- 修复：流式接收请求体的 HTTP/1 请求在客户端离开后不再保留其 context 和消息体 sink：会话在连接关闭时丢弃它们，并在
+  客户端的 EOF 于消息体中途到来时关闭连接。
+- `Live::set_write_timeout` / `write_timeout`：`Config::write_timeout` 可热加载（`Engine::reload` 把它列在
+  `applied` 中），支持 epoll 与 io_uring。
+- 修复：更短的超时在扫描线程休眠期间调低其 tick 时，HTTP 截止时间的粗粒度时钟会滞后最多一秒（此时设置的客户端 300 ms
+  响应头超时约 40 ms 后就触发）。调短 tick 的注册现在会更新时钟并唤醒扫描线程。测试：`akio-http/tests/deadline_clock.rs`。
+
+### 新增：bcrypt、每个请求上的客户端证书，以及请求的挂起与恢复（akio-crypto、akio-tls、akio-quic、akio-http、akio-h3）
+
+ADR-109，新增 API，应 akit 的请求（A63、A64、A65）：
+
+- `akio_crypto::bcrypt`：`Hash::parse` / `verify` / `Display`、`hash` 与 `hash_with_salt`，支持 Go
+  与 `htpasswd -B` 生成的 `$2a$`、`$2b$`、`$2y$` 哈希。
+- `Request::peer_certificates`：客户端发送并经 TLS 握手验证的证书链，出现在每个 HTTP/1.1、HTTP/2 和
+  HTTP/3 请求上，按连接共享；另有 `TlsInfo::peer_certificates`、`akio_tls::peer_chain`（`PeerChain`）
+  和 `akio_quic::Connection::peer_certificates`。
+- `Context::suspend` 与 `Suspended::resume`：暂停请求，之后可在任意线程从暂停处继续（下一个中间件、
+  处理器）；`Context::suspend_to_pool` 用它在逻辑线程池上运行工作（线程池满时回 `503`）。不适用于
+  消息体流式传递的请求。
+
+### 修复：监听器移除后立即发起的连接不再落到其旧 socket 上（akio、akio-uring、akio-epoll）
+
+`Engine::remove_listener` 与 `shutdown_listener`（ADR-099）原先在变更投递给 I/O 线程后即返回，并且在 io_uring 上，被移除
+监听器的 `SO_REUSEPORT` socket 在其 multishot accept 的取消完成前一直处于监听。于是在同一地址上替换监听器（先加入新的，再
+移除旧的，akit 的 reload 就是这样做的）时，移除后立即发起的部分连接会排队到旧 socket 上，并在其关闭时被重置：在 io_uring
+上约四次 akit reload 测试运行中有一次，epoll 上较少。现在 io_uring 线程在处理移除时立即让 socket 停止监听
+（`shutdown(SHUT_RD)`），并且两个调用都在该监听器的每个 I/O 线程处理完移除后才返回（对忙碌的线程最多等一秒；在 I/O 线程上
+调用时不等待）。回归测试：`tests/runtime_listeners.rs`，在同一地址上替换监听器 50 次。
+
+### 新增：证书签名请求（akio-x509）
+
+ADR-107，纯新增：`CsrParams` 为密钥生成 PKCS#10 请求（RFC 2986），subjectAltName、extKeyUsage 和其他扩展放在
+`extensionRequest` 中，即 ACME 客户端完成订单时发送的请求（RFC 8555）；`CertificateRequest` 从 DER 或 PEM 严格
+解析请求并检查签名（`verify_signature`），受 `MAX_REQUEST_LEN` 和 `MAX_ATTRIBUTES` 限制。模糊测试目标
+`x509_csr`；与 rcgen 和 OpenSSL 互通。
+
+### 新增：带联动背压的流式消息体（akio-http、akio-h3）
+
+ADR-101，均为新增，应 akit 的需求（A19、A20、A21）：
+
+- `ClientRequest::streamed(len)` 与 `Client::request_streamed(req, on_ready, done)`：通过 `RequestBody`
+  （`write`、`queued_bytes`、`on_drain`、`finish`、`finish_with_trailers`）边产生边写出的 HTTP/1 请求体，按
+  `Content-Length` 或分块编码。这样的请求从不重试也不跟随重定向；消息体写完前到来的响应照常交付，连接随后关闭。
+- `Client::request_with(req, handler)`：响应边到达边交付给 `ResponseHandler`（`on_request_body`、`on_head`、
+  `on_data`、`on_end`、`on_error`），用 `ResponseBody::hold_reads` 暂停和恢复读取，用 `cancel` 放弃。
+  `max_body_bytes` 不适用；不跟随重定向。
+- `Context::body_reads()` 与 `BodyReads::hold`：暂停和恢复流式请求体的读取（HTTP/1.1 上是连接的读取，HTTP/2 与
+  HTTP/3 上是流的流控窗口）。暂停期间消息体超时不触发。
+- `BodyStream::on_drain(f)`：流式响应排队的字节让开路后运行 `f`。
+- 带默认实现的 `transport::ConnSink::hold_reads` 与 `transport::BodySink::on_drain`，由 akio-h3 实现。
+
 ### 新增：面向网关的静态文件：调用者给出的路径、按 q 值选择副本、候选路径、目录列表（akio-http）
 
 ADR-100，均为新增：
@@ -263,7 +384,7 @@ ADR-091 的第二次更新（2026-11-23），了结第一次更新留下的各�
 - `tools/interop/webrtc/turn-ttl-df.sh` 针对 akio-turn 检查这两种报告。
 ### 新增：借用的 WebSocket 消息；更快的 WebSocket 回显（akio-ws、akio-core）
 
-ADR-101，均为新增：
+ADR-114，均为新增：
 
 - `WsHandler::on_message_ref(&WsSender, MessageRef<'_>)` 交出借自连接缓冲区的消息（`MessageRef::Text(&str)` |
   `Binary(&[u8])`），只在本次调用内有效：每条消息没有分配也没有复制。默认实现复制消息后调用 `on_message`，后者

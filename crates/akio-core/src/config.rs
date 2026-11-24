@@ -130,9 +130,9 @@ pub struct Config {
     /// Reloadable at runtime (`Engine::reload` / [`Telemetry::reload`]): `idle_timeout`,
     /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
     /// `max_connections`, `shutdown_timeout`, `retire_timeout`, `log_level`, `read_buffer`,
-    /// `backlog` and `udp_idle_timeout` (see [`Live`](crate::Live) for when each applies). Fixed at
-    /// build time: `max_pending_responses`, `write_timeout`, `connect_timeout`, `udp_max_peers`,
-    /// `udp_gro`. Thread counts change with `Engine::set_threads`.
+    /// `backlog`, `udp_idle_timeout` and `write_timeout` (see [`Live`](crate::Live) for when each
+    /// applies). Fixed at build time: `max_pending_responses`, `connect_timeout`,
+    /// `udp_max_peers`, `udp_gro`. Thread counts change with `Engine::set_threads`.
     pub telemetry: Arc<Telemetry>,
 }
 

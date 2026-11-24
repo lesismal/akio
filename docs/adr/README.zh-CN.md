@@ -100,9 +100,17 @@
 - [ADR-098：由可稍后应答的解析器按握手选择服务端证书](098-tls-cert-resolver.zh-CN.md)（2026-11-23 采纳）
 - [ADR-099：运行时增加、移除和排空 TCP 监听器，以及对已接受连接的过滤器](099-runtime-listeners-accept-filter.zh-CN.md)（2026-11-23 采纳）
 - [ADR-100：面向网关的静态文件：调用者给出的路径、按 q 值选择压缩副本、候选路径、目录列表](100-static-files-gateway-settings.zh-CN.md)（2026-11-24 采纳）
-- [ADR-101：借用的 WebSocket 消息与无锁发送路径](101-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）
+- [ADR-101：带联动背压的流式消息体：边产生边发送的客户端请求体、边到达边交付的客户端响应、服务端请求对读取的暂停与排空通知](101-streamed-bodies-linked-backpressure.zh-CN.md)（2026-11-24 采纳）
 - [ADR-102：按 UDP 对端记住 QUIC 路由，HTTP/3 服务端默认开启 QPACK 动态表](102-quic-peer-routes-qpack-server-default.zh-CN.md)（2026-11-24 采纳）
 - [ADR-103：I/O 循环上的定时器](103-loop-timers.zh-CN.md)（2026-11-23 采纳）
 - [ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次](104-rounds-scheduling.zh-CN.md)（2026-11-23 提议）
 - [ADR-105：在监听器的各线程之间于 accept 时均衡连接](105-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
 - [ADR-106：io_uring 环上发送：响应作为 SEND 条目，随 loop 的那一次 `io_uring_enter` 发出](106-uring-ring-sends.zh-CN.md)（2026-11-24 采纳）
+- [ADR-107：akio-x509 中的证书签名请求](107-x509-certificate-requests.zh-CN.md)（2026-11-23 采纳）
+- [ADR-108：HTTP/1 客户端的响应头超时、空闲超时与取消，服务端请求得知客户端离开，运行时修改写超时](108-client-timeouts-cancel-client-gone.zh-CN.md)（2026-11-24 采纳）
+- [ADR-109：bcrypt、每个请求上的客户端证书，以及请求的挂起与恢复](109-bcrypt-client-certificates-suspend.zh-CN.md)（2026-11-24 采纳）
+- [ADR-110：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN](110-h2-client-streams-backpressure-limits.zh-CN.md)（2026-11-24 采纳）
+- [ADR-111：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`](111-h2-client-header-idle-timeouts-cancel.zh-CN.md)（2026-11-24 采纳）
+- [ADR-112：任何响应过滤器都能设置的流编码，以及缓存文件的压缩副本](112-stream-coding-for-filters-and-compressed-copies.zh-CN.md)（2026-11-24 采纳）
+- [ADR-113：HTTP/1 客户端在 `101` 时交出连接，HTTP/2 扩展 CONNECT 的流式 `2xx` 应答即隧道](113-client-upgrade-handover-h2-tunnels.zh-CN.md)（2026-11-24 采纳）
+- [ADR-114：借用的 WebSocket 消息与无锁发送路径](114-borrowed-websocket-messages.zh-CN.md)（2026-11-23 采纳）

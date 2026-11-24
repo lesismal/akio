@@ -1,6 +1,6 @@
-# ADR-101: Borrowed WebSocket messages and a lock-free send path
+# ADR-114: Borrowed WebSocket messages and a lock-free send path
 
-English | [简体中文](101-borrowed-websocket-messages.zh-CN.md)
+English | [简体中文](114-borrowed-websocket-messages.zh-CN.md)
 
 Status: accepted (2026-11-23)
 
@@ -81,7 +81,7 @@ promise. The public additions (`MessageRef`, `on_message_ref`, `EventRef`, `deco
   echo-ws 1% (it is held by system calls), echo-ws-limited and HTTP are unchanged. The rest of
   the gap to Proa is user-space work Proa skips (UTF-8) and, against aegon, sends submitted
   through io_uring, which akio's io_uring backend does not do yet. Measurements: see
-  docs/BENCHMARKS.md, "WebSocket echo hot path (ADR-101)".
+  docs/BENCHMARKS.md, "WebSocket echo hot path (ADR-114)".
 - Autobahn|Testsuite: server 298 OK + 3 informational, permessage-deflate 216/216, client 514 OK
   + 3 informational and 216/216 without context takeover, as before.
 - The `ws_frames` fuzz target already checks that events and errors do not depend on read

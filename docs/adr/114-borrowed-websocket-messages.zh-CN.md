@@ -1,6 +1,6 @@
-# ADR-101：借用的 WebSocket 消息与无锁发送路径
+# ADR-114：借用的 WebSocket 消息与无锁发送路径
 
-[English](101-borrowed-websocket-messages.md) | 简体中文
+[English](114-borrowed-websocket-messages.md) | 简体中文
 
 状态：已接受（2026-11-23）
 
@@ -63,7 +63,7 @@ Proa 都不做（它也不校验 UTF-8、不重组分片；akio 必须保留这�
   接，外加几把无竞争的锁。gpu51 上 echo-ws-pipeline 提升 12–13%（512 连接 15.7 M → 17.8 M；Proa 20.4 M），
   echo-ws 提升 1%（受系统调用限制），echo-ws-limited 和 HTTP 不变。与 Proa 余下的差距是 Proa 省掉的用户态工作
   （UTF-8），与 aegon 的差距还在于经由 io_uring 提交的发送，akio 的 io_uring 后端还没有这样做。
-  测量见 docs/BENCHMARKS.zh-CN.md 的"WebSocket 回显热路径（ADR-101）"。
+  测量见 docs/BENCHMARKS.zh-CN.md 的"WebSocket 回显热路径（ADR-114）"。
 - Autobahn|Testsuite：服务端 298 OK + 3 informational，permessage-deflate 216/216，客户端 514 OK + 3
   informational，无上下文接管 216/216，与以前相同。
 - `ws_frames` 模糊测试目标本来就检查事件和错误不依赖读的边界，这正好把整帧路径与通用路径相比较：十分钟 470 万次运行（libFuzzer，macOS arm64），没有失败。

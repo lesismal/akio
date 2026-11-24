@@ -27,9 +27,10 @@ A configuration reload adds and removes TCP listeners without a restart (ADR-099
   connections keep running, and each thread exits after its last one.
 - `Engine::shutdown_listener(id, drain)` also calls `on_shutdown` on every open connection and
   closes those still open after `drain`.
-- Both return at once; the sockets close at the threads' next iteration. To replace a listener
-  on the same address without a gap, add the new one first (on Linux both share the port with
-  `SO_REUSEPORT`), then remove the old one.
+- Both return once the listener's threads have stopped its sockets listening (up to a second
+  for a busy thread; at once when called on an I/O thread). To replace a listener on the same
+  address without a gap, add the new one first (on Linux both share the port with
+  `SO_REUSEPORT`), then remove the old one: connections made after that go to the new one.
 - Engines that add and remove listeners should set `client_threads`: without them, dials run on
   the last builder listener's threads, which then stay up after that listener is removed.
 
