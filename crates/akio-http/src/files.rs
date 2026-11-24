@@ -3041,7 +3041,7 @@ mod tests {
         get(&f, &p);
         get(&f, &dir.join("z.txt"));
         assert!(f.inner.fresh(&p, false).is_none());
-        assert!(f.inner.fresh(&dir.join("z.txt")).is_none());
+        assert!(f.inner.fresh(&dir.join("z.txt"), false).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 
