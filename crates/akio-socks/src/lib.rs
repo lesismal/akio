@@ -567,7 +567,9 @@ impl<'a> Request<'a> {
         self.version
     }
 
-    /// The client's address (its TCP control connection).
+    /// The client's address: its TCP control connection's peer, or the client a PROXY header
+    /// names when akio-mux's `proxy::ProxyProtocol` layer took one from a trusted proxy in front
+    /// of the server (ADR-119).
     pub fn client(&self) -> SocketAddr {
         self.client
     }
@@ -969,7 +971,7 @@ impl SocksSession {
         self.allow.as_ref().is_none_or(|f| {
             f(&Request {
                 version,
-                client: udp::canon(c.peer_addr()),
+                client: udp::canon(akio_mux::proxy::client_addr(c)),
                 user: self.user.as_deref(),
                 command,
                 dest,

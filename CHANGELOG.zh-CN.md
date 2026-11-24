@@ -19,6 +19,8 @@ ADR-119，应 akit 的请求（A132、A133）：
   `0x5b` 或 HTTP `502`，且不再尝试其他地址。
 - `ProxyConfig::connect_timeout`：从 `CONNECT` 请求到上游连接建立的最长时间；超过后应答 SOCKS5 4、SOCKS4
   `0x5b` 或 HTTP `504 Gateway Timeout`。
+- 访问钩子的 `Request::client` 是受信任 PROXY 头所指的客户端（前面有 akio-mux 的 `ProxyProtocol` 层），
+  与 ADR-118 以来 akio-http 的请求一致。
 - 名字解析被逻辑线程池拒绝（已满）的 SOCKS 请求，在关闭前会收到应答 1。
 
 ### 新增：正则表达式的匹配位置、分组与 Go 的模板（akio-regex）

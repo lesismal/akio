@@ -1173,3 +1173,51 @@ fn connect_timeout_replies() {
         e.wait();
     }
 }
+
+/// ADR-119: behind akio-mux's PROXY protocol layer, the access hook sees the client the header
+/// names, not the proxy in front.
+#[test]
+fn access_hook_sees_the_proxy_headers_client() {
+    let echo = echo_server();
+    let er = EngineRef::new();
+    let seen: Arc<Mutex<Vec<SocketAddr>>> = Arc::default();
+    let s2 = seen.clone();
+    let socks = Socks::new(er.clone())
+        .destinations(Destinations::Any)
+        .allow(move |r| {
+            s2.lock().unwrap().push(r.client());
+            true
+        });
+    let l = Listener::tcp("127.0.0.1:0".parse().unwrap())
+        .backend(backend())
+        .serve_any(
+            akio_mux::proxy::ProxyProtocol::new_any(akio::AnyAcceptor::new(socks))
+                .trusted(|_| true),
+        );
+    let e = Arc::new(
+        Engine::builder()
+            .listen(l)
+            .client_threads(if uring() { 0 } else { 2 })
+            .build()
+            .unwrap(),
+    );
+    er.set(&e);
+    e.start().unwrap();
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(b"PROXY TCP4 192.0.2.7 127.0.0.1 1111 1080\r\n")
+        .unwrap();
+    s.write_all(&[5, 1, 0]).unwrap();
+    assert_eq!(read_n(&mut s, 2), [5, 0]);
+    let mut req = vec![5, 1, 0];
+    req.extend(ipv4(echo));
+    s.write_all(&req).unwrap();
+    assert_eq!(read_n(&mut s, 10)[1], 0);
+    s.write_all(b"hi").unwrap();
+    assert_eq!(read_n(&mut s, 2), b"hi");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["192.0.2.7:1111".parse::<SocketAddr>().unwrap()]
+    );
+    e.shutdown();
+    e.wait();
+}

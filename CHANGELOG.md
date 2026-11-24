@@ -20,6 +20,8 @@ ADR-119, requested by akit (A132, A133):
   `502`, and no other address is tried.
 - `ProxyConfig::connect_timeout`: the longest time from a `CONNECT` request to its upstream
   being connected; past it SOCKS5 reply 4, SOCKS4 `0x5b` or HTTP `504 Gateway Timeout`.
+- The access hook's `Request::client` is the client a trusted PROXY header names (akio-mux's
+  `ProxyProtocol` layer in front), as akio-http's requests have it since ADR-118.
 - A SOCKS request whose name resolution the logical pool refuses (full) gets reply 1 before the
   close.
 

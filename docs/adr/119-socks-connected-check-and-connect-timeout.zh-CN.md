@@ -35,6 +35,10 @@ fit 还给代理一个独立的连接超时（`connect_timeout`，默认 10 秒�
   每个地址。超过后请求失败并应答（SOCKS5 4，SOCKS4 `0x5b`，HTTP `504 Gateway Timeout`），应答发出后关闭
   客户端。由代理的看门狗线程计时，与另外两个超时相同；`handshake_timeout` 仍从客户端连接时开始计时。
 
+当 akio-mux 的 `proxy::ProxyProtocol` 层从 SOCKS 服务器前面受信任的代理处读到 PROXY 头时，访问钩子的
+`Request::client` 是该头所指的客户端，正如 ADR-118 在 akio-http 中把它作为请求的对端；否则是套接字的对端。
+fit 在负载均衡器之后就是这样检查 SOCKS 客户端的。akio-socks 现在依赖 akio-mux（akio-http 已经依赖它）。
+
 隧道的结果现在只确定一次（`Pending`）：第一个打开并通过检查的上游、一次失败或连接超时，以先到者为准；超时
 之后才打开的连接会被关闭。逻辑线程池无法接收名字解析任务（池已满）的 SOCKS 请求，现在会先收到应答 1 再被
 关闭，此前是不应答直接关闭。
@@ -46,4 +50,4 @@ fit 还给代理一个独立的连接超时（`connect_timeout`，默认 10 秒�
 - akit 的 `socks` 监听器和 `forward_proxy` 处理器按 fit 的方式应用 fit 的规则和超时。
 - 测试（`crates/akio-socks/tests/proxy.rs`）：检查能看到名字和两个地址，并以 SOCKS5 2、SOCKS4 `0x5b` 和
   HTTP 502 拒绝，上游收不到任何数据；连接超时应答 SOCKS5 4 和 HTTP 504，且不会截断按时建立的隧道。epoll 与
-  io_uring。
+  io_uring。PROXY 头之后的访问钩子看到的是该头所指的客户端。

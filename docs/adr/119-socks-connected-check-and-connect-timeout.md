@@ -46,6 +46,12 @@ Two fields of `ProxyConfig`, both `None` by default, which keeps every proxy as 
   sent. The proxies' watchdog thread times it, as it times the other two; `handshake_timeout`
   still runs from the client's connect.
 
+The access hook's `Request::client` is the client a PROXY header names when akio-mux's
+`proxy::ProxyProtocol` layer took one from a trusted proxy in front of the SOCKS server, as
+ADR-118 made it a request's peer in akio-http; the socket's peer otherwise. fit checks a SOCKS
+client that way behind a load balancer. akio-socks now depends on akio-mux (akio-http already
+did).
+
 A tunnel's outcome is now settled once (`Pending`): the first upstream that opens and passes the
 check, a failure, or the connect timeout, whichever comes first; a connection that opens after
 the timeout fired is closed. A SOCKS request whose name the logical pool cannot take (the pool
@@ -60,4 +66,4 @@ full) now gets reply 1 before the close, where it was closed without one.
 - Tests (`crates/akio-socks/tests/proxy.rs`): the check sees the name and both addresses and
   refuses with SOCKS5 2, SOCKS4 `0x5b` and HTTP 502, nothing reaching the upstream; the connect
   timeout answers SOCKS5 4 and HTTP 504 and does not cut a tunnel connected in time. Epoll and
-  io_uring.
+  io_uring. The access hook behind a PROXY header sees the header's client.
