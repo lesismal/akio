@@ -21,6 +21,16 @@ ADR-115，应 akit 的请求（A32）：
 - 惰性重复与 `(?U)` 现在会改变匹配的结束位置（它们从不改变文本是否匹配）。分组超过 1000 个、或分组重复到超过
   20 000 条指令的模式，在编译时被拒绝。
 
+### 新增：消息体旁路、外层响应过滤器与 `parse_http_date`（akio-http）
+
+ADR-116，akit 的需求（A111、A112、A113）：
+
+- `Response::tap_body(impl BodyTap)`、`BodyTap`（`data`、`end`）与 `TapEnd`（`Finished`、`Trailers`、
+  `Cut`）：响应过滤器能看到流式消息体在经过流编码后发出的字节，以及它如何结束。
+- `Context::add_outer_response_filter`：在所有普通过滤器之后运行的过滤器，后添加的先运行，外层中间件因此
+  看到内层中间件处理后的响应。
+- `akio_http::parse_http_date`：解析 RFC 9110 三种格式中任意一种的 HTTP 日期。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：

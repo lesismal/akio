@@ -22,6 +22,17 @@ ADR-115, requested by akit (A32):
   matches). A pattern with more than 1000 groups, or whose groups are repeated past 20 000
   instructions, is refused when compiled.
 
+### Added: body taps, outer response filters and `parse_http_date` (akio-http)
+
+ADR-116, requested by akit (A111, A112, A113):
+
+- `Response::tap_body(impl BodyTap)`, `BodyTap` (`data`, `end`) and `TapEnd` (`Finished`,
+  `Trailers`, `Cut`): a response filter sees a streamed body as it is sent, after its stream
+  coding, and how it ended.
+- `Context::add_outer_response_filter`: a filter that runs after every ordinary one, the last
+  added first, so an outer middleware sees the response as the inner ones left it.
+- `akio_http::parse_http_date`: an HTTP-date in any of RFC 9110's three formats.
+
 ### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
 
 ADR-111, requested by akit (A66):
