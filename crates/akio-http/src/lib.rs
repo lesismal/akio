@@ -76,6 +76,7 @@ pub mod trace;
 pub mod transport;
 
 pub use akio_ws as ws;
+pub use coding::Coding;
 pub use context::{
     BodyEvent, BodyMode, BodyReads, BodyStream, Context, Detached, Middleware, Service, Streaming,
     Suspended, WsOptions,

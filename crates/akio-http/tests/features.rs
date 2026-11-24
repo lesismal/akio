@@ -660,6 +660,155 @@ fn get_with(a: SocketAddr, path: &str, accept: &str) -> Resp {
     }
 }
 
+/// `n` bytes of JavaScript-like text, which compresses as such text does.
+fn js_text(n: usize) -> String {
+    let words = [
+        "function", "return", "const", "let", "var", "if", "else", "for", "while", "this",
+    ];
+    let mut s = String::new();
+    let mut x = 7u64;
+    while s.len() < n {
+        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let w = words[(x >> 33) as usize % words.len()];
+        s.push_str(&format!(
+            "{w} v{}={};",
+            (x >> 20) % 1000,
+            (x >> 40) % 1_000_000
+        ));
+    }
+    s.truncate(n);
+    s
+}
+
+/// `n` bytes that do not compress.
+fn noise(n: usize) -> Vec<u8> {
+    let mut x = 11u64;
+    (0..n)
+        .map(|_| {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (x >> 56) as u8
+        })
+        .collect()
+}
+
+fn decode(coding: &str, body: &[u8]) -> Vec<u8> {
+    match coding {
+        "gzip" => akio_deflate::decompress(akio_deflate::Format::Gzip, body, 1 << 24).unwrap(),
+        "br" => akio_brotli::decompress(body, 1 << 24).unwrap(),
+        "zstd" => akio_zstd::decompress(body, 1 << 24).unwrap(),
+        _ => body.to_vec(),
+    }
+}
+
+/// Gets `path` with `accept` until its answer's `Content-Encoding` is `coding`: the copy is made
+/// on the disk pool after the first request for it.
+fn until_coded(a: SocketAddr, path: &str, accept: &str, coding: &str) -> Resp {
+    for _ in 0..500 {
+        let r = get_with(a, path, accept);
+        if r.header("content-encoding").unwrap_or("") == coding {
+            return r;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("{path} {accept:?}: never {coding:?}");
+}
+
+#[test]
+fn compressed_copies_of_cached_files() {
+    let js = js_text(20_000);
+    let dir = tree(
+        "packs",
+        &[
+            ("app.js", &js),
+            ("small.txt", "short"),
+            ("pic.png", &js),
+            ("twin.js", &js),
+            ("twin.js.gz", "gzip-twin"),
+            ("big.js", &js_text(300_000)),
+        ],
+    );
+    std::fs::write(dir.join("noise.txt"), noise(20_000)).unwrap();
+    let e = start(
+        Files::new(&dir)
+            .check_interval(Duration::from_secs(3600))
+            .twins(&["gzip"])
+            .compress(&["br", "zstd", "gzip"]),
+    );
+    let a = e.local_addrs()[0];
+    let identity = get_with(a, "/app.js", "");
+    assert_eq!(identity.header("content-encoding"), None);
+    assert_eq!(identity.body, js.as_bytes());
+    assert_eq!(identity.header("vary"), Some("Accept-Encoding"));
+    let tag = identity.header("etag").unwrap().to_owned();
+    for (accept, coding) in [
+        ("gzip", "gzip"),
+        // Equal q: the first listed.
+        ("gzip, br, zstd", "br"),
+        ("br;q=0.5, zstd", "zstd"),
+    ] {
+        let r = until_coded(a, "/app.js", accept, coding);
+        assert_eq!(decode(coding, &r.body), js.as_bytes(), "{accept}");
+        assert!(
+            r.body.len() < js.len() / 2,
+            "{accept}: {} bytes",
+            r.body.len()
+        );
+        let own = format!("{}-{coding}\"", tag.trim_end_matches('"'));
+        assert_eq!(r.header("etag"), Some(own.as_str()), "{accept}");
+        assert_eq!(r.header("accept-ranges"), None, "{accept}");
+        assert_eq!(r.header("vary"), Some("Accept-Encoding"));
+        assert_eq!(r.header("content-type"), identity.header("content-type"));
+        assert_eq!(
+            r.header("content-length").map(str::to_owned),
+            Some(r.body.len().to_string())
+        );
+        // The copy's tag answers a conditional request.
+        let r = get(
+            a,
+            "/app.js",
+            &format!("Accept-Encoding: {accept}\r\nIf-None-Match: {own}\r\n"),
+        );
+        assert_eq!(r.status, 304, "{accept}");
+    }
+    // A range is of the file as it is.
+    let r = get(
+        a,
+        "/app.js",
+        "Accept-Encoding: gzip\r\nRange: bytes=0-3\r\n",
+    );
+    assert_eq!(r.status, 206);
+    assert_eq!(r.body, &js.as_bytes()[..4]);
+    assert_eq!(r.header("content-encoding"), None);
+    // A twin on disk goes ahead of a copy.
+    let r = get_with(a, "/twin.js", "gzip");
+    assert_eq!(r.body, b"gzip-twin");
+    // Small files, images, files that do not compress and files too large to cache go as
+    // they are.
+    for path in ["/small.txt", "/pic.png", "/noise.txt", "/big.js"] {
+        for _ in 0..5 {
+            let r = get_with(a, path, "gzip");
+            assert_eq!(r.header("content-encoding"), None, "{path}");
+            assert_eq!(r.header("vary"), Some("Accept-Encoding"), "{path}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    // Refused, nothing is compressed.
+    let r = get_with(a, "/app.js", "gzip;q=0, identity");
+    assert_eq!(r.header("content-encoding"), None);
+    // HEAD has the copy's fields and length.
+    let mut s = connect(a);
+    s.write_all(b"HEAD /app.js HTTP/1.1\r\nHost: x\r\nAccept-Encoding: zstd\r\n\r\n")
+        .unwrap();
+    let r = read_resp(&mut s, true);
+    assert_eq!(r.header("content-encoding"), Some("zstd"));
+    let zstd = get_with(a, "/app.js", "zstd");
+    assert_eq!(
+        r.header("content-length").map(str::to_owned),
+        Some(zstd.body.len().to_string())
+    );
+    stop(&e);
+}
+
 #[test]
 fn compressed_twins_by_q_value_among_the_configured_encodings() {
     let dir = tree(

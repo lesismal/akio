@@ -536,3 +536,106 @@ fn streams_left_alone() {
     stop(&off);
     stop(&on);
 }
+
+/// Counts the guards alive; dropping one counts it out.
+struct Guard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_filter_of_its_own_sets_the_coding_and_keeps_a_guard_until_the_stream_ends() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let alive = Arc::new(AtomicUsize::new(0));
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let go_rx = Arc::new(Mutex::new(go_rx));
+    let a2 = alive.clone();
+    let app = Router::new()
+        .get("/events", move |ctx: &mut Context| {
+            let mut h = Headers::new();
+            h.set("Content-Type", "text/event-stream");
+            let s = ctx.stream_response(200, h).unwrap();
+            let go = go_rx.clone();
+            thread::spawn(move || {
+                s.write(b"data: one\n\n").unwrap();
+                let _ = go.lock().unwrap().recv_timeout(Duration::from_secs(5));
+                // A client that went makes the write fail: the stream is dropped unfinished.
+                if s.write(b"data: two\n\n").is_ok() {
+                    s.finish();
+                }
+            });
+        })
+        .layer(move |ctx: &mut Context, next: &dyn akio_http::Service| {
+            let alive = a2.clone();
+            ctx.add_response_filter(
+                move |resp: &mut akio_http::Response, _: &akio_http::Request| {
+                    if !resp.is_streaming() {
+                        return;
+                    }
+                    let coding = akio_http::Coding::zstd(1, 17);
+                    resp.set_stream_coding(Some(coding));
+                    assert_eq!(resp.stream_coding(), Some(coding));
+                    resp.headers.set("Content-Encoding", coding.name());
+                    alive.fetch_add(1, Ordering::SeqCst);
+                    resp.keep_until_sent(Guard(alive));
+                },
+            );
+            next.call(ctx);
+        });
+    let e = start(app);
+    let wait_none = |what: &str| {
+        for _ in 0..500 {
+            if alive.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("{what}: the guard was kept");
+    };
+    // To its end: decoded event by event; the guard goes when the stream is finished.
+    let mut s = connect(e.local_addrs()[0]);
+    get(&mut s, "/events", "zstd");
+    let (status, h) = read_head(&mut s);
+    assert_eq!(
+        (status, h.get("content-encoding").map(String::as_str)),
+        (200, Some("zstd"))
+    );
+    let mut dec = Dec::new("zstd");
+    let mut out = Vec::new();
+    dec.feed(&read_chunk(&mut s).unwrap(), &mut out);
+    assert_eq!(out, b"data: one\n\n");
+    assert_eq!(
+        alive.load(Ordering::SeqCst),
+        1,
+        "kept while the stream is open"
+    );
+    go_tx.send(()).unwrap();
+    while let Some(c) = read_chunk(&mut s) {
+        dec.feed(&c, &mut out);
+    }
+    assert_eq!(out, b"data: one\n\ndata: two\n\n");
+    assert!(dec.done());
+    wait_none("finished");
+    // A client that goes: the guard goes with the stream.
+    let mut s = connect(e.local_addrs()[0]);
+    get(&mut s, "/events", "zstd");
+    let _ = read_head(&mut s);
+    let _ = read_chunk(&mut s);
+    assert_eq!(alive.load(Ordering::SeqCst), 1);
+    drop(s);
+    thread::sleep(Duration::from_millis(100));
+    go_tx.send(()).unwrap();
+    wait_none("client gone");
+    // HEAD: the fields, no body, and the guard is not kept.
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(b"HEAD /events HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    let (_, h) = read_head(&mut s);
+    assert_eq!(h.get("content-encoding").map(String::as_str), Some("zstd"));
+    go_tx.send(()).unwrap();
+    wait_none("HEAD");
+    stop(&e);
+}

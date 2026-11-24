@@ -39,6 +39,9 @@ use crate::{
 ///   (`*` standing for codings it does not name, `q=0` refusing one), among equals the first of
 ///   [`twins`](Files::twins) (`br`, `zstd`, `gzip` by default); whether they exist is cached
 ///   with the file, so a hit costs no `stat` per variant.
+/// * With [`compress`](Files::compress), a file cached in memory is also kept compressed, one
+///   copy per coding, made once on the disk pool the first time a client asks for it and
+///   served from then on to the clients that accept it.
 /// * [`serve`](Files::serve) serves a path the caller names; [`try_paths`](Files::try_paths)
 ///   tries candidate paths in turn (`try_files`); [`list_directories`](Files::list_directories)
 ///   lists a directory without an index file.
@@ -91,6 +94,9 @@ struct Inner {
     hide: Option<Hide>,
     /// What the candidates resolved request paths to (see [`Tried`]).
     tried: RwLock<HashMap<String, Tried>>,
+    /// [`Files::compress`]' codings, as indexes into [`TWINS`] in order of preference among
+    /// equal q values; none: no copies.
+    compress: Vec<usize>,
     /// [`Files::list_directories`]' bound on the entries read; 0: no listings.
     list_max: usize,
 }
@@ -219,7 +225,23 @@ struct Cached {
     /// The compressed twins (see [`TWINS`]); `None` when there is no such file. Checked with
     /// the entry itself.
     twins: [Option<Arc<Cached>>; 3],
+    /// The compressed copies ([`Files::compress`]), by index into [`TWINS`]; empty when the
+    /// file gets none.
+    packs: Box<[Pack]>,
 }
+
+/// A compressed copy of a file kept in memory ([`Files::compress`]).
+#[derive(Default)]
+struct Pack {
+    /// Set once the copy's job ran: the copy, or `None` when it is not worth keeping.
+    made: OnceLock<Option<Arc<Cached>>>,
+    /// A job is making it (or was refused, and the flag cleared again).
+    making: AtomicBool,
+}
+
+/// The smallest file [`Files::compress`] compresses: a smaller one goes in one packet with its
+/// head either way.
+const PACK_MIN_BYTES: u64 = 1400;
 
 impl Cached {
     #[allow(clippy::too_many_arguments)]
@@ -234,6 +256,7 @@ impl Cached {
         vary: bool,
         twins: [Option<Arc<Cached>>; 3],
         track: (bool, Option<Arc<FileWatch>>),
+        packs: bool,
     ) -> Cached {
         let secs = unix_secs(mtime);
         let etag = match encoding {
@@ -274,6 +297,13 @@ impl Cached {
             meta,
             full,
             twins,
+            packs: if packs {
+                std::iter::repeat_with(Pack::default)
+                    .take(TWINS.len())
+                    .collect()
+            } else {
+                Box::default()
+            },
         }
     }
 
@@ -334,6 +364,7 @@ impl Files {
                 tries: Vec::new(),
                 hide: None,
                 tried: RwLock::default(),
+                compress: Vec::new(),
                 list_max: 0,
             }),
         }
@@ -422,6 +453,35 @@ impl Files {
             }
         }
         self.cfg().twins = order;
+        self
+    }
+
+    /// Codings a file cached in memory is also kept compressed with, by name (`"br"`, `"zstd"`,
+    /// `"gzip"`), in order of preference among codings the client accepts with equal q values
+    /// (ADR-112); other names, and a name given twice, are left out. None (`&[]`, the default)
+    /// keeps no copies.
+    ///
+    /// A copy is made once, on the disk pool, at a level that makes it small (gzip 9, brotli 9,
+    /// zstd 19, with windows no larger than the file), the first time a client that prefers
+    /// that coding asks for the file; that request and those before the copy is ready get the
+    /// file as it is. It is kept with the file's entry, until the file changes. A file of fewer
+    /// than 1400 bytes, of a type that does not compress (see
+    /// [`compressible`](crate::middleware::compressible)), or that compresses by less than a
+    /// twentieth gets none; a ranged request is answered from the file, and a compressed twin
+    /// on disk ([`twins`](Files::twins)) goes ahead of a copy. A copy has its own `ETag` (the
+    /// file's with `-` and the coding added) and no `Accept-Ranges`; every answer about a file
+    /// says `Vary: Accept-Encoding`.
+    #[must_use]
+    pub fn compress(mut self, encodings: &[&str]) -> Files {
+        let mut order = Vec::new();
+        for e in encodings {
+            if let Some(i) = TWINS.iter().position(|(name, _)| name == e) {
+                if !order.contains(&i) {
+                    order.push(i);
+                }
+            }
+        }
+        self.cfg().compress = order;
         self
     }
 
@@ -630,7 +690,7 @@ impl Inner {
         let Some(c) = self.load_tracked(&path, &md, track) else {
             return Response::text(404, "Not Found");
         };
-        let served = pick(&c, &req.headers, &self.twins);
+        let served = self.variant(req, &c);
         self.build(req, served, true)
             .unwrap_or_else(|| Response::text(500, "Internal Server Error"))
     }
@@ -706,12 +766,132 @@ impl Inner {
                     },
                 );
             }
-            let served = pick(&c, &req.headers, &self.twins);
+            let served = self.variant(req, &c);
             return self
                 .build(req, served, true)
                 .unwrap_or_else(|| Response::text(500, "Internal Server Error"));
         }
         Response::text(404, "Not Found")
+    }
+
+    /// Whether answers about a file say `Vary: Accept-Encoding`: when twins or copies may
+    /// answer in its place.
+    fn vary(&self) -> bool {
+        !self.twins.is_empty() || !self.compress.is_empty()
+    }
+
+    /// Whether a file (not a twin: `encoding` is `None`) whose content is `body` gets
+    /// compressed copies: kept in memory, large enough and of a type that compresses.
+    fn packable(&self, body: &Body, len: u64, mime: &str, encoding: Option<&str>) -> bool {
+        !self.compress.is_empty()
+            && encoding.is_none()
+            && matches!(body, Body::Mem(_))
+            && len >= PACK_MIN_BYTES
+            && crate::middleware::compressible(mime)
+    }
+
+    /// The variant of `c` to send `req`: a compressed twin on disk ([`pick`]), else the
+    /// compressed copy the client prefers once it is made, else `c`. Asking for a copy not
+    /// made yet starts its job on the disk pool.
+    fn variant<'a>(self: &Arc<Self>, req: &Request, c: &'a Arc<Cached>) -> &'a Arc<Cached> {
+        let served = pick(c, &req.headers, &self.twins);
+        if c.packs.is_empty() || !Arc::ptr_eq(served, c) || req.headers.get("range").is_some() {
+            return served;
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for &i in &self.compress {
+            let (Some(p), Some((enc, _))) = (c.packs.get(i), TWINS.get(i)) else {
+                continue;
+            };
+            if matches!(p.made.get(), Some(None)) {
+                continue; // not worth it
+            }
+            let q = accept_q(&req.headers, enc);
+            if q > 0.0 && best.is_none_or(|(_, b)| q > b) {
+                best = Some((i, q));
+            }
+        }
+        let Some((i, _)) = best else { return c };
+        let Some(p) = c.packs.get(i) else { return c };
+        match p.made.get() {
+            Some(Some(copy)) => copy,
+            Some(None) => c,
+            None => {
+                self.make_pack(c, i);
+                c
+            }
+        }
+    }
+
+    /// Starts the job that makes `c`'s copy in the `i`-th coding of [`TWINS`], unless one is
+    /// under way. A job the pool refuses leaves the copy to a later request.
+    fn make_pack(self: &Arc<Self>, c: &Arc<Cached>, i: usize) {
+        let Some(p) = c.packs.get(i) else { return };
+        if p.making.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (inner, file) = (self.clone(), c.clone());
+        let job = Box::new(move || {
+            let copy = inner.pack(&file, i);
+            if let Some(p) = file.packs.get(i) {
+                let _ = p.made.set(copy);
+            }
+        });
+        if disk_pool().try_execute(job).is_err() {
+            p.making.store(false, Ordering::Release);
+        }
+    }
+
+    /// `c`'s copy compressed with the `i`-th coding of [`TWINS`], or `None` when it compresses
+    /// by less than a twentieth. Runs on the disk pool.
+    fn pack(&self, c: &Cached, i: usize) -> Option<Arc<Cached>> {
+        let (Body::Mem(data), Some(&(enc, _))) = (&c.body, TWINS.get(i)) else {
+            return None;
+        };
+        // Windows no larger than the file bound the encoders' memory by it.
+        let bits = usize::BITS - (data.len().max(2) - 1).leading_zeros();
+        let mut out = Vec::new();
+        match enc {
+            "gzip" => {
+                out = akio_deflate::compress(
+                    akio_deflate::Format::Gzip,
+                    akio_deflate::Level::new(9),
+                    data,
+                );
+            }
+            "br" => akio_brotli::Compressor::new(akio_brotli::Level::new(9))
+                .window_bits(bits.clamp(10, 24))
+                .compress(data, &mut out, akio_brotli::Flush::Finish),
+            _ => akio_zstd::Compressor::new(akio_zstd::Level::new(19))
+                .window_log(bits.clamp(10, 23))
+                .compress(data, &mut out, akio_zstd::Flush::Finish),
+        }
+        if out.is_empty() || out.len() > data.len() - data.len() / 20 {
+            return None;
+        }
+        let len = out.len() as u64;
+        let mut copy = Cached::new(
+            Body::Mem(out.into()),
+            len,
+            c.mtime,
+            c.id,
+            c.mime,
+            Some(enc),
+            self.cache_control.as_deref(),
+            true,
+            [None, None, None],
+            (false, None),
+            false,
+        );
+        // Another representation of the file: its tag with the coding added, and no ranges,
+        // which are answered from the file as it is.
+        let tag = format!("{}-{enc}\"", c.etag.trim_end_matches('"'));
+        for h in [&mut copy.meta, &mut copy.full] {
+            h.set("ETag", &tag);
+            h.remove("Accept-Ranges");
+        }
+        copy.etag = tag.into();
+        Some(Arc::new(copy))
     }
 
     /// [`load_tracked`](Inner::load_tracked) without change notifications.
@@ -777,9 +957,10 @@ impl Inner {
                     mime,
                     None,
                     self.cache_control.as_deref(),
-                    !self.twins.is_empty(),
+                    self.vary(),
                     twins,
                     (o.trackable, o.guard.clone()),
+                    self.packable(&o.body, o.len, mime, None),
                 ))
             }
             _ => self.read(path, md, mime, None, twins, watch)?,
@@ -843,6 +1024,7 @@ impl Inner {
             let n = data.len() as u64;
             (Body::Mem(data.into()), n)
         };
+        let packs = self.packable(&body, len, mime, encoding);
         Some(Arc::new(Cached::new(
             body,
             len,
@@ -851,9 +1033,10 @@ impl Inner {
             mime,
             encoding,
             self.cache_control.as_deref(),
-            !self.twins.is_empty(),
+            self.vary(),
             twins,
             track,
+            packs,
         )))
     }
 
@@ -1562,7 +1745,7 @@ impl Files {
             inner.tried_fresh(&asked)
         };
         if let Some(c) = known {
-            let served = pick(&c, &ctx.req().headers, &inner.twins);
+            let served = inner.variant(ctx.req(), &c);
             if let Some(r) = inner.build(ctx.req(), served, false) {
                 return ctx.respond(r);
             }

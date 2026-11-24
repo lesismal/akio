@@ -10,6 +10,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：任何响应过滤器都能设置的流编码，以及缓存文件的压缩副本（akio-http）
+
+ADR-112，akit 的需求（A90、A91）：
+
+- `akio_http::Coding`（`gzip`、`deflate`、`br`、`zstd`、`name`）、`Response::set_stream_coding` /
+  `stream_coding` 与 `Response::is_streaming`：调用方自己的响应过滤器像 `compress` 中间件一样选择流式消息体的编码。
+- `Response::keep_until_sent(value)`：把一个值保留到响应发出为止（流式响应：到它的 `BodyStream`
+  结束或被丢弃），供限制同时进行的响应数的过滤器使用。
+- `Files::compress(&[...])`：内存中缓存的文件也按每种编码各保存一份压缩副本，在磁盘线程池上做一次，
+  提供给首选它的客户端。
+- `middleware::compressible` 公开；现在也包括字体、图标、BMP 和 `application/ecmascript`，
+  `compress` 中间件也会压缩它们。
+
 ### 新增：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN（akio-http）
 
 ADR-110，akit 的需求（A51、A52、A53）：

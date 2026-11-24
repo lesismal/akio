@@ -105,3 +105,4 @@
 - [ADR-108：HTTP/1 客户端的响应头超时、空闲超时与取消，服务端请求得知客户端离开，运行时修改写超时](108-client-timeouts-cancel-client-gone.zh-CN.md)（2026-11-24 采纳）
 - [ADR-109：bcrypt、每个请求上的客户端证书，以及请求的挂起与恢复](109-bcrypt-client-certificates-suspend.zh-CN.md)（2026-11-24 采纳）
 - [ADR-110：HTTP/2 客户端流式请求的重置、超时与请求尾部字段；按流的背压；服务端的流上限、`GOAWAY`、连接超时与 ALPN](110-h2-client-streams-backpressure-limits.zh-CN.md)（2026-11-24 采纳）
+- [ADR-112：任何响应过滤器都能设置的流编码，以及缓存文件的压缩副本](112-stream-coding-for-filters-and-compressed-copies.zh-CN.md)（2026-11-24 采纳）
