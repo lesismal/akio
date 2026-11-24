@@ -239,9 +239,20 @@ impl LoopStats {
     /// A connection handed to this thread arrived (opened here, passed on or dropped).
     pub fn handoff_done(&self) {
         // Never below zero, even if a command is ever delivered twice.
-        let _ = self
-            .incoming
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        // A compare-exchange loop rather than `fetch_update`, which newer compilers deprecate
+        // (its replacement is newer than the MSRV).
+        let mut n = self.incoming.load(Ordering::Relaxed);
+        while n > 0 {
+            match self.incoming.compare_exchange_weak(
+                n,
+                n - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(cur) => n = cur,
+            }
+        }
     }
 
     /// Counts one received datagram of `n` bytes.
