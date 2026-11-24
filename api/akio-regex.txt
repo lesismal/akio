@@ -1,4 +1,23 @@
 pub mod akio_regex
+pub struct akio_regex::Captures
+impl akio_regex::Captures
+pub fn akio_regex::Captures::get(&self, usize) -> core::option::Option<core::ops::range::Range<usize>>
+pub fn akio_regex::Captures::len(&self) -> usize
+pub fn akio_regex::Captures::name(&self, &str) -> core::option::Option<core::ops::range::Range<usize>>
+pub fn akio_regex::Captures::range(&self) -> core::ops::range::Range<usize>
+impl core::clone::Clone for akio_regex::Captures
+pub fn akio_regex::Captures::clone(&self) -> Self
+impl core::cmp::Eq for akio_regex::Captures
+impl core::cmp::PartialEq for akio_regex::Captures
+pub fn akio_regex::Captures::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_regex::Captures
+pub fn akio_regex::Captures::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_regex::Captures
+impl core::marker::Send for akio_regex::Captures
+impl core::marker::Sync for akio_regex::Captures
+impl core::marker::Unpin for akio_regex::Captures
+impl core::panic::unwind_safe::RefUnwindSafe for akio_regex::Captures
+impl core::panic::unwind_safe::UnwindSafe for akio_regex::Captures
 pub struct akio_regex::Error
 impl akio_regex::Error
 pub fn akio_regex::Error::message(&self) -> &'static str
@@ -19,12 +38,32 @@ impl core::marker::Sync for akio_regex::Error
 impl core::marker::Unpin for akio_regex::Error
 impl core::panic::unwind_safe::RefUnwindSafe for akio_regex::Error
 impl core::panic::unwind_safe::UnwindSafe for akio_regex::Error
+pub struct akio_regex::FindIter<'r, 't>
+impl core::iter::traits::iterator::Iterator for akio_regex::FindIter<'_, '_>
+pub type akio_regex::FindIter<'_, '_>::Item = core::ops::range::Range<usize>
+pub fn akio_regex::FindIter<'_, '_>::next(&mut self) -> core::option::Option<core::ops::range::Range<usize>>
+impl<'r, 't> core::fmt::Debug for akio_regex::FindIter<'r, 't>
+pub fn akio_regex::FindIter<'r, 't>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'r, 't> core::marker::Send for akio_regex::FindIter<'r, 't>
+impl<'r, 't> core::marker::Sync for akio_regex::FindIter<'r, 't>
+impl<'r, 't> core::marker::Unpin for akio_regex::FindIter<'r, 't>
+impl<'r, 't> core::panic::unwind_safe::RefUnwindSafe for akio_regex::FindIter<'r, 't>
+impl<'r, 't> core::panic::unwind_safe::UnwindSafe for akio_regex::FindIter<'r, 't>
 pub struct akio_regex::Regex
 impl akio_regex::Regex
 pub fn akio_regex::Regex::as_str(&self) -> &str
+pub fn akio_regex::Regex::captures(&self, &str) -> core::option::Option<akio_regex::Captures>
+pub fn akio_regex::Regex::captures_at(&self, &str, usize) -> core::option::Option<akio_regex::Captures>
+pub fn akio_regex::Regex::captures_len(&self) -> usize
+pub fn akio_regex::Regex::expand(&self, &akio_regex::Captures, &str, &str, &mut alloc::string::String)
+pub fn akio_regex::Regex::find(&self, &str) -> core::option::Option<core::ops::range::Range<usize>>
+pub fn akio_regex::Regex::find_at(&self, &str, usize) -> core::option::Option<core::ops::range::Range<usize>>
+pub fn akio_regex::Regex::find_iter<'r, 't>(&'r self, &'t str) -> akio_regex::FindIter<'r, 't>
+pub fn akio_regex::Regex::group_names(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = core::option::Option<&str>> + '_
 pub fn akio_regex::Regex::is_match(&self, &str) -> bool
 pub fn akio_regex::Regex::is_match_fmt(&self, core::fmt::Arguments<'_>) -> bool
 pub fn akio_regex::Regex::new(&str) -> core::result::Result<akio_regex::Regex, akio_regex::Error>
+pub fn akio_regex::Regex::replace_all<'t>(&self, &'t str, &str) -> alloc::borrow::Cow<'t, str>
 impl core::clone::Clone for akio_regex::Regex
 pub fn akio_regex::Regex::clone(&self) -> Self
 impl core::cmp::Eq for akio_regex::Regex

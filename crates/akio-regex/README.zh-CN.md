@@ -8,12 +8,16 @@
 路由约束（`/users/{id:[0-9]+}`，ADR-051）背后的引擎。属于内部 crate（docs/api-stability.zh-CN.md）：
 请通过 `akio-log` 与 `akio-http` 使用。
 
-- 只回答一个问题：模式是否出现在这段文本的某处？`Regex::is_match(&str)`，以及
+- 模式是否出现在这段文本的某处？`Regex::is_match(&str)`，以及
   `Regex::is_match_fmt(format_args!(..))`：在格式化的同时逐段匹配，不拼接字符串，也不分配内存。
+- 匹配在哪、各分组捕获了什么（ADR-115）：`find`、`find_at`、`find_iter`、`captures`（`Captures::get`、
+  `name`、`range`），采用 Go `regexp` 与 `regex` crate 的最左优先语义，由带捕获的 Pike VM 以线性时间完成；
+  `expand` 与 `replace_all` 遵循 Go 的模板规则（`$1`、`${name}`、`$$`），同 `Regexp.Expand` 与
+  `ReplaceAllString`。
 - `RegexBuilder` 选项：`whole_text(true)` 只匹配整段文本（相当于 `\A(?:...)\z`），`ascii_classes(true)`
   让 `\d \w \s` 与 `\b` 只看 ASCII。路由器同时使用两者。
 - 语法是 `regex` crate 的子集，含义相同：字面字符、`.`、带范围与取反的字符类、支持 Unicode 的
-  `\d \w \s`（及 `\D \W \S`）、重复 `* + ? {m,n}`（贪婪或惰性）、分支、分组（不捕获，接受命名分组）、
+  `\d \w \s`（及 `\D \W \S`）、重复 `* + ? {m,n}`（贪婪或惰性）、分支、分组（捕获、命名、不捕获）、
   `^ $ \A \z`、`\b \B`（Unicode 单词边界）、标志 `(?i)`（Unicode 简单大小写折叠）、`(?m)`、`(?s)` 与
   `(?U)`，可取反（`(?-i)`）也可限定作用域（`(?i:...)`）。Unicode 类（`\p{..}`）、反向引用、环视以及
   `u` / `x` / `R` 标志会产生说明原因的编译错误。

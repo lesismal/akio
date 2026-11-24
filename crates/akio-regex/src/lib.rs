@@ -2,10 +2,12 @@
 #![warn(clippy::unwrap_used)]
 //! A small regular expression engine in safe Rust, without dependencies, whose matching time
 //! is linear in the input whatever the pattern: a Thompson NFA run by a Pike VM, with a DFA
-//! built ahead of time. It answers one question, *does the pattern occur
-//! anywhere in this text* ([`Regex::is_match`]), also for text that is being formatted
-//! ([`Regex::is_match_fmt`]: nothing is allocated). `akio-log` uses it for env_logger-style
-//! message filters (`AKIO_LOG=info/connection (reset|refused)`).
+//! built ahead of time. It answers *does the pattern occur anywhere in this text*
+//! ([`Regex::is_match`]), also for text that is being formatted ([`Regex::is_match_fmt`]: nothing
+//! is allocated), and *where, and what do its groups hold* ([`Regex::find`],
+//! [`Regex::captures`]), with Go's template rules to build text from a match ([`Regex::expand`],
+//! [`Regex::replace_all`]). `akio-log` uses it for env_logger-style message filters
+//! (`AKIO_LOG=info/connection (reset|refused)`).
 //!
 //! An internal crate of [`akio`](https://github.com/lesismal/akio) (docs/api-stability.md).
 //!
@@ -30,13 +32,13 @@
 //! * `\d` (Unicode decimal digits), `\w` (Unicode word characters), `\s` (Unicode white space)
 //!   and their negations `\D \W \S`; escapes `\n \t \r \f \v \a`, `\xHH`, `\x{H...}`, `\uHHHH`,
 //!   `\u{H...}`, `\UHHHHHHHH`, `\U{H...}` and any escaped ASCII punctuation;
-//! * groups `(...)`, `(?:...)`, `(?P<name>...)`, `(?<name>...)` (nothing is captured), alternation
-//!   `|`, repetition `*` `+` `?` `{m}` `{m,}` `{m,n}` (counts up to 1000), greedy or lazy (`*?`;
-//!   laziness does not change whether a text matches);
+//! * capturing groups `(...)`, `(?P<name>...)`, `(?<name>...)` (at most 1000), non-capturing
+//!   `(?:...)`, alternation `|`, repetition `*` `+` `?` `{m}` `{m,}` `{m,n}` (counts up to 1000),
+//!   greedy or lazy (`*?`; laziness changes where a match ends, not whether a text matches);
 //! * assertions `^` and `\A` (start of the text), `$` and `\z` (end of the text), `\b` and `\B`
 //!   (Unicode word boundary and its negation);
 //! * flags `(?i)` (case-insensitive, Unicode simple case folding), `(?m)` (`^` and `$` also
-//!   match after and before `\n`), `(?s)` (`.` matches `\n`), `(?U)` (accepted, no effect), with
+//!   match after and before `\n`), `(?s)` (`.` matches `\n`), `(?U)` (greedy and lazy swapped), with
 //!   negation (`(?-i)`) and scoped forms (`(?i:...)`); a `(?flags)` group applies to the rest of
 //!   the enclosing group.
 //!
@@ -59,11 +61,37 @@
 //! per-thread working memory kept between searches, and the search returns to the DFA as soon as
 //! it reaches a state the DFA has. There is no backtracking: `(a*)*b` on a million `a`s takes
 //! linear time.
+//!
+//! # Matches and groups
+//!
+//! [`find`](Regex::find), [`captures`](Regex::captures) and the functions built on them return
+//! the leftmost-first match, as Go's `regexp` and the `regex` crate do: the match that starts
+//! first, and among those the one the pattern prefers (the left alternative, more of a greedy
+//! repetition, less of a lazy one). They run a Pike VM with capture slots over a second program
+//! (the same pattern with an instruction saving each group's bounds), in time linear in the
+//! text times the program's size, with per-thread working memory kept between searches. A search
+//! from the start of a text that does not match costs a DFA pass ([`is_match`](Regex::is_match));
+//! a literal pattern is found with `str::find`.
+//!
+//! ```
+//! use akio_regex::Regex;
+//!
+//! let re = Regex::new(r"^/old/(?P<id>[0-9]+)(/.*)?$").unwrap();
+//! let path = "/old/42/edit";
+//! let caps = re.captures(path).unwrap();
+//! assert_eq!(caps.get(1), Some(5..7));
+//! assert_eq!(caps.name("id").map(|r| &path[r]), Some("42"));
+//! let mut to = String::new();
+//! re.expand(&caps, "/new/${id}$2", path, &mut to);
+//! assert_eq!(to, "/new/42/edit");
+//! assert_eq!(Regex::new("a+").unwrap().replace_all("baaac", "<$0>"), "b<aaa>c");
+//! ```
 
-use std::{error, fmt, str::FromStr, sync::Arc};
+use std::{borrow::Cow, error, fmt, ops::Range, str::FromStr, sync::Arc};
 
 mod exec;
 mod parse;
+mod pike;
 #[rustfmt::skip]
 mod tables;
 
@@ -201,11 +229,294 @@ impl Regex {
         s.0.finish()
     }
 
+    /// The leftmost-first match in `text`: its byte range.
+    pub fn find(&self, text: &str) -> Option<Range<usize>> {
+        self.find_at(text, 0)
+    }
+
+    /// The leftmost-first match in `text` that starts at `start` or later. Assertions see the
+    /// text before `start` (`^` and `\A` still mean the start of `text`, `\b` looks at the
+    /// character before `start`). `None` when `start` is past the end or not a character
+    /// boundary.
+    pub fn find_at(&self, text: &str, start: usize) -> Option<Range<usize>> {
+        if !text.is_char_boundary(start) {
+            return None;
+        }
+        match self.prog.literal() {
+            Some((lit, false)) => {
+                let i = text.get(start..)?.find(lit)?;
+                let s = start.checked_add(i)?;
+                return Some(s..s.checked_add(lit.len())?);
+            }
+            Some((lit, true)) => return (start == 0 && text == lit).then_some(0..text.len()),
+            None => {}
+        }
+        if start == 0 && !self.is_match(text) {
+            return None;
+        }
+        let mut slots = [pike::NONE; 2];
+        if !pike::search(&self.prog, text, start, &mut slots) {
+            return None;
+        }
+        Some(slots[0]..slots[1])
+    }
+
+    /// Every successive match in `text`, as Go's `FindAllString` finds them: after each match
+    /// the search goes on from its end, and an empty match right where the previous one ended
+    /// is skipped.
+    pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> FindIter<'r, 't> {
+        FindIter {
+            re: self,
+            text,
+            pos: 0,
+            prev_end: None,
+        }
+    }
+
+    /// The leftmost-first match in `text` and what each group holds.
+    pub fn captures(&self, text: &str) -> Option<Captures> {
+        self.captures_at(text, 0)
+    }
+
+    /// [`captures`](Regex::captures) of the match [`find_at`](Regex::find_at) finds.
+    pub fn captures_at(&self, text: &str, start: usize) -> Option<Captures> {
+        if !text.is_char_boundary(start) || (start == 0 && !self.is_match(text)) {
+            return None;
+        }
+        let mut slots = vec![pike::NONE; self.captures_len().saturating_mul(2)];
+        if !pike::search(&self.prog, text, start, &mut slots) {
+            return None;
+        }
+        Some(Captures {
+            slots: slots.into(),
+            names: Arc::clone(&self.prog.names),
+        })
+    }
+
+    /// The number of groups, the whole match (group 0) included.
+    pub fn captures_len(&self) -> usize {
+        self.prog.names.len()
+    }
+
+    /// The name of each group, by number: `None` for group 0 and for unnamed groups.
+    pub fn group_names(&self) -> impl ExactSizeIterator<Item = Option<&str>> + '_ {
+        self.prog.names.iter().map(|n| n.as_deref())
+    }
+
+    /// Appends `template` to `out` with the groups of `caps` (a match in `text`) put in, by Go's
+    /// `Regexp.Expand` rules: `$1` or `${1}` is group 1, `$name` or `${name}` the group of that
+    /// name, the name being the longest run of letters, digits and `_` (so `$1x` is the group
+    /// named `1x`, and `${1}x` is group 1 then `x`); `$$` is a `$`. A group that does not exist
+    /// or took no part is empty, and a `$` not followed by a valid name is itself. A non-ASCII
+    /// character counts as a letter when it is alphabetic (Go: when it is in a Unicode letter
+    /// category) and as a digit when `\d` matches it.
+    pub fn expand(&self, caps: &Captures, template: &str, text: &str, out: &mut String) {
+        let mut t = template;
+        while let Some(i) = t.find('$') {
+            out.push_str(&t[..i]);
+            t = &t[i + 1..];
+            if let Some(rest) = t.strip_prefix('$') {
+                out.push('$');
+                t = rest;
+                continue;
+            }
+            let Some((name, num, rest)) = extract(t) else {
+                out.push('$');
+                continue;
+            };
+            t = rest;
+            let range = match num {
+                Some(k) => caps.get(k),
+                None => caps.name(name),
+            };
+            if let Some(s) = range.and_then(|r| text.get(r)) {
+                out.push_str(s);
+            }
+        }
+        out.push_str(t);
+    }
+
+    /// `text` with every match replaced by `template` expanded ([`expand`](Regex::expand)), as
+    /// Go's `ReplaceAllString`: an empty match right after a match is not replaced, and the
+    /// search always moves on by at least one character. Borrowed when nothing matched.
+    pub fn replace_all<'t>(&self, text: &'t str, template: &str) -> Cow<'t, str> {
+        let mut out = String::new();
+        let mut last = 0;
+        let mut pos = 0;
+        let mut any = false;
+        while pos <= text.len() {
+            let Some(caps) = self.captures_at(text, pos) else {
+                break;
+            };
+            let m = caps.range();
+            any = true;
+            out.push_str(text.get(last..m.start).unwrap_or(""));
+            if m.end > last || m.start == 0 {
+                self.expand(&caps, template, text, &mut out);
+            }
+            last = m.end;
+            let width = text
+                .get(pos..)
+                .and_then(|s| s.chars().next())
+                .map_or(0, char::len_utf8);
+            pos = if pos + width > m.end {
+                pos + width
+            } else if pos + 1 > m.end {
+                pos + 1
+            } else {
+                m.end
+            };
+        }
+        if !any {
+            return Cow::Borrowed(text);
+        }
+        out.push_str(text.get(last..).unwrap_or(""));
+        Cow::Owned(out)
+    }
+
     /// Runs the NFA alone (no DFA): the fuzz target compares the two.
     #[cfg(feature = "fuzzing")]
     #[doc(hidden)]
     pub fn nfa_is_match(&self, text: &str) -> bool {
         exec::Search::nfa_only(&self.prog, text)
+    }
+}
+
+/// A group's name or number after a `$` in a template (Go's `extract`): the name, its number
+/// when it is a number without a leading zero, and the rest of the template.
+fn extract(t: &str) -> Option<(&str, Option<usize>, &str)> {
+    let (brace, s) = match t.strip_prefix('{') {
+        Some(s) => (true, s),
+        None => (false, t),
+    };
+    let end = s
+        .char_indices()
+        .find(|&(_, c)| !(c == '_' || is_letter(c) || is_digit(c)))
+        .map_or(s.len(), |(i, _)| i);
+    if end == 0 {
+        return None;
+    }
+    let name = &s[..end];
+    let rest = if brace {
+        s[end..].strip_prefix('}')?
+    } else {
+        &s[end..]
+    };
+    let mut num = Some(0usize);
+    for b in name.bytes() {
+        num = match num {
+            Some(n) if b.is_ascii_digit() && n < 100_000_000 => {
+                Some(n * 10 + usize::from(b - b'0'))
+            }
+            _ => None,
+        };
+    }
+    if name.len() > 1 && name.starts_with('0') {
+        num = None;
+    }
+    Some((name, num, rest))
+}
+
+/// A letter, for a group name in a template.
+fn is_letter(c: char) -> bool {
+    if c.is_ascii() {
+        c.is_ascii_alphabetic()
+    } else {
+        c.is_alphabetic()
+    }
+}
+
+/// A decimal digit (Unicode `Nd`, as `\d`), for a group name in a template.
+fn is_digit(c: char) -> bool {
+    if c.is_ascii() {
+        c.is_ascii_digit()
+    } else {
+        parse::in_ranges(tables::DIGIT, c as u32)
+    }
+}
+
+/// The successive matches in a text: [`Regex::find_iter`].
+#[derive(Debug)]
+pub struct FindIter<'r, 't> {
+    re: &'r Regex,
+    text: &'t str,
+    pos: usize,
+    prev_end: Option<usize>,
+}
+
+impl Iterator for FindIter<'_, '_> {
+    type Item = Range<usize>;
+
+    fn next(&mut self) -> Option<Range<usize>> {
+        while self.pos <= self.text.len() {
+            let m = self.re.find_at(self.text, self.pos)?;
+            let mut accept = true;
+            if m.end == self.pos {
+                // An empty match: not right where the previous match ended, and the search
+                // moves on by a character.
+                if Some(m.start) == self.prev_end {
+                    accept = false;
+                }
+                self.pos += self
+                    .text
+                    .get(self.pos..)
+                    .and_then(|s| s.chars().next())
+                    .map_or(1, char::len_utf8);
+            } else {
+                self.pos = m.end;
+            }
+            self.prev_end = Some(m.end);
+            if accept {
+                return Some(m);
+            }
+        }
+        None
+    }
+}
+
+/// What the groups of a match hold: [`Regex::captures`]. Group 0 is the whole match.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Captures {
+    /// Start and end of each group, `pike::NONE` where it took no part.
+    slots: Box<[usize]>,
+    names: Arc<[Option<Box<str>>]>,
+}
+
+impl Captures {
+    /// The byte range of the whole match.
+    pub fn range(&self) -> Range<usize> {
+        self.get(0).unwrap_or(0..0)
+    }
+
+    /// The byte range group `i` matched; `None` when there is no such group or it took no part
+    /// in the match.
+    pub fn get(&self, i: usize) -> Option<Range<usize>> {
+        let k = i.checked_mul(2)?;
+        let s = *self.slots.get(k)?;
+        let e = *self.slots.get(k.checked_add(1)?)?;
+        (s != pike::NONE && e != pike::NONE).then_some(s..e)
+    }
+
+    /// The byte range the group named `name` matched.
+    pub fn name(&self, name: &str) -> Option<Range<usize>> {
+        let i = self.names.iter().position(|n| n.as_deref() == Some(name))?;
+        self.get(i)
+    }
+
+    /// The number of groups, the whole match (group 0) included.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
+impl fmt::Debug for Captures {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut l = f.debug_list();
+        for i in 0..self.len() {
+            l.entry(&self.get(i));
+        }
+        l.finish()
     }
 }
 

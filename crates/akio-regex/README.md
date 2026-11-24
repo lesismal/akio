@@ -9,14 +9,18 @@ the pattern. It is the engine behind `akio-log`'s env_logger-style message filte
 (`/users/{id:[0-9]+}`, ADR-051). An internal crate (docs/api-stability.md): use it through
 `akio-log` and `akio-http`.
 
-- One question: does the pattern occur anywhere in this text? `Regex::is_match(&str)`, and
+- Does the pattern occur anywhere in this text? `Regex::is_match(&str)`, and
   `Regex::is_match_fmt(format_args!(..))`, which matches the pieces as they are formatted, with
   no string built and no allocation.
+- Where, and what the groups hold (ADR-115): `find`, `find_at`, `find_iter`, `captures`
+  (`Captures::get`, `name`, `range`), with the leftmost-first semantics of Go's `regexp` and the
+  `regex` crate, on a capturing Pike VM in linear time; `expand` and `replace_all` with Go's
+  template rules (`$1`, `${name}`, `$$`), as `Regexp.Expand` and `ReplaceAllString`.
 - `RegexBuilder` options: `whole_text(true)` matches the whole text only (as `\A(?:...)\z`), and
   `ascii_classes(true)` makes `\d \w \s` and `\b` ASCII. The router uses both.
 - The syntax is a subset of the `regex` crate's, with the same meaning: literals, `.`, classes with
   ranges and negation, Unicode-aware `\d \w \s` (and `\D \W \S`), repetition `* + ? {m,n}`,
-  greedy or lazy, alternation, groups (non-capturing, named groups accepted), `^ $ \A \z`,
+  greedy or lazy, alternation, groups (capturing, named, non-capturing), `^ $ \A \z`,
   `\b \B` (Unicode word boundaries), flags `(?i)` (Unicode simple case folding), `(?m)`, `(?s)`
   and `(?U)`, negated (`(?-i)`) and scoped (`(?i:...)`). Unicode classes (`\p{..}`),
   backreferences, look-around and the `u` / `x` / `R` flags are compile errors that say so.

@@ -10,6 +10,18 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: where a regular expression matches, its groups, and Go's templates (akio-regex)
+
+ADR-115, requested by akit (A32):
+
+- `Regex::find`, `find_at`, `find_iter`, `captures`, `captures_at` (`Captures`: `get`, `name`,
+  `range`, `len`), `captures_len` and `group_names`: the leftmost-first match, as Go's `regexp`
+  and the `regex` crate find it, on a capturing Pike VM in linear time.
+- `Regex::expand` and `replace_all`, with Go's `Regexp.Expand` and `ReplaceAllString` rules.
+- Lazy repetition and `(?U)` now change where a match ends (they never changed whether a text
+  matches). A pattern with more than 1000 groups, or whose groups are repeated past 20 000
+  instructions, is refused when compiled.
+
 ### Added: the HTTP/2 client heeds the response header and idle timeouts and `CancelToken` (akio-http)
 
 ADR-111, requested by akit (A66):

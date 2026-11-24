@@ -10,6 +10,17 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：正则表达式的匹配位置、分组与 Go 的模板（akio-regex）
+
+ADR-115，应 akit 的请求（A32）：
+
+- `Regex::find`、`find_at`、`find_iter`、`captures`、`captures_at`（`Captures`：`get`、`name`、`range`、
+  `len`）、`captures_len` 与 `group_names`：按 Go `regexp` 与 `regex` crate 的方式求最左优先匹配，由带捕获的
+  Pike VM 以线性时间完成。
+- `Regex::expand` 与 `replace_all`，规则同 Go 的 `Regexp.Expand` 与 `ReplaceAllString`。
+- 惰性重复与 `(?U)` 现在会改变匹配的结束位置（它们从不改变文本是否匹配）。分组超过 1000 个、或分组重复到超过
+  20 000 条指令的模式，在编译时被拒绝。
+
 ### 新增：HTTP/2 客户端遵循响应头超时、空闲超时与 `CancelToken`（akio-http）
 
 ADR-111，akit 的需求（A66）：
