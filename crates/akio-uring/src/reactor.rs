@@ -13,7 +13,7 @@ use std::{
 
 use akio_core::{
     Config, ConnInfo, ConnInner, DatagramPort, DynAcceptor, DynHandler, Error, LoopLink, LoopMeta,
-    LoopStats, Pool, RING_IOV, RingSend, Task,
+    LoopStats, Pool, RING_IOV, RingSend, RingSent, Task,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use akio_sys::EventFd;
@@ -1893,7 +1893,24 @@ impl Loop {
                 return;
             }
         };
-        self.after_flush(id, r);
+        match r {
+            Err(e) => self.finalize(id, Some(Error::Io(e))),
+            Ok(RingSent::Drained { close: true }) => self.finalize(id, None),
+            Ok(RingSent::Drained { close: false }) => {
+                // The usual case: the answer is out. Interest changes only if reads were held
+                // back for the queue, or kernel TLS waits to move its receive direction.
+                if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+                    if lc.bp || lc.inner.offload_rx_waiting() {
+                        lc.q_hint = Some(0);
+                        self.refresh(id);
+                    }
+                }
+            }
+            Ok(RingSent::Pending) => {
+                self.submit_send(id);
+                self.refresh(id);
+            }
+        }
     }
 
     /// Arms or cancels the connection's recv / writability poll to match its state.

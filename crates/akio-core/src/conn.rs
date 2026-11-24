@@ -441,6 +441,13 @@ struct WriteState {
     ring_inflight: usize,
 }
 
+/// With ring sends, owned buffers up to this size that are queued are copied into the queue's
+/// tail and returned to the pool at once instead of being held until the send completes.
+const RING_COALESCE: usize = 1024;
+/// With ring sends, the smallest tail buffer `push_copy` allocates (one `akio_buf` size class),
+/// so that a batch's small answers to one connection share one buffer.
+const RING_TAIL: usize = 4 << 10;
+
 #[doc(hidden)]
 /// The most buffers one ring send carries (`IORING_OP_SENDMSG` iovecs).
 pub const RING_IOV: usize = 16;
@@ -463,6 +470,21 @@ impl Default for RingSend {
             iov: [(0, 0); RING_IOV],
         }
     }
+}
+
+/// What a ring send's completion left ([`ConnInner::ring_sent`]).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingSent {
+    /// Nothing is queued any more; `close` if `close_after_send` was requested.
+    Drained {
+        /// The connection asked to close once its output is out.
+        close: bool,
+    },
+    /// Output is still queued: the next send is described in the `RingSend` passed in, or (with
+    /// it empty, after `EAGAIN`, or a file or socket operation that waits) the loop waits for
+    /// writability.
+    Pending,
 }
 
 impl RingSend {
@@ -525,8 +547,11 @@ impl WriteState {
             }
         }
         // A datagram buffer is never appended to: allocate it exactly, not a whole size class.
+        // With ring sends the tail collects a batch's small answers (`RING_COALESCE`).
         let mut v = if self.datagram {
             Vec::with_capacity(data.len())
+        } else if self.ring {
+            akio_buf::get(data.len().max(RING_TAIL))
         } else {
             akio_buf::get(data.len())
         };
@@ -1393,15 +1418,15 @@ impl ConnInner {
 
     /// Loop side: the ring send described by an earlier flush completed with `res` (bytes sent,
     /// or `-errno`). Accounts what was sent and, as [`flush_queue_ring`](Self::flush_queue_ring),
-    /// describes the next send in `rs`. `Ok(true)`: the queue is empty. `Ok(false)` with `rs`
-    /// empty after `EAGAIN`: wait for the socket to become writable, then flush again.
-    pub fn ring_sent(&self, res: i32, rs: &mut RingSend) -> io::Result<bool> {
+    /// describes the next send in `rs`, all under one lock. [`RingSent::Pending`] with `rs`
+    /// empty (after `EAGAIN`): wait for the socket to become writable, then flush again.
+    pub fn ring_sent(&self, res: i32, rs: &mut RingSend) -> io::Result<RingSent> {
         let mut w = self.lock();
         let n = std::mem::take(&mut w.ring_inflight);
         if self.state.load(Ordering::Acquire) == CLOSED {
             // Closed meanwhile (`mark_closed` kept the chunks for the kernel): free them.
             w.free_chunks();
-            return Ok(true);
+            return Ok(RingSent::Drained { close: false });
         }
         if res > 0 {
             let m = (res as usize).min(n);
@@ -1414,7 +1439,7 @@ impl ConnInner {
         } else {
             let e = io::Error::from_raw_os_error(-res);
             match e.kind() {
-                io::ErrorKind::WouldBlock => return Ok(false),
+                io::ErrorKind::WouldBlock => return Ok(RingSent::Pending),
                 io::ErrorKind::Interrupted => {}
                 _ => return Err(e),
             }
@@ -1425,9 +1450,16 @@ impl ConnInner {
         if matches!(r, Ok(true)) && self.offload.load(Ordering::Relaxed) & OFFLOAD_PENDING != 0 {
             r = self.try_offload(&mut w).map(|()| w.queue.is_empty());
         }
+        let close = w.close_after_send;
         drop(w);
         self.run_drained();
-        r
+        r.map(|empty| {
+            if empty {
+                RingSent::Drained { close }
+            } else {
+                RingSent::Pending
+            }
+        })
     }
 
     /// Backend side: a ring send of this connection ended after it was closed
@@ -2191,13 +2223,22 @@ impl ConnInner {
                 }
             }
         }
-        w.add_queued(data.len() - off);
-        w.queue.push_back(Chunk {
-            bytes: Bytes::Owned(data),
-            off,
-        });
         let need_wake = was_empty && !corked;
-        drop(w);
+        if w.ring && data.len() - off <= RING_COALESCE {
+            // Ring sends hold queued buffers until the send's completion, after the whole
+            // batch: a small one is copied into the tail and goes back to the pool now (so a
+            // batch of answers does not drain the pool), and the send has fewer pieces.
+            w.push_copy(&data[off..]);
+            drop(w);
+            akio_buf::put(data);
+        } else {
+            w.add_queued(data.len() - off);
+            w.queue.push_back(Chunk {
+                bytes: Bytes::Owned(data),
+                off,
+            });
+            drop(w);
+        }
         if need_wake {
             self.link.wake_conn(self.id);
         }

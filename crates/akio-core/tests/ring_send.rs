@@ -13,7 +13,7 @@ use std::{
     },
 };
 
-use akio_core::{Config, ConnInner, LoopLink, RingSend, Task};
+use akio_core::{Config, ConnInner, LoopLink, RingSend, RingSent, Task};
 
 #[derive(Default)]
 struct Link {
@@ -63,6 +63,11 @@ fn kernel_send(c: &ConnInner, rs: &RingSend, max: usize) -> i32 {
     n as i32
 }
 
+/// Reports a completion; whether the queue drained.
+fn drained(c: &ConnInner, res: i32, rs: &mut RingSend) -> bool {
+    matches!(c.ring_sent(res, rs).unwrap(), RingSent::Drained { .. })
+}
+
 /// Everything readable on `peer` right now.
 fn read_now(peer: &mut TcpStream) -> Vec<u8> {
     let mut out = Vec::new();
@@ -108,7 +113,8 @@ fn a_flush_describes_the_queue_instead_of_writing_it() {
     let mut rs = RingSend::default();
     let q = c.uncork_flush_ring(&mut rs).unwrap();
     assert_eq!(q, 18, "the bytes stay queued while in flight");
-    assert_eq!(rs.parts().len(), 3);
+    // The small owned buffer was copied into the tail (`RING_COALESCE`); the shared one is not.
+    assert_eq!(rs.parts().len(), 2);
     assert_eq!(described(&rs), b"hello owned shared");
     assert!(
         read_now(&mut peer).is_empty(),
@@ -116,10 +122,7 @@ fn a_flush_describes_the_queue_instead_of_writing_it() {
     );
     let n = kernel_send(&c, &rs, usize::MAX);
     rs.clear();
-    assert!(
-        c.ring_sent(n, &mut rs).unwrap(),
-        "queue empty after the whole send"
-    );
+    assert!(drained(&c, n, &mut rs), "queue empty after the whole send");
     assert!(rs.parts().is_empty());
     assert_eq!(c.queued_bytes(), 0);
     assert_eq!(read_n(&mut peer, 18), b"hello owned shared");
@@ -147,14 +150,11 @@ fn sends_during_a_send_in_flight_queue_behind_it() {
     let woken = link.wakes.load(Ordering::SeqCst);
     let n = kernel_send(&c, &rs, usize::MAX);
     rs.clear();
-    assert!(
-        !c.ring_sent(n, &mut rs).unwrap(),
-        "the rest goes as the next send"
-    );
+    assert!(!drained(&c, n, &mut rs), "the rest goes as the next send");
     assert_eq!(described(&rs), b"second;third;");
     let n = kernel_send(&c, &rs, usize::MAX);
     rs.clear();
-    assert!(c.ring_sent(n, &mut rs).unwrap());
+    assert!(drained(&c, n, &mut rs));
     assert_eq!(read_n(&mut peer, 19), b"first;second;third;");
     assert!(link.wakes.load(Ordering::SeqCst) >= woken);
 }
@@ -178,7 +178,7 @@ fn a_short_send_resumes_where_it_stopped() {
     for max in [3, 7_777, usize::MAX] {
         let n = kernel_send(&c, &rs, max);
         rs.clear();
-        let empty = c.ring_sent(n, &mut rs).unwrap();
+        let empty = drained(&c, n, &mut rs);
         got.extend(read_n(&mut peer, n as usize));
         if empty {
             break;
@@ -212,7 +212,7 @@ fn a_send_not_yet_submitted_takes_what_was_queued_after_it() {
     assert_eq!(described(&rs), b"abcdefghi");
     let n = kernel_send(&c, &rs, usize::MAX);
     rs.clear();
-    assert!(c.ring_sent(n, &mut rs).unwrap());
+    assert!(drained(&c, n, &mut rs));
     assert_eq!(read_n(&mut peer, 9), b"abcdefghi");
 }
 
@@ -238,7 +238,7 @@ fn a_close_keeps_the_bytes_in_flight_until_released() {
     assert!(c.send(b"late").is_err());
     // The completion of a closed connection's send frees the chunks and asks for nothing more.
     let mut next = RingSend::default();
-    assert!(c.ring_sent(-ECONNRESET, &mut next).unwrap());
+    assert!(drained(&c, -ECONNRESET, &mut next));
     assert!(next.parts().is_empty());
     c.ring_release(); // idempotent
 }
@@ -264,7 +264,7 @@ fn eagain_waits_and_errors_fail() {
     c.uncork_flush_ring(&mut rs).unwrap();
     rs.clear();
     // Nothing sent, socket full: no next send; the loop waits for writability.
-    assert!(!c.ring_sent(-EAGAIN, &mut rs).unwrap());
+    assert!(!drained(&c, -EAGAIN, &mut rs));
     assert!(rs.parts().is_empty());
     assert_eq!(c.queued_bytes(), 10);
     // Writable again: the same bytes are described again.
@@ -306,11 +306,11 @@ fn a_file_goes_out_with_sendfile_between_ring_sends() {
     let n = kernel_send(&c, &rs, usize::MAX);
     rs.clear();
     // The completion runs the file with sendfile, then describes what follows it.
-    assert!(!c.ring_sent(n, &mut rs).unwrap());
+    assert!(!drained(&c, n, &mut rs));
     assert_eq!(described(&rs), b":b");
     let n = kernel_send(&c, &rs, usize::MAX);
     rs.clear();
-    assert!(c.ring_sent(n, &mut rs).unwrap());
+    assert!(drained(&c, n, &mut rs));
     assert_eq!(read_n(&mut peer, 8), b"a:FILE:b");
 }
 
@@ -323,4 +323,49 @@ fn without_ring_mode_a_ring_flush_writes_as_before() {
     assert_eq!(c.uncork_flush_ring(&mut rs).unwrap(), 0);
     assert!(rs.parts().is_empty());
     assert_eq!(read_n(&mut peer, 5), b"plain");
+}
+
+#[test]
+fn small_owned_buffers_share_the_tail_and_large_ones_stay_whole() {
+    let (c, _link, mut peer) = conn(true);
+    c.set_corked(true);
+    for i in 0..16u8 {
+        c.send_owned(vec![b'a' + i; 130]).unwrap();
+    }
+    let big = vec![b'Z'; 5000];
+    c.send_owned(big.clone()).unwrap();
+    let mut rs = RingSend::default();
+    c.uncork_flush_ring(&mut rs).unwrap();
+    assert_eq!(
+        rs.parts().len(),
+        2,
+        "16 small answers in one 4 KiB tail, the large one whole"
+    );
+    let mut want = Vec::new();
+    for i in 0..16u8 {
+        want.extend_from_slice(&[b'a' + i; 130]);
+    }
+    want.extend_from_slice(&big);
+    assert!(described(&rs) == want);
+    let n = kernel_send(&c, &rs, usize::MAX);
+    rs.clear();
+    assert!(drained(&c, n, &mut rs));
+    assert!(read_n(&mut peer, want.len()) == want);
+}
+
+#[test]
+fn the_completion_that_drains_reports_close_after_send() {
+    let (c, _link, mut peer) = conn(true);
+    c.set_corked(true);
+    c.send(b"bye").unwrap();
+    let mut rs = RingSend::default();
+    c.uncork_flush_ring(&mut rs).unwrap();
+    c.close_after_send();
+    let n = kernel_send(&c, &rs, usize::MAX);
+    rs.clear();
+    assert_eq!(
+        c.ring_sent(n, &mut rs).unwrap(),
+        RingSent::Drained { close: true }
+    );
+    assert_eq!(read_n(&mut peer, 3), b"bye");
 }

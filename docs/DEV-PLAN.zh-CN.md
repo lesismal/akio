@@ -362,7 +362,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 功能 | crate / 计划条目 | 已测 | 已优化 | 证据或剩余工作 |
 |---|---|---|---|---|
 | 事件循环，epoll | akio-core、akio-epoll、akio-buf、akio-timer（M1） | 是（BENCHMARKS 测评 `10070cff`，TCP echo，每连接内存） | 是（2026-11-14 一轮：每次回调读一次时钟、内联队列头；`3d3aca96`） | 与 tokio 同一档次；keep-alive HTTP/1 受内核限制。时间轮和缓冲池没有单独的微基准。 |
-| 事件循环，io_uring | akio-uring（M2） | 是（测评；“io_uring 特性评估”） | 部分 | 评估过注册文件、SEND_ZC、MSG_RING，均未采用；环上发送已采用（ADR-106：echo-ws +10–11%，baseline +12%；pipelined 两行仍待查，见该 ADR）。 |
+| 事件循环，io_uring | akio-uring（M2） | 是（测评；“io_uring 特性评估”） | 部分 | 评估过注册文件、SEND_ZC、MSG_RING，均未采用；环上发送已采用（ADR-106：echo-ws、HTTP/1.1 baseline 与 pipelined 比使用 `writev` 的 io_uring 快 9–13%）。 |
 | 事件循环，kqueue | akio-epoll（macOS，M1） | 否 | 否 | 开发/调试用后端；规则 17 不采用 macOS 数字。需要决定它是否要基准测试（一台空闲的 macOS 主机，或者不测）。 |
 | TCP echo 与每连接内存 | akio-core | 是（测评，`tools/bench/echo.sh`、`mem.sh`） | 是（内联队列头、装箱的会话状态、装箱的 deflate 状态） | 受客户端限制，平台期在 0.65–0.8 M req/s；没有延迟分位数。 |
 | UDP：按对端、无连接、GRO/GSO、自有缓冲区 | akio-core、akio-sys（ADR-024、ADR-065、ADR-093） | 是（“无连接 UDP”“绑定 UDP 套接字接收”，测评 UDP echo） | 是（默认 GRO、`recvmmsg` 槽位来自池化 slab、`sendmmsg` + GSO，数据报监听器 1.08x） | – |

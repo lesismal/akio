@@ -43,7 +43,7 @@ pub use config::{Config, SlowCallback, SlowHook};
 pub use conn::KernelRead;
 pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport, TransportWaker};
 #[doc(hidden)]
-pub use conn::{ConnInner, LoopLink, RING_IOV, RingSend, Task};
+pub use conn::{ConnInner, LoopLink, RING_IOV, RingSend, RingSent, Task};
 #[cfg(target_os = "linux")]
 pub use conn::{Offloaded, SocketOp};
 #[doc(hidden)]

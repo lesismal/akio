@@ -22,11 +22,13 @@ ADR-106. Behaviour is unchanged; no public API changed:
   stopped; per-connection order (including sends from other threads, kernel TLS socket
   operations and `sendfile` chunks, which still run from the loop) is kept; backpressure,
   `close_after_send`, `write_timeout` and closes with a send in flight behave as before.
+- On io_uring, a queued owned buffer of up to 1 KiB is copied into the queue's tail and returned
+  to the pool at once (queued buffers now live until the batch's sends complete).
 - `AKIO_URING_SENDS=write` restores the old path (for A/B measurements). epoll and kqueue are
   unchanged.
 - `ConnInner` gained `#[doc(hidden)]` backend plumbing for it (`set_ring_sends`,
   `uncork_flush_ring`, `flush_queue_ring`, `ring_redescribe`, `ring_sent`, `ring_release`,
-  `RingSend`, `RING_IOV`).
+  `RingSend`, `RingSent`, `RING_IOV`).
 
 ### Added: rounds scheduling for TCP listeners, off by default (akio, akio-epoll, akio-sys)
 

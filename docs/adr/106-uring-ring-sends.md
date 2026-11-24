@@ -56,6 +56,18 @@ one invariant, and adds from the second the deferral of the submission to the en
   connection's send goes to the kernel in the one `io_uring_enter` the loop makes anyway: a batch
   costs one system call however many connections answered. At most one send per connection is in
   flight.
+- **Completion handling in one step**: `ring_sent` accounts the result, describes the next send
+  and reports whether the queue drained and whether `close_after_send` was asked, under one lock
+  (`RingSent`). A drained send with reads not held back for the queue and no kernel TLS move
+  pending changes no interest, so the loop skips its `refresh`.
+- **Small buffers are copied, not held**: queued buffers stay alive until their send completes,
+  after the whole batch. An HTTP/1 server answering 16 pipelined requests on each of 512
+  connections per thread then held thousands of pooled 512-byte buffers at once, far past
+  `akio_buf`'s 64 cached per size class, so every `get` / `put` fell through to `malloc` / `free`
+  (and each send carried 16 iovecs). In ring mode, an owned buffer of up to 1 KiB that is queued
+  is copied into the queue's tail and goes back to the pool at once, and `push_copy` starts a
+  new tail at 4 KiB, so a batch's small answers to one connection share one buffer. epoll keeps
+  its zero-copy queuing of owned buffers.
 - **Close**: `mark_closed` stops counting the queue but keeps its chunks while a send reads them;
   the loop keeps the connection's `ConnInner` and `msghdr` in `orphans` until the completion
   arrives (the shutdown at close ends the send quickly), then frees them with `ring_release`. A
@@ -93,29 +105,30 @@ one invariant, and adds from the second the deferral of the submission to the en
 
 gpu51 (Ryzen 7 7800X3D, Linux 7.0), `http-bench` with 8 I/O threads on CPUs 0-3,8-11, gcannon
 (HttpArena's load generator) with 8 threads on CPUs 4-7,12-15, 5 s runs, fresh server per run,
-variant order rotated, medians of 3 rounds (spread within 2%). `main` is the code before this
-change; `write` is this build with `AKIO_URING_SENDS=write`.
+variant order rotated, medians of 3 rounds (largest spread 2.3%, most under 1%). `main` is the
+branch point (`6f82da20`); `write` is this build with `AKIO_URING_SENDS=write`; "ring, first cut"
+is this design before the completion and coalescing changes above.
 
-| Case | main io_uring | ring sends | ring / main io_uring | ring / epoll |
-|---|---:|---:|---:|---:|
-| echo-ws, 512 connections | 1,290,871 | 1,433,949 | 1.111 | 1.182 |
-| echo-ws, 4096 connections | 1,260,852 | 1,388,751 | 1.101 | 1.171 |
-| echo-ws-pipeline (16), 512 | 17,862,374 | 16,813,974 | 0.941 (1.085 vs `write`) | 1.140 |
-| echo-ws-pipeline (16), 4096 | 17,308,358 | 16,169,145 | 0.934 (1.078 vs `write`) | 1.128 |
-| HTTP/1.1 baseline, 4096 | 1,149,072 | 1,285,558 | 1.119 | 1.168 |
-| HTTP/1.1 pipelined (16), 4096 | 6,806,851 | 6,638,940 | 0.975 (0.977 vs `write`) | 1.001 |
+| Case | main io_uring | `write` | ring sends | ring / main io_uring | ring / epoll | ring, first cut |
+|---|---:|---:|---:|---:|---:|---:|
+| echo-ws, 512 connections | 1,282,718 | 1,287,872 | 1,445,950 | 1.127 | 1.176 | 1,437,597 |
+| echo-ws, 4096 connections | 1,256,832 | 1,261,609 | 1,398,272 | 1.113 | 1.173 | 1,394,494 |
+| echo-ws-pipeline (16), 512 | 17,882,771 | 17,955,184 | 19,483,929 | 1.090 | 1.151 | 19,452,793 |
+| echo-ws-pipeline (16), 4096 | 17,162,038 | 17,207,616 | 18,653,184 | 1.087 | 1.132 | 18,586,780 |
+| HTTP/1.1 baseline, 4096 | 1,143,972 | 1,151,305 | 1,283,907 | 1.122 | 1.167 | 1,279,972 |
+| HTTP/1.1 pipelined (16), 4096 | 6,800,800 | 6,883,244 | 7,502,486 | 1.103 | 1.118 | 6,712,899 |
 
-On the pipelined WebSocket rows the new binary was 13% slower than main with ring sends off too
-(`write` 0.867x main io_uring, epoll 0.872x main epoll), so that gap is not the send path (the
-profile shows more instructions in `akio_ws::protocol::Decoder::decode`, whose code akio-ws did
-not change: a code-layout effect under investigation). Against the same build, ring sends gain
-8% there.
+epoll is unchanged (this build against main: 0.999–1.019 over the six cases), and so is io_uring
+with ring sends off (`write` against main io_uring: 1.003–1.012). The first cut was 2.5% behind
+`write` on pipelined HTTP/1.1: the profile showed `malloc` / `free` and longer `consume` (the
+held response buffers, see the decision above); copying small buffers into the tail gave +11.8%
+there and changed the other cases by under 1%.
 
 System calls per response (perf stat on the server, whole run):
 
 | Case | main io_uring: total / writev / io_uring_enter | ring sends: total / writev / io_uring_enter | epoll: total |
 |---|---|---|---|
-| echo-ws 512 | 1.057 / 1.005 / 0.051 | 0.026 / 0 / 0.026 | 2.025 |
-| echo-ws-pipeline 512 | 0.066 / 0.063 / 0.0032 | 0.002 / 0 / 0.0016 | 0.127 |
-| HTTP/1.1 baseline 4096 | 1.057 / 1.001 / 0.052 | 0.045 / 0 / 0.041 | 2.012 |
-| HTTP/1.1 pipelined 4096 | 0.067 / 0.063 / 0.0033 | 0.003 / 0 / 0.0018 | 0.127 |
+| echo-ws 512 | 1.057 / 1.005 / 0.051 | 0.027 / 0 / 0.026 | 2.027 |
+| echo-ws-pipeline 512 | 0.066 / 0.063 / 0.0032 | 0.0018 / 0 / 0.0018 | 0.127 |
+| HTTP/1.1 baseline 4096 | 1.057 / 1.001 / 0.052 | 0.031 / 0 / 0.027 | 2.012 |
+| HTTP/1.1 pipelined 4096 | 0.067 / 0.063 / 0.0033 | 0.0025 / 0 / 0.0018 | 0.127 |

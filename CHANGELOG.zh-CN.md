@@ -20,9 +20,11 @@ ADR-106。行为不变；公开 API 没有变化：
   在途；短发送从停下的地方继续；每个连接的顺序（包括其他线程的发送、仍由 loop 执行的 kernel TLS
   socket 操作和 `sendfile` 块）保持不变；背压、`close_after_send`、`write_timeout` 以及有发送在途
   时的关闭与以前一样。
+- io_uring 上，排队的不超过 1 KiB 的自有缓冲区被拷进队列尾部并立即还给池（排队的缓冲区现在要活到
+  这一批的发送完成）。
 - `AKIO_URING_SENDS=write` 恢复旧路径（用于 A/B 测量）。epoll 和 kqueue 不变。
 - `ConnInner` 为此新增了 `#[doc(hidden)]` 的后端接口（`set_ring_sends`、`uncork_flush_ring`、
-  `flush_queue_ring`、`ring_redescribe`、`ring_sent`、`ring_release`、`RingSend`、`RING_IOV`）。
+  `flush_queue_ring`、`ring_redescribe`、`ring_sent`、`ring_release`、`RingSend`、`RingSent`、`RING_IOV`）。
 
 ### 新增：TCP listener 的轮次调度，默认关闭（akio、akio-epoll、akio-sys）
 
