@@ -68,6 +68,8 @@ const SOCK: u64 = 1;
 const ICMP4: u64 = 2;
 #[cfg(target_os = "macos")]
 const ICMP6: u64 = 3;
+/// How often a removed listener's thread looks whether the listener's last peer is gone.
+const UNLISTED_POLL: Duration = Duration::from_millis(50);
 /// Datagrams taken from the socket per `recvmmsg`.
 const BATCH: usize = 32;
 const MAX_BATCHES_PER_EVENT: usize = 8;
@@ -147,6 +149,9 @@ struct Bound {
     /// Peers with datagrams waiting for socket space.
     blocked: IdSet,
     write_reg: bool,
+    /// Draining (`UdpBinding::shutdown`, ADR-155): no new peers; closed once its peers are gone
+    /// or at this deadline.
+    kill: Option<Instant>,
 }
 
 /// Counters shared by the loops of one UDP group.
@@ -205,6 +210,14 @@ struct UdpLoop {
     icmp: [Option<akio_sys::IcmpListener>; 2],
     #[cfg(target_os = "macos")]
     icmp_binds: std::collections::HashMap<(bool, u16), Vec<u64>>,
+    /// The listener was removed (`Cmd::StopListening`, ADR-155): the server socket takes no new
+    /// peers and closes once its peers are gone (at `unlisted_kill`, the drain deadline, those
+    /// left are closed); with `unlisted_exit` the thread ends once nothing is left.
+    unlisted: bool,
+    unlisted_kill: Option<Instant>,
+    unlisted_exit: bool,
+    /// A removal or a bound socket's drain is at work (checked once per iteration).
+    unlisting: bool,
 }
 
 /// GRO (`Config::udp_gro`, on by default) coalesces up to 64 KiB into one receive: only safe
@@ -316,6 +329,10 @@ impl UdpLoop {
             icmp: [None, None],
             #[cfg(target_os = "macos")]
             icmp_binds: std::collections::HashMap::new(),
+            unlisted: false,
+            unlisted_kill: None,
+            unlisted_exit: false,
+            unlisting: false,
         })
     }
 
@@ -482,6 +499,18 @@ impl UdpLoop {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
                 timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
             }
+            if self.unlisting {
+                let mut wait = self.unlist_deadline().map(|at| {
+                    at.saturating_duration_since(Instant::now()) + Duration::from_millis(1)
+                });
+                if self.unlisted && self.sock.is_some() {
+                    // Waiting for the other threads' peers to go too (see `unlisted_step`).
+                    wait = Some(wait.map_or(UNLISTED_POLL, |w| w.min(UNLISTED_POLL)));
+                }
+                if let Some(wait) = wait {
+                    timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
+                }
+            }
             let timeout = akio_core::timer::poll_timeout(timeout);
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
@@ -525,6 +554,9 @@ impl UdpLoop {
             akio_core::timer::fire();
             self.drain_cmds();
             self.fire_timers();
+            if self.unlisting && self.draining.is_none() && self.unlisted_step() {
+                break;
+            }
             if let Some(deadline) = self.draining {
                 // Datagrams have no stream to drain: once handlers had their `on_shutdown` and
                 // nothing is waiting for socket space, everything left is closed.
@@ -720,7 +752,17 @@ impl UdpLoop {
         };
         match known {
             Some(id) => Some(id),
+            // Removed or draining (ADR-155): known peers only.
+            None if self.unlisting && self.stopped(src) => None,
             None => self.open(src, peer),
+        }
+    }
+
+    /// Whether the server socket (`None`) or bound socket `src` takes no new peers any more.
+    fn stopped(&self, src: Option<u64>) -> bool {
+        match src {
+            None => self.unlisted,
+            Some(b) => self.binds.get(&b).is_none_or(|b| b.kill.is_some()),
         }
     }
 
@@ -1186,6 +1228,7 @@ impl UdpLoop {
                 peers: KeyedMap::default(),
                 blocked: IdSet::default(),
                 write_reg: false,
+                kill: None,
             },
         );
     }
@@ -1339,6 +1382,125 @@ impl UdpLoop {
         }
     }
 
+    // ---- removing the listener, draining a bound socket (ADR-155) ---------------------------
+
+    /// The listener was removed: the server socket takes no new peers from now on. With
+    /// `drain`, its peers get `on_shutdown` now and those still open after it are closed; the
+    /// socket closes once none is left. With `exit`, the thread ends once nothing is left.
+    fn stop_listening(&mut self, drain: Option<Duration>, exit: bool) {
+        if self.draining.is_some() || self.dgram.is_some() {
+            return; // shutting down anyway; datagram listeners are not removed
+        }
+        self.unlisted = true;
+        self.unlisted_exit |= exit;
+        self.unlisting = true;
+        if let Some(d) = drain {
+            let at = Instant::now() + d;
+            self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
+            let ids = self.server_peers();
+            self.shut_down_peers(ids);
+        }
+    }
+
+    /// The socket bound under `id` drains: no new peers, `on_shutdown` for its peers, closed
+    /// once they are gone or at `drain` from now.
+    fn drain_bound(&mut self, id: u64, drain: Duration) {
+        if self.draining.is_some() {
+            return;
+        }
+        let at = Instant::now() + drain;
+        let Some(b) = self.binds.get_mut(&id) else {
+            return;
+        };
+        let first = b.kill.is_none();
+        b.kill = Some(b.kill.map_or(at, |t| t.min(at)));
+        self.unlisting = true;
+        if first {
+            let ids: Vec<u64> = b.peers.values().copied().collect();
+            self.shut_down_peers(ids);
+        }
+    }
+
+    /// `on_shutdown` for each of `ids`, and what it sent is flushed.
+    fn shut_down_peers(&mut self, ids: Vec<u64>) {
+        for id in ids {
+            let Some(p) = self.conns.get(&id) else {
+                continue;
+            };
+            let (acc, inner) = (p.acceptor.clone(), p.inner.clone());
+            if catch_unwind(AssertUnwindSafe(|| acc.on_shutdown(&inner))).is_err() {
+                self.finalize(id, Some(panic_error()));
+            } else {
+                self.on_wake(id);
+            }
+        }
+    }
+
+    /// The peers of the server socket.
+    fn server_peers(&self) -> Vec<u64> {
+        self.conns
+            .iter()
+            .filter(|(_, p)| p.own.is_none() && p.bind.is_none())
+            .map(|(&id, _)| id)
+            .collect()
+    }
+
+    /// The earliest drain deadline at work.
+    fn unlist_deadline(&self) -> Option<Instant> {
+        self.binds
+            .values()
+            .filter_map(|b| b.kill)
+            .chain(self.unlisted_kill)
+            .min()
+    }
+
+    /// Once per iteration while a removal or a drain is at work: closes what is left at a
+    /// deadline, closes the sockets with no peer left, and ends the thread (true) once nothing
+    /// is left, if it may.
+    fn unlisted_step(&mut self) -> bool {
+        let now = Instant::now();
+        let due: Vec<(u64, bool)> = self
+            .binds
+            .iter()
+            .filter_map(|(&id, b)| {
+                b.kill
+                    .map(|t| (id, now >= t || b.peers.is_empty()))
+                    .filter(|(_, go)| *go)
+            })
+            .collect();
+        for (id, _) in due {
+            self.unbind(id);
+        }
+        if self.unlisted {
+            if self.unlisted_kill.is_some_and(|t| now >= t) {
+                self.unlisted_kill = None;
+                for id in self.server_peers() {
+                    self.finalize(id, None);
+                }
+            }
+            if self.sock.is_some() && self.stats.peers.load(Ordering::Acquire) == 0 {
+                // The listener's last peer is gone, on every thread: the socket closes (once
+                // the peers' handles let go of it), leaving the port to other sockets. Not
+                // before: on Linux the threads' sockets form one `SO_REUSEPORT` group, and one
+                // leaving it would move the other threads' peers to sockets that do not know
+                // them.
+                if let Some(sock) = self.sock.take() {
+                    self.poller.delete(sock.as_raw_fd());
+                }
+                self.blocked.clear();
+                self.want_write = false;
+                #[cfg(target_os = "linux")]
+                {
+                    self.batch = None;
+                }
+            }
+        }
+        self.unlisting = self.unlisted_kill.is_some()
+            || self.binds.values().any(|b| b.kill.is_some())
+            || (self.unlisted && (self.sock.is_some() || self.unlisted_exit));
+        self.unlisted_exit && self.sock.is_none() && self.conns.is_empty() && self.binds.is_empty()
+    }
+
     fn flush_blocked(&mut self) {
         let ids: Vec<u64> = self.blocked.iter().copied().collect();
         for id in ids {
@@ -1416,8 +1578,13 @@ impl UdpLoop {
                     | Cmd::AddListener(..)
                     | Cmd::GiveListener { .. }
                     | Cmd::Retire
-                    | Cmd::Revive
-                    | Cmd::StopListening { .. } => {}
+                    | Cmd::Revive => {}
+                    Cmd::StopListening {
+                        drain, exit, done, ..
+                    } => {
+                        self.stop_listening(drain, exit);
+                        drop(done);
+                    }
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),
                     Cmd::BindUdp {
                         id,
@@ -1426,12 +1593,13 @@ impl UdpLoop {
                         icmp,
                     } => self.open_bound(id, sock, acceptor, icmp),
                     Cmd::Unbind(id) => self.unbind(id),
+                    Cmd::DrainBind { id, drain } => self.drain_bound(id, drain),
                     Cmd::OpenPeer {
                         peer,
                         acceptor,
                         on_error,
                     } => {
-                        if self.sock.is_none() || self.draining.is_some() {
+                        if self.sock.is_none() || self.draining.is_some() || self.unlisted {
                             on_error(io::Error::new(
                                 io::ErrorKind::NotConnected,
                                 "no UDP listener socket",
@@ -1574,6 +1742,10 @@ pub struct UdpGroup {
     stats: Arc<Stats>,
     /// A datagram listener's sender (on thread 0's socket).
     sender: Option<DatagramSender>,
+    /// The listener was removed (`Group::stop_listening`, ADR-155), and the countdown of the
+    /// threads that have not yet acted on it (`Group::await_unlisted`).
+    unlisted: AtomicBool,
+    unlisting: Mutex<Option<akio_core::Countdown>>,
 }
 
 impl std::fmt::Debug for UdpGroup {
@@ -1603,13 +1775,24 @@ impl UdpGroup {
             acceptor,
             icmp,
         });
-        let closed = AtomicBool::new(false);
+        // 0: open, 1: draining, 2: closed. A close ends a drain early; a drain after a close or
+        // another drain does nothing.
+        let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let (st, sh) = (state.clone(), shared.clone());
         let closer = Arc::new(move || {
-            if !closed.swap(true, Ordering::AcqRel) {
-                shared.post(Cmd::Unbind(id));
+            if st.swap(2, Ordering::AcqRel) != 2 {
+                sh.post(Cmd::Unbind(id));
             }
         });
-        Ok(akio_core::UdpBinding::new(sock, local, closer))
+        let drainer = Arc::new(move |drain: Duration| {
+            if state
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                shared.post(Cmd::DrainBind { id, drain });
+            }
+        });
+        Ok(akio_core::UdpBinding::new(sock, local, closer).with_drainer(drainer))
     }
 
     /// Binds `addr` and prepares `threads` loops. On Linux every loop gets its own
@@ -1676,6 +1859,8 @@ impl UdpGroup {
             rr: AtomicUsize::new(0),
             stats,
             sender: None,
+            unlisted: AtomicBool::new(false),
+            unlisting: Mutex::new(None),
         })
     }
 
@@ -1736,6 +1921,8 @@ impl UdpGroup {
             rr: AtomicUsize::new(0),
             stats,
             sender,
+            unlisted: AtomicBool::new(false),
+            unlisting: Mutex::new(None),
         })
     }
 }
@@ -1746,11 +1933,70 @@ impl Group for UdpGroup {
     }
 
     fn threads(&self) -> usize {
+        if self.unlisted.load(Ordering::Acquire) && self.started.load(Ordering::Acquire) {
+            // Removed (ADR-155): the threads still serving its last peers.
+            return self.shared.iter().filter(|s| s.stats.running()).count();
+        }
         self.shared.len()
     }
 
     fn listener_fds(&self) -> Vec<i32> {
+        if self.unlisted.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         self.fds.clone()
+    }
+
+    fn stop_listening(&self, drain: Option<Duration>, exit_when_idle: bool) -> io::Result<()> {
+        if self.sender.is_some() || self.addr.port() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this UDP group has no per-peer listener socket",
+            ));
+        }
+        if self.unlisted.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let done = akio_core::Countdown::default();
+        let started = self.started.load(Ordering::Acquire);
+        for s in &self.shared {
+            s.post(Cmd::StopListening {
+                lid: None,
+                drain,
+                exit: exit_when_idle,
+                done: started.then(|| done.token()),
+            });
+        }
+        *self.unlisting.lock().unwrap_or_else(|p| p.into_inner()) = Some(done);
+        Ok(())
+    }
+
+    fn await_unlisted(&self, limit: Duration) {
+        let done = self
+            .unlisting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        // On an I/O thread (its own loop's among those waited for, perhaps): no waiting.
+        if let Some(done) = done {
+            if !crate::reactor::on_loop_thread() {
+                done.wait(limit);
+            }
+        }
+    }
+
+    fn finished(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+            && self
+                .threads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .all(JoinHandle::is_finished)
+    }
+
+    fn loop_stats(&self) -> Vec<Arc<akio_core::LoopStats>> {
+        self.shared.iter().map(|s| s.stats.clone()).collect()
     }
     fn datagram_sender(&self) -> Option<DatagramSender> {
         self.sender.clone()

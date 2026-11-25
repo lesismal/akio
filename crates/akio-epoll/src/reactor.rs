@@ -75,6 +75,12 @@ pub(crate) enum Cmd {
     },
     /// UDP only: closes the socket bound under `id` and its connections.
     Unbind(u64),
+    /// UDP only: the socket bound under `id` takes no new peers; its peers get `on_shutdown`
+    /// now, and the socket closes once they are gone or at `drain` from now (ADR-155).
+    DrainBind {
+        id: u64,
+        drain: Duration,
+    },
     /// UDP only: a peer of the server socket opened from this side.
     OpenPeer {
         peer: SocketAddr,
@@ -934,7 +940,7 @@ impl Loop {
             Cmd::Shutdown => self.begin_shutdown(),
             Cmd::Core(c) => self.on_core(c),
             // Only UDP loops are sent these.
-            Cmd::DialUdp { .. } | Cmd::BindUdp { .. } | Cmd::Unbind(_) => {}
+            Cmd::DialUdp { .. } | Cmd::BindUdp { .. } | Cmd::Unbind(_) | Cmd::DrainBind { .. } => {}
             Cmd::OpenPeer { on_error, .. } => on_error(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "not a UDP listener",

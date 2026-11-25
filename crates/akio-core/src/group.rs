@@ -419,12 +419,15 @@ pub type IcmpHandler = Arc<dyn Fn(&IcmpError) + Send + Sync>;
 /// datagrams with any address from one local port. Datagrams it receives are served like a UDP
 /// listener's (each distinct peer address is a [`Conn`](crate::Conn) of the acceptor);
 /// [`send_to`](UdpBinding::send_to) sends to any address from any thread. Cheap to clone; the
-/// socket stays open until [`close`](UdpBinding::close) or engine shutdown.
+/// socket stays open until [`close`](UdpBinding::close), the end of a
+/// [`shutdown`](UdpBinding::shutdown) or engine shutdown.
 #[derive(Clone)]
 pub struct UdpBinding {
     sock: Arc<std::net::UdpSocket>,
     local: SocketAddr,
     closer: Arc<dyn Fn() + Send + Sync>,
+    /// Drains the socket (`shutdown`), where the backend can (ADR-155).
+    drainer: Option<Arc<dyn Fn(Duration) + Send + Sync>>,
     /// The socket has `IP_RECVERR` (`bind_udp_icmp`): a send may fail once with the error an
     /// ICMP message left pending, having sent nothing.
     recverr: bool,
@@ -450,8 +453,17 @@ impl UdpBinding {
             sock,
             local,
             closer,
+            drainer: None,
             recverr: false,
         }
+    }
+
+    /// Backend-facing: how [`shutdown`](Self::shutdown) drains the socket.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_drainer(mut self, drainer: Arc<dyn Fn(Duration) + Send + Sync>) -> UdpBinding {
+        self.drainer = Some(drainer);
+        self
     }
 
     /// Backend-facing: the socket has `IP_RECVERR` (see `Group::bind_udp_icmp`).
@@ -679,9 +691,24 @@ impl UdpBinding {
     }
 
     /// Closes the socket: its connections are closed (their `on_close` runs on the I/O thread)
-    /// and it stops receiving. Idempotent.
+    /// and it stops receiving. Idempotent; also ends a [`shutdown`](Self::shutdown) early.
     pub fn close(&self) {
         (self.closer)();
+    }
+
+    /// Drains the socket (ADR-155, akit A22): from now on datagrams from new addresses are
+    /// dropped (no connection is opened for them) while the peers it has keep exchanging
+    /// datagrams; each of them gets [`Acceptor::on_shutdown`](crate::Acceptor::on_shutdown) at
+    /// once, as in an engine shutdown (an HTTP/3 server sends `GOAWAY`), and those still open
+    /// after `drain` are closed (`on_close` runs). The socket closes once it has no peer left,
+    /// at the latest at `drain`. `Duration::ZERO` closes them at the thread's next loop
+    /// iteration. Returns at once. A second call, or one after [`close`](Self::close), does
+    /// nothing. On a backend that cannot drain (DPDK) it is [`close`](Self::close).
+    pub fn shutdown(&self, drain: Duration) {
+        match &self.drainer {
+            Some(d) => d(drain),
+            None => self.close(),
+        }
     }
 }
 

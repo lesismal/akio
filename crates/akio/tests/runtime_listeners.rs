@@ -560,20 +560,28 @@ fn max_listeners_under_at_and_over_counting_removed_ones_still_serving() {
 
 #[test]
 fn what_cannot_be_added_removed_or_filtered() {
+    struct Drop0;
+    impl akio::DatagramsHandler for Drop0 {
+        fn on_datagrams(&mut self, _b: &akio::Datagrams<'_>, _out: &mut akio::Replies) {}
+    }
+    let datagrams = || Listener::udp(localhost()).serve_datagrams(|_: &akio::DatagramSender| Drop0);
     let e = Engine::builder()
         .config(quick())
         .listen(Listener::udp(localhost()).serve(fn_acceptor(|_c: &Conn<Echo>| Echo)))
+        .listen(datagrams())
         .build()
         .unwrap();
     e.start().unwrap();
     let udp = e.listeners()[0].clone();
-    assert!(udp.udp);
+    let dgram = e.listeners()[1].clone();
+    assert!(udp.udp && dgram.udp);
+    // Datagram listeners (ADR-065) are not removed (per-peer UDP ones are, ADR-155).
     assert_eq!(
-        e.remove_listener(udp.id).unwrap_err().kind(),
+        e.remove_listener(dgram.id).unwrap_err().kind(),
         ErrorKind::Unsupported
     );
     assert_eq!(
-        e.shutdown_listener(udp.id, Duration::ZERO)
+        e.shutdown_listener(dgram.id, Duration::ZERO)
             .unwrap_err()
             .kind(),
         ErrorKind::Unsupported
@@ -582,16 +590,15 @@ fn what_cannot_be_added_removed_or_filtered() {
         e.set_listener_filter(udp.id, |_| false).unwrap_err().kind(),
         ErrorKind::Unsupported
     );
-    let add_udp =
-        e.add_listener(Listener::udp(localhost()).serve(fn_acceptor(|_c: &Conn<Echo>| Echo)));
-    assert_eq!(add_udp.unwrap_err().kind(), ErrorKind::InvalidInput);
+    let add_dgram = e.add_listener(datagrams());
+    assert_eq!(add_dgram.unwrap_err().kind(), ErrorKind::InvalidInput);
     let no_serve = e.add_listener(Listener::tcp(localhost()));
     assert_eq!(no_serve.unwrap_err().kind(), ErrorKind::InvalidInput);
     // A bind error comes back from the call.
     let taken = std::net::TcpListener::bind(localhost()).unwrap();
     let busy = e.add_listener(echo_listener(taken.local_addr().unwrap(), 1));
     assert!(busy.is_err());
-    assert_eq!(e.listeners().len(), 1);
+    assert_eq!(e.listeners().len(), 2);
     stop(&e);
     // A filter on a UDP listener is refused by the builder.
     let built = Engine::builder()
