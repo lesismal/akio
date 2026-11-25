@@ -398,7 +398,7 @@ impl Group for RoundsGroup {
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
         match akio_sys::connect_nonblocking(addr) {
-            Ok(s) => poller::post_dial(self.next_poller(), s, acceptor, on_error),
+            Ok(s) => poller::post_dial(self.next_poller(), s, acceptor, on_error, false),
             Err(e) => on_error(e),
         }
     }
@@ -410,7 +410,16 @@ impl Group for RoundsGroup {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        poller::post_dial(self.next_poller(), stream, acceptor, on_error);
+        poller::post_dial(self.next_poller(), stream, acceptor, on_error, false);
+    }
+
+    fn dial_unix(
+        &self,
+        stream: std::net::TcpStream,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        poller::post_dial(self.next_poller(), stream, acceptor, on_error, true);
     }
 
     fn adopt(
@@ -422,6 +431,6 @@ impl Group for RoundsGroup {
         if let Err(e) = stream.set_nonblocking(true) {
             return on_error(e);
         }
-        poller::post_dial(self.next_poller(), stream, acceptor, on_error);
+        poller::post_dial(self.next_poller(), stream, acceptor, on_error, false);
     }
 }

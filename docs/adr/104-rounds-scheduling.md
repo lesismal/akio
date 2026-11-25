@@ -316,3 +316,18 @@ workers and 1 driver, loops 8 threads; `skew-bench`, two alternating rounds of e
 | loops, 256 conns, depth 1, no work | 888k-964k req/s | 919k-967k req/s |
 
 Within noise: no regression in either mode.
+
+### Unix-domain dials (2026-11-25)
+
+`Engine::dial_unix` (ADR-120) goes to the group that serves `dial`, which under
+`AKIO_DEFAULT_SCHEDULING=rounds` (or a builder listener with `Scheduling::Rounds`) is a rounds
+group. That group did not implement `Group::dial_unix`, so the default answered `Unsupported`
+and every Unix dial failed in rounds mode. A rounds group now dials a Unix-domain socket as the
+loops do, rather than falling back to loops: the connection is an ordinary stream socket, the
+driver already owns the connect phase of every dial, and once connected the connection's rounds
+are no different from a TCP one's. `RCmd::Dial` (and the driver's connecting entry) carries a
+`unix` flag; once the connect completes the driver takes `UNIX_ADDR` as both addresses instead of
+asking the socket (which has no `SocketAddr`), and `open` skips `TCP_NODELAY` and
+`local_addr()` for it, exactly as the epoll loop's `open` does. Bytes, connection reuse, a cut
+reported as an error, the connect timeout and shutdown behave as for a dialed TCP connection. The
+round loop is unchanged; accepted connections pass `None` for the new `open` argument.

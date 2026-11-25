@@ -94,8 +94,9 @@ ADR-104, third revision; no API change:
 ADR-120, requested by akit (A135):
 
 - `Engine::dial_unix(path, acceptor, on_error)`: a Unix-domain stream connection served like a
-  dialed TCP one, on epoll and io_uring; its `peer_addr` and `local_addr` are the new
-  `UNIX_ADDR` (`0.0.0.0:0`). `Group::dial_unix` (unsupported by default).
+  dialed TCP one, on epoll and io_uring, in loops and in rounds scheduling (ADR-104); its
+  `peer_addr` and `local_addr` are the new `UNIX_ADDR` (`0.0.0.0:0`). `Group::dial_unix`
+  (unsupported by default).
 - `Client::with_unix_socket(Option<PathBuf>)`: every request of the client goes to that socket,
   the URL's host still its `Host` and the key of its idle connections.
 - `akio_sys::connect_unix_nonblocking`, `ffi::AF_UNIX` and `ffi::sockaddr_un`.

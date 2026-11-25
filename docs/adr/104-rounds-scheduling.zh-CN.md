@@ -268,3 +268,15 @@ worker 和 1 个 driver，loops 8 个线程；`skew-bench`，两个构建交替�
 | loops，256 个连接，深度 1，无计算 | 888k~964k req/s | 919k~967k req/s |
 
 均在噪声范围内：两种模式都没有退化。
+
+### Unix 域拨号（2026-11-25）
+
+`Engine::dial_unix`（ADR-120）交给服务 `dial` 的 group；在 `AKIO_DEFAULT_SCHEDULING=rounds`
+下（或构建器 listener 设了 `Scheduling::Rounds` 时）它是一个 rounds group。该 group 没有实现
+`Group::dial_unix`，于是默认实现返回 `Unsupported`，rounds 模式下所有 Unix 拨号都失败。现在
+rounds group 像 loops 一样拨号 Unix 域套接字，而不是回退到 loops：这种连接只是普通的流套接字，
+driver 本来就负责每次拨号的连接阶段，连接建立后它的轮次与 TCP 连接没有区别。`RCmd::Dial`（以及
+driver 的连接中条目）带一个 `unix` 标志；连接完成后 driver 把 `UNIX_ADDR` 作为两端地址，而不向
+套接字询问（它没有 `SocketAddr`），`open` 对它跳过 `TCP_NODELAY` 和 `local_addr()`，与 epoll
+loop 的 `open` 完全一致。字节、连接复用、断开报告为错误、连接超时和关闭都与拨出的 TCP 连接相同。
+轮次循环没有改动；accept 的连接给 `open` 的新参数传 `None`。

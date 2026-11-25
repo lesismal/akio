@@ -61,6 +61,8 @@ pub(crate) enum RCmd {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        /// A Unix-domain socket (ADR-120): its addresses are `UNIX_ADDR`.
+        unix: bool,
     },
 }
 
@@ -232,14 +234,22 @@ impl PollerShared {
         peer: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         dialed: bool,
+        // The local address of a Unix-domain socket, which has none of its own (ADR-120).
+        unix_local: Option<SocketAddr>,
         workers: &Arc<Workers>,
     ) {
         if stream.set_nonblocking(true).is_err() {
             return;
         }
-        let _ = stream.set_nodelay(true);
-        let Ok(local) = stream.local_addr() else {
-            return;
+        let local = match unix_local {
+            Some(l) => l,
+            None => {
+                let _ = stream.set_nodelay(true);
+                let Ok(l) = stream.local_addr() else {
+                    return;
+                };
+                l
+            }
         };
         let tel = &self.cfg.telemetry;
         if !tel.conn_opened(!dialed) {
@@ -582,6 +592,7 @@ impl ListenJob {
                                 peer,
                                 self.acceptor.clone(),
                                 false,
+                                None,
                                 &ctx.workers,
                             );
                         }
@@ -641,6 +652,7 @@ struct Connecting {
     stream: TcpStream,
     acceptor: Arc<dyn DynAcceptor>,
     on_error: Option<Box<dyn FnOnce(io::Error) + Send>>,
+    unix: bool,
 }
 
 pub(crate) struct RLoop {
@@ -922,6 +934,7 @@ impl RLoop {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        unix: bool,
     ) {
         if self.draining.is_some() {
             return on_error(io::Error::new(
@@ -939,6 +952,7 @@ impl RLoop {
                 stream,
                 acceptor,
                 on_error: Some(on_error),
+                unix,
             },
         );
         if let Some(ct) = self.cfg().connect_timeout {
@@ -955,19 +969,27 @@ impl RLoop {
             stream,
             acceptor,
             on_error,
+            unix,
         }) = self.connecting.remove(&id)
         else {
             return;
         };
         self.poller.delete(stream.as_raw_fd());
         let result = match stream.take_error() {
+            // A Unix-domain socket has no `SocketAddr`; both its addresses are `UNIX_ADDR`.
+            Ok(None) if unix => Ok(akio_core::UNIX_ADDR),
             Ok(None) => stream.peer_addr(),
             Ok(Some(e)) | Err(e) => Err(e),
         };
         match result {
-            Ok(peer) => self
-                .shared
-                .open(stream, peer, acceptor, true, &self.workers),
+            Ok(peer) => self.shared.open(
+                stream,
+                peer,
+                acceptor,
+                true,
+                unix.then_some(akio_core::UNIX_ADDR),
+                &self.workers,
+            ),
             Err(e) => {
                 if let Some(f) = on_error {
                     f(e);
@@ -1019,7 +1041,8 @@ impl RLoop {
                 stream,
                 acceptor,
                 on_error,
-            } => self.begin_dial(stream, acceptor, on_error),
+                unix,
+            } => self.begin_dial(stream, acceptor, on_error, unix),
         }
     }
 
@@ -1127,17 +1150,19 @@ impl RLoop {
     }
 }
 
-/// Posts a dial to `sh`'s poller.
+/// Posts a dial to `sh`'s poller; `unix` for a Unix-domain socket (ADR-120).
 pub(crate) fn post_dial(
     sh: &PollerShared,
     stream: TcpStream,
     acceptor: Arc<dyn DynAcceptor>,
     on_error: Box<dyn FnOnce(io::Error) + Send>,
+    unix: bool,
 ) {
     sh.post(RCmd::Dial {
         stream,
         acceptor,
         on_error,
+        unix,
     });
 }
 

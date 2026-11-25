@@ -82,7 +82,7 @@ ADR-104 第三次修订，API 不变：
 ADR-120，由 akit 提出（A135）：
 
 - `Engine::dial_unix(path, acceptor, on_error)`：像拨出的 TCP 连接一样服务的 Unix 域流连接，
-  支持 epoll 和 io_uring；它的 `peer_addr` 和 `local_addr` 是新常量 `UNIX_ADDR`（`0.0.0.0:0`）。
+  支持 epoll 和 io_uring，loops 和 rounds 调度（ADR-104）都支持；它的 `peer_addr` 和 `local_addr` 是新常量 `UNIX_ADDR`（`0.0.0.0:0`）。
   `Group::dial_unix`（默认不支持）。
 - `Client::with_unix_socket(Option<PathBuf>)`：该客户端的每个请求都发往这个套接字，URL 的主机
   仍是 `Host` 字段，也仍是空闲连接的键。
