@@ -10,6 +10,14 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a TLS server takes a ClientHello whose server name is an IP address (akio-tls)
+
+akit's A172, found by akit's I25 benchmarks, where wrk's HTTPS requests to `https://127.0.0.1/`
+all failed: wrk (OpenSSL) sends the URL's host as the SNI even when it is an IP address, which
+RFC 6066 does not allow, and akio-tls's server answered `decode_error`. Such a name is now taken
+as no name, as Go's, OpenSSL's and nginx's servers take it, and a trailing dot is dropped from a
+host name rather than failing the handshake. An empty or non-ASCII name still fails it.
+
 ### Fixed: HTTP/3 QPACK encoding and WebSocket sends from an application thread no longer deadlock (akio-h3, akio-quic)
 
 The same kind of deadlock as the client's request lock: a call on a QUIC connection from outside

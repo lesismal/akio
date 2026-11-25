@@ -10,6 +10,10 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：TLS 服务端接受 server name 为 IP 地址的 ClientHello（akio-tls）
+
+akit 的 A172，由 akit I25 的基准测试发现：wrk 对 `https://127.0.0.1/` 的 HTTPS 请求全部失败。wrk（OpenSSL）即使在主机是 IP 地址时也把 URL 的主机作为 SNI 发送（RFC 6066 不允许），akio-tls 的服务端随即以 `decode_error` 应答。现在这样的名字被视为没有名字，与 Go、OpenSSL 和 nginx 的服务端一致；主机名末尾的点被去掉，而不再使握手失败。空名字或非 ASCII 名字仍会使握手失败。
+
 ### 修复：在应用线程上进行 HTTP/3 QPACK 编码和 WebSocket 发送不再死锁（akio-h3、akio-quic）
 
 与客户端请求锁同类的死锁：在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，
