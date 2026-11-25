@@ -431,3 +431,44 @@ fn rounds_filters_and_run_time_listeners_are_per_listener() {
     assert_eq!(tag_of(&mut connect(ab)), b'b');
     stop(&e);
 }
+
+#[test]
+fn a_unix_listener_shares_rounds_workers_with_tcp_ones() {
+    use std::os::unix::net::UnixStream;
+    if skip_rounds() {
+        return;
+    }
+    let path = std::env::temp_dir().join(format!("akio-shared-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let closed = Arc::new(AtomicUsize::new(0));
+    let unix = {
+        let closed = closed.clone();
+        Listener::unix(&path)
+            .scheduling(rounds(2))
+            .serve(fn_acceptor(move |_c: &Conn<Tagged>| Tagged {
+                tag: b'u',
+                closed: closed.clone(),
+            }))
+    };
+    let e = Engine::builder()
+        .config(quick())
+        .listen(tagged_on_default(b't', &closed).scheduling(rounds(2)))
+        .listen(unix)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    // One pool of 2 workers and a poller for both.
+    assert_eq!(all_threads(&e), 3);
+    assert_eq!(e.local_addrs()[1], akio::UNIX_ADDR);
+    for _ in 0..4 {
+        let mut s = UnixStream::connect(&path).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.write_all(b"x").unwrap();
+        let mut b = [0u8; 2];
+        s.read_exact(&mut b).unwrap();
+        assert_eq!(&b, b"ux");
+        assert_eq!(tag_of(&mut connect(e.local_addrs()[0])), b't');
+    }
+    stop(&e);
+    let _ = std::fs::remove_file(&path);
+}

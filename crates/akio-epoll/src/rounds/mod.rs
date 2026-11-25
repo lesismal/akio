@@ -144,7 +144,7 @@ fn bind_socks(
     pollers: usize,
     workers: usize,
     backlog: i32,
-) -> io::Result<(SocketAddr, Vec<TcpListener>)> {
+) -> io::Result<Bound> {
     let clones = |first: TcpListener| -> io::Result<Vec<TcpListener>> {
         let mut v = Vec::with_capacity(pollers);
         for _ in 1..pollers {
@@ -157,25 +157,56 @@ fn bind_socks(
         ListenSocket::Bind(a) if cfg!(target_os = "linux") => {
             let first = akio_sys::listen(a, true, backlog)?;
             let addr = first.local_addr()?;
-            let mut v = vec![first];
+            let mut socks = vec![first];
             for _ in 1..workers.max(pollers) {
-                v.push(akio_sys::listen(addr, true, backlog)?);
+                socks.push(akio_sys::listen(addr, true, backlog)?);
             }
-            Ok((addr, v))
+            Ok(Bound {
+                addr,
+                unix: false,
+                reuseport: true,
+                socks,
+            })
         }
         ListenSocket::Bind(a) => {
             let first = akio_sys::listen(a, false, backlog)?;
-            Ok((first.local_addr()?, clones(first)?))
+            Ok(Bound {
+                addr: first.local_addr()?,
+                unix: false,
+                reuseport: false,
+                socks: clones(first)?,
+            })
         }
         ListenSocket::Inherited(l) => {
             l.set_nonblocking(true)?;
-            Ok((l.local_addr()?, clones(l)?))
+            Ok(Bound {
+                addr: l.local_addr()?,
+                unix: false,
+                reuseport: false,
+                socks: clones(l)?,
+            })
         }
-        ListenSocket::Unix(_) => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "a Unix-domain listener with rounds scheduling",
-        )),
+        // ADR-121: accepted without an address; every poller polls a clone.
+        ListenSocket::Unix(l) => {
+            l.set_nonblocking(true)?;
+            Ok(Bound {
+                addr: akio_core::UNIX_ADDR,
+                unix: true,
+                reuseport: false,
+                socks: clones(l)?,
+            })
+        }
     }
+}
+
+/// A listener's sockets before it joins a group ([`bind_socks`]).
+struct Bound {
+    addr: SocketAddr,
+    unix: bool,
+    /// One `SO_REUSEPORT` socket per worker (Linux), whose fds steering could use.
+    reuseport: bool,
+    /// Socket `i` goes to poller `i % pollers`.
+    socks: Vec<TcpListener>,
 }
 
 impl RoundsGroup {
@@ -207,6 +238,20 @@ impl RoundsGroup {
         Self::one(ListenSocket::Inherited(listener), acceptor, rc, cfg, pool)
     }
 
+    /// Serves a listening Unix-domain stream socket (ADR-121, `akio_sys::listen_unix`) as
+    /// [`bind_listener`](Self::bind_listener) serves an inherited one: every poller polls a
+    /// clone. Its connections are accepted without reading an address; their `peer_addr` and
+    /// `local_addr`, and the group's, are [`akio_core::UNIX_ADDR`].
+    pub fn bind_unix_listener(
+        listener: TcpListener,
+        acceptor: Arc<dyn DynAcceptor>,
+        rc: RoundsConfig,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<RoundsGroup> {
+        Self::one(ListenSocket::Unix(listener), acceptor, rc, cfg, pool)
+    }
+
     /// A shared group with `rc`'s pollers and workers (ADR-130): it starts with no listener;
     /// listeners join with [`Group::add_listener`] and leave with [`Group::remove_listener`],
     /// and the workers serve them all until shutdown. Its `local_addr` is the unspecified
@@ -224,17 +269,16 @@ impl RoundsGroup {
         pool: Arc<Pool>,
     ) -> io::Result<RoundsGroup> {
         let (pollers, workers) = rc.resolved();
-        let inherited = matches!(socket, ListenSocket::Inherited(_));
-        let (addr, socks) = bind_socks(socket, pollers, workers, cfg.backlog)?;
-        let fds = if cfg!(target_os = "linux") && !inherited {
-            socks.iter().map(|l| l.as_raw_fd()).collect()
+        let b = bind_socks(socket, pollers, workers, cfg.backlog)?;
+        let fds = if b.reuseport {
+            b.socks.iter().map(|l| l.as_raw_fd()).collect()
         } else {
             Vec::new()
         };
-        let mut g = Self::assemble(rc, Some(addr), true, false, cfg, pool)?;
-        g.addr = addr;
+        let mut g = Self::assemble(rc, Some(b.addr), true, false, cfg, pool)?;
+        g.addr = b.addr;
         g.fds = fds;
-        g.install(addr, socks, acceptor)?;
+        g.install(b, acceptor)?;
         Ok(g)
     }
 
@@ -301,12 +345,10 @@ impl RoundsGroup {
 
     /// Makes `socks` a listener of the group: socket `i` becomes an accept job of poller
     /// `i % pollers`, which registers it when it gets it. Its key.
-    fn install(
-        &self,
-        addr: SocketAddr,
-        socks: Vec<TcpListener>,
-        acceptor: Arc<dyn DynAcceptor>,
-    ) -> io::Result<usize> {
+    fn install(&self, b: Bound, acceptor: Arc<dyn DynAcceptor>) -> io::Result<usize> {
+        let Bound {
+            addr, unix, socks, ..
+        } = b;
         let mut ls = lock(&self.listeners);
         let lid = ls.len();
         let filter = Arc::new(FilterCell::default());
@@ -314,7 +356,16 @@ impl RoundsGroup {
         for (i, l) in socks.into_iter().enumerate() {
             let home = &self.shareds[i % self.shareds.len()];
             let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-            let j = ListenJob::new(l, lid, addr, token, acceptor.clone(), &filter, home.clone())?;
+            let j = ListenJob::new(
+                l,
+                lid,
+                addr,
+                unix,
+                token,
+                acceptor.clone(),
+                &filter,
+                home.clone(),
+            )?;
             home.post(RCmd::AddJob(j.clone()));
             jobs.push(j);
         }
@@ -441,8 +492,9 @@ impl Group for RoundsGroup {
             ));
         }
         let backlog = self.cfg.telemetry.live().backlog();
-        let (addr, socks) = bind_socks(socket, self.shareds.len(), self.workers.len(), backlog)?;
-        Ok((self.install(addr, socks, acceptor)?, addr))
+        let b = bind_socks(socket, self.shareds.len(), self.workers.len(), backlog)?;
+        let addr = b.addr;
+        Ok((self.install(b, acceptor)?, addr))
     }
 
     fn remove_listener(&self, key: usize, drain: Option<Duration>) -> io::Result<()> {

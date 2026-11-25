@@ -26,7 +26,7 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
    `Listener::dedicated()`（每核一个）让该 listener 保持 ADR-004 的方式：为管理端口或对延迟敏感的
    协议提供隔离，或单独确定线程数。需要按 listener 分配线程的总是独占一组：BPF 引流
    （`Accel::Ebpf`，其程序引流到该 listener 自己的 socket）、UDP 和数据报 listener 以及 DPDK
-   （事件循环类型不同），以及使用轮次调度的 Unix 域 listener。
+   （事件循环类型不同）。
 3. **一个事件循环，多个 listener。** epoll/kqueue 事件循环为所在组的每个 listener 保存 acceptor、
    accept 过滤器、是否为 Unix 域以及是否已被移除，并以同时标明 listener 和 socket 的令牌监听该
    listener 的 socket。accept 时运行对应的过滤器和 acceptor；每个连接记住自己的 listener。在 Linux
@@ -61,7 +61,8 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
 （每个 listener 的 accept 任务和 accept 过滤器）；之后加入的 listener 的 accept 任务投递给 poller
 （`RCmd::AddJob`），由 poller 注册；每个连接记住自己的 listener，所以移除一个 listener 只关闭它的
 accept 任务、只排空它的连接（`RCmd::StopListening` 标明它），连接表也标明每个连接的 listener。
-使用轮次调度的 Unix 域 listener 仍独占线程组（轮次调度只 accept TCP socket）。
+Unix 域 listener 也一样加入：它们的 accept 任务 accept 时不读取地址（2026-11-26；此前使用轮次调度的
+Unix 域 listener 被当作 TCP listener 绑定在未指定地址上）。
 
 ## 第三阶段：io_uring（2026-11-26 实现）
 

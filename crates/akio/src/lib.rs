@@ -400,10 +400,9 @@ impl Listener {
     /// ([`EngineBuilder::io_threads`], one per core by default), as one on io_uring does with
     /// the io_uring listeners of the same [`UringConfig`] ring options, and one with
     /// [`Scheduling::Rounds`] shares the workers of the other rounds listeners with the same
-    /// [`RoundsConfig`]; UDP, datagram, DPDK and BPF-steered listeners (and Unix-domain ones
-    /// with rounds) always have their own (one per core by default). With
-    /// rounds the count itself is ignored, [`RoundsConfig`] sizes the threads: it only keeps the
-    /// listener's workers to itself.
+    /// [`RoundsConfig`]; UDP, datagram, DPDK and BPF-steered listeners always have their own
+    /// (one per core by default). With rounds the count itself is ignored, [`RoundsConfig`]
+    /// sizes the threads: it only keeps the listener's workers to itself.
     #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = Some(n.max(1));
@@ -606,7 +605,7 @@ fn bind_one(
     }
     // ADR-130: a TCP listener on epoll/kqueue loops that did not ask for threads of its own
     // joins the shared group of its kind.
-    // Rounds listeners (not Unix-domain ones) share a group per `RoundsConfig`.
+    // Rounds listeners share a group per `RoundsConfig`.
     let rounds = match &scheduling {
         Scheduling::Rounds(rc) => Some(*rc),
         Scheduling::Loops => None,
@@ -623,7 +622,6 @@ fn bind_one(
         && l.datagrams.is_none()
         && backend_shares
         && matches!(l.accel, Accel::None)
-        && (rounds.is_none() || l.unix.is_none())
         && cfg!(any(target_os = "linux", target_os = "macos"));
     if shares {
         let g = bind_shared(l, balance, rounds, cfg, pool, sharing)?;
@@ -793,26 +791,31 @@ fn bind_rounds(
             "rounds scheduling runs on epoll/kqueue, not DPDK",
         ));
     }
+    if l.unix_mode.is_some() && !matches!(l.unix, Some(UnixSpec::Path(_))) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unix_mode applies to a Unix-domain listener akio binds (Listener::unix)",
+        ));
+    }
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let rc = rc.epoll();
-        Ok(Box::new(match l.inherited {
-            Some(listener) => akio_epoll::RoundsGroup::bind_listener(
-                listener,
-                acceptor,
-                rc,
-                cfg.clone(),
-                pool.clone(),
-            )?,
-            None => akio_epoll::RoundsGroup::bind(
-                Some((l.addr, acceptor)),
-                rc,
-                cfg.clone(),
-                pool.clone(),
-            )?,
+        let (cfg, pool) = (cfg.clone(), pool.clone());
+        Ok(Box::new(match (l.unix, l.inherited) {
+            (Some(spec), _) => {
+                let listener = match spec {
+                    UnixSpec::Path(path) => listen_unix(&path, cfg.backlog, l.unix_mode)?,
+                    UnixSpec::Std(u) => std::net::TcpListener::from(std::os::fd::OwnedFd::from(u)),
+                };
+                akio_epoll::RoundsGroup::bind_unix_listener(listener, acceptor, rc, cfg, pool)?
+            }
+            (None, Some(listener)) => {
+                akio_epoll::RoundsGroup::bind_listener(listener, acceptor, rc, cfg, pool)?
+            }
+            (None, None) => akio_epoll::RoundsGroup::bind(Some((l.addr, acceptor)), rc, cfg, pool)?,
         }))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

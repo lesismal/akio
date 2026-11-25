@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
+
+A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain
+listener under `AKIO_DEFAULT_SCHEDULING=rounds`, was bound as a TCP listener at its unspecified
+address: the socket file never appeared and connections to it failed, and `unix_mode` on a TCP
+listener was not refused. Rounds groups now serve Unix-domain sockets
+(`RoundsGroup::bind_unix_listener`; accept jobs accept without reading an address, and the
+connections' addresses are `UNIX_ADDR`), and `unix_mode` is checked as with loops. The
+`unix_listener` tests of akio-http pass under rounds scheduling.
+
 ### Changed: TCP listeners share one group of I/O threads by default (akio, akio-epoll, akio-uring, akio-core)
 
 ADR-130, phases 1 to 3. TCP listeners on epoll/kqueue with per-thread loops (bound, inherited or
@@ -30,8 +40,8 @@ accepted them.
 - Rounds scheduling (ADR-104): listeners with the same `RoundsConfig` (resolved pollers and
   workers) share its workers and pollers instead of one pool each; each listener keeps its own
   accept jobs and filter, a listener added later gets its accept jobs posted to the pollers,
-  and removing one closes its jobs and drains its connections only. Unix-domain listeners with
-  rounds keep a group of their own.
+  and removing one closes its jobs and drains its connections only. Unix-domain listeners
+  share too.
 - The per-listener API keeps one entry per listener: `local_addrs`, `listeners`, `threads` and
   the `ListenerId`s. `threads()` reports the shared group's size for each of its listeners (0 once
   removed), and `set_threads` / `set_listener_threads` on a shared listener resize the shared

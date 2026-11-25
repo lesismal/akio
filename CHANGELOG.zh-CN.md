@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
+
+使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在
+`AKIO_DEFAULT_SCHEDULING=rounds` 下的任何 Unix 域 listener，过去被当作 TCP listener 绑定在其未指定
+地址上：socket 文件从未出现，连接它会失败，TCP listener 上的 `unix_mode` 也没有被拒绝。轮次调度组
+现在服务 Unix 域 socket（`RoundsGroup::bind_unix_listener`；accept 任务 accept 时不读取地址，连接的
+地址为 `UNIX_ADDR`），`unix_mode` 也像每线程事件循环一样被校验。akio-http 的 `unix_listener` 测试在
+轮次调度下通过。
+
 ### 变更：TCP listener 默认共享一组 I/O 线程（akio、akio-epoll、akio-uring、akio-core）
 
 ADR-130 第一至三阶段。epoll/kqueue 每线程事件循环上的 TCP listener（绑定的、继承的或 Unix 域的）
@@ -27,8 +36,8 @@ ADR-130 第一至三阶段。epoll/kqueue 每线程事件循环上的 TCP listen
   的共享组（或在 `strict` 时报错）。
 - 轮次调度（ADR-104）：`RoundsConfig`（解析后的 poller 数和 worker 数）相同的 listener 共享其
   worker 和 poller，而不是各自一个池；每个 listener 保留自己的 accept 任务和过滤器，之后加入的
-  listener 的 accept 任务投递给 poller，移除一个 listener 只关闭它的任务、只排空它的连接。使用
-  轮次调度的 Unix 域 listener 仍独占线程组。
+  listener 的 accept 任务投递给 poller，移除一个 listener 只关闭它的任务、只排空它的连接。Unix
+  域 listener 也一样共享。
 - 按 listener 的 API 仍然每个 listener 一项：`local_addrs`、`listeners`、`threads` 以及各个
   `ListenerId`。`threads()` 为共享组的每个 listener 报告该组的大小（移除后为 0）；对共享 listener
   调用 `set_threads` / `set_listener_threads` 会调整共享组的大小，影响组内所有 listener。

@@ -38,6 +38,7 @@ pub struct akio_epoll::RoundsGroup
 impl akio_epoll::RoundsGroup
 pub fn akio_epoll::RoundsGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>)>, akio_epoll::RoundsConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::RoundsGroup>
 pub fn akio_epoll::RoundsGroup::bind_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>, akio_epoll::RoundsConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::RoundsGroup>
+pub fn akio_epoll::RoundsGroup::bind_unix_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>, akio_epoll::RoundsConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::RoundsGroup>
 pub fn akio_epoll::RoundsGroup::shared(akio_epoll::RoundsConfig, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>) -> core::io::error::Result<akio_epoll::RoundsGroup>
 impl core::fmt::Debug for akio_epoll::RoundsGroup
 pub fn akio_epoll::RoundsGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

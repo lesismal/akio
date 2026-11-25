@@ -30,7 +30,7 @@ on one loop.
    listener: isolation for an admin port or a latency-critical protocol, or a size of its own.
    Listeners that need per-listener threads always get their own group: BPF steering
    (`Accel::Ebpf`, whose program steers to the listener's own sockets), UDP and datagram
-   listeners and DPDK (other loop types), and Unix-domain listeners with rounds scheduling.
+   listeners and DPDK (other loop types).
 3. **One loop, several listeners.** An epoll/kqueue loop keeps, per listener of its group, the
    acceptor, the accept filter, whether it is Unix-domain and whether it was removed, and polls
    the listener's sockets under a token that names the listener and the socket. Accepting runs
@@ -70,8 +70,9 @@ acceptor. A shared rounds group keeps a listener table (each listener's accept j
 filter); a listener added later gets accept jobs posted to the pollers (`RCmd::AddJob`), which
 register them; each connection remembers its listener, so removing one listener closes its
 accept jobs and drains its connections only (`RCmd::StopListening` names it), and the
-connection table names each connection's listener. Unix-domain listeners with rounds keep a
-group of their own (rounds accepts TCP sockets only).
+connection table names each connection's listener. Unix-domain listeners join too: their
+accept jobs accept without reading an address (2026-11-26; until then a Unix-domain listener
+with rounds scheduling was bound as a TCP one, at its unspecified address).
 
 ## Phase 3: io_uring (built 2026-11-26)
 

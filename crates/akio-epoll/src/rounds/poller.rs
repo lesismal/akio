@@ -553,6 +553,9 @@ pub(crate) struct ListenJob {
     /// table's `owner.listener`).
     lid: usize,
     addr: SocketAddr,
+    /// A Unix-domain listener (ADR-121): connections are accepted without an address and get
+    /// `UNIX_ADDR` for both.
+    unix: bool,
     listener: Mutex<Accepting>,
     /// The listener's accept filter (ADR-099). Outside `listener`: the filter is user code, and
     /// one that removes its own listener closes this job, which locks `listener`. Only the
@@ -579,10 +582,12 @@ pub(crate) const NO_LISTENER: usize = usize::MAX;
 
 impl ListenJob {
     /// The accept job of socket `l` of listener `lid`, polled by `home` under `token`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         l: TcpListener,
         lid: usize,
         addr: SocketAddr,
+        unix: bool,
         token: u64,
         acceptor: Arc<dyn DynAcceptor>,
         filter: &Arc<FilterCell>,
@@ -592,6 +597,7 @@ impl ListenJob {
         Ok(Arc::new(ListenJob {
             lid,
             addr,
+            unix,
             filter: Mutex::new(FilterView::new(filter.clone())),
             fd: l.as_raw_fd(),
             listener: Mutex::new(Accepting { listener: Some(l) }),
@@ -625,7 +631,12 @@ impl ListenJob {
                     again = false; // closed while the filter ran
                     break;
                 };
-                match l.accept() {
+                let accepted = if self.unix {
+                    akio_sys::accept_stream(l).map(|s| (s, akio_core::UNIX_ADDR))
+                } else {
+                    l.accept()
+                };
+                match accepted {
                     Ok((stream, peer)) => {
                         // The filter runs without the socket's lock: it is user code, and may
                         // remove this very listener (`close` takes the lock).
@@ -648,7 +659,7 @@ impl ListenJob {
                             peer,
                             self.acceptor.clone(),
                             false,
-                            None,
+                            self.unix.then_some(akio_core::UNIX_ADDR),
                             &ctx.workers,
                             self.lid,
                         );
