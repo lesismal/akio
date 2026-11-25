@@ -132,5 +132,6 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-130: Listeners of one backend share an I/O thread group](130-shared-io-groups.md) (accepted 2026-11-25; phases 1 to 3: epoll/kqueue loops, rounds, io_uring)
 - [ADR-154: A connect timeout per dial, and timers off the I/O threads](154-dial-options-and-send-timers.md) (accepted 2026-11-26; akit A12, A79, A45)
 - [ADR-155: An idle timeout per connection, and UDP listeners removed and drained](155-per-connection-idle-and-udp-listener-removal.md) (accepted 2026-11-26; akit A78, A22)
+- [ADR-156: Spliced tunnels and a connection's TCP counters](156-spliced-tunnels-and-tcp-counters.md) (accepted 2026-11-26; akit A170)
 - [ADR-158: A listener's response observer, without an allocation per request](158-response-observer.md) (accepted 2026-11-26; akit A29)
 - [ADR-159: A request whose body streams, suspended with its reads held](159-suspended-streamed-bodies.md) (accepted 2026-11-26; akit A75)

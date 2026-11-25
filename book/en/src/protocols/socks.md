@@ -214,6 +214,9 @@ Spliced bytes bypass the engine's write watermarks. Timeouts and closing still w
 - When one side closes, the other is closed only after everything relayed has reached its send
   queue, since closing a socket drops the kernel's relay backlog.
 
+Both are `akio::ebpf::Tunnel`'s, which any proxy can use to run two spliced `akio` connections
+(`Relay::tunnel(&a, &b, first)`, with `first` written to `b` ahead of the relayed bytes).
+
 With io_uring, if a read that completed before the splice delivers payload while both ends are
 open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh).
 

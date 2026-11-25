@@ -490,3 +490,42 @@ fn dial_side_writes_the_header() {
     e.shutdown();
     e.wait();
 }
+
+/// The header attached to a connection says how many bytes it took on the wire: v1, v2 with
+/// TLVs, and LOCAL (whose address block is discarded), each followed by data in one write.
+#[test]
+fn attached_header_has_its_wire_length() {
+    struct Len;
+    impl Handler for Len {
+        fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+            let n = proxy::header(c).and_then(ProxyHeader::wire_len);
+            let mut out = format!("{n:?}|").into_bytes();
+            out.extend_from_slice(data);
+            let _ = c.send(&out);
+        }
+    }
+    let e = engine(ProxyProtocol::new(fn_acceptor(|_c: &Conn<Len>| Len)));
+    let addr = e.local_addrs()[0];
+    let h = ProxyHeader::proxy(
+        "203.0.113.7:40000".parse().unwrap(),
+        "192.0.2.1:443".parse().unwrap(),
+    );
+    let v2 = h.clone().with_tlv(proxy::tlv::AUTHORITY, "a.test");
+    let mut local = ProxyHeader::local().encode_v2().unwrap();
+    local[13] = 0x11;
+    local[15] = 12;
+    local.extend_from_slice(&[0; 12]);
+    for (wire, n) in [
+        (h.encode_v1().unwrap(), 44),
+        (v2.encode_v2().unwrap(), 16 + 12 + 3 + 6),
+        (local, 28),
+    ] {
+        assert_eq!(wire.len(), n);
+        let mut s = connect(addr);
+        s.write_all(&[&wire[..], b"data"].concat()).unwrap();
+        let want = format!("Some({n})|data");
+        assert_eq!(read_n(&mut s, want.len()), want.as_bytes());
+    }
+    e.shutdown();
+    e.wait();
+}

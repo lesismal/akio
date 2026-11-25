@@ -188,6 +188,9 @@ let socks = Socks::new(engine_ref.clone()).sockmap(akio::ebpf::Relay::new(0)?);
 - 一端关闭时，要等所有已转发的数据都进入另一端的发送队列后才关闭另一端，因为关闭 socket 会
   丢掉内核中的转发积压。
 
+两者都来自 `akio::ebpf::Tunnel`，任何代理都可以用它运行两个拼接的 `akio` 连接
+（`Relay::tunnel(&a, &b, first)`，`first` 先于被中继的字节写给 `b`）。
+
 使用 io_uring 时，若两端都开着而一个在拼接前已完成的读交来了负载，隧道会被关闭，避免乱序。
 吞吐量见[基准测试](https://github.com/lesismal/akio/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)。
 

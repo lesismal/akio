@@ -13,7 +13,8 @@
 //!   closing listener's queued connections migrate (`BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`).
 //! * **sockmap relay** ([`Relay`]): splices two TCP sockets in the kernel (`SOCKHASH` +
 //!   `sk_skb` stream verdict) for proxies; privileged, and Linux 6.15+ by default (older
-//!   kernels can lose relayed data, see [`relay::MIN_KERNEL`]).
+//!   kernels can lose relayed data, see [`relay::MIN_KERNEL`]). [`Tunnel`] runs a spliced pair
+//!   of connections by their TCP counters ([`conn_byte_counts`]): idle probe, drain on close.
 //!
 //! * **AF_XDP** (`xsk`, `#[doc(hidden)]`): the sockets and redirect program behind akio-dpdk's
 //!   `Device::AfXdp` link.
@@ -42,6 +43,7 @@ mod steer;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod sys;
+mod tunnel;
 #[cfg(any(test, feature = "fuzzing"))]
 mod vm;
 pub mod xdp;
@@ -51,9 +53,12 @@ pub mod xdp;
 #[allow(unsafe_code)]
 pub mod xsk;
 
-pub use relay::{ByteCounts, Relay, Splice, byte_counts};
+pub use relay::{
+    ByteCounts, Relay, Splice, SpliceError, byte_counts, conn_byte_counts, inner_byte_counts,
+};
 pub use shared::{MAX_SHARED_SOCKETS, SharedSteering};
 pub use steer::{AttachOptions, HashKey, SteerInfo, Steering, Tier, attach_reuseport, cpu_pinning};
+pub use tunnel::{Tunnel, TunnelSide};
 pub use xdp::{RateLimiter, XdpLimit};
 // Steering internals the tests check the kernel against; unstable.
 #[doc(hidden)]

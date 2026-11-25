@@ -13,6 +13,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -383,6 +384,321 @@ fn sockmap_relay_splices_proxied_only_connections() {
         assert_eq!(user, 0, "spliced data must not reach userspace");
     } else {
         assert_eq!(user, 2 * total);
+    }
+    stop(&e);
+}
+
+// ---- a connection's counters, and a spliced tunnel with a first write (akit A170) ----------
+
+fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_secs(10);
+    while !f() {
+        assert!(Instant::now() < end, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Counts what it reads.
+struct Counted(Arc<AtomicUsize>);
+impl Handler for Counted {
+    fn on_data(&mut self, _c: &Conn<Self>, data: &[u8]) {
+        self.0.fetch_add(data.len(), Ordering::SeqCst);
+    }
+}
+
+/// `conn_byte_counts` of a live connection: what arrived while its reads are held is unread,
+/// what the handler read is consumed, and what it sent is written. No privileges needed.
+#[test]
+fn conn_byte_counts_follow_a_live_connection() {
+    let got = Arc::new(AtomicUsize::new(0));
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let g = got.clone();
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(common::backend())
+                .serve(akio::fn_acceptor(move |c: &Conn<Counted>| {
+                    c.hold_reads(true);
+                    let _ = tx.lock().unwrap().send(c.clone());
+                    Counted(g.clone())
+                })),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let c = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    s.write_all(&[b'a'; 1000]).unwrap();
+    let mut n = ebpf::ByteCounts::default();
+    wait_until("1000 bytes received", || {
+        n = ebpf::conn_byte_counts(&c).unwrap();
+        n.received == 1000
+    });
+    assert_eq!((n.unread, n.consumed(), n.written), (1000, 0, 0), "{n:?}");
+    assert_eq!(got.load(Ordering::SeqCst), 0);
+
+    c.hold_reads(false);
+    wait_until("the handler read them", || {
+        got.load(Ordering::SeqCst) == 1000
+    });
+    let n = ebpf::conn_byte_counts(&c).unwrap();
+    assert_eq!(
+        (n.received, n.unread, n.consumed()),
+        (1000, 0, 1000),
+        "{n:?}"
+    );
+
+    c.send(&[b'b'; 500]).unwrap();
+    assert_eq!(read_n(&mut s, 500), vec![b'b'; 500]);
+    wait_until("500 bytes written", || {
+        ebpf::conn_byte_counts(&c).unwrap().written == 500
+    });
+    stop(&e);
+}
+
+/// One proxied connection's state, shared by its two handlers.
+struct TunnelState {
+    relay: ebpf::Relay,
+    tunnel: Mutex<Option<Arc<ebpf::Tunnel>>>,
+    client: Mutex<Option<Conn<TunnelClient>>>,
+    up: Mutex<Option<Conn<TunnelUp>>>,
+    /// Payload a handler read while the tunnel was spliced (must stay 0).
+    late: AtomicUsize,
+    report: Mutex<mpsc::Sender<Result<Arc<ebpf::Tunnel>, String>>>,
+}
+
+impl TunnelState {
+    fn tunnel(&self) -> Option<Arc<ebpf::Tunnel>> {
+        self.tunnel.lock().unwrap().clone()
+    }
+}
+
+/// The client's side: reads a greeting line in userspace, then holds its reads, dials the
+/// upstream and splices, the greeting written first behind a marker.
+struct TunnelClient {
+    st: Arc<TunnelState>,
+    engine: EngineRef,
+    upstream: SocketAddr,
+    greeting: Vec<u8>,
+}
+
+impl Handler for TunnelClient {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if let Some(t) = self.st.tunnel() {
+            self.st.late.fetch_add(data.len(), Ordering::SeqCst);
+            return t.late_payload();
+        }
+        if let Some(up) = self.st.up.lock().unwrap().as_ref() {
+            let _ = up.send(data); // the userspace fallback
+            return;
+        }
+        self.greeting.extend_from_slice(data);
+        if !self.greeting.ends_with(b"\n") {
+            return;
+        }
+        c.hold_reads(true);
+        let st = self.st.clone();
+        let first = [&b"FIRST:"[..], &self.greeting].concat();
+        let c2 = c.clone();
+        self.engine.get().unwrap().dial(
+            self.upstream,
+            akio::fn_acceptor(move |u: &Conn<TunnelUp>| {
+                *st.up.lock().unwrap() = Some(u.clone());
+                let client = st.client.lock().unwrap().clone().unwrap();
+                match st.relay.tunnel(&client, u, &first) {
+                    Ok(t) => {
+                        let t = Arc::new(t);
+                        *st.tunnel.lock().unwrap() = Some(t.clone());
+                        let _ = st.report.lock().unwrap().send(Ok(t));
+                    }
+                    Err(e) => {
+                        let _ = u.send(&first[e.written..]);
+                        let _ = st.report.lock().unwrap().send(Err(e.to_string()));
+                    }
+                }
+                client.hold_reads(false);
+                TunnelUp { st: st.clone() }
+            }),
+            move |_| c2.close(),
+        );
+    }
+
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<akio::Error>) {
+        match self.st.tunnel() {
+            Some(t) => t.close_after_forward(ebpf::TunnelSide::A, Duration::from_secs(5)),
+            None => {
+                if let Some(up) = self.st.up.lock().unwrap().as_ref() {
+                    up.close_after_send();
+                }
+            }
+        }
+    }
+}
+
+/// The upstream's side.
+struct TunnelUp {
+    st: Arc<TunnelState>,
+}
+
+impl Handler for TunnelUp {
+    fn on_data(&mut self, _c: &Conn<Self>, data: &[u8]) {
+        if let Some(t) = self.st.tunnel() {
+            self.st.late.fetch_add(data.len(), Ordering::SeqCst);
+            return t.late_payload();
+        }
+        if let Some(c) = self.st.client.lock().unwrap().as_ref() {
+            let _ = c.send(data);
+        }
+    }
+
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<akio::Error>) {
+        match self.st.tunnel() {
+            Some(t) => t.close_after_forward(ebpf::TunnelSide::B, Duration::from_secs(5)),
+            None => {
+                if let Some(c) = self.st.client.lock().unwrap().as_ref() {
+                    c.close_after_send();
+                }
+            }
+        }
+    }
+}
+
+struct TunnelProxy {
+    engine: EngineRef,
+    upstream: SocketAddr,
+    relay: ebpf::Relay,
+    states: Arc<Mutex<Vec<Arc<TunnelState>>>>,
+    report: Mutex<mpsc::Sender<Result<Arc<ebpf::Tunnel>, String>>>,
+}
+
+impl Acceptor for TunnelProxy {
+    type Handler = TunnelClient;
+    fn on_open(&self, c: &Conn<TunnelClient>) -> TunnelClient {
+        let st = Arc::new(TunnelState {
+            relay: self.relay.clone(),
+            tunnel: Mutex::new(None),
+            client: Mutex::new(Some(c.clone())),
+            up: Mutex::new(None),
+            late: AtomicUsize::new(0),
+            report: Mutex::new(self.report.lock().unwrap().clone()),
+        });
+        self.states.lock().unwrap().push(st.clone());
+        TunnelClient {
+            st,
+            engine: self.engine.clone(),
+            upstream: self.upstream,
+            greeting: Vec::new(),
+        }
+    }
+}
+
+/// A tunnel spliced with a first write: the upstream gets `first` (built from the greeting
+/// userspace read) ahead of every relayed byte, the base counters say what userspace took and
+/// wrote, the counters follow the relayed bytes, and when the client closes right after a bulk
+/// write the upstream is closed only once all of it reached it.
+#[test]
+fn tunnel_writes_first_then_relays_and_drains_on_close() {
+    let relay = match ebpf::Relay::new(64) {
+        Ok(r) => r,
+        Err(e) if expect_ebpf() => panic!("sockmap relay: {e}"),
+        Err(e) => return eprintln!("skipping: sockmap relay unavailable ({e})"),
+    };
+    const BULK: usize = 4 << 20;
+    // Upstream: checks what comes first, greets, then counts until EOF.
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream = l.local_addr().unwrap();
+    let (utx, urx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut s, _) = l.accept().unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let first = read_n(&mut s, 12);
+        s.write_all(b"UP-HELLO").unwrap();
+        let mut total = 0usize;
+        let mut ok = true;
+        let mut b = vec![0u8; 64 << 10];
+        loop {
+            match s.read(&mut b) {
+                Ok(0) => break,
+                Ok(n) => {
+                    ok &= b[..n]
+                        .iter()
+                        .enumerate()
+                        .all(|(i, &x)| x == ((total + i) % 251) as u8);
+                    total += n;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => panic!("upstream read after {total}: {e}"),
+            }
+        }
+        let _ = utx.send((first, total, ok));
+    });
+    let er = EngineRef::new();
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let (rtx, rrx) = mpsc::channel();
+    let e = Arc::new(
+        Engine::builder()
+            .config(cfg())
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .backend(common::backend())
+                    .serve(TunnelProxy {
+                        engine: er.clone(),
+                        upstream,
+                        relay,
+                        states: states.clone(),
+                        report: Mutex::new(rtx),
+                    }),
+            )
+            .build()
+            .unwrap(),
+    );
+    er.set(&e);
+    e.start().unwrap();
+
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(b"GREET\n").unwrap();
+    let t = rrx
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .expect("spliced");
+    assert_eq!(read_n(&mut s, 8), b"UP-HELLO");
+    // Base: the client's 6 greeting bytes were read by userspace, the upstream was written the
+    // 12 bytes of `first` (plus its SYN, which the kernel counts on a dialed socket).
+    let [a, b] = t.base();
+    assert_eq!((a.consumed(), a.written), (6, 0), "{a:?}");
+    assert_eq!((b.consumed(), b.written), (0, 13), "{b:?}");
+    assert_eq!(t.splice().base(), Some([a, b]));
+    // The upstream's greeting is relayed to the client by the kernel.
+    assert_eq!(t.relayed_from(ebpf::TunnelSide::B), Some(8));
+    assert_eq!(t.relayed_from(ebpf::TunnelSide::A), Some(0));
+    wait_until("the greeting in the client's send queue", || {
+        t.counts(ebpf::TunnelSide::A)
+            .is_some_and(|c| c.written == 8)
+    });
+    assert!(t.moved());
+    assert!(!t.moved());
+
+    // Bulk, then close at once: the upstream must get every byte before its EOF.
+    let bulk: Vec<u8> = (0..BULK).map(|i| (i % 251) as u8).collect();
+    s.write_all(&bulk).unwrap();
+    drop(s);
+    let closing = Instant::now();
+    let (first, total, ok) = urx.recv_timeout(Duration::from_secs(30)).unwrap();
+    // Closed once everything was forwarded, not after the 5 s stall.
+    assert!(
+        closing.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        closing.elapsed()
+    );
+    assert_eq!(first, b"FIRST:GREET\n");
+    assert_eq!(total, BULK);
+    assert!(ok, "the relayed bytes differ");
+    for st in states.lock().unwrap().iter() {
+        assert_eq!(st.late.load(Ordering::SeqCst), 0);
     }
     stop(&e);
 }
