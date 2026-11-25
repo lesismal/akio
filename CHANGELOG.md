@@ -10,6 +10,35 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: akio-wasm runs modules, milestone W2: translation and interpreter (akio-wasm, akio)
+
+ADR-125, second milestone: `akio-wasm` now runs what it loads, still in safe Rust without
+dependencies, experimental until W4.
+
+- `Module::new` translates each function, once, after validating it, to a register form: every
+  operand-stack position is a fixed slot, `local.get` copies nothing, constants are immediates, a
+  comparison and its branch are one instruction; at most four 16-byte instructions per byte of
+  code, in linear time. The interpreter is a `match` loop with explicit frames, never native
+  recursion.
+- `Store<S>`: instances (`instantiate(&Arc<Module>, &[Extern], &Budget)`, which may import from
+  each other), host functions (`func_new(FuncType, Fn(&mut Caller<S>, &[Value], &mut [Value]))`),
+  globals, tables and memories made by the host, exports, `call(Func, &[Value], &mut [Value],
+  &Budget)`. `Send`, not `Sync`. A trap ends the store (later calls return `Trap::Ended`).
+- `InstanceLimits`: memory (128 MiB; `memory.grow` past it returns `-1`), table elements (10 M),
+  value stack (1 Mi slots), call depth (10 000).
+- `Budget`: a deadline, fuel and an `InterruptHandle`, checked as basic blocks are entered, about
+  every 10 000 instructions (bulk memory and table instructions pay by the byte), so a call stops
+  within tens of microseconds of its deadline, with no watchdog thread; `Store::fuel_used`.
+- `Trap` (the specification's traps with its wording, the run limits, `Deadline`, `OutOfFuel`,
+  `Interrupted`, `Host`, `Ended`, `BadCall`), `InstantiateError`, `Value`, `ExternRef`, handles
+  `Func`, `Table`, `Memory`, `Global`, `Instance`, `Extern`.
+- Floats as the specification has them, with canonical NaNs: execution is deterministic.
+- Tests: the whole WebAssembly 2.0 specification suite (21 453 `assert_return`, 2 354
+  `assert_trap`, exhaustion, linking, instantiation), the translator's corner cases, budgets,
+  every run limit under, at and over, host functions, translation in linear time. Fuzz targets
+  `wasm_exec` (`wasm-smith` modules under small limits) and `wasm_diff` (against wasmi), fuzz-only
+  dependencies.
+
 ### Added: akio-wasm, a WebAssembly runtime for plugins, milestone W1: decoder and validator (akio-wasm, akio)
 
 ADR-125 (accepted), requested by akit (A165) for its WASM plugins (I71) and Proxy-Wasm (I72).

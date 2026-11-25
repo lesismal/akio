@@ -10,6 +10,25 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：akio-wasm 可以运行模块，里程碑 W2：翻译与解释器（akio-wasm、akio）
+
+ADR-125 的第二个里程碑：`akio-wasm` 现在能运行它加载的模块，仍是安全 Rust、无依赖，W4 之前属于实验层。
+
+- `Module::new` 在验证每个函数之后把它翻译一次，成为寄存器形式：操作数栈的每个位置是固定的槽，`local.get` 不复制，常量成为立即数，
+  比较与其分支合为一条指令；每字节代码至多四条 16 字节的指令，时间线性。解释器是带显式帧的 `match` 循环，从不使用原生递归。
+- `Store<S>`：实例（`instantiate(&Arc<Module>, &[Extern], &Budget)`，实例之间可以相互导入）、宿主函数
+  （`func_new(FuncType, Fn(&mut Caller<S>, &[Value], &mut [Value]))`）、宿主创建的全局变量、表和内存、导出、
+  `call(Func, &[Value], &mut [Value], &Budget)`。`Send`，不是 `Sync`。陷入会结束 store（之后的调用返回 `Trap::Ended`）。
+- `InstanceLimits`：内存（128 MiB；超过时 `memory.grow` 返回 `-1`）、表元素（10 M）、值栈（1 Mi 个槽）、调用深度（10 000）。
+- `Budget`：截止时间、燃料和 `InterruptHandle`，在进入基本块时大约每 10 000 条指令检查一次（批量内存和表指令按字节计费），
+  所以调用在截止时间后几十微秒内停止，无需看门狗线程；`Store::fuel_used`。
+- `Trap`（规范的陷入及其措辞、运行上限、`Deadline`、`OutOfFuel`、`Interrupted`、`Host`、`Ended`、`BadCall`）、`InstantiateError`、
+  `Value`、`ExternRef`，句柄 `Func`、`Table`、`Memory`、`Global`、`Instance`、`Extern`。
+- 浮点遵循规范，NaN 规范化：执行是确定的。
+- 测试：完整的 WebAssembly 2.0 规范测试集（21 453 个 `assert_return`、2 354 个 `assert_trap`、栈耗尽、链接、实例化）、翻译器的边界情形、
+  预算、每个运行上限的低于/等于/超过、宿主函数、线性时间的翻译。模糊测试目标 `wasm_exec`（`wasm-smith` 模块，小上限）和
+  `wasm_diff`（与 wasmi 对比），两者的依赖只在模糊测试中。
+
 ### 新增：akio-wasm，插件用的 WebAssembly 运行时，里程碑 W1：解码器与验证器（akio-wasm、akio）
 
 ADR-125（已采纳），akit 为其 WASM 插件（I71）和 Proxy-Wasm（I72）提出（A165）。新 crate `akio-wasm`，

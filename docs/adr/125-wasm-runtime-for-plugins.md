@@ -2,7 +2,7 @@
 
 English | [简体中文](125-wasm-runtime-for-plugins.zh-CN.md)
 
-Status: accepted (2026-11-25). Built in the milestones of section 8; W1 (decoder and validator) is done, see "As built" at the end.
+Status: accepted (2026-11-25). Built in the milestones of section 8; W1 (decoder and validator) and W2 (translation and interpreter) are done, see "As built" at the end.
 
 ## Context
 
@@ -355,3 +355,85 @@ facade re-exports it as `akio::wasm` behind the feature `wasm`. Decided while bu
 - **Fuzzing**: `wasm_decode` loads each input under the default limits and under small ones; a
   module accepted under the small limits is inside each, and one refused under them for another
   reason than a limit is refused the same way, at the same offset, under the defaults.
+
+### W2: translation and interpreter (2026-11-25)
+
+Each body is translated right after it is validated, in the same pass over the module, to the
+register form of section 1 (`instr.rs`, `translate.rs`); `exec.rs` runs it. The whole
+WebAssembly 2.0 specification suite now passes, every command: 21 453 `assert_return`,
+2 354 `assert_trap`, 15 `assert_exhaustion`, 83 `assert_unlinkable`, 34
+`assert_uninstantiable`, `register` and the `spectest` imports. Fuzz targets `wasm_exec` and
+`wasm_diff` (against wasmi 2.0) are in `fuzz/`. Decided while building it:
+
+- **A `Store<S>` rather than an `Instance<S>`.** Section 3's sketch makes an instance own its
+  memory, tables and globals. W2 puts them in a `Store<S>` that holds instances, host functions
+  and the host's state, with handles (`Func`, `Memory`, `Table`, `Global`, `Instance`) into it,
+  because WebAssembly lets one instance import another's memory, tables, globals and functions
+  and see the same objects (the suite's `register` and linking tests need it; a table shared by
+  two instances holds functions of both). A plugin's store holds one instance; the pool (W4)
+  owns one store per thread, and W3's `Linker` instantiates into a store. The store is `Send`,
+  not `Sync`. Handles of another store are refused by calls (`Trap::BadCall`) and make the
+  accessors panic, as in wasmtime.
+- **A trap ends the store**, enforced: later calls and instantiations return `Trap::Ended`
+  (section 3 left it to the owner). `Store::set_trap_ends(false)` keeps the specification's
+  semantics, where a store goes on after a trap; the suite runs that way, nothing else should.
+  `Trap::BadCall` (arguments of the wrong number or type) runs nothing and ends nothing.
+- **`Trap`** is an enum: the specification's traps (with its wording from `message()`),
+  `CallStackExhausted` and `ValueStackExhausted` for the two run limits, `Deadline`,
+  `OutOfFuel`, `Interrupted`, `Host(message)` for a host function's failure, and the two
+  refusals. Instantiation fails with `InstantiateError::{Unlinkable, Limit, Trap}`; what the
+  active segments before a failing one wrote stays written, as in 2.0.
+- **The register form**: a frame is the function's locals, then one slot per position of the
+  operand stack; instructions are 16 bytes and name slots. The translator keeps a stack of where
+  each value is: in its slot, still in a local (`local.get` emits nothing until the local changes,
+  then every pending read is copied first), or a constant (an immediate for the `i32` and `i64`
+  operations that have one). An instruction whose result goes to a `local.set` writes the local
+  directly; a comparison followed by `br_if` or `if` is one instruction; a call's arguments are
+  already where the callee's frame starts, and its results come back there. Blocks with params
+  and results move values only on a branch to a label lower in the stack (`CopyRange`), and
+  `br_table` targets that move values get a stub each. Unreachable code is skipped.
+- **The translated form's bound** is structural: every WebAssembly instruction emits at most
+  three instructions, counting the materialization of the value it pushed, so a body is at most
+  `4 × bytes + 4` instructions, checked; no `ModuleLimits` field is needed. Translation is linear:
+  pending reads of locals are kept in a list and each is copied at most once (a test builds the
+  quadratic case for a careless translator, 20 000 locals read then set, and a 20 000-target
+  `br_table` whose every target moves two values). The module drops the code bytes once
+  translated.
+- **Metering**: a `Fuel(n)` instruction starts the function and every basic block a branch can
+  reach (loop heads, labels with incoming branches, `else`), with `n` the WebAssembly instructions
+  up to the next one. Fuel counts WebAssembly instructions; besides, bulk memory instructions,
+  `memory.grow` and the zeroing of a call's locals take one unit per 64 bytes, and table
+  instructions one per eight elements, so a slice stays short in time too. The slice is
+  `Budget::SLICE`, 10 000. Fuel is exact: a block that cannot be paid for does not start
+  (`OutOfFuel`), and `Store::fuel_used()` reports the last call's use. The first block of a call
+  checks the budget, so a call past its deadline does not start.
+- **Running limits** (`InstanceLimits`, section 3's values): `max_memory` (bytes, 128 MiB) and the
+  memory's declared maximum, `max_table_elements` (10 M) for `table.grow` and tables made at
+  instantiation, `max_value_stack` (1 Mi slots) checked on each call against the callee's whole
+  frame, `max_call_depth` (10 000). A grow whose allocation fails returns `-1` too
+  (`try_reserve`), so an allocation failure never aborts the process.
+- **Floats**: an arithmetic result that is a NaN is the canonical NaN (positive, quiet), so
+  results do not depend on the hardware's NaN propagation (x86 and Arm differ); `abs`, `neg`,
+  `copysign`, loads, stores and reinterpretations keep the bits.
+- **Values**: `Value::{I32, I64, F32, F64, FuncRef(Option<Func>), ExternRef(Option<ExternRef>)}`,
+  floats as Rust's floats (their bits pass unchanged). `externref` is kept (section 3's open
+  question): it costs nothing in the interpreter, and an `ExternRef` is a `u32` the host gives
+  meaning to.
+- **Host functions, the minimum for W2**: `Store::func_new(FuncType, Fn(&mut Caller<S>, &[Value],
+  &mut [Value]) -> Result<(), Trap>)`, with `Caller::state(_mut)` and `memory(_mut)` (the calling
+  instance's memory as a slice). They cannot call back into the guest. W3 adds the `Linker`, typed
+  host functions, bounds-checked views and unresolved imports that trap.
+- **Fuzzing**: `wasm_exec` generates modules with `wasm-smith` (section 2's features, at most one
+  memory, small sizes) and checks that each loads (translation never refuses a valid module) and
+  runs under small limits and fuel: results of the right type, or a trap that ended the store.
+  Its stable replay runs `fuzzing::exec` over `wasm_decode`'s corpus, whose inputs are modules
+  (`wasm_exec`'s are `wasm-smith`'s seeds). `wasm_diff` runs the same module (no imports) on
+  akio-wasm and wasmi (its `deterministic` feature canonicalizes arithmetic NaNs as akio-wasm
+  does, and its portable dispatch, since the tail-call one recurses natively under ASan), calls
+  each export with the same arguments, and compares results (float bits exactly), traps, then
+  every exported global and memory;
+  running out of akio-wasm's fuel or either side's stack ends the comparison, their limits being
+  different.
+  Neither target's corpus is committed: their inputs are `wasm-smith` seeds, tens of megabytes
+  once minimized, that only a `wasm-smith` build can turn into modules; a run grows them anew.
+

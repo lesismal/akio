@@ -1,6 +1,6 @@
 [package]
 name = "akio-wasm"
-description = "akio: a WebAssembly runtime for plugins, in safe Rust without dependencies (decoder and validator)"
+description = "akio: a WebAssembly runtime for plugins, in safe Rust without dependencies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -2,7 +2,7 @@
 
 [English](125-wasm-runtime-for-plugins.md) | 简体中文
 
-状态：已采纳（2026-11-25）。按第 8 节的里程碑实现；W1（解码器与验证器）已完成，见文末“实现记录”。
+状态：已采纳（2026-11-25）。按第 8 节的里程碑实现；W1（解码器与验证器）与 W2（翻译与解释器）已完成，见文末“实现记录”。
 
 ## 背景
 
@@ -279,3 +279,53 @@ crate `akio-wasm`（`#![forbid(unsafe_code)]`，无依赖）：`Module::new(&byt
   门面的 `wasm` feature 不在 akio 的快照中，与 `dpdk` 相同。
 - **模糊测试**：`wasm_decode` 对每个输入分别在默认上限和小上限下加载；在小上限下接受的模块满足每个上限，
   在小上限下因上限以外的原因被拒的模块，在默认上限下以同样的方式、在同样的偏移被拒。
+
+### W2：翻译与解释器（2026-11-25）
+
+每个函数体在验证之后立即翻译，与模块的解析在同一遍中，翻译成第 1 节的寄存器形式（`instr.rs`、`translate.rs`）；
+`exec.rs` 运行它。WebAssembly 2.0 规范测试集现在全部通过，每一类命令：21 453 个 `assert_return`、2 354 个 `assert_trap`、
+15 个 `assert_exhaustion`、83 个 `assert_unlinkable`、34 个 `assert_uninstantiable`、`register` 以及 `spectest` 导入。
+模糊测试目标 `wasm_exec` 和 `wasm_diff`（与 wasmi 2.0 对比）在 `fuzz/` 中。实现中做出的决定：
+
+- **用 `Store<S>` 而不是 `Instance<S>`。** 第 3 节的草图让实例自己拥有内存、表和全局变量。W2 把它们放进 `Store<S>`：
+  它持有实例、宿主函数和宿主状态，并给出句柄（`Func`、`Memory`、`Table`、`Global`、`Instance`），因为 WebAssembly 允许一个实例
+  导入另一个实例的内存、表、全局变量和函数并看到同一个对象（测试集的 `register` 和链接测试需要它；两个实例共享的表里
+  有两者的函数）。插件的 store 只有一个实例；实例池（W4）每个线程拥有一个 store，W3 的 `Linker` 实例化到 store 中。
+  store 是 `Send`，不是 `Sync`。其他 store 的句柄在调用时被拒绝（`Trap::BadCall`），在访问器中导致 panic，与 wasmtime 相同。
+- **陷入结束 store**，并强制执行：之后的调用和实例化返回 `Trap::Ended`（第 3 节把这留给所有者）。
+  `Store::set_trap_ends(false)` 保留规范的语义，即陷入后 store 继续可用；测试集这样运行，其他场合不应使用。
+  `Trap::BadCall`（参数个数或类型不对）什么也不运行，也不结束 store。
+- **`Trap`** 是枚举：规范定义的陷入（`message()` 给出规范的措辞）、两个运行上限的 `CallStackExhausted` 和
+  `ValueStackExhausted`、`Deadline`、`OutOfFuel`、`Interrupted`、宿主函数失败的 `Host(message)`，以及两种拒绝。
+  实例化以 `InstantiateError::{Unlinkable, Limit, Trap}` 失败；失败段之前的活动段已写入的内容保留，与 2.0 相同。
+- **寄存器形式**：帧是函数的局部变量，加上操作数栈每个位置一个槽；指令 16 字节，指名槽位。翻译器维护一个栈，记录每个值
+  在哪里：在自己的槽里、仍在某个局部变量里（`local.get` 不生成指令，直到该局部变量改变时，先复制所有待读的值），或是常量
+  （对有立即数形式的 `i32`、`i64` 运算作为立即数）。结果交给 `local.set` 的指令直接写局部变量；比较后接 `br_if` 或 `if`
+  合为一条指令；调用的参数已经在被调函数帧的起点，结果也回到那里。带参数和结果的块只在跳到栈中更低位置的标签时移动值
+  （`CopyRange`），需要移动值的 `br_table` 目标各有一个桩。不可达代码被跳过。
+- **翻译结果的上界**是结构性的：每条 WebAssembly 指令至多生成三条指令（包括把它压入的值落到槽里），所以函数体至多
+  `4 × 字节数 + 4` 条指令，并做检查；不需要 `ModuleLimits` 字段。翻译是线性的：待读的局部变量放在列表中，每个至多复制一次
+  （有测试构造对粗心的翻译器是二次的情形：读 20 000 个局部变量再逐个赋值，以及每个目标都要移动两个值的 20 000 目标 `br_table`）。
+  翻译完成后模块丢弃代码字节。
+- **计量**：函数开头和每个分支可达的基本块（循环头、有跳入的标签、`else`）以 `Fuel(n)` 指令开始，`n` 是到下一个此类指令为止的
+  WebAssembly 指令数。燃料按 WebAssembly 指令计；此外批量内存指令、`memory.grow` 和调用时清零局部变量按每 64 字节一个单位计，
+  表指令按每 8 个元素一个单位计，使一个时间片在时间上也保持短。时间片为 `Budget::SLICE`，10 000。燃料是精确的：付不起的块不会开始
+  （`OutOfFuel`），`Store::fuel_used()` 报告上一次调用的用量。调用的第一个块就检查预算，所以已过截止时间的调用不会开始。
+- **运行上限**（`InstanceLimits`，取第 3 节的值）：`max_memory`（字节，128 MiB）与内存声明的最大值，`max_table_elements`
+  （10 M）用于 `table.grow` 和实例化时创建的表，`max_value_stack`（1 Mi 个槽）在每次调用时按被调函数的整个帧检查，
+  `max_call_depth`（10 000）。分配失败的增长同样返回 `-1`（`try_reserve`），分配失败永远不会中止进程。
+- **浮点**：结果为 NaN 的算术运算给出规范 NaN（正、静默），结果不依赖硬件的 NaN 传播（x86 与 Arm 不同）；`abs`、`neg`、
+  `copysign`、加载、存储和重新解释保留位模式。
+- **值**：`Value::{I32, I64, F32, F64, FuncRef(Option<Func>), ExternRef(Option<ExternRef>)}`，浮点用 Rust 的浮点（位模式不变）。
+  保留 `externref`（第 3 节的待定问题）：它在解释器中没有开销，`ExternRef` 是由宿主赋予含义的 `u32`。
+- **宿主函数，W2 只做最少的部分**：`Store::func_new(FuncType, Fn(&mut Caller<S>, &[Value], &mut [Value]) -> Result<(), Trap>)`，
+  `Caller::state(_mut)` 和 `memory(_mut)`（调用方实例的内存切片）。它们不能回调客户代码。W3 加入 `Linker`、类型化宿主函数、
+  带边界检查的视图以及调用时才陷入的未解析导入。
+- **模糊测试**：`wasm_exec` 用 `wasm-smith` 生成模块（第 2 节的特性、至多一个内存、较小的规模），检查每个都能加载（翻译从不拒绝有效模块），
+  并在小上限和少量燃料下运行：结果类型正确，或者陷入并结束 store。它在 stable 上的回放把 `wasm_decode` 的语料（输入就是模块）
+  交给 `fuzzing::exec`（`wasm_exec` 的输入是 `wasm-smith` 的种子）。`wasm_diff` 在 akio-wasm 和 wasmi 上运行同一个模块（无导入；
+  wasmi 开启 `deterministic` feature，像 akio-wasm 一样规范化算术 NaN，并使用 portable dispatch，因为尾调用分派在 ASan 下会原生递归），
+  以相同参数调用每个导出函数，比较结果（浮点按位精确比较）、陷入，以及之后每个导出的全局变量和内存；
+  akio-wasm 燃料耗尽或任一方栈耗尽时停止比较，因为两者的上限不同。两个目标的语料都不提交：
+  输入是 `wasm-smith` 的种子，最小化后仍有几十 MB，且只有 `wasm-smith` 能把它们变成模块；每次运行重新生成。
+

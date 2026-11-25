@@ -118,4 +118,4 @@
 - [ADR-122：HTTP/2 和 HTTP/3 流上的 CONNECT，以及关闭连接的发送方向](122-connect-on-h2-h3-streams-half-close.zh-CN.md)（2026-11-25 采纳）
 - [ADR-123：握手之外使用的根证书，以及仅用于握手的 ALPN 协议](123-root-store-and-handshake-only-alpn.zh-CN.md)（2026-11-25 采纳）
 - [ADR-124：`Files` 作为网关的静态文件处理器、内存有界，以及文件消息体编码](124-files-as-a-gateway-static-handler.zh-CN.md)（2026-11-25 采纳）
-- [ADR-125：插件用的 WebAssembly 运行时：独立 crate 中的安全解释器](125-wasm-runtime-for-plugins.zh-CN.md)（2026-11-25 采纳；akit A165，用于 I71 和 I72；W1 已实现）
+- [ADR-125：插件用的 WebAssembly 运行时：独立 crate 中的安全解释器](125-wasm-runtime-for-plugins.zh-CN.md)（2026-11-25 采纳；akit A165，用于 I71 和 I72；W1、W2 已实现）

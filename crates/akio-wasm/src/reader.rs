@@ -21,11 +21,6 @@ impl<'a> Reader<'a> {
         self.base + self.pos
     }
 
-    /// All the bytes this reader covers, read or not.
-    pub(crate) const fn data(&self) -> &'a [u8] {
-        self.data
-    }
-
     pub(crate) const fn remaining(&self) -> usize {
         self.data.len() - self.pos
     }

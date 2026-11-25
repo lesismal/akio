@@ -7,6 +7,7 @@ use crate::{
     limits::ModuleLimits,
     ops::{Decoder, Op},
     reader::Reader,
+    translate::{Compiled, Translator},
     types::{
         Export, ExportKind, ExternType, FuncType, GlobalType, Import, Limits, MemoryType, RefType,
         TableType, ValType,
@@ -55,13 +56,11 @@ pub(crate) struct DataSegment {
     pub(crate) bytes: Box<[u8]>,
 }
 
-/// A defined function's body: its declared locals and where its instructions are.
+/// A defined function's body: its declared locals and where its instructions were.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FuncBody {
     /// `(end, type)` runs of declared locals, counted from the first parameter.
     pub(crate) locals: Box<[(u32, ValType)]>,
-    /// The instructions, a range of [`Module::code`] (the body's final `end` included).
-    pub(crate) code: std::ops::Range<usize>,
     /// Offset of the instructions in the module, for errors.
     pub(crate) offset: usize,
     /// The highest the operand stack gets.
@@ -97,8 +96,8 @@ pub struct Module {
     /// Functions that `ref.func` may name in a body: those named outside bodies (C.refs).
     pub(crate) declared: Vec<bool>,
     pub(crate) bodies: Vec<FuncBody>,
-    /// The code section's bytes, which [`FuncBody::code`] ranges point into.
-    pub(crate) code: Box<[u8]>,
+    /// The defined functions, translated to the register form.
+    pub(crate) compiled: Vec<Compiled>,
 }
 
 impl fmt::Debug for Module {
@@ -113,7 +112,10 @@ impl fmt::Debug for Module {
             .field("exports", &self.exports.len())
             .field("elems", &self.elems.len())
             .field("datas", &self.datas.len())
-            .field("code_bytes", &self.code.len())
+            .field(
+                "instructions",
+                &self.compiled.iter().map(|c| c.code.len()).sum::<usize>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -161,7 +163,7 @@ impl Module {
             datas: Vec::new(),
             declared: Vec::new(),
             bodies: Vec::new(),
-            code: Box::default(),
+            compiled: Vec::new(),
         };
         let mut d = Load {
             limits,
@@ -679,7 +681,6 @@ impl Load<'_> {
 
     fn code(&self, m: &mut Module, r: &mut Reader<'_>) -> Result<()> {
         let at = r.offset();
-        let section_base = at;
         let n = r.count(1)?;
         let defined = m.funcs.len() - m.imported_funcs as usize;
         if n as usize != defined {
@@ -689,28 +690,35 @@ impl Load<'_> {
             ));
         }
         let mut v = Validator::new(self.limits);
+        let mut t = Translator::default();
         let mut bodies = Vec::with_capacity(n as usize);
+        let mut compiled = Vec::with_capacity(n as usize);
         for i in 0..n as usize {
             let len = r.u32()? as usize;
             let mut b = r.sub(len)?;
             let ty = m.funcs[m.imported_funcs as usize + i];
-            v.read_locals(
-                &mut b,
-                m.types[ty as usize].params(),
-                self.limits.max_locals,
-            )?;
+            let params = m.types[ty as usize].params();
+            v.read_locals(&mut b, params, self.limits.max_locals)?;
             let start = b.offset();
+            // Validated first, then translated from the same bytes: translation may then rely
+            // on the body being valid.
+            let mut code = b.clone();
             let info = v.body(m, &mut b, ty)?;
+            let locals = v
+                .locals
+                .runs()
+                .last()
+                .map_or(params.len() as u32, |&(end, _)| end);
+            let func_ty = m.types[ty as usize].clone();
+            compiled.push(t.translate(m, &mut code, &func_ty, locals, info.max_stack)?);
             bodies.push(FuncBody {
                 locals: v.locals.runs().into(),
-                code: start - section_base..b.offset() - section_base,
                 offset: start,
                 max_stack: info.max_stack,
             });
         }
-        // Kept for translation: the ranges above are relative to the section's start.
-        m.code = r.data().into();
         m.bodies = bodies;
+        m.compiled = compiled;
         Ok(())
     }
 

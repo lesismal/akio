@@ -64,7 +64,8 @@ use akio_core::{
 pub use akio_tun as tun;
 
 /// WebAssembly for plugins (experimental, cargo feature `wasm`, ADR-125): a safe interpreter
-/// built in milestones; this release decodes and validates modules ([`wasm::Module`]).
+/// built in milestones; this release loads modules ([`wasm::Module`]) and runs them
+/// ([`wasm::Store`]).
 #[cfg(feature = "wasm")]
 pub use akio_wasm as wasm;
 
