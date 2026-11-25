@@ -790,14 +790,14 @@ impl<S: Service> Session<S> {
         let h = &head.headers;
         // One pass over the fields for everything framing needs (a lookup per header name
         // cost ~4% of pipelined throughput).
-        let (mut host, mut close, mut keep, mut te, mut te_n, mut expect) =
-            (false, false, false, None, 0, None);
+        let (mut hosts, mut close, mut keep, mut te, mut te_n, mut expect) =
+            (0u32, false, false, None, 0, None);
         // Content-Length: every value must parse and agree.
         let (mut cl, mut cl_bad) = (None::<usize>, false);
         for (n, v) in h.iter() {
             let token = |t: &str| v.split(',').any(|x| x.trim().eq_ignore_ascii_case(t));
             match n.len() {
-                4 if n.eq_ignore_ascii_case("host") => host = true,
+                4 if n.eq_ignore_ascii_case("host") => hosts += 1,
                 6 if n.eq_ignore_ascii_case("expect") => {
                     expect = expect.or(Some(v));
                 }
@@ -816,7 +816,9 @@ impl<S: Service> Session<S> {
                 _ => {}
             }
         }
-        if head.version == Version::Http11 && !host {
+        // RFC 9112 §3.2: no Host in HTTP/1.1, or more than one in any version, is a 400 (an
+        // intermediary behind this server could route by either one).
+        if (head.version == Version::Http11 && hosts == 0) || hosts > 1 {
             return self.fail(c, 400);
         }
         let keep_alive = !self.draining

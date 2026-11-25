@@ -1659,7 +1659,7 @@ impl Core {
         }
         let mut tr = Headers::new();
         for (n, v) in fields.iter() {
-            if n.first() == Some(&b':') || n.iter().any(u8::is_ascii_uppercase) {
+            if n.first() == Some(&b':') || !valid_field(n, v) {
                 return self.peer_rst(sid, err::PROTOCOL);
             }
             if let (Ok(n), Ok(v)) = (std::str::from_utf8(n), std::str::from_utf8(v)) {
@@ -1707,6 +1707,9 @@ impl Core {
         let mut regular = false;
         let mut cookies: Option<String> = None;
         for (n, v) in fields.iter() {
+            if invalid_value(v) {
+                return Err(()); // RFC 9113 §8.2.1, pseudo-header fields too
+            }
             let v = std::str::from_utf8(v).map_err(|_| ())?;
             if n.first() == Some(&b':') {
                 if regular {
@@ -1727,7 +1730,7 @@ impl Core {
                 continue;
             }
             regular = true;
-            if n.iter().any(u8::is_ascii_uppercase) {
+            if !valid_field(n, b"") {
                 return Err(());
             }
             let n = std::str::from_utf8(n).map_err(|_| ())?;
@@ -2604,4 +2607,21 @@ fn finalize(ctx: &mut Context) {
     if !ctx.responded() && !ctx.is_detached() {
         ctx.respond(Response::text(500, "handler did not respond"));
     }
+}
+
+/// Whether a regular field's name and value are well formed, as RFC 9113 §8.2.1 asks: the name
+/// has no byte in 0x00-0x20, 0x41-0x5A (uppercase) or 0x7F-0xFF and no colon (pseudo-header
+/// names are checked apart), and the value no NUL, CR or LF. A request or trailer section
+/// breaking either is malformed: an HTTP/1.1 hop behind this server would read it differently.
+pub(crate) fn valid_field(name: &[u8], value: &[u8]) -> bool {
+    !name.is_empty()
+        && name
+            .iter()
+            .all(|&b| matches!(b, 0x21..=0x40 | 0x5b..=0x7e) && b != b':')
+        && !invalid_value(value)
+}
+
+/// Whether a field value holds a NUL, CR or LF, which no HTTP version lets a value carry.
+pub(crate) fn invalid_value(value: &[u8]) -> bool {
+    value.iter().any(|&b| matches!(b, 0 | b'\r' | b'\n'))
 }

@@ -46,6 +46,16 @@ per `RoundsConfig`. Removing a shared listener closes its sockets and drains its
 Several listeners with different handler types, backends and thread counts can live in one
 engine.
 
+`EngineBuilder::pin_io_threads(true)` (or `AKIO_PIN_IO_THREADS=1`) pins each I/O thread to one
+CPU of those the process may use, in turn over the groups (Linux). With as many busy I/O threads
+as CPUs, which a shared group sized to the CPUs often is, the scheduler can otherwise leave two
+of them on one CPU for a while and another CPU idle; pinned, HTTP/1.1 over 3 listeners sharing
+4 threads on 4 CPUs ran as fast as with 12 dedicated threads (docs/BENCHMARKS.md). A pinned thread
+cannot move away from other busy threads on its CPU, though: h2c, whose handlers run on the
+logical pool by default, lost up to half its throughput pinned on the same CPUs. Turn it on for
+handlers served inline on CPUs the I/O threads have to themselves. NUMA placement and BPF
+steering pin their own groups.
+
 ## Backends
 
 | Backend | Platforms | Notes |

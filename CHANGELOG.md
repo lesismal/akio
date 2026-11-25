@@ -178,6 +178,63 @@ carries a `Content-Length` beside `Transfer-Encoding`. HTTP/2 and HTTP/3 are unc
 ADR-157. Filled as `Request::peer` is: the connection's local address on HTTP/1.1 and HTTP/2, the
 UDP socket's on HTTP/3, unspecified where there is none (`Request::new`, a Unix-domain socket).
 `akio_quic::Connection::local_addr` gives a QUIC connection's.
+### Added: pinning I/O threads to CPUs, and a shared-group benchmark (akio, tools/bench)
+
+`EngineBuilder::pin_io_threads(bool)` (or `AKIO_PIN_IO_THREADS=1`), off by default, pins each I/O
+thread to one CPU of those the process may use, in turn over the groups (shared and dedicated
+listeners, client threads; threads added by `set_threads` and groups added at run time continue
+the round). Groups pinned by NUMA placement or BPF steering are left alone; rounds workers are
+not pinned. Linux only.
+
+Why (docs/BENCHMARKS.md, "Shared I/O groups and I/O thread pinning"): with as many busy I/O
+threads as CPUs, as in a shared group sized to the CPUs, the scheduler sometimes stacks two of
+them on one CPU; unpinned, HTTP/1.1 over 3 listeners sharing 4 threads swung between 612k and
+752k requests/s, pinned it held 754k (±1%), at or above 12 dedicated threads. But h2c, whose
+handlers run on the logical pool on the same CPUs, fell by up to half pinned, so it stays off by
+default. `tools/bench/shared.sh` measures shared against dedicated groups, pinned or not
+(`http-bench` gains `AKIO_BENCH_LISTENERS` and `AKIO_BENCH_SHARED`).
+
+### Fixed: requests RFC 9112, RFC 9113 and RFC 9114 call malformed are refused (akio-http, akio-h3)
+
+akit's A169, found by akit's I25 conformance suite, where an akio server let these through to
+an application, and a proxy on akio passed them to its upstream:
+
+- HTTP/1: a request with more than one `Host` field is answered 400 and the connection closed,
+  as RFC 9112 §3.2 asks (one was accepted, and an intermediary could route by either).
+- HTTP/2: a request or trailer field whose name holds a byte in 0x00-0x20, 0x41-0x5A or
+  0x7F-0xFF, or whose value (a pseudo-header's too) holds a NUL, CR or LF, resets the stream with
+  `PROTOCOL_ERROR` (RFC 9113 §8.2.1). Only uppercase names were refused; a NUL in a value reached
+  the application, and an HTTP/1.1 client then wrote it to its upstream.
+- HTTP/3: the same, as RFC 9114 §4.2 asks.
+
+### Fixed: an HTTP client request's timeout no longer holds the request until it would pass (akio-http)
+
+akit's A171, found by akit's I25 benchmarks, where akit's proxy grew by about 240 bytes a request
+(1.8 GiB in a 35-second run at 230k requests a second): the timer thread's job for a request's
+`timeout` (`Client`) and for an h2 stream's timeout and header and idle checks (`H2Client`)
+stayed queued after the request ended, keeping its exchange's allocation (or its callback and
+stream control) until the delay passed. With a 60s timeout that is a minute of requests; with an
+hour, an hour. The job is now cancelled when the request ends, and the heap entries of cancelled
+jobs are compacted once they outnumber the live ones.
+
+### Added: `Client::close_idle` (akio-http, akit's A10)
+
+`akio_http::client::Client::close_idle` closes every idle keep-alive connection of a client now,
+and from then on closes each connection once its response is in instead of keeping it idle, as the
+engine's graceful shutdown already did; requests sent afterwards are still served, each on a
+connection of its own. Until now a client's idle connections closed only after
+`ClientOptions::idle_timeout` (90 s by default), when the server closed them, or when the engine
+shut down: dropping the `Client` did not close them, since each idle connection holds a clone. An
+application that lets a client go (akit's upstream pool replaced by a reload) calls it so that the
+connections go too. Test: `client`'s `close_idle_closes_idle_connections_now`.
+
+### Fixed: a TLS server takes a ClientHello whose server name is an IP address (akio-tls)
+
+akit's A172, found by akit's I25 benchmarks, where wrk's HTTPS requests to `https://127.0.0.1/`
+all failed: wrk (OpenSSL) sends the URL's host as the SNI even when it is an IP address, which
+RFC 6066 does not allow, and akio-tls's server answered `decode_error`. Such a name is now taken
+as no name, as Go's, OpenSSL's and nginx's servers take it, and a trailing dot is dropped from a
+host name rather than failing the handshake. An empty or non-ASCII name still fails it.
 
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 

@@ -590,6 +590,46 @@ fn default_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
+/// What [`bind_one`] made of a listener: its group, kind and acceleration, whether accept-time
+/// balancing applies, and whether it joined a shared group (ADR-130).
+type Bound = (Box<dyn Group>, Kind, Accel, bool, bool);
+
+/// `AKIO_PIN_IO_THREADS`: `1` (or `true`, `on`) turns [`EngineBuilder::pin_io_threads`] on.
+fn pin_io_from_env() -> bool {
+    matches!(
+        std::env::var("AKIO_PIN_IO_THREADS").as_deref(),
+        Ok("1" | "true" | "on")
+    )
+}
+
+/// Gives I/O threads one CPU each, in turn ([`EngineBuilder::pin_io_threads`]).
+struct Pinner {
+    /// The CPUs the process may use.
+    cpus: Vec<usize>,
+    /// The CPU the next thread gets (index into `cpus`).
+    next: usize,
+}
+
+impl Pinner {
+    /// `None` where CPU affinity is unavailable (not Linux).
+    fn new() -> Option<Pinner> {
+        let cpus = akio_sys::process::allowed_cpus().ok()?;
+        (!cpus.is_empty()).then_some(Pinner { cpus, next: 0 })
+    }
+
+    /// Pins `g`'s threads (before it starts) to the next CPUs; also those it may grow to, up
+    /// to one per CPU.
+    fn pin(&mut self, g: &dyn Group) {
+        let n = self.cpus.len();
+        let count = g.threads().max(1);
+        let sets = (0..count.max(n))
+            .map(|i| vec![self.cpus[(self.next + i) % n]])
+            .collect();
+        self.next = (self.next + count) % n;
+        g.pin_threads(sets);
+    }
+}
+
 /// Where listeners that share I/O threads get them (ADR-130).
 struct Sharing<'a> {
     groups: &'a mut shared::SharedGroups,
@@ -604,7 +644,7 @@ fn bind_one(
     cfg: &Config,
     pool: &Arc<Pool>,
     sharing: Sharing<'_>,
-) -> io::Result<(Box<dyn Group>, Kind, Accel, bool)> {
+) -> io::Result<Bound> {
     let explicit_scheduling = l.scheduling.is_some();
     // The environment's default never overrides what the listener asked for explicitly
     // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s) and BPF steering need
@@ -664,7 +704,7 @@ fn bind_one(
         if filter.is_some() {
             g.set_filter(filter)?;
         }
-        return Ok((g, Kind::Tcp, accel, balance));
+        return Ok((g, Kind::Tcp, accel, balance, true));
     }
     if l.udp && explicit_scheduling && scheduling != Scheduling::Loops {
         log_or_stderr(
@@ -684,7 +724,7 @@ fn bind_one(
     if filter.is_some() {
         group.set_filter(filter)?;
     }
-    Ok((group, kind, accel, balance))
+    Ok((group, kind, accel, balance, false))
 }
 
 /// Adds a TCP listener to the engine's shared group of its kind (ADR-130), made now if it is
@@ -993,6 +1033,8 @@ pub struct EngineBuilder {
     listeners: Vec<Listener>,
     /// The size of shared I/O groups (ADR-130); `None`: one thread per core.
     io_threads: Option<usize>,
+    /// One CPU per I/O thread; `None`: what `AKIO_PIN_IO_THREADS` says.
+    pin_io_threads: Option<bool>,
     client_threads: usize,
     udp_client_threads: usize,
     cfg: Config,
@@ -1018,6 +1060,30 @@ impl EngineBuilder {
     #[must_use]
     pub fn io_threads(mut self, n: usize) -> Self {
         self.io_threads = Some(n.max(1));
+        self
+    }
+
+    /// Pins each I/O thread to one CPU (default: off, or `AKIO_PIN_IO_THREADS=1` when this is
+    /// not called). The I/O threads of every group (shared and dedicated listeners, client
+    /// threads) take the CPUs the process may use (`sched_getaffinity`) in turn, one each,
+    /// continuing from group to group and starting over when there are more threads than CPUs;
+    /// threads added later by [`Engine::set_threads`] and groups of listeners added at run time
+    /// continue the round. Groups that NUMA placement ([`numa`](Self::numa)) or BPF steering
+    /// with [`EbpfConfig::pin_threads`] already pin are left as they are, and rounds workers
+    /// are not pinned. Linux only (elsewhere it does nothing).
+    ///
+    /// With as many busy I/O threads as CPUs (one shared group sized to the CPUs, say), the
+    /// scheduler can otherwise leave two of them on one CPU for a while, idling another: on
+    /// gpu51, HTTP/1.1 plaintext over 3 listeners sharing 4 threads on 4 CPUs ran at 754k
+    /// requests/s (±1%) pinned and 612k to 752k unpinned (docs/BENCHMARKS.md). But a pinned
+    /// thread can no longer move away from other busy threads on its CPU: h2c on the same
+    /// setup, whose handlers run on the logical pool (`H2Config::run_on_pool`, on the same
+    /// CPUs), fell from about 490k to 250k–400k. Turn it on for handlers served inline on CPUs
+    /// the I/O threads have to themselves; leave it off when the logical pool or other busy
+    /// processes share those CPUs.
+    #[must_use]
+    pub fn pin_io_threads(mut self, on: bool) -> Self {
+        self.pin_io_threads = Some(on);
         self
     }
 
@@ -1112,8 +1178,10 @@ impl EngineBuilder {
         let rt_cfg = self.cfg.clone();
         let io_threads = self.io_threads.unwrap_or_else(default_threads);
         let mut shared_groups = shared::SharedGroups::default();
+        // Per listener: it joined a shared group (pinned with that group, not on its own).
+        let mut shared_flags: Vec<bool> = Vec::new();
         for l in self.listeners {
-            let (g, kind, accel, balance) = bind_one(
+            let (g, kind, accel, balance, shares) = bind_one(
                 l,
                 env_backend.as_ref(),
                 env_scheduling.as_ref(),
@@ -1125,6 +1193,7 @@ impl EngineBuilder {
                 },
             )?;
             balances.push(balance);
+            shared_flags.push(shares);
             match kind {
                 // Never a target of `dial` (TCP) or of `dial_udp` / `bind_udp`.
                 Kind::Datagrams => udp_listeners.push(groups.len()),
@@ -1183,6 +1252,26 @@ impl EngineBuilder {
         }
         let rt_nodes = numa_nodes.as_ref().ok().cloned().unwrap_or_default();
         let numa = place_threads(&numa_cfg, numa_nodes, &groups, &accel, &unplaced, pool_cpus);
+        // One CPU per I/O thread, where NUMA placement did not place them (ADR-130 follow-up).
+        let pin_io = self.pin_io_threads.unwrap_or_else(pin_io_from_env);
+        let mut pinner = (pin_io && !matches!(numa, NumaStatus::Placed(_)))
+            .then(Pinner::new)
+            .flatten();
+        if let Some(p) = pinner.as_mut() {
+            for g in shared_groups.all() {
+                p.pin(g.as_ref());
+            }
+            for (i, g) in groups.iter().enumerate() {
+                let steered =
+                    matches!(accel.get(i), Some(AccelStatus::Steering(s)) if s.pinned_threads > 0);
+                if !steered
+                    && !unplaced.contains(&i)
+                    && !shared_flags.get(i).copied().unwrap_or(false)
+                {
+                    p.pin(g.as_ref());
+                }
+            }
+        }
         let entries = kinds
             .iter()
             .enumerate()
@@ -1214,6 +1303,7 @@ impl EngineBuilder {
                 }),
                 stopped: Condvar::new(),
                 shared: Mutex::new(shared_groups),
+                pinner: Mutex::new(pinner),
                 io_threads,
                 cfg: rt_cfg,
                 env_backend,
@@ -1626,6 +1716,8 @@ struct Runtime {
     stopped: Condvar,
     /// The shared I/O groups (ADR-130), which the engine shuts down and joins itself.
     shared: Mutex<shared::SharedGroups>,
+    /// Pins the I/O threads of groups made later, when `pin_io_threads` is on.
+    pinner: Mutex<Option<Pinner>>,
     /// The size of a shared group made by `add_listener`.
     io_threads: usize,
     /// The configuration listeners added later are bound with (live settings from telemetry).
@@ -1755,7 +1847,8 @@ impl Engine {
         let mut cfg = rt.cfg.clone();
         cfg.backlog = self.telemetry.live().backlog();
         let mut shared_groups = lock(&rt.shared);
-        let (g, kind, accel, balance) = bind_one(
+        let shared_before = shared_groups.groups.len();
+        let (g, kind, accel, balance, shares) = bind_one(
             listener,
             rt.env_backend.as_ref(),
             rt.env_scheduling.as_ref(),
@@ -1766,6 +1859,10 @@ impl Engine {
                 threads: rt.io_threads,
             },
         )?;
+        // A shared group made for this listener (the first of its kind).
+        let new_shared = (shared_groups.groups.len() > shared_before)
+            .then(|| shared_groups.groups.last().map(|(_, g)| g.clone()))
+            .flatten();
         drop(shared_groups);
         let g: Arc<dyn Group> = Arc::from(g);
         let accel = apply_accel(&accel, g.as_ref())?;
@@ -1781,6 +1878,13 @@ impl Engine {
                 &[],
                 Vec::new(),
             );
+        } else if let Some(p) = lock(&rt.pinner).as_mut() {
+            let steered = matches!(&accel, AccelStatus::Steering(s) if s.pinned_threads > 0);
+            if let Some(sg) = &new_shared {
+                p.pin(sg.as_ref());
+            } else if !shares && !steered {
+                p.pin(g.as_ref());
+            }
         }
         if st.started {
             if let Err(e) = g.start() {

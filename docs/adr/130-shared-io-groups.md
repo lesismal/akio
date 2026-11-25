@@ -85,6 +85,19 @@ ring options (`UringConfig::entries`, `sqpoll`), sized by `EngineBuilder::io_thr
 io_uring is unavailable they fall back to the shared epoll group (or fail with `strict`), as a
 listener of its own falls back.
 
+## Follow-up: pinning I/O threads (2026-11-26)
+
+A shared group sized to the CPUs has exactly as many busy I/O threads as CPUs, and unpinned the
+scheduler sometimes leaves two of them on one CPU for most of a run while another CPU idles
+(measured on gpu51: two of the 4 threads on one CPU in up to 19 of 20 samples, HTTP/1.1 over 3
+listeners 10% to 20% slower in those runs). Dedicated groups hid it by oversubscribing the CPUs
+(12 threads on 4). `EngineBuilder::pin_io_threads` (or `AKIO_PIN_IO_THREADS=1`), off by default,
+pins each I/O thread to one allowed CPU in turn over the groups; groups NUMA placement or BPF
+steering pin are left alone. It is not the default: pinned threads cannot get out of the way of
+other busy threads on their CPUs. Measured (docs/BENCHMARKS.md): pinned, HTTP/1.1 over 3
+listeners sharing 4 threads matched 12 dedicated threads with a 1% spread; h2c, whose handlers
+run on the logical pool on the same CPUs, fell by up to half.
+
 ## Not done
 
 - UDP and datagram listeners: their loops are of another type.

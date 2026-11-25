@@ -150,6 +150,43 @@ HTTP/1.1 上用 chunked，否则以关闭连接定界）；chunked 的响应头�
 ADR-157。与 `Request::peer` 一样填写：HTTP/1.1 和 HTTP/2 上是连接的本地地址，HTTP/3 上是 UDP
 socket 的本地地址，没有时为未指定地址（`Request::new`、Unix 域 socket）。
 `akio_quic::Connection::local_addr` 给出 QUIC 连接的本地地址。
+### 新增：I/O 线程绑核，以及共享线程组基准（akio、tools/bench）
+
+`EngineBuilder::pin_io_threads(bool)`（或 `AKIO_PIN_IO_THREADS=1`），默认关闭，把每个 I/O 线程
+绑到进程可用 CPU 中的一个，在各线程组之间轮流分配（共享和独占的 listener、客户端线程；`set_threads`
+新增的线程和运行时新增的线程组接着轮转）。NUMA 放置或 BPF 引流已绑定的线程组保持不变；轮次调度的
+worker 不绑核。仅 Linux。
+
+原因（docs/BENCHMARKS.zh-CN.md，“共享 I/O 线程组与 I/O 线程绑核”）：忙碌 I/O 线程数与 CPU 数相同
+时（按 CPU 数确定大小的共享组就是如此），调度器有时会把其中两个叠在同一个 CPU 上；不绑核时，3 个
+listener 共享 4 个线程的 HTTP/1.1 在每秒 612k 到 752k 请求之间波动，绑核后稳定在 754k（±1%），
+达到或超过 12 个独占线程。但 handler 在同一组 CPU 的逻辑线程池上执行的 h2c 绑核后最多下降一半，
+所以默认关闭。`tools/bench/shared.sh` 测量共享与独占线程组，各自绑核与不绑核（`http-bench` 新增
+`AKIO_BENCH_LISTENERS` 和 `AKIO_BENCH_SHARED`）。
+
+### 修复：拒绝 RFC 9112、RFC 9113 和 RFC 9114 规定为畸形的请求（akio-http、akio-h3）
+
+akit 的 A169，由 akit I25 的一致性测试套件发现：akio 的服务端曾把这些请求交给应用，akio 上的代理再把它们转发给上游：
+
+- HTTP/1：带多个 `Host` 字段的请求按 RFC 9112 §3.2 的要求以 400 应答并关闭连接（此前会接受，中间设备可能按其中任意一个路由）。
+- HTTP/2：请求或 trailer 字段的名字含 0x00-0x20、0x41-0x5A 或 0x7F-0xFF 范围内的字节，或值（伪首部字段的值也算）含 NUL、CR 或 LF 时，以 `PROTOCOL_ERROR` 重置该流（RFC 9113 §8.2.1）。此前只拒绝大写名字；值里的 NUL 会到达应用，HTTP/1.1 客户端随后把它写给上游。
+- HTTP/3：同上，按 RFC 9114 §4.2 的要求。
+
+### 修复：HTTP 客户端请求的超时不再把请求一直保留到超时时间（akio-http）
+
+akit 的 A171，由 akit I25 的基准测试发现：akit 的代理每个请求约增长 240 字节（每秒 23 万请求的 35 秒运行中达 1.8 GiB）。定时器线程上为请求的 `timeout`（`Client`）以及 h2 流的超时和 header、idle 检查（`H2Client`）安排的任务，在请求结束后仍留在队列中，一直保留其 exchange 的内存（或其回调和流控制）直到延迟过去。超时为 60 秒时就是一分钟的请求，为一小时时就是一小时的请求。现在请求结束时就取消该任务，已取消任务的堆条目在数量超过存活任务后被清理。
+
+### 新增：`Client::close_idle`（akio-http，akit 的 A10）
+
+`akio_http::client::Client::close_idle` 立即关闭客户端所有空闲的 keep-alive 连接，并且此后每个连接在收到响应后
+关闭而不再放回空闲池，与引擎的优雅关闭已有的做法相同；之后发出的请求仍会被处理，各用一个新连接。此前客户端的空闲连接
+只在 `ClientOptions::idle_timeout`（默认 90 秒）之后、服务器关闭它们时或引擎关闭时才关闭：丢弃 `Client` 不会关闭它们，
+因为每个空闲连接都持有一个克隆。放弃一个客户端的应用（akit 中被重载替换的上游池）调用它，让连接随之关闭。测试：
+`client` 的 `close_idle_closes_idle_connections_now`。
+
+### 修复：TLS 服务端接受 server name 为 IP 地址的 ClientHello（akio-tls）
+
+akit 的 A172，由 akit I25 的基准测试发现：wrk 对 `https://127.0.0.1/` 的 HTTPS 请求全部失败。wrk（OpenSSL）即使在主机是 IP 地址时也把 URL 的主机作为 SNI 发送（RFC 6066 不允许），akio-tls 的服务端随即以 `decode_error` 应答。现在这样的名字被视为没有名字，与 Go、OpenSSL 和 nginx 的服务端一致；主机名末尾的点被去掉，而不再使握手失败。空名字或非 ASCII 名字仍会使握手失败。
 
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 

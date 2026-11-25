@@ -64,6 +64,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_http::client::CancelToken
 impl core::panic::unwind_safe::UnwindSafe for akio_http::client::CancelToken
 pub struct akio_http::client::Client
 impl akio_http::client::Client
+pub fn akio_http::client::Client::close_idle(&self)
 pub fn akio_http::client::Client::cookies(&self) -> core::option::Option<&akio_http::cookie::CookieJar>
 pub fn akio_http::client::Client::new(alloc::rcs::arc::Arc<akio::Engine>) -> akio_http::client::Client
 pub fn akio_http::client::Client::options(&self) -> &akio_http::client::ClientOptions

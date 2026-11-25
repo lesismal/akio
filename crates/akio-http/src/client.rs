@@ -1144,6 +1144,18 @@ struct Exchange {
     /// Why the exchange gave up ([`GaveUp`]), 0 while it did not.
     gave_up: AtomicU8,
     hops: AtomicU32,
+    /// The timeout's job on the timer thread, cancelled when the exchange ends (A171).
+    timer: OnceLock<crate::timer::Key>,
+}
+
+impl Drop for Exchange {
+    /// The exchange ended (its job holds it only weakly): its timeout's job goes now rather
+    /// than when the timeout would have passed, with the allocation its `Weak` keeps.
+    fn drop(&mut self) {
+        if let Some(k) = self.timer.get() {
+            crate::timer::cancel(*k);
+        }
+    }
 }
 
 impl Exchange {
@@ -1494,6 +1506,7 @@ impl Client {
             conn: Mutex::new(None),
             gave_up: AtomicU8::new(0),
             hops: AtomicU32::new(0),
+            timer: OnceLock::new(),
         });
         if let Some(t) = &req.cancel {
             if !t.attach(&ex) {
@@ -1503,11 +1516,12 @@ impl Client {
         }
         if let Some(d) = req.timeout.or(self.inner.settings.timeout) {
             let weak = Arc::downgrade(&ex);
-            crate::timer::after(d, move || {
+            let key = crate::timer::after(d, move || {
                 if let Some(ex) = weak.upgrade() {
                     ex.give_up(GaveUp::Timeout);
                 }
             });
+            let _ = ex.timer.set(key);
         }
         ex
     }
@@ -1722,6 +1736,27 @@ impl Client {
         let s = shared.clone();
         self.request(req, move |r| s.complete(r));
         ResponseFuture { shared }
+    }
+
+    /// Closes every idle keep-alive connection now, and from then on closes each connection
+    /// once its response is in instead of keeping it idle, as the engine's graceful shutdown
+    /// does: for a client that is done (Go's `Transport.CloseIdleConnections` on a transport
+    /// let go of). Requests sent afterwards are still served, each on a connection of its own.
+    /// Clones share the client, and so this. Never blocks.
+    pub fn close_idle(&self) {
+        self.inner.shutting_down.store(true, Ordering::Relaxed);
+        let idle: Vec<Conn<ClientConn>> = {
+            let mut pool = self.pool();
+            pool.total = 0;
+            pool.hosts
+                .drain()
+                .flat_map(|(_, v)| v)
+                .map(|(c, _)| c)
+                .collect()
+        };
+        for c in idle {
+            c.close();
+        }
     }
 
     fn pool(&self) -> std::sync::MutexGuard<'_, Pool> {
