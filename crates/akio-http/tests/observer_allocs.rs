@@ -133,9 +133,13 @@ fn an_observed_request_allocates_nothing_where_a_boxed_filter_allocates() {
     });
     let boxed = allocs_per_request(filtered, Arc::new(Count::default()), n);
     assert!(boxed >= 0.9, "the control allocates: {boxed}");
-    // Background threads (the deadline sweeper, the engine's) may allocate now and then.
+    // The baseline: the same request not observed, on the same scheduler. Background threads
+    // (the deadline sweeper, the engine's, rounds scheduling's workers) allocate now and then,
+    // the same with or without the observer, so the observed request is held to the baseline.
+    let plain = Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hi"));
+    let base = allocs_per_request(plain, Arc::new(Count::default()), n);
     assert!(
-        per < 0.05,
-        "an observed request allocates: {per} per request"
+        per < base + 0.05,
+        "an observed request allocates: {per} per request, {base} without the observer"
     );
 }

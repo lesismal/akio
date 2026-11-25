@@ -2967,14 +2967,25 @@ impl Inner {
                 if let Some(left) = left {
                     // Framed by its length: a write past it is refused whole (akit A35).
                     let n = data.len() as u64;
-                    if left
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |l| l.checked_sub(n))
-                        .is_err()
-                    {
-                        return Err(akio_core::Error::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "write past the response's Content-Length",
-                        )));
+                    // A compare-exchange loop rather than `fetch_update`, which newer
+                    // compilers deprecate (its replacement is newer than the MSRV).
+                    let mut l = left.load(Ordering::Acquire);
+                    loop {
+                        let Some(rest) = l.checked_sub(n) else {
+                            return Err(akio_core::Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "write past the response's Content-Length",
+                            )));
+                        };
+                        match left.compare_exchange_weak(
+                            l,
+                            rest,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        ) {
+                            Ok(_) => break,
+                            Err(cur) => l = cur,
+                        }
                     }
                     return stream.write(data.to_vec());
                 }
