@@ -327,7 +327,9 @@ fn byte_counts_report_unread_and_consumed_bytes() {
     assert_eq!(read_exact_loop(&mut c, 500), vec![9u8; 500]);
     let n = byte_counts(&c).unwrap();
     assert_eq!((n.received, n.unread, n.written), (500, 0, c0 + 3000));
-    // A received FIN is not payload.
+    // A received FIN is not payload. (`a` reads what it still holds first: closing a socket
+    // with unread data sends a reset, not a FIN.)
+    assert_eq!(read_exact_loop(&mut a, 2000), vec![7u8; 2000]);
     drop(a);
     let mut one = [0u8; 1];
     assert_eq!(c.read(&mut one).unwrap(), 0);
