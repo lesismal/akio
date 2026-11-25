@@ -10,6 +10,29 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：连接的 TCP 计数器、带首写的拼接、拼接隧道（akio-ebpf、akio-mux、akio-socks；akit A170）
+
+ADR-156。用 sockmap 中继拼接两个 `akio` 连接的代理不再需要伸手去拿 `Conn::inner`：
+
+- `akio::ebpf::conn_byte_counts(&Conn<H>)`（以及 `inner_byte_counts(&ConnInner)`）读取连接的 TCP
+  计数器。`ByteCounts` 新增 `unread`（`SIOCINQ`，接收队列）和 `consumed()`（`received - unread`：
+  用户态读走的字节，包括 PROXY 头或 ClientHello）。其背后的三次调用会重读，直到 `TCP_INFO` 在前后
+  一致。
+- `Relay::splice_conns_with(&Conn<A>, &Conn<B>, first: &[u8]) -> Result<Splice, SpliceError>`
+  （以及面向 `ConnInner` 的 `splice_inner_first`）在两个 socket 都进入 map 之后、中继任何字节之前，
+  把 `first` 写入 `b` 的 socket。`SpliceError` 带有错误以及 `first` 已写出的字节数。
+  `Splice::base()` 保存中继开始时两个 socket 的计数器，在闸门下读取（`consumed` 在 socket 进入 map
+  之前读取，因为进入后 `SIOCINQ` 可能报告的是 psock 的队列）；所有连接间的拼接都会填充它。
+- `akio::ebpf::Tunnel`（`Relay::tunnel`、`Relay::tunnel_inner`）运行一对拼接的连接：`base`、
+  `counts`、`relayed_from`、空闲探测（`activity`、`moved`）、`close_after_forward`（结束一侧收到的
+  全部字节进入另一侧发送队列后再关闭另一侧，或在停滞后关闭，由唯一的 `akio-ebpf-drain` 线程轮询）
+  以及 `late_payload`。它只弱引用两个连接。
+- akio-socks 的 `CONNECT` 拼接改为基于 `Tunnel`：其私有的 drain 线程被移除；一侧的 drain 目标现在
+  计入拼接时还在另一个 socket 接收队列里的字节（先发问候的服务器），旧的目标漏算了这部分。
+- akio-mux：`ProxyHeader::wire_len()` 是读取到的头在线上的长度（`parse`，因而也包括
+  `ProxyProtocol` 附加的头），本地构造的头为 `None`。该结构体新增一个私有字段（请用 `proxy` /
+  `local` 构造头），相等比较与哈希忽略它。
+
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
 使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在

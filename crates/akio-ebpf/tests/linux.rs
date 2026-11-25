@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use akio_ebpf::{AttachOptions, HashKey, Relay, Steering, Tier, attach_reuseport};
+use akio_ebpf::{AttachOptions, HashKey, Relay, Steering, Tier, attach_reuseport, byte_counts};
 
 fn expect_ebpf() -> bool {
     std::env::var("AKIO_TEST_EXPECT_EBPF").is_ok_and(|v| v == "1")
@@ -292,4 +292,66 @@ fn relay_refuses_kernels_with_the_eagain_bug() {
         let e = Relay::new(1).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::Unsupported, "{e}");
     }
+}
+
+/// `byte_counts` on plain sockets (no privileges): bytes not read yet are `unread`, what was
+/// read is `consumed`, and what was written counts at once (acknowledged or still queued).
+#[test]
+fn byte_counts_report_unread_and_consumed_bytes() {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+    let (mut a, _) = l.accept().unwrap();
+    for s in [&c, &a] {
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    }
+    c.write_all(&[7u8; 3000]).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    let mut n = byte_counts(&a).unwrap();
+    while n.received < 3000 {
+        assert!(Instant::now() < end, "{n:?}");
+        std::thread::sleep(Duration::from_millis(2));
+        n = byte_counts(&a).unwrap();
+    }
+    assert_eq!(
+        (n.received, n.unread, n.consumed(), n.written),
+        (3000, 3000, 0, 0)
+    );
+    assert_eq!(read_exact_loop(&mut a, 1000), vec![7u8; 1000]);
+    let n = byte_counts(&a).unwrap();
+    assert_eq!((n.received, n.unread, n.consumed()), (3000, 2000, 1000));
+    a.write_all(&[9u8; 500]).unwrap();
+    assert_eq!(byte_counts(&a).unwrap().written, 500);
+    assert_eq!(read_exact_loop(&mut c, 500), vec![9u8; 500]);
+    let n = byte_counts(&c).unwrap();
+    assert_eq!((n.received, n.unread, n.written), (500, 0, 3000));
+}
+
+/// A raw splice reads both sockets' base counters as the relay begins.
+#[test]
+fn raw_splice_reports_base_counters() {
+    let Some(relay) = privileged("sockmap relay", Relay::new_any_kernel(4)) else {
+        return;
+    };
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let mut c1 = TcpStream::connect(addr).unwrap();
+    let (mut a, _) = l.accept().unwrap();
+    let mut c2 = TcpStream::connect(addr).unwrap();
+    let (b, _) = l.accept().unwrap();
+    for s in [&c1, &c2, &a, &b] {
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    }
+    // `a` read 2 of the 5 bytes it received; 3 wait in its queue and are relayed.
+    c1.write_all(b"hello").unwrap();
+    assert_eq!(read_exact_loop(&mut a, 2), b"he");
+    let end = Instant::now() + Duration::from_secs(10);
+    while byte_counts(&a).unwrap().received < 5 {
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let s = relay.splice(a.as_raw_fd(), b.as_raw_fd()).unwrap();
+    let [x, y] = s.base().unwrap();
+    assert_eq!((x.received, x.consumed(), x.unread), (5, 2, 3), "{x:?}");
+    assert_eq!((y.received, y.consumed(), y.written), (0, 0, 0), "{y:?}");
+    assert_eq!(read_exact_loop(&mut c2, 3), b"llo");
 }

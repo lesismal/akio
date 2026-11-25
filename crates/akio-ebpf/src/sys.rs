@@ -541,11 +541,14 @@ pub(crate) fn if_index(name: &str) -> io::Result<u32> {
 }
 
 const SIOCOUTQ: ffi::c_ulong = 0x5411;
+/// `SIOCINQ` (`FIONREAD`).
+const SIOCINQ: ffi::c_ulong = 0x541B;
 const TCP_INFO: ffi::c_int = 11;
 
+/// `ioctl(fd, req, &int)` for `req` one of `SIOCOUTQ` / `SIOCINQ`.
 fn ioctl_int(fd: RawFd, req: ffi::c_ulong) -> io::Result<usize> {
     let mut n: ffi::c_int = 0;
-    // SAFETY: SIOCOUTQ writes one int to the pointer, which is valid for that write.
+    // SAFETY: SIOCOUTQ and SIOCINQ write one int to the pointer, which is valid for that write.
     cvt(unsafe { ffi::ioctl(fd, req, &raw mut n) })?;
     Ok(n.max(0) as usize)
 }
@@ -553,6 +556,11 @@ fn ioctl_int(fd: RawFd, req: ffi::c_ulong) -> io::Result<usize> {
 /// `ioctl(SIOCOUTQ)`: bytes in the socket's send queue not acknowledged yet.
 pub(crate) fn unsent_bytes(fd: RawFd) -> io::Result<usize> {
     ioctl_int(fd, SIOCOUTQ)
+}
+
+/// `ioctl(SIOCINQ)`: bytes in the socket's receive queue not read yet.
+pub(crate) fn unread_bytes(fd: RawFd) -> io::Result<usize> {
+    ioctl_int(fd, SIOCINQ)
 }
 
 /// `(tcpi_bytes_received, tcpi_bytes_acked)` of `TCP_INFO` (Linux 4.1+).

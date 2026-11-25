@@ -129,7 +129,11 @@ pub struct Tlv {
 }
 
 /// A PROXY protocol header.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// Build one with [`proxy`](Self::proxy) or [`local`](Self::local) (then set its fields), or
+/// read one with [`parse`](Self::parse). Equality and hashing compare the fields, not
+/// [`wire_len`](Self::wire_len).
+#[derive(Clone, Debug)]
 pub struct ProxyHeader {
     /// The format it came in (or [`Version::V2`] for one built here).
     pub version: Version,
@@ -141,6 +145,30 @@ pub struct ProxyHeader {
     pub addresses: Addresses,
     /// v2 extensions, in order.
     pub tlvs: Vec<Tlv>,
+    /// Its length on the wire, when it was read.
+    wire_len: Option<usize>,
+}
+
+impl PartialEq for ProxyHeader {
+    fn eq(&self, o: &ProxyHeader) -> bool {
+        self.version == o.version
+            && self.command == o.command
+            && self.transport == o.transport
+            && self.addresses == o.addresses
+            && self.tlvs == o.tlvs
+    }
+}
+
+impl Eq for ProxyHeader {}
+
+impl std::hash::Hash for ProxyHeader {
+    fn hash<S: std::hash::Hasher>(&self, h: &mut S) {
+        self.version.hash(h);
+        self.command.hash(h);
+        self.transport.hash(h);
+        self.addresses.hash(h);
+        self.tlvs.hash(h);
+    }
 }
 
 /// Why a header could not be read.
@@ -188,6 +216,7 @@ impl ProxyHeader {
                 destination,
             },
             tlvs: Vec::new(),
+            wire_len: None,
         }
     }
 
@@ -199,6 +228,7 @@ impl ProxyHeader {
             transport: Transport::Unspec,
             addresses: Addresses::None,
             tlvs: Vec::new(),
+            wire_len: None,
         }
     }
 
@@ -241,7 +271,15 @@ impl ProxyHeader {
         std::str::from_utf8(self.tlv(tlv::AUTHORITY)?).ok()
     }
 
-    /// Reads a v1 or v2 header from the start of `b`; returns it and its length.
+    /// The header's length on the wire, when it was read ([`parse`](Self::parse), and so the
+    /// header [`ProxyProtocol`] attaches to a connection): the bytes the listener layer took
+    /// from the connection before its handler's first byte. `None` for a header built here.
+    pub fn wire_len(&self) -> Option<usize> {
+        self.wire_len
+    }
+
+    /// Reads a v1 or v2 header from the start of `b`; returns it and its length (also kept as
+    /// its [`wire_len`](Self::wire_len)).
     ///
     /// Prefix-consistent: a prefix of a header is [`ProxyError::Incomplete`], and input found
     /// invalid stays invalid however many bytes follow.
@@ -249,12 +287,16 @@ impl ProxyHeader {
         if b.is_empty() {
             return Err(ProxyError::Incomplete);
         }
-        match (prefix_state(b, V1_PREFIX), prefix_state(b, &V2_SIGNATURE)) {
+        let r = match (prefix_state(b, V1_PREFIX), prefix_state(b, &V2_SIGNATURE)) {
             (Some(true), _) => parse_v1(b),
             (_, Some(true)) => parse_v2(b),
             (Some(false), _) | (_, Some(false)) => Err(ProxyError::Incomplete),
             (None, None) => Err(ProxyError::Invalid("no PROXY signature")),
-        }
+        };
+        r.map(|(mut h, n)| {
+            h.wire_len = Some(n);
+            (h, n)
+        })
     }
 
     /// The v1 form: `None` when v1 cannot carry the header (Unix addresses, TLVs, datagrams).
@@ -403,6 +445,7 @@ fn parse_v1(b: &[u8]) -> Result<(ProxyHeader, usize), ProxyError> {
         transport: Transport::Unspec,
         addresses: Addresses::None,
         tlvs: Vec::new(),
+        wire_len: None,
     };
     if line == "UNKNOWN" || line.starts_with("UNKNOWN ") {
         return Ok((unknown, used));
@@ -441,6 +484,7 @@ fn parse_v1(b: &[u8]) -> Result<(ProxyHeader, usize), ProxyError> {
                 destination: SocketAddr::new(d, dp),
             },
             tlvs: Vec::new(),
+            wire_len: None,
         },
         used,
     ))
@@ -495,6 +539,7 @@ fn parse_v2(b: &[u8]) -> Result<(ProxyHeader, usize), ProxyError> {
                 transport,
                 addresses: Addresses::None,
                 tlvs: Vec::new(),
+                wire_len: None,
             },
             total,
         ));
@@ -579,6 +624,7 @@ fn parse_v2(b: &[u8]) -> Result<(ProxyHeader, usize), ProxyError> {
             transport,
             addresses,
             tlvs,
+            wire_len: None,
         },
         total,
     ))
@@ -907,6 +953,40 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    /// A parsed header keeps its length on the wire, whatever the parser discards (a LOCAL
+    /// block, an UNKNOWN line's rest, TLVs); a built one has none; equality ignores it.
+    #[test]
+    fn wire_len_of_read_headers() {
+        let built = ProxyHeader::proxy(v4("192.0.2.1:51000"), v4("198.51.100.2:443"));
+        assert_eq!(built.wire_len(), None);
+        let v1 = built.encode_v1().unwrap();
+        let v2 = built
+            .clone()
+            .with_tlv(tlv::AUTHORITY, "a.test")
+            .encode_v2()
+            .unwrap();
+        let mut local = ProxyHeader::local().encode_v2().unwrap();
+        // A LOCAL header with an address block, which the parser discards.
+        local[13] = 0x11;
+        local[15] = 12;
+        local.extend_from_slice(&[0; 12]);
+        let unknown = b"PROXY UNKNOWN ffff::1 x y z\r\n".to_vec();
+        for (w, n) in [
+            (&v1, v1.len()),
+            (&v2, 16 + 12 + 3 + 6),
+            (&local, 28),
+            (&unknown, 29),
+        ] {
+            let wire = [&w[..], b"payload"].concat();
+            let (h, used) = ProxyHeader::parse(&wire).unwrap();
+            assert_eq!((used, h.wire_len()), (n, Some(n)), "{w:?}");
+        }
+        let (h, _) = ProxyHeader::parse(&v1).unwrap();
+        let mut b = built;
+        b.version = Version::V1;
+        assert_eq!(h, b);
     }
 
     #[test]

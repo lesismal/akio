@@ -318,10 +318,10 @@ impl Handler for Upstream {
         }
         forward(c.inner(), &self.client, data);
     }
-    fn on_close(&mut self, c: &Conn<Self>, _err: Option<akio::Error>) {
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<akio::Error>) {
         match &self.splice {
             Some(s) if s.is_spliced() => {
-                s.close_after_forward(c.inner(), false, self.client.clone(), self.stall);
+                s.close_after_forward(false, &self.client, self.stall);
             }
             _ => self.client.close_after_send(),
         }
@@ -1602,7 +1602,7 @@ impl Handler for SocksSession {
         }
     }
 
-    fn on_close(&mut self, c: &Conn<Self>, _err: Option<akio::Error>) {
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<akio::Error>) {
         if let Some(cancel) = self.bind_cancel.take() {
             cancel.store(true, Ordering::Release);
         }
@@ -1617,7 +1617,7 @@ impl Handler for SocksSession {
         if let Some(up) = taken {
             match &self.splice {
                 Some(s) if s.is_spliced() => {
-                    s.close_after_forward(c.inner(), true, up, stall(&self.cfg));
+                    s.close_after_forward(true, &up, stall(&self.cfg));
                 }
                 _ => up.close_after_send(),
             }
@@ -2202,8 +2202,8 @@ impl RawHandler for Tunnel {
             .take();
         if let Some(up) = taken {
             match (&self.splice, &self.client) {
-                (Some(s), Some(client)) if s.is_spliced() => {
-                    s.close_after_forward(client, true, up, stall(&self.cfg));
+                (Some(s), Some(_)) if s.is_spliced() => {
+                    s.close_after_forward(true, &up, stall(&self.cfg));
                 }
                 _ => up.close_after_send(),
             }

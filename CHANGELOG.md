@@ -10,6 +10,34 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a connection's TCP counters, splices with a first write, and spliced tunnels (akio-ebpf, akio-mux, akio-socks; akit A170)
+
+ADR-156. A proxy that splices two `akio` connections with the sockmap relay no longer reaches
+into `Conn::inner`:
+
+- `akio::ebpf::conn_byte_counts(&Conn<H>)` (and `inner_byte_counts(&ConnInner)`) read a
+  connection's TCP counters. `ByteCounts` gains `unread` (`SIOCINQ`, the receive queue) and
+  `consumed()` (`received - unread`: what userspace read, a PROXY header or ClientHello
+  included). The three calls behind it are read again until `TCP_INFO` is stable around them.
+- `Relay::splice_conns_with(&Conn<A>, &Conn<B>, first: &[u8]) -> Result<Splice, SpliceError>`
+  (and `splice_inner_first` for `ConnInner`s) writes `first` to `b`'s socket once both are in
+  the map and before any byte is relayed. `SpliceError` carries the error and how much of
+  `first` was written. `Splice::base()` holds both sockets' counters as the relay began, read
+  under the gate (`consumed` before the sockets enter the map, where `SIOCINQ` may report the
+  psock's queue); every splice of connections fills it.
+- `akio::ebpf::Tunnel` (`Relay::tunnel`, `Relay::tunnel_inner`) runs a spliced pair: `base`,
+  `counts`, `relayed_from`, the idle probe (`activity`, `moved`), `close_after_forward` (the
+  other side closed once everything the ended side received reached its send queue, or after a
+  stall, polled on one `akio-ebpf-drain` thread) and `late_payload`. It keeps the connections
+  weakly.
+- akio-socks's `CONNECT` splice runs on `Tunnel`: its private drain thread is gone, and a side's
+  drain target now counts the bytes that waited in the other socket's receive queue at the
+  splice (a server that greets first), which the old target missed.
+- akio-mux: `ProxyHeader::wire_len()` is the header's length on the wire when it was read
+  (`parse`, and so the header `ProxyProtocol` attaches), `None` for one built here. The struct
+  gains a private field (build headers with `proxy` / `local`), and equality and hashing ignore
+  it.
+
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 
 A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain
