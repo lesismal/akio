@@ -134,6 +134,22 @@ loads modules; running them is W2.
   refused features' proposal files as refusal checks, every limit under, at and over, modules at
   the default limits in bounded time. Fuzz target `wasm_decode` (dictionary `fuzz/dict/wasm.dict`).
 
+### Added: a request changed by a middleware, and a request's end heard (akio-http, ADR-126, ADR-127)
+
+- `Context::req_mut() -> Option<&mut Request>` (ADR-126): a middleware changes the request's
+  fields, target, method or body before the handler; `path()`, `header()`, the handlers after it,
+  `Files` and the response filters see the change. `None` once the request is shared (`detach`, a
+  WebSocket upgrade). Route parameters keep reading the path they were matched in. `suspend` now
+  moves the request whole into the resumed context, which can change it.
+- `Context::on_end(f) -> bool`, `Detached::on_end(f)` and `enum End { Sent, Gone }` (ADR-127): `f`
+  runs exactly once when the request is done with: `Sent` once its response was handed to the
+  connection in full (a streamed one's once finished, not at its head), `Gone` when its client
+  went first (heard while it waits detached or streams) or its response was given up (a
+  `Detached` or `BodyStream` dropped unfinished). Several hooks run in order; one added after the
+  end runs at once. `on_gone` keeps its meaning and now lives beside them (it no longer takes the
+  transport's one peer-gone slot). On HTTP/1.1, HTTP/2 and HTTP/3. A request that registers
+  neither allocates nothing more.
+
 ### Fixed: the HTTP/3 client no longer deadlocks resuming, cancelling or timing out a request (akio-h3)
 
 A call on a QUIC connection from outside its handler drives the connection on the calling thread,

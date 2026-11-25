@@ -119,3 +119,5 @@
 - [ADR-123：握手之外使用的根证书，以及仅用于握手的 ALPN 协议](123-root-store-and-handshake-only-alpn.zh-CN.md)（2026-11-25 采纳）
 - [ADR-124：`Files` 作为网关的静态文件处理器、内存有界，以及文件消息体编码](124-files-as-a-gateway-static-handler.zh-CN.md)（2026-11-25 采纳）
 - [ADR-125：插件用的 WebAssembly 运行时：独立 crate 中的安全解释器](125-wasm-runtime-for-plugins.zh-CN.md)（2026-11-25 采纳；akit A165，用于 I71 和 I72；W1 至 W4 已实现）
+- [ADR-126：由中间件修改的请求](126-request-changed-by-a-middleware.zh-CN.md)（2026-11-25 采纳）
+- [ADR-127：得知请求的结束：响应完整发出，或客户端离开](127-request-end-hooks.zh-CN.md)（2026-11-25 采纳）

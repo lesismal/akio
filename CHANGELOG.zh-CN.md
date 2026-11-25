@@ -95,6 +95,19 @@ ADR-125（已采纳），akit 为其 WASM 插件（I71）和 Proxy-Wasm（I72）
   `crates/akio-wasm/tests/spec`）、被拒绝特性的提案文件作为拒绝检查、每个上限的低于/等于/超过、默认上限处的模块在有界时间内加载。
   模糊测试目标 `wasm_decode`（字典 `fuzz/dict/wasm.dict`）。
 
+### 新增：由中间件修改的请求，以及得知请求的结束（akio-http，ADR-126、ADR-127）
+
+- `Context::req_mut() -> Option<&mut Request>`（ADR-126）：中间件在处理器之前修改请求的字段、
+  目标、方法或消息体；`path()`、`header()`、其后的处理器、`Files` 和响应过滤器都看到修改。请求
+  被共享后（`detach`、WebSocket 升级）返回 `None`。路由参数仍读取它们匹配时的路径。`suspend`
+  现在把整个请求移入恢复后的上下文，后者可以修改它。
+- `Context::on_end(f) -> bool`、`Detached::on_end(f)` 和 `enum End { Sent, Gone }`
+  （ADR-127）：请求结束时 `f` 恰好运行一次：响应完整交给连接后为 `Sent`（流式响应在完成时，而非
+  响应头发出时），客户端先离开（分离等待或流式发送时都能得知）或响应被放弃（未完成就被丢弃的
+  `Detached` 或 `BodyStream`）时为 `Gone`。多个钩子按顺序运行；结束之后添加的立即运行。`on_gone`
+  保持原意，现在与它们并存（不再占用传输层唯一的对端离开槽位）。适用于 HTTP/1.1、HTTP/2 和
+  HTTP/3。两者都不注册的请求没有额外分配。
+
 ### 修复：HTTP/3 客户端恢复读取、取消或超时一个请求时不再死锁（akio-h3）
 
 在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，为待处理的事件运行

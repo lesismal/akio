@@ -90,6 +90,164 @@ impl<'a> std::fmt::Debug for BodyEvent<'a> {
 
 type Sink = Box<dyn FnMut(&mut Context, BodyEvent<'_>) + Send>;
 type Filter = Box<dyn FnOnce(&mut Response, &Request) + Send>;
+type EndHook = Box<dyn FnOnce(End) + Send>;
+type GoneHook = Box<dyn FnOnce() + Send>;
+
+/// How a request ended, for [`Context::on_end`] (ADR-127).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum End {
+    /// Its response was handed to the connection in full: a whole response once sent, a
+    /// streamed one once [`BodyStream::finish`]ed (its last byte, and on HTTP/1.1 its last
+    /// chunk, queued on the connection or stream), an upgrade once its `101` (or `200`) went
+    /// out or the connection was taken over ([`Context::upgrade_raw`]).
+    Sent,
+    /// It ended before that: its client went (as [`Context::on_gone`] hears it: the connection
+    /// closed, or on HTTP/2 and HTTP/3 the stream reset or its response stopped), or the server
+    /// gave its response up (a [`Detached`] or [`BodyStream`] dropped unfinished, which closes
+    /// the connection or resets the stream).
+    Gone,
+}
+
+/// A request's end hooks ([`Context::on_end`]) and its peer-gone callback
+/// ([`Context::on_gone`]), shared by the context and whatever holds its response (a
+/// [`Detached`], a [`BodyStream`]); the transport holds it weakly, to run when the client goes.
+/// Made only for a request that registers one.
+#[derive(Default)]
+pub(crate) struct Hooks(Mutex<HookState>);
+
+#[derive(Default)]
+struct HookState {
+    /// The [`Context::on_gone`] callback: run when the client goes, dropped once the response
+    /// is sent.
+    gone: Option<GoneHook>,
+    /// The [`Context::on_end`] hooks, in registration order, each run once.
+    ends: Vec<EndHook>,
+    /// How the request ended, once it did: a hook registered later runs at once with it.
+    ended: Option<End>,
+    /// The transport was asked to tell the client's going.
+    watched: bool,
+    /// The transport told it: a callback set later runs at once.
+    client_went: bool,
+}
+
+fn lock_hooks(h: &Hooks) -> std::sync::MutexGuard<'_, HookState> {
+    h.0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Hooks {
+    /// The client went (the transport's peer-gone callback): the [`Context::on_gone`] callback
+    /// runs, and the request ends [`End::Gone`] unless it already ended.
+    fn client_gone(&self) {
+        let (gone, ends) = {
+            let mut st = lock_hooks(self);
+            st.client_went = true;
+            let gone = st.gone.take();
+            if st.ended.is_some() {
+                (gone, Vec::new())
+            } else {
+                st.ended = Some(End::Gone);
+                (gone, std::mem::take(&mut st.ends))
+            }
+        };
+        if let Some(g) = gone {
+            g();
+        }
+        for f in ends {
+            f(End::Gone);
+        }
+    }
+
+    /// The request ended `end`, unless it already ended. Once sent, the [`Context::on_gone`]
+    /// callback is dropped unrun; when given up ([`End::Gone`] from a dropped [`Detached`] or
+    /// stream) it stays for the transport, which runs it as the connection or stream closes.
+    fn end(&self, end: End) {
+        let (gone, ends) = {
+            let mut st = lock_hooks(self);
+            if st.ended.is_some() {
+                return;
+            }
+            st.ended = Some(end);
+            let gone = if end == End::Sent {
+                st.gone.take()
+            } else {
+                None
+            };
+            (gone, std::mem::take(&mut st.ends))
+        };
+        drop(gone);
+        for f in ends {
+            f(end);
+        }
+    }
+
+    /// Adds an end hook; runs it at once when the request already ended.
+    fn add_end(&self, f: EndHook) {
+        let ended = {
+            let mut st = lock_hooks(self);
+            if st.ended.is_none() {
+                st.ends.push(f);
+                return;
+            }
+            st.ended
+        };
+        if let Some(e) = ended {
+            f(e);
+        }
+    }
+
+    /// Sets the [`Context::on_gone`] callback, replacing an earlier one; dropped when the
+    /// response was already sent, run at once when the client already went.
+    fn set_gone(&self, f: GoneHook) {
+        let old = {
+            let mut st = lock_hooks(self);
+            if st.ended == Some(End::Sent) {
+                return;
+            }
+            if st.client_went {
+                drop(st);
+                return f();
+            }
+            st.gone.replace(f)
+        };
+        drop(old);
+    }
+
+    /// Asks the transport of `out` to tell the client's going, once.
+    fn watch(self: &Arc<Self>, out: &mut Out) {
+        if std::mem::replace(&mut lock_hooks(self).watched, true) {
+            return;
+        }
+        let w = Arc::downgrade(self);
+        out.on_gone(Box::new(move || {
+            if let Some(h) = w.upgrade() {
+                h.client_gone();
+            }
+        }));
+    }
+}
+
+/// The duty to end a request's hooks, carried with its response (a [`Detached`], a
+/// [`BodyStream`]): [`sent`](Self::sent) once the response is out, [`End::Gone`] when dropped
+/// before.
+#[derive(Default)]
+struct EndGuard(Option<Arc<Hooks>>);
+
+impl EndGuard {
+    fn sent(&mut self) {
+        if let Some(h) = self.0.take() {
+            h.end(End::Sent);
+        }
+    }
+}
+
+impl Drop for EndGuard {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            h.end(End::Gone);
+        }
+    }
+}
 
 impl<F> Service for F
 where
@@ -161,7 +319,9 @@ impl Out {
         }
     }
 
-    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+    /// Sends `resp`, its filters applied, then ends the request's hooks [`End::Sent`] (a coded
+    /// file's, streamed, once its stream finishes).
+    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request, mut end: EndGuard) -> u16 {
         fin.apply(&mut resp, req);
         let status = resp.status;
         if resp.stream_coding.is_some()
@@ -171,7 +331,7 @@ impl Out {
             && status != 304
         {
             // A file body a filter gave a coding (ADR-124): read and encoded on the disk pool.
-            coded_file(self, resp, req);
+            coded_file(self, resp, req, end);
             return status;
         }
         match self {
@@ -179,6 +339,7 @@ impl Out {
             Out::H2(r) => r.send(resp),
             Out::Ext(r) => r.send(resp),
         }
+        end.sent();
         status
     }
 }
@@ -187,7 +348,7 @@ impl Out {
 /// streamed response (ADR-124): `Content-Length` dropped, chunked on keep-alive HTTP/1.1, the
 /// file read in pieces on the disk pool and each piece encoded there and written under the
 /// connection's backpressure ([`FilePump`]). A HEAD answer sends the head alone.
-fn coded_file(out: Out, mut resp: Response, req: &Request) {
+fn coded_file(out: Out, mut resp: Response, req: &Request, end: EndGuard) {
     let Some(file) = resp.file.take() else { return };
     resp.streaming = true;
     resp.headers.remove("Content-Length");
@@ -195,7 +356,7 @@ fn coded_file(out: Out, mut resp: Response, req: &Request) {
     if chunked {
         resp.headers.set("Transfer-Encoding", "chunked");
     }
-    let Some(stream) = open_stream(out, resp, req, chunked) else {
+    let Some(stream) = open_stream(out, resp, req, chunked, end) else {
         return;
     };
     if req.method == Method::Head || file.len == 0 {
@@ -533,6 +694,20 @@ pub struct Context {
     /// HTTP/1: the hold on the connection's reads that [`body_reads`](Self::body_reads) gave
     /// out, released when the body ends.
     reads: Option<Arc<H1Reads>>,
+    /// The request's end hooks and peer-gone callback, once one is registered (ADR-127).
+    hooks: Option<Arc<Hooks>>,
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        // Dropped still holding its response, unanswered (its connection or stream closes
+        // with it): the request ends there.
+        if self.responder.is_some() {
+            if let Some(h) = &self.hooks {
+                h.end(End::Gone);
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Context {
@@ -589,6 +764,7 @@ impl Context {
             route: None,
             streamed: false,
             reads: None,
+            hooks: None,
         }
     }
 
@@ -607,6 +783,10 @@ impl Context {
     #[inline]
     pub(crate) fn recycle_request(&mut self) {
         if let ReqCell::Own(r) = &mut self.req {
+            // A request moved out ([`suspend`](Self::suspend)) left an empty one: nothing to keep.
+            if r.target.capacity() == 0 {
+                return;
+            }
             if r.target.capacity() <= SPARE_TARGET_MAX {
                 let mut t = std::mem::take(&mut r.target);
                 t.clear();
@@ -631,6 +811,7 @@ impl Context {
             route: None,
             streamed: false,
             reads: None,
+            hooks: None,
             responder: None,
         }
     }
@@ -651,6 +832,7 @@ impl Context {
             route: None,
             streamed: false,
             reads: None,
+            hooks: None,
             responder: Some(Out::H2(responder)),
         }
     }
@@ -658,6 +840,29 @@ impl Context {
     /// The request.
     pub fn req(&self) -> &Request {
         &self.req
+    }
+
+    /// The request, to change before the handler sees it (ADR-126): a middleware sets, adds and
+    /// removes its fields, changes its target (a rewritten path), its method or its body. What
+    /// reads the request afterwards sees the change: [`path`](Self::path),
+    /// [`header`](Self::header), the handlers after this middleware, [`Files`](crate::Files)'
+    /// conditional and range fields, the response filters' `&Request`. Route parameters keep
+    /// reading the path they were matched in ([`param`](Self::param)): a router matches before
+    /// its routes' layers run, so a target changed by one of them does not route the request
+    /// again, while one changed by a [`Middleware`] wrapping the whole router does.
+    ///
+    /// `None` once the request is shared: after [`detach`](Self::detach) (the [`Detached`] has
+    /// it) or a WebSocket upgrade. A context resumed after [`suspend`](Self::suspend) has it
+    /// whole, to change.
+    ///
+    /// The request's framing is the server's: a changed `Content-Length` or
+    /// `Transfer-Encoding` does not change how the rest of its body is read.
+    pub fn req_mut(&mut self) -> Option<&mut Request> {
+        self.params.pin(self.req.path());
+        match &mut self.req {
+            ReqCell::Own(r) => Some(r),
+            ReqCell::Shared(a) => Arc::get_mut(a),
+        }
     }
 
     /// The method.
@@ -817,9 +1022,69 @@ impl Context {
     ///
     /// A proxy cancels its upstream request from it ([`CancelToken`](crate::client::CancelToken)).
     pub fn on_gone(&mut self, f: impl FnOnce() + Send + 'static) {
-        if let Some(out) = self.responder.as_mut() {
-            out.on_gone(Box::new(f));
+        self.with_hooks(|h| h.set_gone(Box::new(f)));
+    }
+
+    /// Calls `f` once when the request is done with (ADR-127): [`End::Sent`] once its response
+    /// was handed to the connection in full (a streamed one's once [`BodyStream::finish`]ed),
+    /// [`End::Gone`] when its client went first (as [`on_gone`](Self::on_gone) hears it), or
+    /// its response was given up (a [`Detached`] or [`BodyStream`] dropped unfinished, a
+    /// context dropped unanswered). Whatever happens to the request after this call (answered
+    /// here, detached, streamed, suspended, upgraded, run on the pool), `f` runs exactly once:
+    /// a limit that counts requests under way gives the place back from it, an access log
+    /// takes a streamed response's duration from it.
+    ///
+    /// Hooks run in the order they were added, on the thread that ends the request: the one
+    /// that sends the response or finishes the stream, or the connection's I/O thread when the
+    /// client goes. Registered after the request ended, `f` runs at once. Registering one also
+    /// watches for the client's going, as `on_gone` does (on HTTP/1, an EOF from the client
+    /// counts).
+    ///
+    /// `false`, `f` dropped unrun, when the response was already taken
+    /// ([`detach`](Self::detach), [`stream_response`](Self::stream_response), an upgrade) with
+    /// no hook registered before: the request can no longer be followed from here. Register
+    /// before taking the response, or on the [`Detached`] ([`Detached::on_end`]).
+    pub fn on_end(&mut self, f: impl FnOnce(End) + Send + 'static) -> bool {
+        let mut f = Some(f);
+        if self.with_hooks(|h| {
+            if let Some(f) = f.take() {
+                h.add_end(Box::new(f));
+            }
+        }) {
+            return true;
         }
+        match f {
+            Some(f) if !self.detached && self.status.is_some() => {
+                // Sent from this context, with no hook to follow it: it ended.
+                f(End::Sent);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Runs `add` with the request's hooks: made, and the transport then asked to tell the
+    /// client's going, while this context still holds the response; the existing ones once it
+    /// does not (`false` when there are none).
+    fn with_hooks(&mut self, add: impl FnOnce(&Hooks)) -> bool {
+        if let Some(out) = self.responder.as_mut() {
+            let h = self.hooks.get_or_insert_with(Arc::default);
+            add(h);
+            h.watch(out);
+            return true;
+        }
+        match &self.hooks {
+            Some(h) => {
+                add(h);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The duty to end this request's hooks, for what takes its response.
+    fn end_guard(&self) -> EndGuard {
+        EndGuard(self.hooks.clone())
     }
 
     /// Marks the request as one whose body arrives after `call` (see [`body_reads`]).
@@ -879,7 +1144,8 @@ impl Context {
     /// Sends `resp`. Only the first response counts; later calls are ignored.
     pub fn respond(&mut self, resp: Response) {
         if let Some(r) = self.responder.take() {
-            self.status = Some(r.send(resp, &mut self.fin, &self.req));
+            let end = self.end_guard();
+            self.status = Some(r.send(resp, &mut self.fin, &self.req, end));
         }
     }
 
@@ -900,6 +1166,7 @@ impl Context {
         let responder = self.responder.take()?;
         self.detached = true;
         Some(Detached {
+            end: self.end_guard(),
             req: self.req.share(),
             params: std::mem::take(&mut self.params).boxed(),
             fin: Finish {
@@ -930,7 +1197,8 @@ impl Context {
         let out = self.responder.take()?;
         self.detached = true;
         self.status = Some(status);
-        start_stream(out, &mut self.fin, &self.req, status, headers)
+        let end = self.end_guard();
+        start_stream(out, &mut self.fin, &self.req, status, headers, end)
     }
 
     /// Server push (HTTP/2): promises `GET path` to the client and serves it with the same
@@ -1080,11 +1348,16 @@ impl Context {
         let ext = match self.responder.take() {
             Some(Out::Ext(out)) => match out.start_stream(resp) {
                 Some(body) => Some(body),
-                None => return false,
+                None => {
+                    // The stream is gone: so is the request.
+                    drop(self.end_guard());
+                    return false;
+                }
             },
             // HTTP/2: the session takes the stream over once the handler returns.
             Some(Out::H2(out)) => {
                 if !out.start_tunnel(&resp) {
+                    drop(self.end_guard());
                     return false;
                 }
                 None
@@ -1095,6 +1368,7 @@ impl Context {
             }
         };
         self.detached = true;
+        self.end_guard().sent();
         self.upgrade = Some(PendingUpgrade {
             handler,
             cfg: opts.config.clone(),
@@ -1118,6 +1392,7 @@ impl Context {
                 // Keep the response order: earlier pipelined answers still go out first.
                 r.slot.fill(Vec::new());
                 self.detached = true;
+                self.end_guard().sent();
                 self.raw = Some(Box::new(handler));
                 true
             }
@@ -1164,8 +1439,11 @@ impl Context {
         }
         let responder = self.responder.take()?;
         self.detached = true;
+        // The request moves whole, so the resumed context can change it (`req_mut`); the one the
+        // server keeps reads as detached and is not asked for it again.
+        let req = std::mem::replace(&mut self.req, ReqCell::Own(Request::new(Method::Get, "")));
         let ctx = Context {
-            req: ReqCell::Shared(self.req.share()),
+            req,
             params: std::mem::take(&mut self.params),
             locals: std::mem::take(&mut self.locals),
             fin: std::mem::replace(&mut self.fin, Finish::new()),
@@ -1179,6 +1457,7 @@ impl Context {
             route: self.route,
             streamed: false,
             reads: None,
+            hooks: self.hooks.take(),
         };
         Some(Suspended(Some(Box::new(ctx))))
     }
@@ -1334,6 +1613,8 @@ static EMPTY_REQUEST: std::sync::LazyLock<Request> =
 /// A request whose response will be sent later; see [`Context::detach`]. Dropping it without
 /// responding closes the connection.
 pub struct Detached {
+    /// Ends the request's hooks: when the response goes, or [`End::Gone`] when dropped first.
+    end: EndGuard,
     req: Arc<Request>,
     /// Boxed (and only when there are parameters) to keep `Detached` small.
     params: Option<Box<crate::router::Params>>,
@@ -1372,17 +1653,40 @@ impl Detached {
     /// Calls `f` once if the client goes before the response is finished, as
     /// [`Context::on_gone`] says; replaces an earlier `f` (one registered on the context too).
     pub fn on_gone(&mut self, f: impl FnOnce() + Send + 'static) {
-        self.responder.on_gone(Box::new(f));
+        self.with_hooks(|h| h.set_gone(Box::new(f)));
+    }
+
+    /// Calls `f` once when the request is done with, as [`Context::on_end`] says (ADR-127); with
+    /// the hooks registered on the context, in order.
+    pub fn on_end(&mut self, f: impl FnOnce(End) + Send + 'static) {
+        self.with_hooks(|h| h.add_end(Box::new(f)));
+    }
+
+    /// Runs `add` with the request's hooks (the context's, or new ones), then has its
+    /// transport tell the client's going.
+    fn with_hooks(&mut self, add: impl FnOnce(&Hooks)) {
+        let h = self.end.0.get_or_insert_with(Arc::default);
+        add(h);
+        h.watch(&mut self.responder);
     }
 
     /// Sends the response. Safe from any thread.
     pub fn respond(mut self, resp: Response) {
-        self.responder.send(resp, &mut self.fin, &self.req);
+        let end = std::mem::take(&mut self.end);
+        self.responder.send(resp, &mut self.fin, &self.req, end);
     }
 
     /// Starts a streamed response, as [`Context::stream_response`] does, from any thread.
     pub fn stream_response(mut self, status: u16, headers: Headers) -> Option<BodyStream> {
-        start_stream(self.responder, &mut self.fin, &self.req, status, headers)
+        let end = std::mem::take(&mut self.end);
+        start_stream(
+            self.responder,
+            &mut self.fin,
+            &self.req,
+            status,
+            headers,
+            end,
+        )
     }
 }
 
@@ -1392,6 +1696,7 @@ fn start_stream(
     req: &Request,
     status: u16,
     headers: Headers,
+    end: EndGuard,
 ) -> Option<BodyStream> {
     let mut resp = Response::new(status);
     resp.headers = headers;
@@ -1402,11 +1707,17 @@ fn start_stream(
         resp.headers.set("Transfer-Encoding", "chunked");
     }
     fin.apply(&mut resp, req);
-    open_stream(out, resp, req, chunked)
+    open_stream(out, resp, req, chunked, end)
 }
 
 /// [`start_stream`] once the filters ran: the stream of `resp`, a streamed head.
-fn open_stream(out: Out, mut resp: Response, req: &Request, chunked: bool) -> Option<BodyStream> {
+fn open_stream(
+    out: Out,
+    mut resp: Response,
+    req: &Request,
+    chunked: bool,
+    end: EndGuard,
+) -> Option<BodyStream> {
     // A HEAD answer has the coding's headers and no body to encode.
     let coder = resp
         .stream_coding
@@ -1444,6 +1755,7 @@ fn open_stream(out: Out, mut resp: Response, req: &Request, chunked: bool) -> Op
         coder,
         tap,
         kept,
+        end,
     })
 }
 
@@ -1458,6 +1770,8 @@ pub struct BodyStream {
     /// What a response filter kept until the body is sent (ADR-112), dropped with the stream.
     #[allow(dead_code, reason = "kept for its drop")]
     kept: Option<Arc<crate::message::Kept>>,
+    /// Ends the request's hooks once finished, [`End::Gone`] when dropped unfinished.
+    end: EndGuard,
 }
 
 impl std::fmt::Debug for BodyStream {
@@ -1556,6 +1870,7 @@ impl BodyStream {
         self.end_coding();
         self.end_tap(crate::TapEnd::Finished);
         self.inner.finish();
+        self.end.sent();
     }
 
     /// Like [`finish`](Self::finish), with trailer fields after the body (HTTP/2 trailers, or
@@ -1564,6 +1879,7 @@ impl BodyStream {
         self.end_coding();
         self.end_tap(crate::TapEnd::Trailers);
         self.inner.finish_with_trailers(trailers);
+        self.end.sent();
     }
 }
 
