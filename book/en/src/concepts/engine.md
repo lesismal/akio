@@ -39,8 +39,9 @@ handler type: an HTTP, a gRPC and an admin port on 8 cores run 8 I/O threads, no
 Each thread polls every listener's sockets and runs the right acceptor and accept filter; each
 connection stays on the thread that accepted it. A listener that sets `.threads(n)` or
 `.dedicated()` gets a group of its own instead (isolation: its connections never wait behind
-another listener's callbacks), and so do io_uring, UDP, datagram, DPDK and BPF-steered
-listeners; rounds-scheduled listeners share workers per `RoundsConfig`. Removing a shared listener closes its sockets and drains its connections only;
+another listener's callbacks), and so do UDP, datagram, DPDK and BPF-steered listeners;
+io_uring listeners share a group per ring options, rounds-scheduled listeners share workers
+per `RoundsConfig`. Removing a shared listener closes its sockets and drains its connections only;
 `Engine::set_threads` on a shared listener resizes the shared group, for all its listeners.
 Several listeners with different handler types, backends and thread counts can live in one
 engine.

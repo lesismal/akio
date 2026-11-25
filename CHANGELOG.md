@@ -10,9 +10,9 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed: TCP listeners share one group of I/O threads by default (akio, akio-epoll, akio-core)
+### Changed: TCP listeners share one group of I/O threads by default (akio, akio-epoll, akio-uring, akio-core)
 
-ADR-130, phases 1 and 2. TCP listeners on epoll/kqueue with per-thread loops (bound, inherited or
+ADR-130, phases 1 to 3. TCP listeners on epoll/kqueue with per-thread loops (bound, inherited or
 Unix-domain) no longer get one I/O thread per core each: they share one group, sized by the new
 `EngineBuilder::io_threads(n)` (one thread per core by default). An HTTP, a gRPC and an admin
 port on 8 cores now run 8 I/O threads instead of 24. Each thread polls every listener's sockets
@@ -21,8 +21,12 @@ accepted them.
 
 - `Listener::threads(n)` and the new `Listener::dedicated()` (one per core) give a listener a
   group of its own, as before: isolation for an admin port or a latency-critical protocol.
-  io_uring, UDP, datagram, DPDK and BPF-steered listeners keep groups of their own (io_uring
-  sharing is a later phase).
+  UDP, datagram, DPDK and BPF-steered listeners keep groups of their own.
+- io_uring: listeners with the same ring options (`UringConfig::entries`, `sqpoll`) share one
+  group, sized by `io_threads`; each listening socket has its multishot accept, whose
+  `user_data` names listener and socket. Removing one cancels its accepts and drains its
+  connections only. Where io_uring is unavailable they fall back to the shared epoll group (or
+  fail with `strict`).
 - Rounds scheduling (ADR-104): listeners with the same `RoundsConfig` (resolved pollers and
   workers) share its workers and pollers instead of one pool each; each listener keeps its own
   accept jobs and filter, a listener added later gets its accept jobs posted to the pollers,
@@ -37,8 +41,8 @@ accepted them.
 - Telemetry: a shared thread's `LoopMeta::listener` is `None`; `ConnInfo::owner.listener` names
   the listener each accepted connection came from.
 - Backend-facing: `Group::add_listener`, `remove_listener`, `await_listener_removed`,
-  `set_listener_filter` and `akio_core::ListenSocket`; `EpollGroup::shared` and
-  `RoundsGroup::shared`. One epoll/kqueue loop now keeps a table of its group's listeners.
+  `set_listener_filter` and `akio_core::ListenSocket`; `EpollGroup::shared`,
+  `RoundsGroup::shared` and `UringGroup::shared`. One epoll/kqueue loop now keeps a table of its group's listeners.
 
 ### Fixed: HTTP clients called from the logical pool no longer deadlock it (akio-core, akio-http, akio-ws)
 

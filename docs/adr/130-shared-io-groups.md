@@ -2,8 +2,8 @@
 
 English | [简体中文](130-shared-io-groups.zh-CN.md)
 
-Status: accepted (2026-11-25). Phase 1 (epoll/kqueue, per-thread loops) and phase 2 (rounds
-scheduling) built; io_uring still gives each listener a group of its own.
+Status: accepted (2026-11-25). Phase 1 (epoll/kqueue, per-thread loops), phase 2 (rounds
+scheduling) and phase 3 (io_uring) built.
 
 ## Context
 
@@ -30,8 +30,7 @@ on one loop.
    listener: isolation for an admin port or a latency-critical protocol, or a size of its own.
    Listeners that need per-listener threads always get their own group: BPF steering
    (`Accel::Ebpf`, whose program steers to the listener's own sockets), UDP and datagram
-   listeners and DPDK (other loop types), io_uring (a later phase) and Unix-domain listeners
-   with rounds scheduling.
+   listeners and DPDK (other loop types), and Unix-domain listeners with rounds scheduling.
 3. **One loop, several listeners.** An epoll/kqueue loop keeps, per listener of its group, the
    acceptor, the accept filter, whether it is Unix-domain and whether it was removed, and polls
    the listener's sockets under a token that names the listener and the socket. Accepting runs
@@ -74,8 +73,17 @@ accept jobs and drains its connections only (`RCmd::StopListening` names it), an
 connection table names each connection's listener. Unix-domain listeners with rounds keep a
 group of their own (rounds accepts TCP sockets only).
 
-## Not done (later phases)
+## Phase 3: io_uring (built 2026-11-26)
 
-- io_uring: a ring can poll several listeners the same way (multishot accept per listener);
-  until then io_uring listeners keep groups of their own.
+An io_uring loop keeps the same listener table as an epoll loop and arms one multishot accept
+per listening socket, its `user_data` naming listener and socket. Removing a listener cancels
+its accepts and takes its `SO_REUSEPORT` sockets out of the address's group; what a cancelled
+accept still delivers is served by that listener's acceptor (and, with a drain, shut down after
+its first data), and only its connections are drained. io_uring listeners share a group per
+ring options (`UringConfig::entries`, `sqpoll`), sized by `EngineBuilder::io_threads`; where
+io_uring is unavailable they fall back to the shared epoll group (or fail with `strict`), as a
+listener of its own falls back.
+
+## Not done
+
 - UDP and datagram listeners: their loops are of another type.

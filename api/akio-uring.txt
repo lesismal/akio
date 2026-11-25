@@ -5,6 +5,7 @@ pub fn akio_uring::UringGroup::bind(core::option::Option<(core::net::socket_addr
 pub fn akio_uring::UringGroup::bind_datagrams(core::net::socket_addr::SocketAddr, akio_core::datagrams::DatagramsFactory, usize, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>, akio_uring::UringOptions) -> core::io::error::Result<akio_uring::UringGroup>
 pub fn akio_uring::UringGroup::bind_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>, usize, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>, akio_uring::UringOptions) -> core::io::error::Result<akio_uring::UringGroup>
 pub fn akio_uring::UringGroup::bind_unix_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn akio_core::handler::DynAcceptor>, usize, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>, akio_uring::UringOptions) -> core::io::error::Result<akio_uring::UringGroup>
+pub fn akio_uring::UringGroup::shared(usize, akio_core::config::Config, alloc::rcs::arc::Arc<akio_pool::Pool>, akio_uring::UringOptions) -> core::io::error::Result<akio_uring::UringGroup>
 impl core::fmt::Debug for akio_uring::UringGroup
 pub fn akio_uring::UringGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_uring::UringGroup

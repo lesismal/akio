@@ -397,10 +397,11 @@ impl Listener {
     /// Gives this listener `n` I/O threads of its own (ADR-130). Without it (nor
     /// [`dedicated`](Self::dedicated)), a TCP listener on epoll/kqueue with per-thread loops
     /// shares the engine's I/O threads for its kind with the other such listeners
-    /// ([`EngineBuilder::io_threads`], one per core by default), and one with
+    /// ([`EngineBuilder::io_threads`], one per core by default), as one on io_uring does with
+    /// the io_uring listeners of the same [`UringConfig`] ring options, and one with
     /// [`Scheduling::Rounds`] shares the workers of the other rounds listeners with the same
-    /// [`RoundsConfig`]; UDP, datagram, io_uring, DPDK and BPF-steered listeners (and
-    /// Unix-domain ones with rounds) always have their own (one per core by default). With
+    /// [`RoundsConfig`]; UDP, datagram, DPDK and BPF-steered listeners (and Unix-domain ones
+    /// with rounds) always have their own (one per core by default). With
     /// rounds the count itself is ignored, [`RoundsConfig`] sizes the threads: it only keeps the
     /// listener's workers to itself.
     #[must_use]
@@ -610,10 +611,17 @@ fn bind_one(
         Scheduling::Rounds(rc) => Some(*rc),
         Scheduling::Loops => None,
     };
+    // io_uring listeners (per-thread loops) share a group per ring options.
+    let backend_shares = match &l.backend {
+        Backend::Epoll => true,
+        Backend::IoUring(_) => rounds.is_none(),
+        #[cfg(feature = "dpdk")]
+        Backend::Dpdk(_) => false,
+    };
     let shares = l.threads.is_none()
         && !l.udp
         && l.datagrams.is_none()
-        && matches!(l.backend, Backend::Epoll)
+        && backend_shares
         && matches!(l.accel, Accel::None)
         && (rounds.is_none() || l.unix.is_none())
         && cfg!(any(target_os = "linux", target_os = "macos"));
@@ -664,6 +672,12 @@ fn bind_shared(
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
+    // io_uring when it is available here; else epoll, as `bind_group` falls back (or fails,
+    // `strict`).
+    let uring = match &l.backend {
+        Backend::IoUring(u) => uring_or_epoll(u)?,
+        _ => None,
+    };
     let socket = match (l.unix, l.inherited) {
         (Some(UnixSpec::Path(path)), _) => {
             ListenSocket::Unix(listen_unix(&path, cfg.backlog, l.unix_mode)?)
@@ -679,23 +693,35 @@ fn bind_shared(
         // Accept-time balancing is a loops feature; rounds listeners share by thread counts.
         balance: balance && rounds.is_none(),
         rounds: rounds.map(|rc| rc.epoll().resolved()),
+        uring: uring.as_ref().map(|u| (u.entries, u.sqpoll)),
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let key = shared::ShareKey {
         balance,
         rounds: None,
+        uring: None,
     };
     let threads = sharing.threads;
     let group = sharing.groups.get_or_make(key, || {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            let g: Arc<dyn Group> = match rounds {
-                Some(rc) => Arc::new(akio_epoll::RoundsGroup::shared(
+            let g: Arc<dyn Group> = match (rounds, &uring) {
+                (Some(rc), _) => Arc::new(akio_epoll::RoundsGroup::shared(
                     rc.epoll(),
                     cfg.clone(),
                     pool.clone(),
                 )?),
-                None => Arc::new(akio_epoll::EpollGroup::shared(
+                #[cfg(target_os = "linux")]
+                (None, Some(u)) => Arc::new(akio_uring::UringGroup::shared(
+                    threads,
+                    cfg.clone(),
+                    pool.clone(),
+                    akio_uring::UringOptions {
+                        entries: u.entries,
+                        sqpoll: u.sqpoll,
+                    },
+                )?),
+                _ => Arc::new(akio_epoll::EpollGroup::shared(
                     threads,
                     cfg.clone(),
                     pool.clone(),
@@ -706,12 +732,43 @@ fn bind_shared(
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = (threads, pool, rounds);
+            let _ = (threads, pool, rounds, uring);
             Err(unsupported("the epoll/kqueue backend on this platform"))
         }
     })?;
     let (k, addr) = group.add_listener(socket, acceptor)?;
     Ok(Box::new(shared::SharedListener::new(group, k, addr)))
+}
+
+/// The ring options a shared io_uring listener runs with (`Some`) when io_uring is available
+/// here; `None` to fall back to epoll as `bind_group` does (a warning), or `Unsupported` with
+/// `strict`.
+fn uring_or_epoll(u: &UringConfig) -> io::Result<Option<UringConfig>> {
+    #[cfg(target_os = "linux")]
+    {
+        match akio_uring::probe() {
+            Ok(()) => Ok(Some(u.clone())),
+            Err(why) if u.strict => Err(unsupported(&format!("the io_uring backend ({why})"))),
+            Err(why) => {
+                log_or_stderr(
+                    akio_log::Level::Warn,
+                    format_args!("io_uring unavailable ({why}); using epoll"),
+                );
+                Ok(None)
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if u.strict {
+            return Err(unsupported("the io_uring backend on this platform"));
+        }
+        log_or_stderr(
+            akio_log::Level::Warn,
+            format_args!("io_uring is Linux-only; using epoll/kqueue"),
+        );
+        Ok(None)
+    }
 }
 
 /// Binds a TCP listener with [`Scheduling::Rounds`] (ADR-104).
@@ -914,10 +971,10 @@ impl EngineBuilder {
     }
 
     /// Sizes the I/O threads the listeners share (ADR-130; default: one per core): every TCP
-    /// listener on epoll/kqueue with per-thread loops that has no
-    /// [`threads`](Listener::threads) of its own (nor [`dedicated`](Listener::dedicated)) is
-    /// served by one such group, whatever its port or protocol (listeners with and without
-    /// accept-time [`Balance`] get one group each). Resize it while the engine runs with
+    /// listener with per-thread loops that has no [`threads`](Listener::threads) of its own
+    /// (nor [`dedicated`](Listener::dedicated)) is served by one such group per backend (epoll
+    /// or kqueue, and io_uring per ring options), whatever its port or protocol (listeners with
+    /// and without accept-time [`Balance`] get one group each). Resize it while the engine runs with
     /// [`Engine::set_threads`] on any of its listeners.
     #[must_use]
     pub fn io_threads(mut self, n: usize) -> Self {

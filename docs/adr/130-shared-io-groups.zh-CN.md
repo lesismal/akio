@@ -2,8 +2,8 @@
 
 [English](130-shared-io-groups.md) | 简体中文
 
-状态：已采纳（2026-11-25）。第一阶段（epoll/kqueue、每线程事件循环）和第二阶段（轮次调度）
-已实现；io_uring 仍为每个 listener 建立独立的线程组。
+状态：已采纳（2026-11-25）。第一阶段（epoll/kqueue、每线程事件循环）、第二阶段（轮次调度）和
+第三阶段（io_uring）已实现。
 
 ## 背景
 
@@ -26,7 +26,7 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
    `Listener::dedicated()`（每核一个）让该 listener 保持 ADR-004 的方式：为管理端口或对延迟敏感的
    协议提供隔离，或单独确定线程数。需要按 listener 分配线程的总是独占一组：BPF 引流
    （`Accel::Ebpf`，其程序引流到该 listener 自己的 socket）、UDP 和数据报 listener 以及 DPDK
-   （事件循环类型不同）、io_uring（后续阶段）以及使用轮次调度的 Unix 域 listener。
+   （事件循环类型不同），以及使用轮次调度的 Unix 域 listener。
 3. **一个事件循环，多个 listener。** epoll/kqueue 事件循环为所在组的每个 listener 保存 acceptor、
    accept 过滤器、是否为 Unix 域以及是否已被移除，并以同时标明 listener 和 socket 的令牌监听该
    listener 的 socket。accept 时运行对应的过滤器和 acceptor；每个连接记住自己的 listener。在 Linux
@@ -63,8 +63,15 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
 accept 任务、只排空它的连接（`RCmd::StopListening` 标明它），连接表也标明每个连接的 listener。
 使用轮次调度的 Unix 域 listener 仍独占线程组（轮次调度只 accept TCP socket）。
 
-## 未做（后续阶段）
+## 第三阶段：io_uring（2026-11-26 实现）
 
-- io_uring：一个 ring 可以用同样的方式监听多个 listener（每个 listener 一个 multishot accept）；
-  在此之前 io_uring listener 仍独占线程组。
+io_uring 事件循环保存与 epoll 事件循环相同的 listener 表，并为每个监听 socket 提交一个 multishot
+accept，其 `user_data` 标明 listener 和 socket。移除一个 listener 会取消它的 accept，并把它的
+`SO_REUSEPORT` socket 移出该地址的组；被取消的 accept 仍送达的连接由该 listener 的 acceptor 服务
+（有排空时在首批数据之后关闭），并且只排空它的连接。io_uring listener 按 ring 选项
+（`UringConfig::entries`、`sqpoll`）共享一组，大小由 `EngineBuilder::io_threads` 决定；io_uring
+不可用时，它们与独占线程组时一样退回 epoll 的共享组（或在 `strict` 时报错）。
+
+## 未做
+
 - UDP 和数据报 listener：它们的事件循环是另一种类型。

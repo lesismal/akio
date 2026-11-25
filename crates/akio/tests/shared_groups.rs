@@ -1,7 +1,8 @@
-//! Listeners sharing an I/O thread group (ADR-130): by default TCP listeners on epoll/kqueue
-//! loops share one group, sized by `EngineBuilder::io_threads`; `Listener::threads` and
-//! `Listener::dedicated` keep a group of their own; removing, filtering and resizing act on
-//! the right listener.
+//! Listeners sharing an I/O thread group (ADR-130): by default TCP listeners of one backend
+//! and scheduling share one group, sized by `EngineBuilder::io_threads` (rounds: by its
+//! `RoundsConfig`); `Listener::threads` and `Listener::dedicated` keep a group of their own;
+//! removing, filtering and resizing act on the right listener. The loops tests run on the
+//! backend under test (`AKIO_TEST_BACKEND=uring`: io_uring), the rounds ones on epoll/kqueue.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -20,11 +21,10 @@ use std::{
 
 use akio::{Config, Conn, Engine, EngineBuilder, Handler, Listener, fn_acceptor};
 
-/// Shared groups are epoll/kqueue loops: runs that force io_uring or rounds scheduling skip.
+/// The loops tests count loops: runs that force rounds scheduling (or another default
+/// backend) skip.
 fn skip() -> bool {
-    common::rounds()
-        || std::env::var("AKIO_TEST_BACKEND").as_deref() == Ok("uring")
-        || std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
+    common::rounds() || std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
 }
 
 fn localhost() -> SocketAddr {
@@ -55,7 +55,13 @@ impl Handler for Tagged {
 }
 
 /// A listener whose connections echo with `tag`; `closed` counts their closes.
+/// On the backend under test.
 fn tagged(tag: u8, closed: &Arc<AtomicUsize>) -> Listener {
+    tagged_on_default(tag, closed).backend(common::backend())
+}
+
+/// On the default backend (epoll/kqueue): rounds scheduling runs only there.
+fn tagged_on_default(tag: u8, closed: &Arc<AtomicUsize>) -> Listener {
     let closed = closed.clone();
     Listener::tcp(localhost()).serve(fn_acceptor(move |_c: &Conn<Tagged>| Tagged {
         tag,
@@ -306,10 +312,9 @@ fn a_listener_added_at_run_time_joins_the_shared_group() {
 
 // ---- rounds scheduling (ADR-104): listeners with one `RoundsConfig` share its workers ----------
 
-/// Rounds listeners need epoll/kqueue: runs that force io_uring skip.
+/// Rounds listeners need epoll/kqueue: a run that forces another default backend skips.
 fn skip_rounds() -> bool {
-    std::env::var("AKIO_TEST_BACKEND").as_deref() == Ok("uring")
-        || std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
+    std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
 }
 
 /// One poller and `workers` workers.
@@ -330,9 +335,9 @@ fn rounds_listeners_share_their_workers() {
     let closed = Arc::new(AtomicUsize::new(0));
     let e = Engine::builder()
         .config(quick())
-        .listen(tagged(b'a', &closed).scheduling(rounds(2)))
-        .listen(tagged(b'b', &closed).scheduling(rounds(2)))
-        .listen(tagged(b'c', &closed).scheduling(rounds(3)))
+        .listen(tagged_on_default(b'a', &closed).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'b', &closed).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'c', &closed).scheduling(rounds(3)))
         .build()
         .unwrap();
     e.start().unwrap();
@@ -366,8 +371,8 @@ fn removing_a_shared_rounds_listener_leaves_the_others() {
     let (ca, cb) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let e = Engine::builder()
         .config(quick())
-        .listen(tagged(b'a', &ca).scheduling(rounds(2)))
-        .listen(tagged(b'b', &cb).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'a', &ca).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'b', &cb).scheduling(rounds(2)))
         .build()
         .unwrap();
     e.start().unwrap();
@@ -398,11 +403,11 @@ fn rounds_filters_and_run_time_listeners_are_per_listener() {
     let e = Engine::builder()
         .config(quick())
         .listen(
-            tagged(b'a', &closed)
+            tagged_on_default(b'a', &closed)
                 .scheduling(rounds(2))
                 .filter(|_| false),
         )
-        .listen(tagged(b'b', &closed).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'b', &closed).scheduling(rounds(2)))
         .build()
         .unwrap();
     e.start().unwrap();
@@ -414,7 +419,7 @@ fn rounds_filters_and_run_time_listeners_are_per_listener() {
     assert_eq!(tag_of(&mut connect(ab)), b'b');
     // Added at run time: it joins the same workers.
     let id = e
-        .add_listener(tagged(b'n', &closed).scheduling(rounds(2)))
+        .add_listener(tagged_on_default(b'n', &closed).scheduling(rounds(2)))
         .unwrap();
     let info = e.listeners().into_iter().find(|l| l.id == id).unwrap();
     assert_eq!(info.threads, 2);
