@@ -1,4 +1,42 @@
 pub mod akio_wasm
+pub mod akio_wasm::wasi
+pub enum akio_wasm::wasi::OutputStream
+pub akio_wasm::wasi::OutputStream::Stderr
+pub akio_wasm::wasi::OutputStream::Stdout
+impl core::clone::Clone for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::wasi::OutputStream
+impl core::cmp::PartialEq for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::wasi::OutputStream
+impl core::marker::StructuralPartialEq for akio_wasm::wasi::OutputStream
+impl core::marker::Send for akio_wasm::wasi::OutputStream
+impl core::marker::Sync for akio_wasm::wasi::OutputStream
+impl core::marker::Unpin for akio_wasm::wasi::OutputStream
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::wasi::OutputStream
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::wasi::OutputStream
+pub struct akio_wasm::wasi::WasiConfig
+impl akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::arg(self, &str) -> Self
+pub fn akio_wasm::wasi::WasiConfig::env(self, &str, &str) -> Self
+pub fn akio_wasm::wasi::WasiConfig::new() -> Self
+pub fn akio_wasm::wasi::WasiConfig::output(self, impl core::ops::function::Fn(akio_wasm::wasi::OutputStream, &[u8]) + core::marker::Send + core::marker::Sync + 'static) -> Self
+impl core::clone::Clone for akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::clone(&self) -> Self
+impl core::default::Default for akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::default() -> Self
+impl core::fmt::Debug for akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_wasm::wasi::WasiConfig
+impl core::marker::Sync for akio_wasm::wasi::WasiConfig
+impl core::marker::Unpin for akio_wasm::wasi::WasiConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::wasi::WasiConfig
+impl !core::panic::unwind_safe::UnwindSafe for akio_wasm::wasi::WasiConfig
+pub const akio_wasm::wasi::MODULE: &str
 #[non_exhaustive] pub enum akio_wasm::ErrorKind
 pub akio_wasm::ErrorKind::Invalid
 pub akio_wasm::ErrorKind::Limit(akio_wasm::Limit)
@@ -121,6 +159,10 @@ impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Feature
 #[non_exhaustive] pub enum akio_wasm::InstantiateError
 pub akio_wasm::InstantiateError::Limit(&'static str)
 pub akio_wasm::InstantiateError::Trap(akio_wasm::Trap)
+pub akio_wasm::InstantiateError::UnknownImport
+pub akio_wasm::InstantiateError::UnknownImport::index: usize
+pub akio_wasm::InstantiateError::UnknownImport::module: alloc::boxed::Box<str>
+pub akio_wasm::InstantiateError::UnknownImport::name: alloc::boxed::Box<str>
 pub akio_wasm::InstantiateError::Unlinkable
 pub akio_wasm::InstantiateError::Unlinkable::index: usize
 pub akio_wasm::InstantiateError::Unlinkable::message: &'static str
@@ -173,6 +215,45 @@ impl core::marker::Sync for akio_wasm::Limit
 impl core::marker::Unpin for akio_wasm::Limit
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Limit
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Limit
+#[non_exhaustive] pub enum akio_wasm::LinkError
+pub akio_wasm::LinkError::Duplicate
+pub akio_wasm::LinkError::Duplicate::module: alloc::boxed::Box<str>
+pub akio_wasm::LinkError::Duplicate::name: alloc::boxed::Box<str>
+impl core::clone::Clone for akio_wasm::LinkError
+pub fn akio_wasm::LinkError::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::LinkError
+impl core::cmp::PartialEq for akio_wasm::LinkError
+pub fn akio_wasm::LinkError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_wasm::LinkError
+impl core::fmt::Debug for akio_wasm::LinkError
+pub fn akio_wasm::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::LinkError
+pub fn akio_wasm::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::LinkError
+impl core::marker::Send for akio_wasm::LinkError
+impl core::marker::Sync for akio_wasm::LinkError
+impl core::marker::Unpin for akio_wasm::LinkError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::LinkError
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::LinkError
+pub enum akio_wasm::OutputStream
+pub akio_wasm::OutputStream::Stderr
+pub akio_wasm::OutputStream::Stdout
+impl core::clone::Clone for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::wasi::OutputStream
+impl core::cmp::PartialEq for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::wasi::OutputStream
+pub fn akio_wasm::wasi::OutputStream::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::wasi::OutputStream
+impl core::marker::StructuralPartialEq for akio_wasm::wasi::OutputStream
+impl core::marker::Send for akio_wasm::wasi::OutputStream
+impl core::marker::Sync for akio_wasm::wasi::OutputStream
+impl core::marker::Unpin for akio_wasm::wasi::OutputStream
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::wasi::OutputStream
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::wasi::OutputStream
 pub enum akio_wasm::RefType
 pub akio_wasm::RefType::ExternRef
 pub akio_wasm::RefType::FuncRef
@@ -199,6 +280,7 @@ pub akio_wasm::Trap::BadCall(&'static str)
 pub akio_wasm::Trap::CallStackExhausted
 pub akio_wasm::Trap::Deadline
 pub akio_wasm::Trap::Ended
+pub akio_wasm::Trap::Exit(i32)
 pub akio_wasm::Trap::Host(alloc::boxed::Box<str>)
 pub akio_wasm::Trap::IndirectCallType
 pub akio_wasm::Trap::IntegerDivideByZero
@@ -319,10 +401,24 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Budget
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Budget
 pub struct akio_wasm::Caller<'a, S>
 impl<S> akio_wasm::Caller<'_, S>
+pub fn akio_wasm::Caller<'_, S>::call(&mut self, akio_wasm::Func, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap>
+pub fn akio_wasm::Caller<'_, S>::consume_fuel(&mut self, u64) -> core::result::Result<(), akio_wasm::Trap>
+pub const fn akio_wasm::Caller<'_, S>::deadline(&self) -> core::option::Option<std::time::Instant>
+pub fn akio_wasm::Caller<'_, S>::export(&self, &str) -> core::option::Option<akio_wasm::Extern>
+pub fn akio_wasm::Caller<'_, S>::func_type(&self, akio_wasm::Func) -> &akio_wasm::FuncType
+pub const fn akio_wasm::Caller<'_, S>::instance(&self) -> core::option::Option<akio_wasm::Instance>
+pub fn akio_wasm::Caller<'_, S>::is_interrupted(&self) -> bool
 pub fn akio_wasm::Caller<'_, S>::memory(&self) -> core::option::Option<&[u8]>
 pub fn akio_wasm::Caller<'_, S>::memory_mut(&mut self) -> core::option::Option<&mut [u8]>
+pub fn akio_wasm::Caller<'_, S>::read(&self, u32, u32) -> core::result::Result<&[u8], akio_wasm::Trap>
+pub fn akio_wasm::Caller<'_, S>::read_mut(&mut self, u32, u32) -> core::result::Result<&mut [u8], akio_wasm::Trap>
+pub fn akio_wasm::Caller<'_, S>::read_u32(&self, u32) -> core::result::Result<u32, akio_wasm::Trap>
+pub fn akio_wasm::Caller<'_, S>::read_u64(&self, u32) -> core::result::Result<u64, akio_wasm::Trap>
 pub fn akio_wasm::Caller<'_, S>::state(&self) -> &S
 pub fn akio_wasm::Caller<'_, S>::state_mut(&mut self) -> &mut S
+pub fn akio_wasm::Caller<'_, S>::write(&mut self, u32, &[u8]) -> core::result::Result<(), akio_wasm::Trap>
+pub fn akio_wasm::Caller<'_, S>::write_u32(&mut self, u32, u32) -> core::result::Result<(), akio_wasm::Trap>
+pub fn akio_wasm::Caller<'_, S>::write_u64(&mut self, u32, u64) -> core::result::Result<(), akio_wasm::Trap>
 impl<S> core::fmt::Debug for akio_wasm::Caller<'_, S>
 pub fn akio_wasm::Caller<'_, S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a, S> core::marker::Send for akio_wasm::Caller<'a, S> where &'a mut akio_wasm::Store<S>: core::marker::Send
@@ -550,6 +646,27 @@ impl core::marker::Sync for akio_wasm::Limits
 impl core::marker::Unpin for akio_wasm::Limits
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Limits
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Limits
+pub struct akio_wasm::Linker<S>
+impl<S> akio_wasm::Linker<S>
+pub fn akio_wasm::Linker<S>::func_new(&mut self, &str, &str, akio_wasm::FuncType, impl core::ops::function::Fn(&mut akio_wasm::Caller<'_, S>, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<&mut Self, akio_wasm::LinkError>
+pub fn akio_wasm::Linker<S>::func_type(&self, &str, &str) -> core::option::Option<&akio_wasm::FuncType>
+pub fn akio_wasm::Linker<S>::func_wrap<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults>(&mut self, &str, &str, impl core::ops::function::Fn(&mut akio_wasm::Caller<'_, S>, P) -> core::result::Result<R, akio_wasm::Trap> + core::marker::Send + core::marker::Sync + 'static) -> core::result::Result<&mut Self, akio_wasm::LinkError>
+pub fn akio_wasm::Linker<S>::instantiate(&self, &mut akio_wasm::Store<S>, &alloc::rcs::arc::Arc<akio_wasm::Module>, &akio_wasm::Budget) -> core::result::Result<akio_wasm::Instance, akio_wasm::InstantiateError>
+pub fn akio_wasm::Linker<S>::new() -> Self
+pub fn akio_wasm::Linker<S>::trap_unresolved(&mut self, bool) -> &mut Self
+impl<S> akio_wasm::Linker<S>
+pub fn akio_wasm::Linker<S>::wasi_preview1(&mut self, akio_wasm::wasi::WasiConfig) -> core::result::Result<&mut Self, akio_wasm::LinkError> where S: 'static
+impl<S> core::clone::Clone for akio_wasm::Linker<S>
+pub fn akio_wasm::Linker<S>::clone(&self) -> Self
+impl<S> core::default::Default for akio_wasm::Linker<S>
+pub fn akio_wasm::Linker<S>::default() -> Self
+impl<S> core::fmt::Debug for akio_wasm::Linker<S>
+pub fn akio_wasm::Linker<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for akio_wasm::Linker<S> where std::collections::hash::map::HashMap<(alloc::boxed::Box<str>, alloc::boxed::Box<str>), Def<S>>: core::marker::Send
+impl<S> core::marker::Sync for akio_wasm::Linker<S> where std::collections::hash::map::HashMap<(alloc::boxed::Box<str>, alloc::boxed::Box<str>), Def<S>>: core::marker::Sync
+impl<S> core::marker::Unpin for akio_wasm::Linker<S> where std::collections::hash::map::HashMap<(alloc::boxed::Box<str>, alloc::boxed::Box<str>), Def<S>>: core::marker::Unpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Linker<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for akio_wasm::Linker<S>
 pub struct akio_wasm::Memory
 impl core::clone::Clone for akio_wasm::Memory
 pub fn akio_wasm::Memory::clone(&self) -> Self
@@ -648,6 +765,7 @@ pub fn akio_wasm::Store<S>::global_get(&self, akio_wasm::Global) -> akio_wasm::V
 pub fn akio_wasm::Store<S>::global_new(&mut self, akio_wasm::GlobalType, akio_wasm::Value) -> core::result::Result<akio_wasm::Global, akio_wasm::Trap>
 pub fn akio_wasm::Store<S>::global_set(&mut self, akio_wasm::Global, akio_wasm::Value) -> core::result::Result<(), akio_wasm::Trap>
 pub fn akio_wasm::Store<S>::global_type(&self, akio_wasm::Global) -> akio_wasm::GlobalType
+pub fn akio_wasm::Store<S>::initialize_reactor(&mut self, akio_wasm::Instance, &akio_wasm::Budget) -> core::result::Result<bool, akio_wasm::Trap>
 pub fn akio_wasm::Store<S>::instantiate(&mut self, &alloc::rcs::arc::Arc<akio_wasm::Module>, &[akio_wasm::Extern], &akio_wasm::Budget) -> core::result::Result<akio_wasm::Instance, akio_wasm::InstantiateError>
 pub fn akio_wasm::Store<S>::into_state(self) -> S
 pub const fn akio_wasm::Store<S>::limits(&self) -> &akio_wasm::InstanceLimits
@@ -662,6 +780,8 @@ pub fn akio_wasm::Store<S>::state_mut(&mut self) -> &mut S
 pub fn akio_wasm::Store<S>::table_get(&self, akio_wasm::Table, u32) -> core::option::Option<akio_wasm::Value>
 pub fn akio_wasm::Store<S>::table_new(&mut self, akio_wasm::TableType, akio_wasm::Value) -> core::result::Result<akio_wasm::Table, akio_wasm::Trap>
 pub fn akio_wasm::Store<S>::table_size(&self, akio_wasm::Table) -> u32
+impl<S> akio_wasm::Store<S>
+pub fn akio_wasm::Store<S>::typed_func<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults>(&self, akio_wasm::Func) -> core::result::Result<akio_wasm::TypedFunc<P, R>, akio_wasm::Trap>
 impl<S> core::fmt::Debug for akio_wasm::Store<S>
 pub fn akio_wasm::Store<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::marker::Send for akio_wasm::Store<S> where alloc::vec::Vec<alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&mut akio_wasm::Caller<'_, S>, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Send, S: core::marker::Send
@@ -705,3 +825,109 @@ impl core::marker::Sync for akio_wasm::TableType
 impl core::marker::Unpin for akio_wasm::TableType
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::TableType
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::TableType
+pub struct akio_wasm::TypedFunc<P, R>
+impl<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults> akio_wasm::TypedFunc<P, R>
+pub fn akio_wasm::TypedFunc<P, R>::call<S>(&self, &mut akio_wasm::Store<S>, P, &akio_wasm::Budget) -> core::result::Result<R, akio_wasm::Trap>
+pub fn akio_wasm::TypedFunc<P, R>::call_from<S>(&self, &mut akio_wasm::Caller<'_, S>, P) -> core::result::Result<R, akio_wasm::Trap>
+pub const fn akio_wasm::TypedFunc<P, R>::func(&self) -> akio_wasm::Func
+impl<P, R> core::clone::Clone for akio_wasm::TypedFunc<P, R>
+pub fn akio_wasm::TypedFunc<P, R>::clone(&self) -> Self
+impl<P, R> core::fmt::Debug for akio_wasm::TypedFunc<P, R>
+pub fn akio_wasm::TypedFunc<P, R>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<P, R> core::marker::Copy for akio_wasm::TypedFunc<P, R>
+impl<P, R> core::marker::Send for akio_wasm::TypedFunc<P, R> where core::marker::PhantomData<fn(P) -> R>: core::marker::Send
+impl<P, R> core::marker::Sync for akio_wasm::TypedFunc<P, R> where core::marker::PhantomData<fn(P) -> R>: core::marker::Sync
+impl<P, R> core::marker::Unpin for akio_wasm::TypedFunc<P, R> where core::marker::PhantomData<fn(P) -> R>: core::marker::Unpin
+impl<P, R> core::panic::unwind_safe::RefUnwindSafe for akio_wasm::TypedFunc<P, R> where core::marker::PhantomData<fn(P) -> R>: core::panic::unwind_safe::RefUnwindSafe
+impl<P, R> core::panic::unwind_safe::UnwindSafe for akio_wasm::TypedFunc<P, R> where core::marker::PhantomData<fn(P) -> R>: core::panic::unwind_safe::UnwindSafe
+pub struct akio_wasm::WasiConfig
+impl akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::arg(self, &str) -> Self
+pub fn akio_wasm::wasi::WasiConfig::env(self, &str, &str) -> Self
+pub fn akio_wasm::wasi::WasiConfig::new() -> Self
+pub fn akio_wasm::wasi::WasiConfig::output(self, impl core::ops::function::Fn(akio_wasm::wasi::OutputStream, &[u8]) + core::marker::Send + core::marker::Sync + 'static) -> Self
+impl core::clone::Clone for akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::clone(&self) -> Self
+impl core::default::Default for akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::default() -> Self
+impl core::fmt::Debug for akio_wasm::wasi::WasiConfig
+pub fn akio_wasm::wasi::WasiConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_wasm::wasi::WasiConfig
+impl core::marker::Sync for akio_wasm::wasi::WasiConfig
+impl core::marker::Unpin for akio_wasm::wasi::WasiConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::wasi::WasiConfig
+impl !core::panic::unwind_safe::UnwindSafe for akio_wasm::wasi::WasiConfig
+pub trait akio_wasm::WasmParams: akio_wasm::typed::sealed::Sealed + core::marker::Sized + core::marker::Send + 'static
+pub const akio_wasm::WasmParams::N: usize
+impl akio_wasm::WasmParams for ()
+pub const ()::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy, J: akio_wasm::WasmTy, K: akio_wasm::WasmTy, L: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F, G, H, I, J, K, L)
+pub const (A, B, C, D, E, F, G, H, I, J, K, L)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy, J: akio_wasm::WasmTy, K: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F, G, H, I, J, K)
+pub const (A, B, C, D, E, F, G, H, I, J, K)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy, J: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F, G, H, I, J)
+pub const (A, B, C, D, E, F, G, H, I, J)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F, G, H, I)
+pub const (A, B, C, D, E, F, G, H, I)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F, G, H)
+pub const (A, B, C, D, E, F, G, H)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F, G)
+pub const (A, B, C, D, E, F, G)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E, F)
+pub const (A, B, C, D, E, F)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D, E)
+pub const (A, B, C, D, E)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C, D)
+pub const (A, B, C, D)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B, C)
+pub const (A, B, C)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy> akio_wasm::WasmParams for (A, B)
+pub const (A, B)::N: usize
+impl<A: akio_wasm::WasmTy> akio_wasm::WasmParams for (A)
+pub const (A)::N: usize
+impl<T: akio_wasm::WasmTy> akio_wasm::WasmParams for T
+pub const T::N: usize
+pub trait akio_wasm::WasmResults: core::marker::Sized + core::marker::Send + 'static
+pub const akio_wasm::WasmResults::N: usize
+impl akio_wasm::WasmResults for ()
+pub const ()::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy, J: akio_wasm::WasmTy, K: akio_wasm::WasmTy, L: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F, G, H, I, J, K, L)
+pub const (A, B, C, D, E, F, G, H, I, J, K, L)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy, J: akio_wasm::WasmTy, K: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F, G, H, I, J, K)
+pub const (A, B, C, D, E, F, G, H, I, J, K)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy, J: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F, G, H, I, J)
+pub const (A, B, C, D, E, F, G, H, I, J)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy, I: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F, G, H, I)
+pub const (A, B, C, D, E, F, G, H, I)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy, H: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F, G, H)
+pub const (A, B, C, D, E, F, G, H)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy, G: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F, G)
+pub const (A, B, C, D, E, F, G)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy, F: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E, F)
+pub const (A, B, C, D, E, F)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy, E: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D, E)
+pub const (A, B, C, D, E)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy, D: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C, D)
+pub const (A, B, C, D)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy, C: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B, C)
+pub const (A, B, C)::N: usize
+impl<A: akio_wasm::WasmTy, B: akio_wasm::WasmTy> akio_wasm::WasmResults for (A, B)
+pub const (A, B)::N: usize
+impl<A: akio_wasm::WasmTy> akio_wasm::WasmResults for (A)
+pub const (A)::N: usize
+impl<T: akio_wasm::WasmTy> akio_wasm::WasmResults for T
+pub const T::N: usize
+pub trait akio_wasm::WasmTy: akio_wasm::typed::sealed::Sealed + core::marker::Copy + core::marker::Send + 'static
+pub const akio_wasm::WasmTy::TY: akio_wasm::ValType
+impl akio_wasm::WasmTy for f32
+pub const f32::TY: akio_wasm::ValType
+impl akio_wasm::WasmTy for f64
+pub const f64::TY: akio_wasm::ValType
+impl akio_wasm::WasmTy for i32
+pub const i32::TY: akio_wasm::ValType
+impl akio_wasm::WasmTy for i64
+pub const i64::TY: akio_wasm::ValType
+impl akio_wasm::WasmTy for u32
+pub const u32::TY: akio_wasm::ValType
+impl akio_wasm::WasmTy for u64
+pub const u64::TY: akio_wasm::ValType

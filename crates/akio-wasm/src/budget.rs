@@ -219,6 +219,18 @@ impl Meter {
     pub(crate) const fn used(&self) -> u64 {
         self.given - self.counter
     }
+
+    /// The call's deadline.
+    pub(crate) const fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// Whether the call's interrupt is raised.
+    pub(crate) fn interrupted(&self) -> bool {
+        self.interrupt
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed))
+    }
 }
 
 #[cfg(test)]

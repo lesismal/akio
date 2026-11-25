@@ -433,6 +433,10 @@ dependencies = [
 [[package]]
 name = "akio-wasm"
 version = "1.0.0-rc.1"
+dependencies = [
+ "akio-crypto",
+ "akio-deflate",
+]
 
 [[package]]
 name = "akio-webrtc"

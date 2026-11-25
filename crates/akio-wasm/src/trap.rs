@@ -4,7 +4,7 @@ use std::fmt;
 
 /// Why a call into a [`Store`](crate::Store) stopped before returning, or why it could not start.
 ///
-/// The variants up to [`Trap::Host`] are traps: the guest's code (or a host function it called)
+/// The variants up to [`Trap::Exit`] are traps: the guest's code (or a host function it called)
 /// stopped, or a [`Budget`](crate::Budget) ran out. A trap ends the store (ADR-125, section 3):
 /// its memory may be half-updated, so later calls return [`Trap::Ended`]; whoever owns it drops
 /// it and makes a new one. [`Trap::Ended`] and [`Trap::BadCall`] are refusals: nothing ran.
@@ -41,6 +41,9 @@ pub enum Trap {
     Interrupted,
     /// A host function failed, with its message.
     Host(Box<str>),
+    /// The guest called WASI's `proc_exit` with this code: it is done, and its state is not
+    /// to be used again, so this ends the store like any trap.
+    Exit(i32),
     /// The store ended with an earlier trap; nothing ran.
     Ended,
     /// The call was wrong: arguments or results of the wrong number or type, or a value from
@@ -69,6 +72,7 @@ impl Trap {
             Self::OutOfFuel => "out of fuel",
             Self::Interrupted => "interrupted",
             Self::Host(m) => m,
+            Self::Exit(_) => "proc_exit",
             Self::Ended => "the store ended with an earlier trap",
             Self::BadCall(m) => m,
         }
@@ -86,6 +90,7 @@ impl fmt::Display for Trap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Host(m) => write!(f, "host function failed: {m}"),
+            Self::Exit(code) => write!(f, "wasm exited with code {code}"),
             Self::BadCall(m) => write!(f, "bad call: {m}"),
             _ => write!(f, "wasm trap: {}", self.message()),
         }

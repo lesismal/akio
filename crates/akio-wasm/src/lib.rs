@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
-//! A WebAssembly runtime for plugins, in safe Rust without dependencies (ADR-125): a module is
-//! decoded, validated and translated once, to a register form that an interpreter runs, with
-//! every resource bounded. It is the runtime under akit's WASM plugins (fit's ABI and
-//! Proxy-Wasm), and is built in milestones; this release has **W1**, the decoder and the
-//! validator, and **W2**, the translation and the interpreter, with metering and budgets. The
-//! host API proper (a `Linker`, typed host functions, WASI) is W3, the instance pool W4.
+//! A WebAssembly runtime for plugins, in safe Rust without third-party dependencies (ADR-125): a
+//! module is decoded, validated and translated once, to a register form that an interpreter runs,
+//! with every resource bounded. It is the runtime under akit's WASM plugins (fit's ABI and
+//! Proxy-Wasm), and is built in milestones; this release has **W1**, the decoder and the validator,
+//! **W2**, the translation and the interpreter, with metering and budgets, and **W3**, the host API
+//! (a [`Linker`], typed host functions, WASI preview 1's subset). The instance pool is W4.
 //!
 //! ```
 //! use std::{sync::Arc, time::{Duration, Instant}};
@@ -73,8 +73,8 @@
 //! popping; `local.get` copies nothing, constants become immediates, a comparison followed by a
 //! branch is one instruction, branch targets are resolved. The interpreter is a `match` loop
 //! over it with explicit frames on a `Vec`, never native recursion: deep recursion is a trap
-//! ([`Trap::CallStackExhausted`]), not a stack overflow, and a host function cannot call back
-//! into the guest.
+//! ([`Trap::CallStackExhausted`]), not a stack overflow. A host function that calls back into
+//! the guest nests one native call of the loop, at most 64 deep.
 //!
 //! A [`Store`] holds instances, the host's functions ([`Store::func_new`]) and its state; it is
 //! `Send`, not `Sync`. Every resource is bounded by [`InstanceLimits`]: each memory (128 MiB;
@@ -86,21 +86,53 @@
 //!
 //! **A trap ends the store**: the memory may be half-updated, so later calls return
 //! [`Trap::Ended`]; drop it and make a new one.
+//!
+//! # Host functions
+//!
+//! A [`Linker`] holds host functions by module and name, and instantiates modules into stores
+//! with them, each import checked against its definition's type. It belongs to no store and is
+//! `Send + Sync`, to be shared by a pool's threads. [`Linker::func_wrap`] takes a typed closure
+//! (`|caller, (ptr, len): (u32, u32)| -> Result<i32, Trap>`; see [`WasmTy`]),
+//! [`Linker::func_new`] one over [`Value`]s. With [`Linker::trap_unresolved`], a function import
+//! nothing defines resolves to one that traps when called (fit's Go guests import ABIs they never
+//! call). [`Store::typed_func`] checks an export's type once, for [`TypedFunc::call`].
+//!
+//! A host function gets a [`Caller`]: the store's state, the calling instance's exports, and its
+//! memory through bounds-checked views ([`Caller::read`], [`Caller::write`], [`Caller::read_u32`]
+//! ...), so a pointer and a length from the guest never reach outside it. It may call back into
+//! the guest ([`Caller::call`]), to have it allocate memory for a result as Proxy-Wasm's hosts
+//! do: the call runs on top of the frames below, under the same budget and limits, nested at most
+//! 64 deep, and a trap in it ends the outer call too. It may read the call's deadline and
+//! interrupt, and charge it fuel ([`Caller::consume_fuel`]).
+//!
+//! # WASI
+//!
+//! [`Linker::wasi_preview1`] defines `wasi_snapshot_preview1`'s 46 functions, the subset a plugin
+//! needs ([`WasiConfig`]): arguments and environment (none by default), the realtime and
+//! monotonic clocks, the operating system's random bytes, standard output and error to a sink
+//! (discarded by default), an empty standard input, `poll_oneoff` sleeping on clocks no later than
+//! the call's deadline, `proc_exit` as [`Trap::Exit`]. No file system and no sockets: there are no
+//! preopened directories, and the other functions return `EBADF` or `ENOSYS`. A WASI reactor
+//! (Go's `-buildmode=c-shared`, TinyGo's, a Rust `cdylib`) is initialized once, with
+//! [`Store::initialize_reactor`], before its other exports are called.
 
 mod budget;
 mod error;
 mod exec;
 mod instr;
 mod limits;
+mod linker;
 mod module;
 mod ops;
 mod reader;
 mod store;
 mod translate;
 mod trap;
+mod typed;
 mod types;
 mod validate;
 mod value;
+pub mod wasi;
 
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -109,11 +141,14 @@ pub mod fuzzing;
 pub use budget::{Budget, InstanceLimits, InterruptHandle};
 pub use error::{Error, ErrorKind, Feature, Limit};
 pub use limits::ModuleLimits;
+pub use linker::{LinkError, Linker};
 pub use module::Module;
 pub use store::{Caller, InstantiateError, Store};
 pub use trap::Trap;
+pub use typed::{TypedFunc, WasmParams, WasmResults, WasmTy};
 pub use types::{
     Export, ExportKind, ExternType, FuncType, GlobalType, Import, Limits, MemoryType, RefType,
     TableType, ValType,
 };
 pub use value::{Extern, ExternRef, Func, Global, Instance, Memory, Table, Value};
+pub use wasi::{OutputStream, WasiConfig};

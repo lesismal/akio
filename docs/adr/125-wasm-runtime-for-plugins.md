@@ -2,7 +2,7 @@
 
 English | [简体中文](125-wasm-runtime-for-plugins.zh-CN.md)
 
-Status: accepted (2026-11-25). Built in the milestones of section 8; W1 (decoder and validator) and W2 (translation and interpreter) are done, see "As built" at the end.
+Status: accepted (2026-11-25). Built in the milestones of section 8; W1 (decoder and validator), W2 (translation and interpreter) and W3 (host API and WASI) are done, see "As built" at the end.
 
 ## Context
 
@@ -98,7 +98,8 @@ third-party crates only in `fuzz/` and `tools/` as references.
   followed by `br_if` becomes one instruction, branch targets are resolved, and each basic block
   carries its instruction count for metering (section 3). Execution is a `match` loop over that
   form with explicit frames on a `Vec`, not native recursion: a guest's deep recursion is a trap,
-  never a native stack overflow, and a host call cannot re-enter the guest.
+  never a native stack overflow. (W3 lets a host function call back into the guest, as
+  Proxy-Wasm's hosts must, one native level per nested call, at most 64: see "As built: W3".)
 - **Why an interpreter is enough for fit's use.** A plugin runs only on routes that configure one,
   on its own pool, never on an I/O thread, and its per-request work is small. The spike puts
   wazero's interpreter at 6–8× its compiler on fit's guests; a register interpreter should land
@@ -437,3 +438,56 @@ WebAssembly 2.0 specification suite now passes, every command: 21 453 `assert_re
   Neither target's corpus is committed: their inputs are `wasm-smith` seeds, tens of megabytes
   once minimized, that only a `wasm-smith` build can turn into modules; a run grows them anew.
 
+### W3: host API and WASI (2026-11-25)
+
+`Linker<S>`, typed host functions, the `Caller`'s bounds-checked views, unresolved imports that
+trap, WASI preview 1's subset, and fit's guests running: Go's `headers` (fit's ABI) and the
+Proxy-Wasm Go SDK's `http_routing`, and fit's Rust sync plugin, committed gzipped in
+`crates/akio-wasm/tests/guests` (2.1 MB; rebuilt by `tests/guests/build.sh`, excluded from the
+published crate). Decided while building it:
+
+- **A host function may call back into the guest** (`Caller::call`), which section 1 ruled out.
+  Proxy-Wasm needs it: a host function that returns a header or a buffer asks the guest for
+  memory with `proxy_on_memory_allocate` and writes there (fit's `give`, wazero's
+  `CallWithStack` inside a host function), so I72 cannot work without it. The nested call runs
+  on the same frame stack, above the frames that called the host function, until it returns to
+  them, under the same budget and the same `max_call_depth` and `max_value_stack`; each level is
+  one native call of the interpreter's loop, so nesting is bounded (64, then
+  `CallStackExhausted`), never unbounded native recursion. A trap in a nested call ends the outer
+  call with that trap whatever the host function returns, and ends the store.
+- **The linker belongs to no store.** `Linker<S>` keeps host functions by (module, name), as
+  `Arc`s, and is `Clone + Send + Sync`; `instantiate(&mut Store<S>, &Arc<Module>, &Budget)` makes
+  a store function per import, checks its type (`Unlinkable` if it differs), and refuses what
+  nothing defines with `InstantiateError::UnknownImport` naming it. So W4's pool shares one linker
+  across its threads, each with its own store. Only functions are defined in a linker; memories,
+  tables and globals stay a store's (`Store::memory_new` ...), which no guest of fit's imports.
+- **Typed host functions and calls**: `func_wrap(module, name, |caller, params: P| -> Result<R,
+  Trap>)` with `P` a tuple of up to twelve of `i32`, `u32`, `i64`, `u64`, `f32`, `f64` (or one),
+  `R` the same or `()`; `Store::typed_func::<P, R>(func)` checks the type once and gives a
+  `TypedFunc`, called from the host or from a host function (`call_from`). `func_new` over
+  `Value`s stays for what is typed at run time.
+- **`trap_unresolved`** applies to function imports only; the stub traps with `Trap::Host("called
+  unresolved import module.name")`, so a log names it.
+- **The `Caller`**: `read`, `read_mut`, `write`, `read_u32`, `read_u64`, `write_u32`, `write_u64`,
+  each `Trap::MemoryOutOfBounds` when out of the memory (a host function returns it with `?`),
+  `export`, `func_type`, `instance`, `call`, `deadline`, `is_interrupted` and `consume_fuel` (a
+  host function's own work counts against the call's fuel, as WASI's copies do, a unit per 64
+  bytes).
+- **WASI**: all 46 functions of preview 1 are defined, so a guest importing any of them loads.
+  Section 3's subset as written, plus: `fd_fdstat_get`, `fd_filestat_get`, `fd_fdstat_set_flags`
+  and `fd_close` on 0 to 2 describe a character device (Go's runtime asks at start), `fd_seek`
+  and `fd_tell` on them are `ESPIPE`, `fd_read` on 0 is an empty input; `clock_res_get` is 1 ns;
+  process and thread CPU clocks are `EINVAL`; `poll_oneoff` also reports standard streams ready
+  at once (and other descriptors as `EBADF` events), and sleeps in slices of 5 ms so that it sees
+  the call's interrupt. A pointer from the guest outside its memory is `EFAULT`, not a trap, as
+  wazero does. `proc_exit` is a new trap, `Trap::Exit(code)`. Output goes to a sink the caller
+  gives (`WasiConfig::output`), a call per buffer; rate limiting it is akit's.
+- **Reactors**: `Store::initialize_reactor` runs `_initialize` if the instance exports it (the
+  owner gives it the init deadline). A Go reactor's fatal errors (a panic, out of memory) print
+  to standard error and end in `unreachable`, not `proc_exit`; Rust's `panic = "abort"` does the
+  same. Go's `headers` takes 1.8 M instructions to initialize and about 10 000 for a request.
+- **TinyGo's guest** (fit's sync plugin by TinyGo 0.44) is not committed yet: the build script
+  makes it when `tinygo` is on the path.
+- **Fuzzing**: `wasm_exec`'s imported functions now call back into the calling instance every
+  other call (an export chosen by a counter), so nested calls, their limits and their traps are
+  fuzzed with the rest.

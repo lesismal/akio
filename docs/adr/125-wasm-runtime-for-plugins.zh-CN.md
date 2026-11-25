@@ -2,7 +2,7 @@
 
 [English](125-wasm-runtime-for-plugins.md) | 简体中文
 
-状态：已采纳（2026-11-25）。按第 8 节的里程碑实现；W1（解码器与验证器）与 W2（翻译与解释器）已完成，见文末“实现记录”。
+状态：已采纳（2026-11-25）。按第 8 节的里程碑实现；W1（解码器与验证器）、W2（翻译与解释器）与 W3（宿主 API 与 WASI）已完成，见文末“实现记录”。
 
 ## 背景
 
@@ -81,7 +81,8 @@ wazero 的解释器是在其自身 IR 上的朴素栈机，为可移植性而非
   值栈上的每个位置都是帧里固定的槽位（每条指令处的栈高度是静态的），于是指令直接读写槽位，而不是压栈出栈；
   常量变成立即数，比较后接 `br_if` 合成一条指令，分支目标预先解析，每个基本块带上自己的指令数用于计量
   （第 3 节）。执行是对这种形式的 `match` 循环，帧显式放在 `Vec` 上，不用原生递归：guest 的深递归是 trap，
-  绝不会是原生栈溢出；宿主调用不能重入 guest。
+  绝不会是原生栈溢出。（W3 允许宿主函数回调进 guest，这是 Proxy-Wasm 宿主必需的，每层嵌套调用占一层原生调用，
+  至多 64 层：见“实现记录：W3”。）
 - **为什么解释器对 fit 的用法足够。** 插件只在配置了它的路由上运行，在自己的池上，绝不在 I/O 线程上，每个
   请求的工作量也小。试验显示 wazero 的解释器在 fit 的 guest 上是其编译器的 6–8 倍；寄存器解释器应在 2–4 倍
   左右（待测，里程碑 W5），比 fit 的 5 µs 多几微秒，每次调用有上界。这是插件路由上的开销，不是每个请求的开销。
@@ -329,3 +330,37 @@ crate `akio-wasm`（`#![forbid(unsafe_code)]`，无依赖）：`Module::new(&byt
   akio-wasm 燃料耗尽或任一方栈耗尽时停止比较，因为两者的上限不同。两个目标的语料都不提交：
   输入是 `wasm-smith` 的种子，最小化后仍有几十 MB，且只有 `wasm-smith` 能把它们变成模块；每次运行重新生成。
 
+### W3：宿主 API 与 WASI（2026-11-25）
+
+`Linker<S>`、类型化宿主函数、`Caller` 的带边界检查视图、调用时才陷入的未解析导入、WASI preview 1 子集，以及 fit 的客户模块
+能够运行：Go 的 `headers`（fit 的 ABI）、Proxy-Wasm Go SDK 的 `http_routing`，以及 fit 的 Rust 同步插件，以 gzip 形式提交在
+`crates/akio-wasm/tests/guests`（2.1 MB；由 `tests/guests/build.sh` 重新构建，不进入发布的 crate）。实现时确定的：
+
+- **宿主函数可以回调进 guest**（`Caller::call`），第 1 节原本排除了这一点。Proxy-Wasm 需要它：返回头部或缓冲区的宿主函数要用
+  `proxy_on_memory_allocate` 向 guest 申请内存再写入（fit 的 `give`，wazero 在宿主函数里调用 `CallWithStack`），没有它 I72
+  无法实现。嵌套调用在同一个帧栈上运行，位于调用该宿主函数的帧之上，直到返回到它们；使用同一预算，同一 `max_call_depth` 与
+  `max_value_stack`；每层是解释器循环的一次原生调用，所以嵌套有界（64 层，之后 `CallStackExhausted`），不会无界地原生递归。
+  嵌套调用中的陷入会以该陷入结束外层调用，无论宿主函数返回什么，并结束 store。
+- **链接器不属于任何 store。** `Linker<S>` 以 (模块, 名字) 保存宿主函数（`Arc`），`Clone + Send + Sync`；
+  `instantiate(&mut Store<S>, &Arc<Module>, &Budget)` 为每个导入创建一个 store 函数，检查其类型（不同则 `Unlinkable`），
+  对没有定义的导入以 `InstantiateError::UnknownImport` 拒绝并给出名字。于是 W4 的池在各线程间共享一个链接器，每个线程有自己的
+  store。链接器只定义函数；内存、表和全局变量仍属于 store（`Store::memory_new` 等），fit 的客户模块都不导入它们。
+- **类型化宿主函数与调用**：`func_wrap(module, name, |caller, params: P| -> Result<R, Trap>)`，`P` 是至多 12 个
+  `i32`、`u32`、`i64`、`u64`、`f32`、`f64` 组成的元组（或单个），`R` 同样或为 `()`；`Store::typed_func::<P, R>(func)`
+  只检查一次类型，得到 `TypedFunc`，可由宿主或宿主函数（`call_from`）调用。基于 `Value` 的 `func_new` 保留给运行时才知道类型的情形。
+- **`trap_unresolved`** 只作用于函数导入；替身函数以 `Trap::Host("called unresolved import module.name")` 陷入，日志里能看到名字。
+- **`Caller`**：`read`、`read_mut`、`write`、`read_u32`、`read_u64`、`write_u32`、`write_u64`，越出内存时都返回
+  `Trap::MemoryOutOfBounds`（宿主函数用 `?` 返回即可），以及 `export`、`func_type`、`instance`、`call`、`deadline`、
+  `is_interrupted` 和 `consume_fuel`（宿主函数自己的工作计入调用的燃料，如 WASI 的复制，每 64 字节一个单位）。
+- **WASI**：preview 1 的全部 46 个函数都有定义，导入其中任何一个的 guest 都能加载。第 3 节的子集照写，另外：
+  `fd_fdstat_get`、`fd_filestat_get`、`fd_fdstat_set_flags` 和 `fd_close` 对 0 到 2 描述一个字符设备（Go 的运行时启动时会询问），
+  对它们的 `fd_seek` 和 `fd_tell` 返回 `ESPIPE`，对 0 的 `fd_read` 是空输入；`clock_res_get` 为 1 ns；进程与线程 CPU 时钟返回
+  `EINVAL`；`poll_oneoff` 也把标准流报告为立即就绪（其他描述符报告为 `EBADF` 事件），并以 5 ms 为片睡眠以便看到调用的中断。
+  guest 给出的指针越出其内存时返回 `EFAULT`，而不是陷入，与 wazero 相同。`proc_exit` 是新的陷入 `Trap::Exit(code)`。
+  输出送往调用者给的接收函数（`WasiConfig::output`），每个缓冲区一次调用；限速由 akit 负责。
+- **Reactor**：`Store::initialize_reactor` 在实例导出 `_initialize` 时运行它（初始化的截止时间由所有者给出）。Go reactor 的
+  致命错误（panic、内存不足）打印到标准错误后以 `unreachable` 结束，而不是 `proc_exit`；Rust 的 `panic = "abort"` 也一样。
+  Go 的 `headers` 初始化需要 180 万条指令，一个请求约 1 万条。
+- **TinyGo 的客户模块**（fit 的同步插件，由 TinyGo 0.44 构建）尚未提交：构建脚本在 `tinygo` 位于 PATH 中时会构建它。
+- **模糊测试**：`wasm_exec` 的导入函数现在每隔一次调用就回调进调用方实例（按计数选择一个导出），所以嵌套调用、其上限与陷入
+  也一并被模糊测试。

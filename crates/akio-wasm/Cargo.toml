@@ -1,6 +1,6 @@
 [package]
 name = "akio-wasm"
-description = "akio: a WebAssembly runtime for plugins, in safe Rust without dependencies"
+description = "akio: a WebAssembly runtime for plugins, in safe Rust without third-party dependencies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,10 +11,17 @@ homepage.workspace = true
 documentation = "https://docs.rs/akio-wasm"
 keywords = ["wasm", "webassembly", "interpreter", "sandbox", "plugin"]
 categories = ["wasm"]
-# The converted specification tests (Apache 2.0, tests/spec/LICENSE) stay in the repository.
-exclude = ["tests/spec"]
+# The converted specification tests (Apache 2.0, tests/spec/LICENSE) and fit's guests built for
+# the tests stay in the repository.
+exclude = ["tests/spec", "tests/guests"]
 
 [dependencies]
+# random_get: the operating system's generator (ADR-125, section 1).
+akio-crypto = { workspace = true }
+
+[dev-dependencies]
+# Inflates the guests tests/guests.rs runs, committed gzipped.
+akio-deflate = { workspace = true }
 
 [features]
 # Entry points for `fuzz/` (`akio_wasm::fuzzing`); not a public API.

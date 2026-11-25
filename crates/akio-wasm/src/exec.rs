@@ -312,10 +312,11 @@ fn rem_u64(a: u64, b: u64) -> Result<u64, Trap> {
 }
 
 impl Runtime {
-    /// Runs the frames on the stack from the top one's saved position, until the bottom one
-    /// returns or a host function must be called.
+    /// Runs the frames on the stack from the top one's saved position, until only `floor` frames
+    /// are left (the frames of the calls a host function made this one from) or a host function
+    /// must be called.
     #[allow(clippy::too_many_lines)]
-    pub(crate) fn run(&mut self, meter: &mut Meter) -> Result<Exit, Trap> {
+    pub(crate) fn run(&mut self, meter: &mut Meter, floor: usize) -> Result<Exit, Trap> {
         let Self {
             limits,
             funcs,
@@ -332,8 +333,9 @@ impl Runtime {
         let max_stack = limits.max_value_stack as usize;
         let mut no_memory = MemoryEntity::default();
         'frame: loop {
-            let Some(&fr) = frames.last() else {
-                return Ok(Exit::Done);
+            let fr = match frames.last() {
+                Some(&fr) if frames.len() > floor => fr,
+                _ => return Ok(Exit::Done),
             };
             let inst = &instances[fr.inst as usize];
             let module = &*inst.module;

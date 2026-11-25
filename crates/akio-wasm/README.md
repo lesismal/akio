@@ -3,14 +3,15 @@
 [中文](README.zh-CN.md)
 
 A WebAssembly runtime for plugins, for [`akio`](https://github.com/lesismal/akio), in safe Rust
-(`#![forbid(unsafe_code)]`) without dependencies (ADR-125). A module is decoded, validated and
-translated once, to a register form run by an interpreter, with every resource bounded: no `unsafe`, no executable memory, so a bug is a wrong result or a trap,
-never memory corruption in the host. It is the runtime under akit's WASM plugins (fit's ABI and
-Proxy-Wasm). Also available as `akio::wasm` (feature `wasm`).
+(`#![forbid(unsafe_code)]`) without third-party dependencies (its one is akio-crypto, for random
+bytes; ADR-125). A module is decoded, validated and translated once, to a register form run by an
+interpreter, with every resource bounded: no `unsafe`, no executable memory, so a bug is a wrong
+result or a trap, never memory corruption in the host. It is the runtime under akit's WASM plugins
+(fit's ABI and Proxy-Wasm). Also available as `akio::wasm` (feature `wasm`).
 
 **Experimental**: built in milestones, its API may change in any release until W4
-(docs/api-stability.md). This release has **W1**, the decoder and the validator, and **W2**, the
-translation and the interpreter.
+(docs/api-stability.md). This release has **W1**, the decoder and the validator, **W2**, the
+translation and the interpreter, and **W3**, the host API and WASI preview 1's subset.
 
 - `Module::new(&bytes, &ModuleLimits)`: decodes and validates a binary module in one pass, in
   time linear in its size. `Module` lists the imports, exports (`export(name)`), types, function
@@ -45,20 +46,45 @@ translation and the interpreter.
 - **`Budget`**: each call's deadline, fuel and `InterruptHandle`, checked about every 10 000
   instructions as basic blocks are entered (bulk memory and table instructions pay by the byte),
   so a call stops within tens of microseconds of its deadline, with no watchdog thread.
+- **`Linker<S>`**: host functions by module and name, typed (`func_wrap`, closures over Rust's
+  `i32`, `u32`, `i64`, `u64`, `f32`, `f64`) or over `Value`s (`func_new`), resolved and
+  type-checked when it instantiates a module into a store; `Clone + Send + Sync`, shared by a
+  pool's threads. `trap_unresolved(true)` lets a function import nothing defines load, and trap
+  if called. `Store::typed_func` checks an export's type once.
+- **`Caller`**: what a host function sees: the store's state, the calling instance's exports,
+  its memory through bounds-checked views (`read`, `write`, `read_u32` ...), the call's deadline
+  and interrupt, `consume_fuel`, and `call`, back into the guest (as Proxy-Wasm's hosts call
+  `proxy_on_memory_allocate`), under the same budget, nested at most 64 deep.
+- **WASI preview 1**, the subset a plugin needs (`Linker::wasi_preview1(WasiConfig)`): arguments
+  and environment, the realtime and monotonic clocks, random bytes, standard output and error to a
+  sink, `poll_oneoff` sleeping no later than the call's deadline, `proc_exit` as `Trap::Exit`. No
+  file system and no sockets (`EBADF`, `ENOSYS`). `Store::initialize_reactor` runs a reactor's
+  `_initialize`.
 
 ```rust
 use std::{sync::Arc, time::{Duration, Instant}};
-use akio_wasm::{Budget, InstanceLimits, Module, ModuleLimits, Store, Trap, Value};
+use akio_wasm::{Budget, Caller, InstanceLimits, Linker, Module, ModuleLimits, Store, Trap, WasiConfig};
 
+// Once: load the plugin and define the host's functions.
 let bytes = std::fs::read("plugin.wasm")?;
 let module = Arc::new(Module::new(&bytes, &ModuleLimits::default())?);
-let mut store = Store::new((), InstanceLimits::default());
-let inst = store.instantiate(&module, &[], &Budget::unlimited())?;
-let run = store.export_func(inst, "run").ok_or("no run")?;
-let mut out = [Value::I32(0)];
-let budget = Budget::deadline(Instant::now() + Duration::from_millis(100));
-match store.call(run, &[], &mut out, &budget) {
-    Ok(()) => println!("{:?}", out[0]),
+let mut linker = Linker::<Vec<String>>::new();
+linker
+    .wasi_preview1(WasiConfig::new().output(|_, b| eprint!("{}", String::from_utf8_lossy(b))))?
+    .func_wrap("host", "log", |c: &mut Caller<'_, Vec<String>>, (p, n): (u32, u32)| {
+        let line = String::from_utf8_lossy(c.read(p, n)?).into_owned();
+        c.state_mut().push(line);
+        Ok(())
+    })?
+    .trap_unresolved(true);
+
+// For each instance: a store, the reactor initialized, then calls under a deadline.
+let mut store = Store::new(Vec::new(), InstanceLimits::default());
+let inst = linker.instantiate(&mut store, &module, &Budget::unlimited())?;
+store.initialize_reactor(inst, &Budget::deadline(Instant::now() + Duration::from_secs(1)))?;
+let run = store.typed_func::<(), i32>(store.export_func(inst, "run").ok_or("no run")?)?;
+match run.call(&mut store, (), &Budget::deadline(Instant::now() + Duration::from_millis(100))) {
+    Ok(r) => println!("{r}, logged {:?}", store.state()),
     Err(Trap::Deadline) => eprintln!("too slow: make another store"),
     Err(t) => eprintln!("trapped: {t}"),
 }
@@ -67,9 +93,13 @@ match store.call(run, &[], &mut out, &budget) {
 Tests: the WebAssembly 2.0 specification suite, every command (`tests/spec`, converted by
 `tools/wasm-spec/convert.sh` from `WebAssembly/testsuite`, Apache 2.0): 21 453 `assert_return`,
 2 354 `assert_trap`, linking and instantiation; the proposals of refused features as refusal
-checks; every load and run limit just under, at and over it; budgets; translation in linear time.
-Fuzz targets `wasm_decode`, `wasm_exec` (modules from `wasm-smith` under small limits) and
-`wasm_diff` (against wasmi) in `fuzz/`.
+checks; every load and run limit just under, at and over it; budgets; translation in linear time;
+the linker, the caller's views, calls back into the guest, and each WASI function; fit's guests
+(`tests/guests`, Go and Rust, rebuilt by `tests/guests/build.sh`): fit's header plugin, its sync
+plugin and a Proxy-Wasm filter load, initialize and run, a loop stops at its deadline, growing
+past the memory limit and panicking trap. Fuzz targets `wasm_decode`, `wasm_exec` (modules from
+`wasm-smith` under small limits, their imports calling back into them) and `wasm_diff` (against
+wasmi) in `fuzz/`.
 
-Next: W3 the host API (`Linker`, typed host functions) and a WASI preview 1 subset, W4 the
-instance pool, W5 a performance pass, W6 akio-http's hooks for Proxy-Wasm's response callbacks.
+Next: W4 the instance pool, W5 a performance pass, W6 akio-http's hooks for Proxy-Wasm's
+response callbacks.

@@ -10,6 +10,38 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: akio-wasm's host API and WASI, milestone W3 (akio-wasm, akio)
+
+ADR-125, third milestone: plugins get the host's functions and WASI, and fit's guests run.
+Experimental until W4.
+
+- `Linker<S>`: host functions by module and name, typed (`func_wrap(module, name, |caller,
+  (a, b): (u32, i64)| -> Result<R, Trap>)`, over `i32`, `u32`, `i64`, `u64`, `f32`, `f64`) or over
+  `Value`s (`func_new`); `instantiate(&mut Store<S>, &Arc<Module>, &Budget)` resolves each import
+  and checks its type; `trap_unresolved(true)` makes function imports nothing defines trap when
+  called instead of refusing the module. `Clone + Send + Sync`, shared across stores and threads.
+  `LinkError`, `InstantiateError::UnknownImport`.
+- `Caller`: bounds-checked views of the calling instance's memory (`read`, `read_mut`, `write`,
+  `read_u32`, `read_u64`, `write_u32`, `write_u64`), its exports, the call's deadline and
+  interrupt, `consume_fuel`, and `call`, back into the guest under the same budget, nested at
+  most 64 deep (what Proxy-Wasm's hosts do with `proxy_on_memory_allocate`); a trap in it ends
+  the outer call.
+- `Store::typed_func::<P, R>` and `TypedFunc` (checked once, called from the host or a host
+  function), `WasmTy`, `WasmParams`, `WasmResults`; `Store::initialize_reactor` (a WASI
+  reactor's `_initialize`).
+- WASI preview 1, the subset of ADR-125 (`Linker::wasi_preview1(WasiConfig)`, module
+  `akio_wasm::wasi`): arguments, environment, realtime and monotonic clocks, random bytes
+  (akio-crypto, the crate's one dependency), standard output and error to a sink
+  (`OutputStream`), `poll_oneoff` on clocks sleeping no later than the call's deadline,
+  `proc_exit` as the new `Trap::Exit(code)`; no file system and no sockets (`EBADF`, `ENOSYS`),
+  `EFAULT` for a pointer outside the memory. All 46 functions are defined.
+- Tests: the linker, the views, nested calls and their bounds, typed calls, each WASI function;
+  fit's guests (`tests/guests`, gzipped, rebuilt by `tests/guests/build.sh`): the Go `headers`
+  plugin (fit's ABI: fields edited, a request answered, `/loop` stopped at its deadline, `/grow`
+  and `/panic` trapping, the instance made again), the Proxy-Wasm Go SDK's `http_routing` (memory
+  allocated in the guest from host functions), and fit's Rust sync plugin. The `wasm_exec` fuzz
+  target's imports now call back into the guest.
+
 ### Added: akio-wasm runs modules, milestone W2: translation and interpreter (akio-wasm, akio)
 
 ADR-125, second milestone: `akio-wasm` now runs what it loads, still in safe Rust without

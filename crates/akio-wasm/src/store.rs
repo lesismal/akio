@@ -8,6 +8,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
@@ -23,6 +24,10 @@ use crate::{
 };
 
 pub(crate) const PAGE: usize = 65_536;
+
+/// How deep host functions may call back into the guest, one inside another. Each level is a
+/// native call of the interpreter's loop, so this bounds the native stack.
+pub(crate) const MAX_REENTRY: u32 = 64;
 
 /// A host function: called with the caller, its arguments, and its results to fill (each
 /// already holding its type's zero).
@@ -161,6 +166,17 @@ pub enum InstantiateError {
     /// segments before it wrote stays written (in tables and memories it imported too), and the
     /// store has ended, as after any trap.
     Trap(Trap),
+    /// Import `index`, `module`.`name`, is not something the [`Linker`](crate::Linker)
+    /// defines (and is not a function it was told to trap for, with
+    /// [`Linker::trap_unresolved`](crate::Linker::trap_unresolved)).
+    UnknownImport {
+        /// The import's index in the module.
+        index: usize,
+        /// The module name it imports from.
+        module: Box<str>,
+        /// The name it imports.
+        name: Box<str>,
+    },
 }
 
 impl fmt::Display for InstantiateError {
@@ -169,16 +185,29 @@ impl fmt::Display for InstantiateError {
             Self::Unlinkable { index, message } => write!(f, "import {index}: {message}"),
             Self::Limit(l) => write!(f, "over the store's limit InstanceLimits::{l}"),
             Self::Trap(t) => write!(f, "instantiation trapped: {t}"),
+            Self::UnknownImport {
+                index,
+                module,
+                name,
+            } => write!(f, "import {index}: unknown import {module}.{name}"),
         }
     }
 }
 
 impl std::error::Error for InstantiateError {}
 
-/// The caller of a host function: the store's state and the calling instance's memory.
+/// The caller of a host function: the store's state, the calling instance's memory and exports,
+/// and the call's budget.
+///
+/// A host function reads and writes the guest's memory through bounds-checked views only
+/// ([`read`](Self::read), [`write`](Self::write) ...): a pointer and a length from the guest
+/// that do not fit in its memory fail with [`Trap::MemoryOutOfBounds`], never reach outside it.
+/// It may call back into the guest ([`call`](Self::call)), to have it allocate memory for a
+/// result, for one, as Proxy-Wasm's hosts do.
 pub struct Caller<'a, S> {
     store: &'a mut Store<S>,
     instance: Option<u32>,
+    meter: &'a mut Meter,
 }
 
 impl<S> fmt::Debug for Caller<'_, S> {
@@ -201,6 +230,35 @@ impl<S> Caller<'_, S> {
         &mut self.store.state
     }
 
+    /// The calling instance; `None` when the host called the function itself, through
+    /// [`Store::call`].
+    #[must_use]
+    pub const fn instance(&self) -> Option<Instance> {
+        match self.instance {
+            Some(index) => Some(Instance {
+                store: self.store.rt.id,
+                index,
+            }),
+            None => None,
+        }
+    }
+
+    /// The calling instance's export `name`.
+    #[must_use]
+    pub fn export(&self, name: &str) -> Option<Extern> {
+        self.store.export(self.instance()?, name)
+    }
+
+    /// The type of a function of the store (one the calling instance exports, for one).
+    ///
+    /// # Panics
+    ///
+    /// If `f` belongs to another store.
+    #[must_use]
+    pub fn func_type(&self, f: Func) -> &FuncType {
+        self.store.func_type(f)
+    }
+
     fn memory_index(&self) -> Option<usize> {
         let i = self.instance?;
         self.store.rt.instances[i as usize]
@@ -220,6 +278,148 @@ impl<S> Caller<'_, S> {
         let m = self.memory_index()?;
         Some(&mut self.store.rt.memories[m].data)
     }
+
+    /// `len` bytes of the calling instance's memory at `ptr`.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if they are not all in its memory, or it has none.
+    pub fn read(&self, ptr: u32, len: u32) -> Result<&[u8], Trap> {
+        let mem = self.memory().ok_or(Trap::MemoryOutOfBounds)?;
+        let (start, end) = range(ptr, len, mem.len())?;
+        Ok(&mem[start..end])
+    }
+
+    /// `len` bytes of the calling instance's memory at `ptr`, to change.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if they are not all in its memory, or it has none.
+    pub fn read_mut(&mut self, ptr: u32, len: u32) -> Result<&mut [u8], Trap> {
+        let mem = self.memory_mut().ok_or(Trap::MemoryOutOfBounds)?;
+        let (start, end) = range(ptr, len, mem.len())?;
+        Ok(&mut mem[start..end])
+    }
+
+    /// Writes `bytes` to the calling instance's memory at `ptr`.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if they do not all fit in its memory (nothing is written
+    /// then), or it has none.
+    pub fn write(&mut self, ptr: u32, bytes: &[u8]) -> Result<(), Trap> {
+        let len = u32::try_from(bytes.len()).map_err(|_| Trap::MemoryOutOfBounds)?;
+        self.read_mut(ptr, len)?.copy_from_slice(bytes);
+        Ok(())
+    }
+
+    /// The little-endian `u32` at `ptr`.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if it is not in the calling instance's memory.
+    pub fn read_u32(&self, ptr: u32) -> Result<u32, Trap> {
+        let mut b = [0; 4];
+        b.copy_from_slice(self.read(ptr, 4)?);
+        Ok(u32::from_le_bytes(b))
+    }
+
+    /// The little-endian `u64` at `ptr`.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if it is not in the calling instance's memory.
+    pub fn read_u64(&self, ptr: u32) -> Result<u64, Trap> {
+        let mut b = [0; 8];
+        b.copy_from_slice(self.read(ptr, 8)?);
+        Ok(u64::from_le_bytes(b))
+    }
+
+    /// Writes `v` at `ptr`, little-endian.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if it does not fit in the calling instance's memory.
+    pub fn write_u32(&mut self, ptr: u32, v: u32) -> Result<(), Trap> {
+        self.write(ptr, &v.to_le_bytes())
+    }
+
+    /// Writes `v` at `ptr`, little-endian.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::MemoryOutOfBounds`] if it does not fit in the calling instance's memory.
+    pub fn write_u64(&mut self, ptr: u32, v: u64) -> Result<(), Trap> {
+        self.write(ptr, &v.to_le_bytes())
+    }
+
+    /// The deadline of the call this function serves, if its [`Budget`] has one. A host
+    /// function that waits (WASI's `poll_oneoff`) waits no later than this.
+    #[must_use]
+    pub const fn deadline(&self) -> Option<Instant> {
+        self.meter.deadline()
+    }
+
+    /// Whether the call's [`InterruptHandle`](crate::InterruptHandle) is raised. The guest
+    /// stops at its next check after the host function returns; a host function that waits
+    /// stops waiting.
+    #[must_use]
+    pub fn is_interrupted(&self) -> bool {
+        self.meter.interrupted()
+    }
+
+    /// Charges the call `units` of fuel, as for that many WebAssembly instructions: what a host
+    /// function does for the guest counts against the call's [`Budget`] (WASI's functions
+    /// charge one unit per 64 bytes they copy). It checks the deadline and the interrupt too,
+    /// when it starts a new slice.
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::OutOfFuel`], [`Trap::Deadline`] or [`Trap::Interrupted`] if the budget does not
+    /// allow it; the host function should return it, ending the call.
+    pub fn consume_fuel(&mut self, units: u64) -> Result<(), Trap> {
+        self.meter.take(units)
+    }
+
+    /// Calls `f` (a function of the store: the calling instance's export, for one) from this
+    /// host function, under the same call's budget, writing its results to `results`.
+    ///
+    /// The guest runs on top of the frames that called this host function, which go on when it
+    /// returns. Calls nest, host into guest into host, at most 64 deep, and count against
+    /// [`InstanceLimits::max_call_depth`](crate::InstanceLimits::max_call_depth) and
+    /// `max_value_stack` with the frames below them.
+    ///
+    /// # Errors
+    ///
+    /// The trap that stopped `f`; it ends the outer call too, with that trap, whatever the
+    /// host function then returns. [`Trap::BadCall`] (nothing run) if `args` or `results` do
+    /// not fit `f`'s type, or `f` belongs to another store; [`Trap::CallStackExhausted`] past
+    /// 64 nested calls.
+    pub fn call(&mut self, f: Func, args: &[Value], results: &mut [Value]) -> Result<(), Trap> {
+        if f.store != self.store.rt.id {
+            return Err(Trap::BadCall("a function of another store"));
+        }
+        if self.store.reentry >= MAX_REENTRY {
+            return self.store.fail(Trap::CallStackExhausted);
+        }
+        self.store.reentry += 1;
+        let r = self.store.invoke(f.index, args, results, self.meter);
+        self.store.reentry -= 1;
+        match r {
+            Err(t) if t.ends_store() => self.store.fail(t),
+            r => r,
+        }
+    }
+}
+
+/// The range `ptr..ptr + len` of a memory of `size` bytes.
+fn range(ptr: u32, len: u32, size: usize) -> Result<(usize, usize), Trap> {
+    let start = ptr as usize;
+    let end = start
+        .checked_add(len as usize)
+        .filter(|&e| e <= size)
+        .ok_or(Trap::MemoryOutOfBounds)?;
+    Ok((start, end))
 }
 
 static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
@@ -227,8 +427,9 @@ static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
 /// Where instances live: their memories, tables, globals and functions, the host's functions,
 /// and a state `S` for the host functions to use (ADR-125, section 3).
 ///
-/// A store is `Send` (when `S` is), not `Sync`: one thread runs it at a time, and a host
-/// function cannot call back into it, so a call never re-enters the guest. Several instances
+/// A store is `Send` (when `S` is), not `Sync`: one thread runs it at a time; a host function
+/// reaches it only through its [`Caller`], and calls back into the guest on top of the frames
+/// that called it ([`Caller::call`]). Several instances
 /// may live in one store and import from each other; a plugin's store usually holds one.
 ///
 /// **A trap ends the store**: its memory may be half-updated, so later calls return
@@ -244,6 +445,10 @@ pub struct Store<S> {
     ended: bool,
     trap_ends: bool,
     fuel_used: u64,
+    /// Host functions running guest code, one inside another (`Caller::call`).
+    reentry: u32,
+    /// A trap in a call a host function made: it ends the outer call too.
+    pending: Option<Trap>,
     /// Reused for host calls' arguments and results.
     args: Vec<Value>,
     results: Vec<Value>,
@@ -299,6 +504,8 @@ impl<S> Store<S> {
             ended: false,
             trap_ends: true,
             fuel_used: 0,
+            reentry: 0,
+            pending: None,
             args: Vec::new(),
             results: Vec::new(),
         }
@@ -360,9 +567,14 @@ impl<S> Store<S> {
         + Sync
         + 'static,
     ) -> Func {
-        let ty = self.rt.intern(&ty);
+        self.func_arc(&ty, Arc::new(f))
+    }
+
+    /// A host function of type `ty`, shared (a [`Linker`](crate::Linker)'s).
+    pub(crate) fn func_arc(&mut self, ty: &FuncType, f: HostFn<S>) -> Func {
+        let ty = self.rt.intern(ty);
         let h = self.hosts.len() as u32;
-        self.hosts.push(Arc::new(f));
+        self.hosts.push(f);
         let index = self.rt.funcs.len() as u32;
         self.rt.funcs.push(FuncEntity {
             ty,
@@ -747,7 +959,7 @@ impl<S> Store<S> {
             globals: globals.into(),
             types,
         });
-        if let Err(t) = self.initialize(inst, budget) {
+        if let Err(t) = self.init_segments(inst, budget) {
             self.end_on(&t);
             return Err(InstantiateError::Trap(t));
         }
@@ -758,7 +970,7 @@ impl<S> Store<S> {
     }
 
     /// The active segments, in order, then the start function.
-    fn initialize(&mut self, inst: u32, budget: &Budget) -> Result<(), Trap> {
+    fn init_segments(&mut self, inst: u32, budget: &Budget) -> Result<(), Trap> {
         let module = Arc::clone(&self.rt.instances[inst as usize].module);
         let d = &self.rt.instances[inst as usize];
         let (tables, memory) = (d.tables.clone(), d.memory);
@@ -799,9 +1011,37 @@ impl<S> Store<S> {
         }
         if let Some(f) = module.start {
             let f = funcs[f as usize];
-            self.invoke(f, &[], &mut [], budget)?;
+            self.pending = None;
+            let mut meter = Meter::new(budget);
+            let r = self.invoke(f, &[], &mut [], &mut meter);
+            self.fuel_used = meter.used();
+            r?;
         }
         Ok(())
+    }
+
+    /// Initializes a WASI reactor: calls the instance's export `_initialize`, a function
+    /// taking and returning nothing, under `budget`, if it has one, and says whether it did. A
+    /// reactor (Go's `-buildmode=c-shared`, TinyGo's, a Rust `cdylib`) is initialized once,
+    /// before any other of its exports is called.
+    ///
+    /// # Errors
+    ///
+    /// The trap that stopped it, which ends the store, as [`Store::call`]; [`Trap::BadCall`]
+    /// if `_initialize` is not a function of type `(func)`.
+    ///
+    /// # Panics
+    ///
+    /// If `inst` belongs to another store.
+    pub fn initialize_reactor(&mut self, inst: Instance, budget: &Budget) -> Result<bool, Trap> {
+        let Some(ext) = self.export(inst, "_initialize") else {
+            return Ok(false);
+        };
+        let f = ext
+            .func()
+            .ok_or(Trap::BadCall("_initialize is not a function"))?;
+        self.call(f, &[], &mut [], budget)?;
+        Ok(true)
     }
 
     /// Calls `f` with `args`, writing its results to `results`, under `budget`.
@@ -824,22 +1064,43 @@ impl<S> Store<S> {
         if f.store != self.rt.id {
             return Err(Trap::BadCall("a function of another store"));
         }
-        let r = self.invoke(f.index, args, results, budget);
+        self.pending = None;
+        let mut meter = Meter::new(budget);
+        let r = self.invoke(f.index, args, results, &mut meter);
+        self.fuel_used = meter.used();
         if let Err(t) = &r {
             self.end_on(t);
         }
         r
     }
 
+    /// Records `t`, a trap in a call a host function made, to end the outer call with.
+    fn fail(&mut self, t: Trap) -> Result<(), Trap> {
+        if self.pending.is_none() {
+            self.pending = Some(t.clone());
+        }
+        Err(t)
+    }
+
+    /// The first slot above the frames on the stack: where a call a host function makes starts.
+    fn stack_top(&self) -> usize {
+        self.rt.frames.last().map_or(0, |fr| {
+            let c = &self.rt.instances[fr.inst as usize].module.compiled[fr.func as usize];
+            fr.base as usize + c.frame as usize
+        })
+    }
+
+    /// Runs `f` on top of the frames already on the stack (none, unless a host function called
+    /// it), under `meter`.
     fn invoke(
         &mut self,
         f: u32,
         args: &[Value],
         results: &mut [Value],
-        budget: &Budget,
+        meter: &mut Meter,
     ) -> Result<(), Trap> {
         let fe = self.rt.funcs[f as usize];
-        let ty = self.rt.types[fe.ty as usize].clone();
+        let ty = &self.rt.types[fe.ty as usize];
         if args.len() != ty.params().len()
             || results.len() != ty.results().len()
             || args.iter().zip(ty.params()).any(|(a, &t)| a.ty() != t)
@@ -848,7 +1109,6 @@ impl<S> Store<S> {
                 "arguments or results do not fit the function's type",
             ));
         }
-        self.fuel_used = 0;
         match fe.kind {
             FuncKind::Host(h) => {
                 let host = Arc::clone(&self.hosts[h as usize]);
@@ -858,8 +1118,14 @@ impl<S> Store<S> {
                 let mut caller = Caller {
                     store: self,
                     instance: None,
+                    meter,
                 };
-                host(&mut caller, args, results)?;
+                let r = host(&mut caller, args, results);
+                if let Some(t) = self.pending.take() {
+                    return Err(t);
+                }
+                r?;
+                let ty = &self.rt.types[fe.ty as usize];
                 if results.iter().zip(ty.results()).any(|(r, &t)| r.ty() != t) {
                     return Err(Trap::Host(
                         "a host function's result of the wrong type".into(),
@@ -868,36 +1134,40 @@ impl<S> Store<S> {
                 Ok(())
             }
             FuncKind::Wasm { inst, def } => {
+                let base = self.stack_top();
+                let floor = self.rt.frames.len();
                 let module = &self.rt.instances[inst as usize].module;
                 let c = &module.compiled[def as usize];
                 let (frame, params, locals) =
                     (c.frame as usize, c.params as usize, c.locals as usize);
-                if frame > self.rt.limits.max_value_stack as usize {
+                let end = base + frame;
+                if end > self.rt.limits.max_value_stack as usize {
                     return Err(Trap::ValueStackExhausted);
                 }
-                if self.rt.stack.len() < frame {
-                    self.rt.stack.resize(frame, 0);
+                if floor >= self.rt.limits.max_call_depth as usize {
+                    return Err(Trap::CallStackExhausted);
+                }
+                if self.rt.stack.len() < end {
+                    self.rt.stack.resize(end, 0);
                 }
                 for (k, a) in args.iter().enumerate() {
-                    self.rt.stack[k] = a
+                    self.rt.stack[base + k] = a
                         .to_slot(self.rt.id)
                         .ok_or(Trap::BadCall("a function of another store"))?;
                 }
-                self.rt.stack[params..locals].fill(0);
-                self.rt.frames.clear();
+                self.rt.stack[base + params..base + locals].fill(0);
                 self.rt.frames.push(Frame {
                     inst,
                     func: def,
                     pc: 0,
-                    base: 0,
+                    base: base as u32,
                 });
-                let mut meter = Meter::new(budget);
-                let r = self.run(&mut meter);
-                self.fuel_used = meter.used();
-                self.rt.frames.clear();
+                let r = self.run(meter, floor);
+                self.rt.frames.truncate(floor);
                 r?;
+                let ty = &self.rt.types[fe.ty as usize];
                 for (k, (r, &t)) in results.iter_mut().zip(ty.results()).enumerate() {
-                    *r = Value::from_slot(self.rt.stack[k], t, self.rt.id);
+                    *r = Value::from_slot(self.rt.stack[base + k], t, self.rt.id);
                 }
                 Ok(())
             }
@@ -905,21 +1175,28 @@ impl<S> Store<S> {
     }
 
     /// Runs the frames on the stack, calling host functions as they come.
-    fn run(&mut self, meter: &mut Meter) -> Result<(), Trap> {
+    fn run(&mut self, meter: &mut Meter, floor: usize) -> Result<(), Trap> {
         loop {
-            match self.rt.run(meter)? {
+            match self.rt.run(meter, floor)? {
                 Exit::Done => return Ok(()),
                 Exit::Host {
                     host,
                     ty,
                     base,
                     inst,
-                } => self.call_host(host, ty, base as usize, inst)?,
+                } => self.call_host(host, ty, base as usize, inst, meter)?,
             }
         }
     }
 
-    fn call_host(&mut self, host: u32, ty: u32, base: usize, inst: u32) -> Result<(), Trap> {
+    fn call_host(
+        &mut self,
+        host: u32,
+        ty: u32,
+        base: usize,
+        inst: u32,
+        meter: &mut Meter,
+    ) -> Result<(), Trap> {
         let ty = self.rt.types[ty as usize].clone();
         let host = Arc::clone(&self.hosts[host as usize]);
         let mut args = std::mem::take(&mut self.args);
@@ -937,8 +1214,13 @@ impl<S> Store<S> {
         let mut caller = Caller {
             store: self,
             instance: Some(inst),
+            meter,
         };
         let r = host(&mut caller, &args, &mut results);
+        let r = match self.pending.take() {
+            Some(t) => Err(t),
+            None => r,
+        };
         let r = r.and_then(|()| {
             for (k, (v, &t)) in results.iter().zip(ty.results()).enumerate() {
                 if v.ty() != t {

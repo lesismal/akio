@@ -98,13 +98,47 @@ pub fn small_instance_limits() -> InstanceLimits {
 /// The fuel `exec` gives each call.
 pub const EXEC_FUEL: u64 = 200_000;
 
-/// Imports for `m` made in `store`: host functions that return zeros, and tables, memories and
-/// globals of the imported types; `None` if one is over the store's limits.
-pub fn dummy_imports<S>(store: &mut Store<S>, m: &Module) -> Option<Vec<Extern>> {
+/// Imports for `m` made in `store`: host functions, and tables, memories and globals of the
+/// imported types; `None` if one is over the store's limits.
+///
+/// Every other call of a host function (the store's state counts them) calls back into the
+/// guest: an export of the calling instance, chosen by the count, with zeros, its trap
+/// returned; the others return zeros. So calls nest, guest into host into guest, up to the
+/// bound on re-entry, the call depth, the value stack or the fuel.
+pub fn dummy_imports(store: &mut Store<u32>, m: &Module) -> Option<Vec<Extern>> {
+    let exports: Arc<[Box<str>]> = m
+        .exports()
+        .iter()
+        .filter(|e| e.kind == crate::ExportKind::Func)
+        .map(|e| e.name.clone())
+        .collect();
     m.imports()
         .iter()
         .map(|i| match &i.ty {
-            ExternType::Func(t) => Some(Extern::Func(store.func_new(t.clone(), |_, _, _| Ok(())))),
+            ExternType::Func(t) => {
+                let exports = Arc::clone(&exports);
+                Some(Extern::Func(store.func_new(t.clone(), move |c, _, _| {
+                    let n = *c.state();
+                    *c.state_mut() = n.wrapping_add(1);
+                    if n % 2 == 1 || exports.is_empty() {
+                        return Ok(());
+                    }
+                    let name = &exports[n as usize / 2 % exports.len()];
+                    let Some(f) = c.export(name).and_then(Extern::func) else {
+                        return Ok(());
+                    };
+                    let ty = c.func_type(f).clone();
+                    let args: Vec<Value> =
+                        ty.params().iter().map(|&t| Value::default_of(t)).collect();
+                    let mut out: Vec<Value> =
+                        ty.results().iter().map(|&t| Value::default_of(t)).collect();
+                    c.call(f, &args, &mut out)?;
+                    for (v, &t) in out.iter().zip(ty.results()) {
+                        assert_eq!(v.ty(), t);
+                    }
+                    Ok(())
+                })))
+            }
             ExternType::Table(t) => store
                 .table_new(*t, Value::default_of(t.elem.into()))
                 .ok()
@@ -135,7 +169,7 @@ pub fn exec(wasm: &[u8]) {
         .collect();
     // One store for each export (a trap ends a store), and one for instantiating alone.
     for k in 0..=funcs.len() {
-        let mut store = Store::new((), small_instance_limits());
+        let mut store = Store::new(0u32, small_instance_limits());
         let Some(imports) = dummy_imports(&mut store, &m) else {
             return;
         };

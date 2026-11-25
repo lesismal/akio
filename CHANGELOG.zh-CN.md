@@ -10,6 +10,28 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：akio-wasm 的宿主 API 与 WASI，里程碑 W3（akio-wasm、akio）
+
+ADR-125 的第三个里程碑：插件可以使用宿主函数与 WASI，fit 的客户模块能够运行。W4 之前属于实验层。
+
+- `Linker<S>`：按模块名与名字登记的宿主函数，可以是类型化的（`func_wrap(module, name, |caller, (a, b): (u32, i64)| -> Result<R, Trap>)`，
+  支持 `i32`、`u32`、`i64`、`u64`、`f32`、`f64`），也可以基于 `Value`（`func_new`）；`instantiate(&mut Store<S>, &Arc<Module>, &Budget)`
+  解析每个导入并检查类型；`trap_unresolved(true)` 让没有定义的函数导入在被调用时陷入，而不是拒绝模块。`Clone + Send + Sync`，
+  可在多个 store 与线程间共享。`LinkError`、`InstantiateError::UnknownImport`。
+- `Caller`：调用方实例内存的带边界检查视图（`read`、`read_mut`、`write`、`read_u32`、`read_u64`、`write_u32`、`write_u64`）、
+  它的导出、调用的截止时间与中断、`consume_fuel`，以及 `call`：在同一预算下回调进 guest，最多嵌套 64 层（Proxy-Wasm 宿主用
+  `proxy_on_memory_allocate` 正是这样做的）；其中的陷入会结束外层调用。
+- `Store::typed_func::<P, R>` 与 `TypedFunc`（只检查一次，可由宿主或宿主函数调用）、`WasmTy`、`WasmParams`、`WasmResults`；
+  `Store::initialize_reactor`（WASI reactor 的 `_initialize`）。
+- WASI preview 1，ADR-125 的子集（`Linker::wasi_preview1(WasiConfig)`，模块 `akio_wasm::wasi`）：参数、环境变量、实时与单调时钟、
+  随机字节（akio-crypto，本 crate 唯一的依赖）、标准输出与标准错误送往接收函数（`OutputStream`）、只等时钟的 `poll_oneoff`
+  睡眠不晚于调用的截止时间、`proc_exit` 即新的 `Trap::Exit(code)`；没有文件系统和套接字（`EBADF`、`ENOSYS`），越出内存的指针返回
+  `EFAULT`。全部 46 个函数都有定义。
+- 测试：链接器、内存视图、嵌套调用及其上限、类型化调用、每个 WASI 函数；fit 的客户模块（`tests/guests`，gzip 压缩，由
+  `tests/guests/build.sh` 重新构建）：Go 的 `headers` 插件（fit 的 ABI：修改字段、直接应答请求、`/loop` 在截止时间停止、
+  `/grow` 与 `/panic` 陷入、实例重建）、Proxy-Wasm Go SDK 的 `http_routing`（宿主函数在 guest 中分配内存），以及 fit 的 Rust
+  同步插件。`wasm_exec` 模糊测试目标的导入现在会回调进 guest。
+
 ### 新增：akio-wasm 可以运行模块，里程碑 W2：翻译与解释器（akio-wasm、akio）
 
 ADR-125 的第二个里程碑：`akio-wasm` 现在能运行它加载的模块，仍是安全 Rust、无依赖，W4 之前属于实验层。
