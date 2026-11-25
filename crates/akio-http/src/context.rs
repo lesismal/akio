@@ -15,6 +15,7 @@ use akio_ws::{WsConfig, WsHandler, deflate::PmdParams};
 use crate::coding::StreamEncoder;
 use crate::gate::{BodyFilter, Gate, GateHandle};
 use crate::message::{Headers, Method, Request, Response, Spare, Version};
+use crate::observer::ResponseObserver;
 use crate::router::RouteInfo;
 use akio_log::span::Span;
 
@@ -566,6 +567,10 @@ struct Finish {
     span: Span,
     /// Held heads and body filters (ADR-128), once one is registered.
     asyncs: Option<Box<Asyncs>>,
+    /// The listener's response observer (ADR-158), when it has one: the connection's handle.
+    observer: Option<Arc<dyn ResponseObserver>>,
+    /// The words [`Context::set_observed`] stored, and when: the request is observed.
+    observed: Option<([u64; 2], Instant)>,
 }
 
 /// A response's held heads and body filters (ADR-128), in registration order.
@@ -584,6 +589,8 @@ impl Finish {
             time_header: None,
             span: Span::none(),
             asyncs: None,
+            observer: None,
+            observed: None,
         }
     }
 
@@ -616,6 +623,7 @@ impl Finish {
             && self.extra.is_empty()
             && self.time_header.is_none()
             && self.span.is_none()
+            && self.observed.is_none()
         {
             return;
         }
@@ -642,6 +650,12 @@ impl Finish {
             };
             resp.headers
                 .set(&**h, std::str::from_utf8(&buf[..n]).unwrap_or("0ms"));
+        }
+        // Last: the observer sees the response as it goes (ADR-158), once.
+        if let Some((words, started)) = self.observed.take() {
+            if let Some(o) = &self.observer {
+                o.on_response(resp, req, words, started);
+            }
         }
     }
 }
@@ -864,6 +878,7 @@ impl Context {
     #[inline(always)]
     pub(crate) fn new_ext(req: Request, sink: ExtOut) -> Context {
         let mut c = Context::new_h2_like(req);
+        c.fin.observer = sink.0.get().observer().cloned();
         c.responder = Some(Out::Ext(sink));
         c
     }
@@ -1102,6 +1117,37 @@ impl Context {
         self.fin.started.get_or_insert_with(Instant::now);
     }
 
+    /// Has the listener's [`ResponseObserver`] told of this request's response, with `words`
+    /// (ADR-158, akit A29): a metrics slot, a log shard, whatever the observer reads them as.
+    /// Stored inline, so a request observed costs no allocation. The observer runs once, when
+    /// the response goes, on the thread that sends it (see [`ResponseObserver`]), whether the
+    /// response is sent here, from a [`Detached`], after [`suspend`](Self::suspend), or
+    /// streamed. `started` is the time of the first call; a later call replaces the words.
+    ///
+    /// `false` (nothing stored) when the listener has no observer
+    /// ([`HttpAcceptor::observer`](crate::HttpAcceptor::observer)), or the response was already
+    /// taken ([`detach`](Self::detach), [`stream_response`](Self::stream_response)): set it
+    /// before.
+    pub fn set_observed(&mut self, words: [u64; 2]) -> bool {
+        if self.fin.observer.is_none() || self.responder.is_none() {
+            return false;
+        }
+        let started = match self.fin.observed {
+            Some((_, t)) => t,
+            None => Instant::now(),
+        };
+        self.fin.observed = Some((words, started));
+        true
+    }
+
+    /// Gives the context the listener's observer (a connection's handle on it).
+    #[inline]
+    pub(crate) fn set_observer(&mut self, obs: Option<&Arc<dyn ResponseObserver>>) {
+        if let Some(o) = obs {
+            self.fin.observer = Some(o.clone());
+        }
+    }
+
     /// Receives a streamed request body (see [`BodyMode::Stream`]). The sink is called with each
     /// chunk and finally with `End`; it may respond (early, too) or detach the context.
     pub fn on_body(&mut self, f: impl FnMut(&mut Context, BodyEvent<'_>) + Send + 'static) {
@@ -1226,6 +1272,14 @@ impl Context {
         EndGuard(self.hooks.clone())
     }
 
+    /// HTTP/1: the response, while not taken yet, says `Connection: close` and closes the
+    /// connection (its listener is drained, akit A54).
+    pub(crate) fn set_close(&mut self) {
+        if let Some(Out::H1(r)) = &mut self.responder {
+            r.keep_alive = false;
+        }
+    }
+
     /// Marks the request as one whose body arrives after `call` (see [`body_reads`]).
     pub(crate) fn set_streamed(&mut self) {
         self.streamed = true;
@@ -1316,6 +1370,8 @@ impl Context {
                 time_header: self.fin.time_header.take(),
                 span: std::mem::take(&mut self.fin.span),
                 asyncs: self.fin.asyncs.take(),
+                observer: self.fin.observer.take(),
+                observed: self.fin.observed.take(),
             },
             responder,
         })

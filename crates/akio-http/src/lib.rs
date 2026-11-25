@@ -60,6 +60,7 @@ pub mod hpack;
 pub mod message;
 pub mod middleware;
 pub mod observe;
+mod observer;
 mod parse;
 mod pool;
 pub mod raw;
@@ -86,6 +87,7 @@ pub use context::{
 pub use gate::{BodyChunk, BodyFilter, FilterDone};
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version, parse_http_date};
+pub use observer::ResponseObserver;
 pub use pool::Executor;
 pub use router::{RouteInfo, RouteMatch, Router};
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};
