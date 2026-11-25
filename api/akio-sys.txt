@@ -22,34 +22,14 @@ pub fn akio_sys::numa::nodes() -> core::io::error::Result<alloc::vec::Vec<akio_s
 pub fn akio_sys::numa::parse_cpulist(&str) -> core::option::Option<alloc::vec::Vec<usize>>
 pub fn akio_sys::numa::set_incoming_cpu(std::os::fd::raw::RawFd, usize) -> core::io::error::Result<()>
 pub mod akio_sys::process
-pub struct akio_sys::process::ChildSetup
-pub akio_sys::process::ChildSetup::cpus: alloc::vec::Vec<usize>
-pub akio_sys::process::ChildSetup::inherit: alloc::vec::Vec<std::os::fd::raw::RawFd>
-pub akio_sys::process::ChildSetup::parent_death_signal: core::option::Option<i32>
-impl core::clone::Clone for akio_sys::process::ChildSetup
-pub fn akio_sys::process::ChildSetup::clone(&self) -> Self
-impl core::default::Default for akio_sys::process::ChildSetup
-pub fn akio_sys::process::ChildSetup::default() -> Self
-impl core::fmt::Debug for akio_sys::process::ChildSetup
-pub fn akio_sys::process::ChildSetup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for akio_sys::process::ChildSetup
-impl core::marker::Sync for akio_sys::process::ChildSetup
-impl core::marker::Unpin for akio_sys::process::ChildSetup
-impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::process::ChildSetup
-impl core::panic::unwind_safe::UnwindSafe for akio_sys::process::ChildSetup
 pub const akio_sys::process::SIGHUP: i32
 pub const akio_sys::process::SIGINT: i32
-pub const akio_sys::process::SIGQUIT: i32
 pub const akio_sys::process::SIGTERM: i32
-pub const akio_sys::process::SIGUSR1: i32
 pub const akio_sys::process::SIGUSR2: i32
 pub fn akio_sys::process::allowed_cpus() -> core::io::error::Result<alloc::vec::Vec<usize>>
-pub fn akio_sys::process::configure_child(&mut std::process::Command, &akio_sys::process::ChildSetup)
 pub fn akio_sys::process::kill(u32, i32) -> core::io::error::Result<()>
 pub fn akio_sys::process::pin_current_thread(&[usize]) -> core::io::error::Result<()>
-pub fn akio_sys::process::reserve_reuseport(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpListener>
 pub fn akio_sys::process::signal_pipe(&[i32]) -> core::io::error::Result<std::os::unix::net::stream::UnixStream>
-pub fn akio_sys::process::take_inherited_fd(std::os::fd::raw::RawFd) -> core::io::error::Result<std::os::fd::owned::OwnedFd>
 pub enum akio_sys::FsEvent
 pub akio_sys::FsEvent::Changed
 pub akio_sys::FsEvent::Changed::id: akio_sys::WatchId

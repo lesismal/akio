@@ -322,7 +322,6 @@ impl core::panic::unwind_safe::UnwindSafe for akio::Scheduling
 #[non_exhaustive] pub struct akio::EbpfConfig
 pub akio::EbpfConfig::ebpf_programs: bool
 pub akio::EbpfConfig::pin_threads: bool
-pub akio::EbpfConfig::shared: core::option::Option<akio_ebpf::shared::SharedSteering>
 pub akio::EbpfConfig::steering: akio_ebpf::steer::Steering
 pub akio::EbpfConfig::strict: bool
 impl core::clone::Clone for akio::EbpfConfig
