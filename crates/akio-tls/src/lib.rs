@@ -335,16 +335,18 @@ impl<A: Acceptor> Acceptor for Tls<A> {
     }
 
     fn transport(&self) -> Option<Box<dyn Transport>> {
-        let (conn, timeout, ktls) = match &self.mode {
+        let (conn, timeout, ktls, handshake_only) = match &self.mode {
             Mode::Server(cfg) => (
                 Ok(proto::Connection::server(cfg.inner.clone())),
                 cfg.handshake_timeout,
                 cfg.ktls,
+                cfg.handshake_only.clone(),
             ),
             Mode::Client(cfg, name) => (
                 proto::Connection::client(cfg.inner.clone(), name),
                 cfg.handshake_timeout,
                 cfg.ktls,
+                None,
             ),
         };
         match conn {
@@ -368,6 +370,7 @@ impl<A: Acceptor> Acceptor for Tls<A> {
                     peer: None,
                     stats: Some(self.stats.clone()),
                     timeout,
+                    handshake_only,
                 }))
             }
             Err(e) => {
@@ -416,6 +419,8 @@ struct TlsTransport {
     ktls: Option<Box<ktls::KtlsState>>,
     /// The peer's chain, shared, once the handshake is done ([`peer_chain`]).
     peer: Option<PeerChain>,
+    /// [`ServerConfigBuilder::handshake_only_alpn`]'s protocols (server side).
+    handshake_only: Option<Arc<[Vec<u8>]>>,
 }
 
 impl TlsTransport {
@@ -436,10 +441,26 @@ fn io_err(e: proto::Fatal) -> io::Error {
 impl Transport for TlsTransport {
     fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
         // An empty input still gives a client the chance to emit its first flight.
+        let start = plain.len();
         self.conn.recv(cipher, plain, out).map_err(io_err)?;
         if self.stats.is_some() && !self.conn.handshaking() {
             if let Some(s) = self.stats.take() {
                 s.handshake_done(&self.conn);
+            }
+        }
+        // ALPN is chosen with the ClientHello, so early data is caught too (ADR-123).
+        let only = match (&self.handshake_only, self.conn.alpn()) {
+            (Some(only), Some(alpn)) => only.iter().any(|p| p.as_slice() == alpn),
+            _ => false,
+        };
+        if only {
+            plain.truncate(start);
+            if !self.conn.handshaking() {
+                self.conn.close(out);
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "the negotiated ALPN protocol is for the handshake only",
+                ));
             }
         }
         Ok(())

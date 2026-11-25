@@ -162,19 +162,147 @@ impl Out {
     }
 
     fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+        fin.apply(&mut resp, req);
+        let status = resp.status;
+        if resp.stream_coding.is_some()
+            && resp.file.is_some()
+            && status >= 200
+            && status != 204
+            && status != 304
+        {
+            // A file body a filter gave a coding (ADR-124): read and encoded on the disk pool.
+            coded_file(self, resp, req);
+            return status;
+        }
         match self {
-            Out::H1(r) => r.send(resp, fin, req),
-            Out::H2(r) => {
-                fin.apply(&mut resp, req);
-                let status = resp.status;
-                r.send(resp);
-                status
+            Out::H1(r) => r.send(resp),
+            Out::H2(r) => r.send(resp),
+            Out::Ext(r) => r.send(resp),
+        }
+        status
+    }
+}
+
+/// Sends `resp`, whose body is a file and which a response filter gave a stream coding, as a
+/// streamed response (ADR-124): `Content-Length` dropped, chunked on keep-alive HTTP/1.1, the
+/// file read in pieces on the disk pool and each piece encoded there and written under the
+/// connection's backpressure ([`FilePump`]). A HEAD answer sends the head alone.
+fn coded_file(out: Out, mut resp: Response, req: &Request) {
+    let Some(file) = resp.file.take() else { return };
+    resp.streaming = true;
+    resp.headers.remove("Content-Length");
+    let chunked = matches!(&out, Out::H1(r) if r.version == Version::Http11 && r.keep_alive);
+    if chunked {
+        resp.headers.set("Transfer-Encoding", "chunked");
+    }
+    let Some(stream) = open_stream(out, resp, req, chunked) else {
+        return;
+    };
+    if req.method == Method::Head || file.len == 0 {
+        stream.finish();
+        return;
+    }
+    FilePump {
+        stream,
+        file: file.file,
+        offset: file.offset,
+        left: file.len,
+        refused: 0,
+    }
+    .submit();
+}
+
+/// A file body being read, encoded and written on the disk pool (ADR-124).
+struct FilePump {
+    stream: BodyStream,
+    file: Arc<std::fs::File>,
+    offset: u64,
+    left: u64,
+    /// Times in a row the pool refused the next run.
+    refused: u32,
+}
+
+/// What [`FilePump`] reads at a time: each piece is encoded and flushed as one write.
+const PUMP_PIECE: usize = 64 << 10;
+/// Bytes queued on the connection past which [`FilePump`] waits for it to drain.
+const PUMP_HIGH: usize = 256 << 10;
+/// How long [`FilePump`] waits before asking a full pool again, and how many times: past
+/// that (a second of a pool that stays full), the response is cut and its connection closed.
+const PUMP_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
+const PUMP_RETRIES: u32 = 200;
+
+impl FilePump {
+    /// Runs the pump on the disk pool; a full pool is asked again a little later.
+    fn submit(self) {
+        let cell = Arc::new(Mutex::new(Some(self)));
+        let job_cell = cell.clone();
+        let job = Box::new(move || {
+            let p = job_cell
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(p) = p {
+                p.run();
             }
-            Out::Ext(r) => {
-                fin.apply(&mut resp, req);
-                let status = resp.status;
-                r.send(resp);
-                status
+        });
+        if crate::files::disk_pool().try_execute(job).is_err() {
+            let p = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(mut p) = p {
+                p.refused += 1;
+                if p.refused <= PUMP_RETRIES {
+                    crate::timer::after(PUMP_RETRY, move || p.submit());
+                }
+                // Else dropped: the stream unfinished closes the connection.
+            }
+        }
+    }
+
+    /// Reads, encodes and writes pieces until the file is sent (the stream finished), the
+    /// connection falls behind (resumed when it drains) or a read or write fails (the stream
+    /// dropped, which closes the connection: the body is cut).
+    fn run(mut self) {
+        self.refused = 0;
+        let mut buf = vec![0u8; PUMP_PIECE.min(usize::try_from(self.left).unwrap_or(PUMP_PIECE))];
+        while self.left > 0 {
+            let n = buf
+                .len()
+                .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+            let Some(piece) = buf.get_mut(..n) else {
+                return;
+            };
+            if std::os::unix::fs::FileExt::read_exact_at(&*self.file, piece, self.offset).is_err()
+                || self.stream.write(piece).is_err()
+            {
+                return; // the file shrank, or the client went
+            }
+            self.offset = self.offset.saturating_add(n as u64);
+            self.left -= n as u64;
+            if self.left > 0 && self.stream.queued_bytes() > PUMP_HIGH {
+                return self.wait();
+            }
+        }
+        self.stream.finish();
+    }
+
+    /// Resumes on the disk pool once the connection drained (or is gone).
+    fn wait(self) {
+        let cell: Arc<Mutex<Option<FilePump>>> = Arc::new(Mutex::new(None));
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (c, f) = (cell.clone(), fired.clone());
+        // `on_drain` may run at once, here: the pump is put in its cell after, and the flag
+        // tells whether that happened.
+        self.stream.on_drain(move || {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+            let p = c.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(p) = p {
+                p.submit();
+            }
+        });
+        *cell.lock().unwrap_or_else(PoisonError::into_inner) = Some(self);
+        if fired.load(std::sync::atomic::Ordering::SeqCst) {
+            let p = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(p) = p {
+                p.submit();
             }
         }
     }
@@ -304,9 +432,9 @@ impl Responder {
         }
     }
 
-    fn send(mut self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+    /// Sends `resp`, its filters applied.
+    fn send(mut self, resp: Response) {
         self.forget_gone();
-        fin.apply(&mut resp, req);
         let status = resp.status;
         // From the I/O thread's buffer pool: the connection gives it back there once written.
         let mut head = akio_buf::get(192 + resp.body.len());
@@ -330,7 +458,6 @@ impl Responder {
             _ if self.keep_alive => self.slot.fill(head),
             _ => self.slot.fill_close(head),
         }
-        status
     }
 }
 
@@ -1226,6 +1353,12 @@ impl Detached {
         &self.req
     }
 
+    /// The request, shared: for work that runs apart from the response (`Files`' disk work,
+    /// which a timeout may answer meanwhile).
+    pub(crate) fn req_arc(&self) -> Arc<Request> {
+        self.req.clone()
+    }
+
     /// A route parameter, percent-decoded (see [`Context::param`]).
     pub fn param(&self, name: &str) -> Option<&str> {
         self.params.as_ref()?.get(name, self.req.path())
@@ -1269,6 +1402,11 @@ fn start_stream(
         resp.headers.set("Transfer-Encoding", "chunked");
     }
     fin.apply(&mut resp, req);
+    open_stream(out, resp, req, chunked)
+}
+
+/// [`start_stream`] once the filters ran: the stream of `resp`, a streamed head.
+fn open_stream(out: Out, mut resp: Response, req: &Request, chunked: bool) -> Option<BodyStream> {
     // A HEAD answer has the coding's headers and no body to encode.
     let coder = resp
         .stream_coding

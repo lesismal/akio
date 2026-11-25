@@ -37,6 +37,36 @@ ADR-121，由 akit 提出（A23、A9）：
 - `ServerConfigBuilder::tls12_only` 与 `ClientConfigBuilder::tls12_only`（公开；隐藏的
   `__tls12_only` 调用它们）。与 `tls13_only` 同时设置时 `build` 失败。
 
+### 新增：`Files` 作为网关的静态文件处理器、内存有界；文件消息体编码（akio-http）
+
+ADR-124，由 akit 提出（A14、A15、A92）：
+
+- `Files::index_files`、`redirect_directories`、`mime_types`（`MimeTypes::builtin` 即 Go 的表，
+  `MimeTypes::system` 再按 Go 的方式读入系统的 `mime.types`）、`default_type`、`sniff`
+  （`files::sniff`，即 Go 的 `http.DetectContentType`）、`error_response` 与
+  `serve_prefixed`（目录列表与重定向写出完整路径）。
+- `Files::max_cache_bytes`（默认 64 MiB）：内存中保留的字节，包括孪生文件与压缩副本，按最近
+  最少使用淘汰；`Files::disk_timeout`：磁盘池未能及时回答的请求回 `503` 并带
+  `Retry-After: 1`。
+- 消息体为文件、且响应过滤器设置了流编码（`Response::set_stream_coding`）的响应以流式发送：
+  在磁盘池上以 64 KiB 分片读取、编码并写出，受连接的背压控制。
+
+### 变更：`Files`（akio-http）
+
+- 不可读的文件回 `403`；既不是普通文件也不是目录的（不再打开：FIFO 曾占住磁盘池线程）以及
+  带尾斜杠请求的文件回 `404`；带 `:` 的名字可以访问。
+- 默认最多在内存中保留 64 MiB 的文件（`max_cache_bytes`）。
+- 挂在路由下时，请求的尾斜杠有效（目录被列出而不是重定向），尽管路由的通配符会去掉它。
+
+### 新增：握手之外使用的根证书；仅用于握手的 ALPN 协议（akio-tls）
+
+ADR-123，由 akit 提出（A57、A58）：
+
+- `RootCerts::store()` 与 `From<RootCerts> for akio_x509::RootStore`：把根证书（包括系统的）
+  交给调用者自己的 `Verifier`。
+- `ServerConfigBuilder::handshake_only_alpn(protocols)`：协商到其中之一（`acme-tls/1`，
+  RFC 8737）的连接在握手完成后关闭，它发送的任何内容都不会到达应用。
+
 ### 新增：拨号 Unix 域套接字，以及在其上的 HTTP 客户端（akio、akio-http、akio-sys）
 
 ADR-120，由 akit 提出（A135）：

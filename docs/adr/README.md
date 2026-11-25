@@ -116,3 +116,5 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-120: Dialing a Unix-domain socket, and the HTTP client over one](120-unix-socket-dial.md) (accepted 2026-11-24)
 - [ADR-121: Unix-domain stream listeners, and a TLS server capped at TLS 1.2](121-unix-listeners-tls12-cap.md) (accepted 2026-11-25)
 - [ADR-122: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down](122-connect-on-h2-h3-streams-half-close.md) (accepted 2026-11-25)
+- [ADR-123: Root certificates outside a handshake, and ALPN protocols for the handshake only](123-root-store-and-handshake-only-alpn.md) (accepted 2026-11-25)
+- [ADR-124: `Files` as a gateway's static handler, bounded in memory, and file bodies encoded](124-files-as-a-gateway-static-handler.md) (accepted 2026-11-25)

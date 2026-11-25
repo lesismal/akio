@@ -633,7 +633,14 @@ impl Response {
     /// the coding's encoder and is flushed, so that the client can decode what was written so
     /// far. The filter sets `Content-Encoding` (the coding's [`name`](crate::Coding::name)) and
     /// `Vary` itself, and removes `Content-Length`. A HEAD answer keeps the fields and encodes
-    /// nothing. Ignored on a response that is not streamed; `None` sends the body as written.
+    /// nothing. `None` sends the body as written.
+    ///
+    /// A response whose body is a [file](Response::file) is sent as a streamed one with the
+    /// coding (ADR-124): its `Content-Length` dropped, chunked on keep-alive HTTP/1.1, the file
+    /// read in 64 KiB pieces on the disk pool `files::Files` uses and each piece encoded there
+    /// and written, the next read once fewer than 256 KiB are queued on the connection. A read
+    /// that fails (the file shrank) cuts the body: the connection closes. Ignored on any other
+    /// response (a whole body is the filter's to compress).
     pub fn set_stream_coding(&mut self, coding: Option<crate::Coding>) {
         self.stream_coding = coding.map(|c| c.0);
     }

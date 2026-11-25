@@ -107,6 +107,24 @@ impl core::marker::Sync for akio_tls::KtlsPath
 impl core::marker::Unpin for akio_tls::KtlsPath
 impl core::panic::unwind_safe::RefUnwindSafe for akio_tls::KtlsPath
 impl core::panic::unwind_safe::UnwindSafe for akio_tls::KtlsPath
+pub enum akio_tls::PeerChain
+pub akio_tls::PeerChain::Chain(alloc::rcs::arc::Arc<[alloc::vec::Vec<u8>]>)
+pub akio_tls::PeerChain::Handshaking
+pub akio_tls::PeerChain::None
+pub akio_tls::PeerChain::NotTls
+impl core::clone::Clone for akio_tls::PeerChain
+pub fn akio_tls::PeerChain::clone(&self) -> Self
+impl core::cmp::Eq for akio_tls::PeerChain
+impl core::cmp::PartialEq for akio_tls::PeerChain
+pub fn akio_tls::PeerChain::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_tls::PeerChain
+pub fn akio_tls::PeerChain::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_tls::PeerChain
+impl core::marker::Send for akio_tls::PeerChain
+impl core::marker::Sync for akio_tls::PeerChain
+impl core::marker::Unpin for akio_tls::PeerChain
+impl core::panic::unwind_safe::RefUnwindSafe for akio_tls::PeerChain
+impl core::panic::unwind_safe::UnwindSafe for akio_tls::PeerChain
 #[non_exhaustive] pub enum akio_tls::RevocationPolicy
 pub akio_tls::RevocationPolicy::HardFail
 pub akio_tls::RevocationPolicy::Off
@@ -334,9 +352,12 @@ pub fn akio_tls::RootCerts::add_pem(&mut self, &[u8]) -> core::result::Result<us
 pub fn akio_tls::RootCerts::empty() -> akio_tls::RootCerts
 pub fn akio_tls::RootCerts::is_empty(&self) -> bool
 pub fn akio_tls::RootCerts::len(&self) -> usize
+pub fn akio_tls::RootCerts::store(&self) -> &akio_x509::verify::RootStore
 pub fn akio_tls::RootCerts::system() -> core::result::Result<akio_tls::RootCerts, akio_tls::Error>
 impl core::clone::Clone for akio_tls::RootCerts
 pub fn akio_tls::RootCerts::clone(&self) -> Self
+impl core::convert::From<akio_tls::RootCerts> for akio_x509::verify::RootStore
+pub fn akio_x509::verify::RootStore::from(akio_tls::RootCerts) -> akio_x509::verify::RootStore
 impl core::default::Default for akio_tls::RootCerts
 pub fn akio_tls::RootCerts::default() -> Self
 impl core::fmt::Debug for akio_tls::RootCerts
@@ -376,6 +397,7 @@ pub fn akio_tls::ServerConfigBuilder::client_auth_required(self, akio_tls::RootC
 pub fn akio_tls::ServerConfigBuilder::client_crls(self, akio_tls::Crls, akio_tls::RevocationPolicy) -> Self
 pub fn akio_tls::ServerConfigBuilder::client_ocsp_policy(self, akio_tls::RevocationPolicy) -> Self
 pub fn akio_tls::ServerConfigBuilder::early_data(self, u32) -> Self
+pub fn akio_tls::ServerConfigBuilder::handshake_only_alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
 pub fn akio_tls::ServerConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn akio_tls::ServerConfigBuilder::ktls(self, akio_tls::Ktls) -> Self
 pub fn akio_tls::ServerConfigBuilder::ktls_zerocopy_sendfile(self, bool) -> Self
@@ -465,6 +487,7 @@ pub akio_tls::TlsInfo::handshaking: bool
 pub akio_tls::TlsInfo::ktls_rx: core::option::Option<akio_tls::KtlsPath>
 pub akio_tls::TlsInfo::ktls_tx: core::option::Option<akio_tls::KtlsPath>
 pub akio_tls::TlsInfo::ocsp_response: core::option::Option<alloc::vec::Vec<u8>>
+pub akio_tls::TlsInfo::peer_certificates: alloc::vec::Vec<alloc::vec::Vec<u8>>
 pub akio_tls::TlsInfo::server_name: core::option::Option<alloc::string::String>
 pub akio_tls::TlsInfo::version: core::option::Option<alloc::string::String>
 impl core::clone::Clone for akio_tls::TlsInfo
@@ -507,4 +530,5 @@ pub trait akio_tls::CertResolver: core::marker::Send + core::marker::Sync
 pub fn akio_tls::CertResolver::resolve(&self, &akio_tls::ClientHelloInfo<'_>, akio_tls::CertDone)
 impl akio_tls::CertResolver for akio_tls::CertStore
 pub fn akio_tls::CertStore::resolve(&self, &akio_tls::ClientHelloInfo<'_>, akio_tls::CertDone)
+pub fn akio_tls::peer_chain(&akio_core::conn::ConnInner) -> akio_tls::PeerChain
 pub fn akio_tls::tls_info<H>(&akio_core::conn::Conn<H>) -> core::option::Option<akio_tls::TlsInfo>

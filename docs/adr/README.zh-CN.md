@@ -116,3 +116,5 @@
 - [ADR-120：拨号 Unix 域套接字，以及在其上的 HTTP 客户端](120-unix-socket-dial.zh-CN.md)（2026-11-24 采纳）
 - [ADR-121：Unix 域流监听器，以及限定 TLS 1.2 的 TLS 服务端](121-unix-listeners-tls12-cap.zh-CN.md)（2026-11-25 采纳）
 - [ADR-122：HTTP/2 和 HTTP/3 流上的 CONNECT，以及关闭连接的发送方向](122-connect-on-h2-h3-streams-half-close.zh-CN.md)（2026-11-25 采纳）
+- [ADR-123：握手之外使用的根证书，以及仅用于握手的 ALPN 协议](123-root-store-and-handshake-only-alpn.zh-CN.md)（2026-11-25 采纳）
+- [ADR-124：`Files` 作为网关的静态文件处理器、内存有界，以及文件消息体编码](124-files-as-a-gateway-static-handler.zh-CN.md)（2026-11-25 采纳）
