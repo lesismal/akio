@@ -2,7 +2,7 @@
 
 English | [简体中文](004-reactor-abstraction.zh-CN.md)
 
-Status: accepted (2026-11-13)
+Status: accepted (2026-11-13). Listeners of one backend share a thread group by default since [ADR-130](130-shared-io-groups.md).
 
 ## Decision
 

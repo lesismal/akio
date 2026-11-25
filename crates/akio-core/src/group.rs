@@ -106,9 +106,26 @@ fn filter_allows(filter: Option<&AcceptFilter>, peer: &SocketAddr) -> bool {
     }
 }
 
-/// One backend instance serving one listener (or, with no listener, only dialed connections):
-/// a group of I/O threads. Implemented by backend crates; `Engine` composes groups, which is how
-/// each listener gets its own backend (ADR-004). `#[doc(hidden)]`: backend-facing.
+/// Where a listener added to a shared group ([`Group::add_listener`], ADR-130) gets its
+/// sockets. `#[doc(hidden)]`: backend-facing.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum ListenSocket {
+    /// Bound at this address: on Linux one `SO_REUSEPORT` socket per I/O thread, elsewhere
+    /// clones of one socket.
+    Bind(SocketAddr),
+    /// An already bound and listening socket (one inherited from a supervisor, say), cloned
+    /// for every I/O thread.
+    Inherited(std::net::TcpListener),
+    /// A listening Unix-domain stream socket (ADR-121), cloned for every I/O thread; its
+    /// connections have [`UNIX_ADDR`](crate::UNIX_ADDR) for both addresses.
+    Unix(std::net::TcpListener),
+}
+
+/// One backend instance serving one listener, several listeners of one backend (ADR-130), or,
+/// with no listener, only dialed connections: a group of I/O threads. Implemented by backend
+/// crates; `Engine` composes groups, which is how each backend gets its own threads (ADR-004).
+/// `#[doc(hidden)]`: backend-facing.
 #[doc(hidden)]
 pub trait Group: Send + Sync {
     /// Bound address of the listener (the unspecified address when there is none).
@@ -181,6 +198,39 @@ pub trait Group: Send + Sync {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "this group has no accept filter",
+        ))
+    }
+    /// Adds a listener to a group that serves several (ADR-130): its sockets join every active
+    /// I/O thread (and later ones), served by `acceptor`. Returns its key in the group and its
+    /// bound address. Works before and after [`start`](Self::start). Groups of one listener
+    /// return `Unsupported`.
+    fn add_listener(
+        &self,
+        _socket: ListenSocket,
+        _acceptor: Arc<dyn DynAcceptor>,
+    ) -> io::Result<(usize, SocketAddr)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group serves one listener",
+        ))
+    }
+    /// [`stop_listening`](Self::stop_listening) for listener `key` of a shared group alone: its
+    /// sockets close, `drain` applies to its connections only, and the threads stay up for the
+    /// other listeners.
+    fn remove_listener(&self, _key: usize, _drain: Option<Duration>) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group serves one listener",
+        ))
+    }
+    /// [`await_unlisted`](Self::await_unlisted) for a [`remove_listener`](Self::remove_listener).
+    #[doc(hidden)]
+    fn await_listener_removed(&self, _key: usize, _limit: Duration) {}
+    /// [`set_filter`](Self::set_filter) for listener `key` of a shared group.
+    fn set_listener_filter(&self, _key: usize, _filter: Option<AcceptFilter>) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group serves one listener",
         ))
     }
     /// Whether the group was started and every one of its threads has exited (a group that

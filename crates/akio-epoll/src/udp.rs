@@ -1379,10 +1379,12 @@ impl UdpLoop {
                     Cmd::Shutdown => self.begin_shutdown(),
                     Cmd::Core(LoopCmd::Inspect(reply)) => reply(self.inspect()),
                     Cmd::Core(LoopCmd::Reload) => self.on_reload(),
-                    // Thread resizing is not offered for UDP groups (ADR-028).
-                    Cmd::AddListener(..)
+                    // Thread resizing is not offered for UDP groups (ADR-028), nor shared
+                    // listeners (ADR-130).
+                    Cmd::Listen { .. }
+                    | Cmd::AddListener(..)
                     | Cmd::GiveListener { .. }
-                    | Cmd::Retire { .. }
+                    | Cmd::Retire
                     | Cmd::Revive
                     | Cmd::StopListening { .. } => {}
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),

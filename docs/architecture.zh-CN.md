@@ -153,7 +153,7 @@ flowchart BT
 flowchart LR
     K(("内核<br/>SO_REUSEPORT<br/>+ 可选 BPF"))
     subgraph Engine
-      subgraph LA["Listener A：epoll，2 个线程"]
+      subgraph LA["共享 epoll 线程组，2 个线程：listener A 和 C"]
         A0["I/O 线程 0<br/>poller、连接、时间轮"]
         A1["I/O 线程 1"]
       end
@@ -173,10 +173,15 @@ flowchart LR
     P -- "完成回调投递回来" --> A0
 ```
 
-- `Engine` 为每个 listener 持有一个**线程组**（另外还有用于 `dial` 和 `dial_udp` 的可选客户端
-  线程组）。线程组是一组 I/O 线程；每个线程运行一个事件循环，拥有自己的连接、时间轮
+- `Engine` 在若干 I/O **线程组**上运行它的 listener（另外还有用于 `dial` 和 `dial_udp` 的可选
+  客户端线程组）。线程组是一组 I/O 线程；每个线程运行一个事件循环，拥有自己的连接、时间轮
   （`akio-timer`，毫秒刻度）和读缓冲区（ADR-001、ADR-004）。线程组实现内部的
   `akio_core::Group` trait。
+- **共享线程组**（ADR-130）：epoll/kqueue 事件循环上的 TCP listener 共享一个线程组
+  （`EngineBuilder::io_threads`，默认每核一个线程），除非它们要求独占线程（`Listener::threads`、
+  `Listener::dedicated`）。每个事件循环保存组内 listener 的表（acceptor、accept 过滤器、是否为
+  Unix 域、是否已移除），以标明 listener 和 socket 的令牌监听它们的 socket，每个连接记住自己的
+  listener。io_uring、轮次调度、UDP、数据报、DPDK 和 BPF 引流的 listener 独占线程组。
 - **连接分发**：Linux 上每个线程绑定自己的 `SO_REUSEPORT` socket，由内核（或 `akio-ebpf` 的
   分流程序）选择线程；macOS 上各线程共享一个监听 socket 并竞争 accept。
 - **连接从不迁移。** 它的 handler 在它的线程上创建，也只在那里被访问，所以
@@ -393,8 +398,10 @@ sequenceDiagram
   `on_close` 在所属线程上恰好执行一次；该连接尚未执行的完成回调被丢弃。
 - 引擎运行时可以去掉单个 listener（ADR-099）：`remove_listener` 向其事件循环投递 `StopListening`，
   它们关闭监听 socket，保留连接直到连接关闭，然后退出；`shutdown_listener` 还会对这些连接调用
-  `on_shutdown`，并在排空截止时关闭其余连接。`add_listener` 像 `build` 一样绑定并启动一个新组。
-  `wait` 也会 join 这些组，并且只在 `shutdown` 之后返回。
+  `on_shutdown`，并在排空截止时关闭其余连接。`add_listener` 像 `build` 一样绑定并启动一个新组，
+  或把 listener 加入它的共享组。移除共享组中的一个 listener 只关闭它的 socket、只排空它的连接；
+  线程继续为其他 listener 服务直到 `shutdown`。`wait` 也会 join 这些组，并且只在 `shutdown`
+  之后返回。
 - 只有在 I/O 线程退出之后才停止线程池，因为完成回调需要一个事件循环来执行。
 
 ## 8. 错误处理

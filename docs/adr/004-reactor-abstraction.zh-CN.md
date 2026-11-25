@@ -2,7 +2,7 @@
 
 [English](004-reactor-abstraction.md) | 简体中文
 
-状态：已采纳（2026-11-13）
+状态：已采纳（2026-11-13）。自 [ADR-130](130-shared-io-groups.zh-CN.md) 起，同一后端的 listener 默认共享一组线程。
 
 ## 决定
 

@@ -10,6 +10,31 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: TCP listeners share one group of I/O threads by default (akio, akio-epoll, akio-core)
+
+ADR-130, phase 1. TCP listeners on epoll/kqueue with per-thread loops (bound, inherited or
+Unix-domain) no longer get one I/O thread per core each: they share one group, sized by the new
+`EngineBuilder::io_threads(n)` (one thread per core by default). An HTTP, a gRPC and an admin
+port on 8 cores now run 8 I/O threads instead of 24. Each thread polls every listener's sockets
+and runs that listener's acceptor and accept filter; connections stay on the thread that
+accepted them.
+
+- `Listener::threads(n)` and the new `Listener::dedicated()` (one per core) give a listener a
+  group of its own, as before: isolation for an admin port or a latency-critical protocol.
+  io_uring, rounds-scheduled, UDP, datagram, DPDK and BPF-steered listeners keep groups of their
+  own (io_uring and rounds sharing are later phases).
+- The per-listener API keeps one entry per listener: `local_addrs`, `listeners`, `threads` and
+  the `ListenerId`s. `threads()` reports the shared group's size for each of its listeners (0 once
+  removed), and `set_threads` / `set_listener_threads` on a shared listener resize the shared
+  group, for all of its listeners.
+- `remove_listener` / `shutdown_listener` on a shared listener close its sockets and drain its
+  connections only; the threads keep serving the other listeners until `shutdown`.
+- Telemetry: a shared thread's `LoopMeta::listener` is `None`; `ConnInfo::owner.listener` names
+  the listener each accepted connection came from.
+- Backend-facing: `Group::add_listener`, `remove_listener`, `await_listener_removed`,
+  `set_listener_filter` and `akio_core::ListenSocket`; `EpollGroup::shared`. One epoll/kqueue
+  loop now keeps a table of its group's listeners.
+
 ### Fixed: HTTP clients called from the logical pool no longer deadlock it (akio-core, akio-http, akio-ws)
 
 The HTTP/1.1 client (reusing a keep-alive connection) and the HTTP/2 client (every request,

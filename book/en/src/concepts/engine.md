@@ -2,8 +2,9 @@
 
 ## The engine
 
-An `Engine` is a set of listeners, each served by its own **group** of I/O threads, plus a
-shared logical pool and a telemetry hub. You build it with `Engine::builder()`:
+An `Engine` is a set of listeners served by **groups** of I/O threads (by default the TCP
+listeners of one backend share one group, ADR-130), plus a shared logical pool and a telemetry
+hub. You build it with `Engine::builder()`:
 
 ```rust,ignore
 {{#include ../../../../crates/akio/examples/guide-basics.rs:engine}}
@@ -26,13 +27,23 @@ shared logical pool and a telemetry hub. You build it with `Engine::builder()`:
 | Method | Meaning | Default |
 |---|---|---|
 | `.serve(acceptor)` | who handles the connections (required) | none: `build` fails |
-| `.threads(n)` | I/O threads of this listener | one per core |
+| `.threads(n)` | `n` I/O threads of its own instead of the shared ones | shared (see below) |
+| `.dedicated()` | I/O threads of its own, one per core | shared (see below) |
 | `.backend(Backend::..)` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` | `Epoll` |
 | `.accel(Accel::..)` | `None` or `Ebpf(EbpfConfig)` steering | `None` |
 | `.balance(Balance::..)` | `LeastConnections`: a thread holding more than its share hands a new connection, before its first read, to the thread with the fewest (ADR-105); `Kernel`: keep what the socket accepted | `LeastConnections` (`Kernel` under steering or NUMA `incoming_cpu`) |
 
-Each listener gets its own threads; listeners never share an I/O thread. Several listeners with
-different handler types, backends and thread counts can live in one engine.
+TCP listeners on epoll/kqueue with per-thread loops **share** one group of I/O threads,
+`EngineBuilder::io_threads(n)` (one per core by default), whatever their port, protocol or
+handler type: an HTTP, a gRPC and an admin port on 8 cores run 8 I/O threads, not 24 (ADR-130).
+Each thread polls every listener's sockets and runs the right acceptor and accept filter; each
+connection stays on the thread that accepted it. A listener that sets `.threads(n)` or
+`.dedicated()` gets a group of its own instead (isolation: its connections never wait behind
+another listener's callbacks), and so do io_uring, rounds, UDP, datagram, DPDK and BPF-steered
+listeners. Removing a shared listener closes its sockets and drains its connections only;
+`Engine::set_threads` on a shared listener resizes the shared group, for all its listeners.
+Several listeners with different handler types, backends and thread counts can live in one
+engine.
 
 ## Backends
 

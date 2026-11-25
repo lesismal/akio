@@ -11,19 +11,23 @@ use std::{
 };
 
 use akio_core::{
-    AcceptFilter, Config, Countdown, DynAcceptor, FilterCell, Group, LoopMeta, LoopStats, Pool,
+    AcceptFilter, Config, Countdown, DynAcceptor, FilterCell, Group, ListenSocket, LoopMeta,
+    LoopStats, Pool,
 };
 use akio_sys::Poller;
 
-use crate::reactor::{Cmd, Loop, LoopShared, Roster};
+use crate::reactor::{Cmd, Ear, Loop, LoopShared, Roster, Sock};
 
-/// A group of epoll/kqueue I/O threads serving one listener.
+/// A group of epoll/kqueue I/O threads serving one listener, several listeners (a shared group,
+/// ADR-130), or only dialed connections.
 pub struct EpollGroup {
+    /// The listener's address when the group was built for one (`Group::local_addr`); the
+    /// unspecified address for shared and client-only groups.
     addr: SocketAddr,
-    /// A Unix-domain listener (ADR-121): its connections have no addresses.
-    unix: bool,
-    /// Listener fds in loop order when they form a `SO_REUSEPORT` group (Linux), as bound.
+    /// That listener's fds in loop order when they form a `SO_REUSEPORT` group (Linux), as bound.
     fds: Vec<i32>,
+    /// The listener the threads report in their `LoopMeta` (one-listener groups).
+    meta_listener: Option<SocketAddr>,
     /// The active loops (dials, listener handover).
     roster: Arc<Roster>,
     state: Mutex<State>,
@@ -33,20 +37,32 @@ pub struct EpollGroup {
     pins: Mutex<Vec<Vec<usize>>>,
     cfg: Arc<Config>,
     pool: Arc<Pool>,
-    acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// Serves listeners (not a client-only group).
+    listens: bool,
+    /// A shared group (ADR-130): listeners are added and removed, the threads stay until the
+    /// engine shuts down.
+    shared: bool,
 }
 
-/// How the loops of a group get their listening sockets.
+/// How the loops of a group get one listener's sockets.
 enum Listening {
-    /// Client-only group.
-    None,
-    /// One `SO_REUSEPORT` socket per loop index ever used (Linux), bound when the group first
-    /// grows to that index; each lives in exactly one active loop (or is on its way between
-    /// two).
-    ReusePort,
-    /// Clones of one socket (elsewhere, or an inherited socket); the group keeps one to clone
-    /// for loops it adds, until shutdown.
+    /// One `SO_REUSEPORT` socket per loop index (Linux), bound for indices `0..bound` so far;
+    /// each lives in exactly one active loop (or is on its way between two).
+    ReusePort { bound: usize },
+    /// Clones of one socket (elsewhere, an inherited socket or a Unix-domain one); the group
+    /// keeps one to clone for loops it adds, until the listener is removed or shutdown.
     Shared(Option<TcpListener>),
+}
+
+/// One listener of the group (ADR-130).
+struct GListener {
+    ear: Arc<Ear>,
+    listening: Listening,
+    /// Removed (`Group::remove_listener` or `stop_listening`).
+    unlisted: bool,
+    /// The loops still to close its sockets after `remove_listener`, for
+    /// `Group::await_listener_removed`.
+    unlisting: Option<Countdown>,
 }
 
 /// One loop index of the group.
@@ -58,20 +74,109 @@ struct LoopSlot {
 }
 
 /// The resizable part of a group, changed only under its lock (`set_threads`, `start`,
-/// `shutdown`).
+/// `shutdown`, listeners added and removed).
 struct State {
     slots: Vec<LoopSlot>,
     /// Loops `0..active` are active; the rest are retiring or exited.
     active: usize,
-    listening: Listening,
+    /// The listeners, by key (`lid`); removed ones stay, marked.
+    listeners: Vec<GListener>,
     stopping: bool,
-    /// The listener was removed (`Group::stop_listening`, ADR-099).
+    /// Every listener was removed (`Group::stop_listening`, ADR-099).
     unlisted: bool,
     /// The loops still to stop their listening sockets after `stop_listening`, for
     /// `Group::await_unlisted`.
     unlisting: Option<Countdown>,
-    /// The accept filter every loop runs (ADR-099).
-    filter: Arc<FilterCell>,
+}
+
+impl State {
+    /// What a loop built now must know: the listeners still served, by key.
+    fn ears(&self) -> Vec<Option<Arc<Ear>>> {
+        self.listeners
+            .iter()
+            .map(|l| (!l.unlisted).then(|| l.ear.clone()))
+            .collect()
+    }
+}
+
+/// A listener's sockets, bound for `n` loops, before it joins a group.
+struct Bound {
+    addr: SocketAddr,
+    unix: bool,
+    listening: Listening,
+    /// Loop `i` gets `socks[i]`.
+    socks: Vec<TcpListener>,
+}
+
+impl Bound {
+    fn new(socket: ListenSocket, n: usize, backlog: i32) -> io::Result<Bound> {
+        let n = n.max(1);
+        let clones = |l: TcpListener| -> io::Result<(Vec<TcpListener>, TcpListener)> {
+            l.set_nonblocking(true)?;
+            let mut v = Vec::with_capacity(n);
+            for _ in 1..n {
+                v.push(l.try_clone()?);
+            }
+            let base = l.try_clone()?;
+            v.insert(0, l);
+            Ok((v, base))
+        };
+        match socket {
+            ListenSocket::Bind(a) if cfg!(target_os = "linux") => {
+                // One listener per loop: a `SO_REUSEPORT` group.
+                let first = akio_sys::listen(a, true, backlog)?;
+                let addr = first.local_addr()?;
+                let mut socks = vec![first];
+                for _ in 1..n {
+                    socks.push(akio_sys::listen(addr, true, backlog)?);
+                }
+                Ok(Bound {
+                    addr,
+                    unix: false,
+                    listening: Listening::ReusePort { bound: n },
+                    socks,
+                })
+            }
+            ListenSocket::Bind(a) => {
+                let first = akio_sys::listen(a, false, backlog)?;
+                let addr = first.local_addr()?;
+                let (socks, base) = clones(first)?;
+                Ok(Bound {
+                    addr,
+                    unix: false,
+                    listening: Listening::Shared(Some(base)),
+                    socks,
+                })
+            }
+            ListenSocket::Inherited(l) => {
+                let addr = l.local_addr()?;
+                let (socks, base) = clones(l)?;
+                Ok(Bound {
+                    addr,
+                    unix: false,
+                    listening: Listening::Shared(Some(base)),
+                    socks,
+                })
+            }
+            ListenSocket::Unix(l) => {
+                let (socks, base) = clones(l)?;
+                Ok(Bound {
+                    addr: akio_core::UNIX_ADDR,
+                    unix: true,
+                    listening: Listening::Shared(Some(base)),
+                    socks,
+                })
+            }
+        }
+    }
+
+    /// Their fds when they form a `SO_REUSEPORT` group.
+    fn fds(&self) -> Vec<i32> {
+        match self.listening {
+            Listening::ReusePort { .. } => self.socks.iter().map(|l| l.as_raw_fd()).collect(),
+            Listening::Shared(_) => Vec::new(),
+        }
+    }
 }
 
 impl std::fmt::Debug for EpollGroup {
@@ -84,6 +189,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+fn not_listening() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "not a listener group")
+}
+
 impl EpollGroup {
     /// Binds `listen` (if any) and prepares `threads` loops. Nothing runs until [`Group::start`].
     ///
@@ -94,36 +203,10 @@ impl EpollGroup {
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
-        let threads = threads.max(1);
-        // One listener per loop (Linux, SO_REUSEPORT) or clones of one (elsewhere).
-        let mut listeners: Vec<Option<TcpListener>> = (0..threads).map(|_| None).collect();
-        let mut addr = SocketAddr::from(([0, 0, 0, 0], 0));
-        let mut acceptor = None;
-        let mut listening = Listening::None;
-        if let Some((a, acc)) = listen {
-            let first = akio_sys::listen(a, cfg!(target_os = "linux"), cfg.backlog)?;
-            addr = first.local_addr()?;
-            for slot in listeners.iter_mut().skip(1) {
-                *slot = Some(if cfg!(target_os = "linux") {
-                    akio_sys::listen(addr, true, cfg.backlog)?
-                } else {
-                    first.try_clone()?
-                });
-            }
-            listening = if cfg!(target_os = "linux") {
-                Listening::ReusePort
-            } else {
-                Listening::Shared(Some(first.try_clone()?))
-            };
-            listeners[0] = Some(first);
-            acceptor = Some(acc);
+        match listen {
+            Some((a, acc)) => Self::one(ListenSocket::Bind(a), acc, threads, cfg, pool),
+            None => Self::assemble(threads, None, false, false, cfg, pool),
         }
-        let fds = if cfg!(target_os = "linux") {
-            listeners.iter().flatten().map(|l| l.as_raw_fd()).collect()
-        } else {
-            Vec::new()
-        };
-        Self::assemble(listeners, addr, fds, acceptor, listening, cfg, pool)
     }
 
     /// Serves an already bound and listening socket (one inherited from a supervisor process,
@@ -137,20 +220,10 @@ impl EpollGroup {
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
-        listener.set_nonblocking(true)?;
-        let addr = listener.local_addr()?;
-        let mut listeners = Vec::with_capacity(threads.max(1));
-        for _ in 1..threads.max(1) {
-            listeners.push(Some(listener.try_clone()?));
-        }
-        let base = listener.try_clone()?;
-        listeners.insert(0, Some(listener));
-        Self::assemble(
-            listeners,
-            addr,
-            Vec::new(),
-            Some(acceptor),
-            Listening::Shared(Some(base)),
+        Self::one(
+            ListenSocket::Inherited(listener),
+            acceptor,
+            threads,
             cfg,
             pool,
         )
@@ -167,80 +240,117 @@ impl EpollGroup {
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
-        listener.set_nonblocking(true)?;
-        let mut listeners = Vec::with_capacity(threads.max(1));
-        for _ in 1..threads.max(1) {
-            listeners.push(Some(listener.try_clone()?));
-        }
-        let base = listener.try_clone()?;
-        listeners.insert(0, Some(listener));
-        let mut g = Self::assemble(
-            listeners,
-            akio_core::UNIX_ADDR,
-            Vec::new(),
-            Some(acceptor),
-            Listening::Shared(Some(base)),
-            cfg,
-            pool,
-        )?;
-        g.unix = true;
-        for s in &mut lock(&g.state).slots {
-            if let Some(lp) = s.pending.as_mut() {
-                lp.set_unix();
-            }
-        }
+        Self::one(ListenSocket::Unix(listener), acceptor, threads, cfg, pool)
+    }
+
+    /// A shared group of `threads` loops (ADR-130): it starts with no listener; listeners join
+    /// with [`Group::add_listener`] and leave with [`Group::remove_listener`], and the threads
+    /// serve them all until shutdown. Its `local_addr` is the unspecified address and its
+    /// threads report no listener in their `LoopMeta`.
+    pub fn shared(threads: usize, cfg: Config, pool: Arc<Pool>) -> io::Result<EpollGroup> {
+        Self::assemble(threads, None, true, true, cfg, pool)
+    }
+
+    /// A group of `threads` loops serving the one listener `socket`.
+    fn one(
+        socket: ListenSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+        threads: usize,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<EpollGroup> {
+        let b = Bound::new(socket, threads, cfg.backlog)?;
+        let mut g = Self::assemble(threads, Some(b.addr), true, false, cfg, pool)?;
+        g.addr = b.addr;
+        g.fds = b.fds();
+        let mut st = lock(&g.state);
+        Self::install(&mut st, b, acceptor);
+        drop(st);
         Ok(g)
     }
 
     fn assemble(
-        listeners: Vec<Option<TcpListener>>,
-        addr: SocketAddr,
-        fds: Vec<i32>,
-        acceptor: Option<Arc<dyn DynAcceptor>>,
-        listening: Listening,
+        threads: usize,
+        meta_listener: Option<SocketAddr>,
+        listens: bool,
+        shared: bool,
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
         cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
-        let roster = Arc::new(Roster::new(matches!(listening, Listening::ReusePort)));
-        let n = listeners.len();
+        let roster = Arc::new(Roster::new());
+        let n = threads.max(1);
         let mut slots = Vec::with_capacity(n);
-        for (thread, l) in listeners.into_iter().enumerate() {
-            let ls = l.map(|l| vec![(thread, l)]).unwrap_or_default();
+        for thread in 0..n {
             slots.push(Self::make_loop(
-                thread, None, ls, &acceptor, &roster, addr, &cfg, &pool,
+                thread,
+                None,
+                Vec::new(),
+                Vec::new(),
+                &roster,
+                meta_listener,
+                &cfg,
+                &pool,
             )?);
-        }
-        let filter = Arc::new(FilterCell::default());
-        if !matches!(listening, Listening::None) {
-            for s in &mut slots {
-                if let Some(lp) = s.pending.as_mut() {
-                    lp.set_filter(&filter);
-                }
-            }
         }
         roster.set(slots.iter().map(|s| s.shared.clone()).collect());
         Ok(EpollGroup {
-            addr,
-            unix: false,
-            fds,
+            addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            fds: Vec::new(),
+            meta_listener,
             roster,
             state: Mutex::new(State {
                 slots,
                 active: n,
-                listening,
+                listeners: Vec::new(),
                 stopping: false,
                 unlisted: false,
                 unlisting: None,
-                filter,
             }),
             started: AtomicBool::new(false),
             pins: Mutex::new(Vec::new()),
             cfg,
             pool,
-            acceptor,
+            listens,
+            shared,
         })
+    }
+
+    /// Makes `b` a listener of the group: every loop learns it, active loop `i` gets socket
+    /// `b.socks[i]`. Its key.
+    fn install(st: &mut State, b: Bound, acceptor: Arc<dyn DynAcceptor>) -> usize {
+        let lid = st.listeners.len();
+        let reuseport = matches!(b.listening, Listening::ReusePort { .. });
+        let ear = Arc::new(Ear {
+            acceptor,
+            filter: Arc::new(FilterCell::default()),
+            unix: b.unix,
+            reuseport,
+            addr: b.addr,
+        });
+        // Every loop, retiring ones too (they may be revived), before any socket: commands of
+        // one loop run in order.
+        for s in &st.slots {
+            s.shared.post(Cmd::Listen {
+                lid,
+                ear: ear.clone(),
+            });
+        }
+        for (i, l) in b.socks.into_iter().enumerate() {
+            let sock = Sock {
+                lid,
+                idx: if reuseport { i } else { 0 },
+            };
+            st.slots[i].shared.post(Cmd::AddListener(sock, l));
+        }
+        st.listeners.push(GListener {
+            ear,
+            listening: b.listening,
+            unlisted: false,
+            unlisting: None,
+        });
+        lid
     }
 
     /// Builds loop `thread` (reusing the counters `stats` of an exited loop of that index).
@@ -248,10 +358,10 @@ impl EpollGroup {
     fn make_loop(
         thread: usize,
         stats: Option<Arc<LoopStats>>,
-        listeners: Vec<(usize, TcpListener)>,
-        acceptor: &Option<Arc<dyn DynAcceptor>>,
+        listeners: Vec<(Sock, TcpListener)>,
+        ears: Vec<Option<Arc<Ear>>>,
         roster: &Arc<Roster>,
-        addr: SocketAddr,
+        meta_listener: Option<SocketAddr>,
         cfg: &Arc<Config>,
         pool: &Arc<Pool>,
     ) -> io::Result<LoopSlot> {
@@ -259,8 +369,7 @@ impl EpollGroup {
         let sh = match stats {
             Some(st) => LoopShared::with_stats(&poller, pool.clone(), cfg, st)?,
             None => {
-                let listener = acceptor.as_ref().map(|_| addr);
-                let meta = LoopMeta::new(crate::reactor::BACKEND, listener, thread);
+                let meta = LoopMeta::new(crate::reactor::BACKEND, meta_listener, thread);
                 LoopShared::new(&poller, pool.clone(), cfg, meta)?
             }
         };
@@ -268,7 +377,7 @@ impl EpollGroup {
             poller,
             sh.clone(),
             listeners,
-            acceptor.clone(),
+            ears,
             roster.clone(),
             cfg.clone(),
         )?;
@@ -312,15 +421,45 @@ impl EpollGroup {
 
     /// Grows to `n > st.active` loops.
     fn grow(&self, st: &mut State, n: usize) -> io::Result<()> {
+        let backlog = self.cfg.telemetry.live().backlog();
         while st.active < n {
             let i = st.active;
-            // `ReusePort` keeps one listening socket per loop index ever used, so loop `i`
-            // existed before exactly when listener `i` did.
             let existed = i < st.slots.len();
             let revived = existed && st.slots[i].shared.try_revive();
+            // Per listener: whether its `SO_REUSEPORT` socket `i` was bound before (it is then
+            // held by some active loop, which passes it back below).
+            let had: Vec<bool> = st
+                .listeners
+                .iter()
+                .map(|l| matches!(l.listening, Listening::ReusePort { bound } if i < bound))
+                .collect();
+            // Sockets loop `i` gets now: new `SO_REUSEPORT` ones and clones.
+            let mut own = Vec::new();
+            for (lid, l) in st.listeners.iter_mut().enumerate() {
+                if l.unlisted {
+                    continue;
+                }
+                match &mut l.listening {
+                    Listening::ReusePort { bound } if i >= *bound => {
+                        own.push((
+                            Sock { lid, idx: i },
+                            akio_sys::listen(l.ear.addr, true, backlog)?,
+                        ));
+                        *bound = i + 1;
+                    }
+                    Listening::Shared(Some(base)) => {
+                        own.push((Sock { lid, idx: 0 }, base.try_clone()?));
+                    }
+                    _ => {}
+                }
+            }
             if revived {
-                // Still running (serving the connections it had): active again.
+                // Still running (serving the connections it had): active again, and it knows
+                // every listener (all loops are told of each).
                 st.slots[i].shared.post(Cmd::Revive);
+                for (sock, l) in own {
+                    st.slots[i].shared.post(Cmd::AddListener(sock, l));
+                }
             } else {
                 // A new loop, with the counters of the exited one of this index if any.
                 let stats = match st.slots.get_mut(i) {
@@ -333,31 +472,16 @@ impl EpollGroup {
                     }
                     None => None,
                 };
-                let mut own = Vec::new();
-                match &st.listening {
-                    Listening::Shared(Some(base)) => own.push((0, base.try_clone()?)),
-                    Listening::ReusePort if !existed => {
-                        let backlog = self.cfg.telemetry.live().backlog();
-                        own.push((i, akio_sys::listen(self.addr, true, backlog)?));
-                    }
-                    _ => {}
-                }
                 let mut slot = Self::make_loop(
                     i,
                     stats,
                     own,
-                    &self.acceptor,
+                    st.ears(),
                     &self.roster,
-                    self.addr,
+                    self.meta_listener,
                     &self.cfg,
                     &self.pool,
                 )?;
-                if let Some(lp) = slot.pending.as_mut() {
-                    lp.set_filter(&st.filter);
-                    if self.unix {
-                        lp.set_unix();
-                    }
-                }
                 Self::spawn(i, &mut slot, self.pin_of(i))?;
                 if existed {
                     st.slots[i] = slot;
@@ -374,25 +498,19 @@ impl EpollGroup {
                     .map(|s| s.shared.clone())
                     .collect(),
             );
-            match &st.listening {
-                // Listener `i` went to another loop when loop `i` retired: whichever active
-                // loop holds it now passes it back. The socket stays open on its way, so
-                // connections arriving meanwhile queue instead of being refused.
-                Listening::ReusePort if existed => {
-                    let to = st.slots[i].shared.clone();
+            // Socket `i` of a listener went to another loop when loop `i` retired: whichever
+            // active loop holds it now passes it back. The socket stays open on its way, so
+            // connections arriving meanwhile queue instead of being refused.
+            let to = st.slots[i].shared.clone();
+            for (lid, l) in st.listeners.iter().enumerate() {
+                if had[lid] && !l.unlisted {
                     for s in &st.slots[..i] {
                         s.shared.post(Cmd::GiveListener {
-                            idx: i,
+                            sock: Sock { lid, idx: i },
                             to: to.clone(),
                         });
                     }
                 }
-                Listening::Shared(Some(base)) if revived => {
-                    st.slots[i]
-                        .shared
-                        .post(Cmd::AddListener(0, base.try_clone()?));
-                }
-                _ => {}
             }
         }
         Ok(())
@@ -400,15 +518,33 @@ impl EpollGroup {
 
     /// Shrinks to `n < st.active` loops: the highest ones retire.
     fn shrink(&self, st: &mut State, n: usize) {
-        let forward = matches!(st.listening, Listening::ReusePort);
         // Out of the roster first, so nothing is handed to a loop that is leaving.
         self.roster
             .set(st.slots[..n].iter().map(|s| s.shared.clone()).collect());
         for s in &st.slots[n..st.active] {
             s.shared.mark_retiring();
-            s.shared.post(Cmd::Retire { forward });
+            s.shared.post(Cmd::Retire);
         }
         st.active = n;
+    }
+
+    /// Posts `StopListening` for listener `lid` (or all) to every loop; the countdown the
+    /// running active ones drop once their sockets are closed.
+    fn post_stop(st: &State, lid: Option<usize>, drain: Option<Duration>, exit: bool) -> Countdown {
+        // The running active loops hold the listening sockets (and those on their way between
+        // loops, posted to them ahead of this); a retiring loop handed its own on, and an exited
+        // one acts on nothing, so the waits are for the former only.
+        let done = Countdown::default();
+        for (i, s) in st.slots.iter().enumerate() {
+            let running = i < st.active && s.handle.is_some();
+            s.shared.post(Cmd::StopListening {
+                lid,
+                drain,
+                exit,
+                done: running.then(|| done.token()),
+            });
+        }
+        done
     }
 }
 
@@ -477,38 +613,26 @@ impl Group for EpollGroup {
     }
 
     fn stop_listening(&self, drain: Option<Duration>, exit_when_idle: bool) -> io::Result<()> {
-        let mut st = lock(&self.state);
-        if matches!(st.listening, Listening::None) {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "not a listener group",
-            ));
+        if !self.listens {
+            return Err(not_listening());
         }
+        let mut st = lock(&self.state);
         if st.stopping || st.unlisted {
             return Ok(());
         }
         st.unlisted = true;
-        if let Listening::Shared(base) = &mut st.listening {
-            *base = None;
+        for l in &mut st.listeners {
+            l.unlisted = true;
+            if let Listening::Shared(base) = &mut l.listening {
+                *base = None;
+            }
         }
         if exit_when_idle {
             // Nothing is dialed here; an empty roster also closes a socket on its way between
             // loops (`Roster::forward_listener`).
             self.roster.set(Vec::new());
         }
-        // The running active loops hold the listening sockets (and those on their way between
-        // loops, posted to them ahead of this); a retiring loop handed its own on, and an exited
-        // one acts on nothing, so `await_unlisted` waits for the former only.
-        let done = Countdown::default();
-        let active = st.active;
-        for (i, s) in st.slots.iter().enumerate() {
-            let running = i < active && s.handle.is_some();
-            s.shared.post(Cmd::StopListening {
-                drain,
-                exit: exit_when_idle,
-                done: running.then(|| done.token()),
-            });
-        }
+        let done = Self::post_stop(&st, None, drain, exit_when_idle);
         st.unlisting = Some(done);
         Ok(())
     }
@@ -524,14 +648,71 @@ impl Group for EpollGroup {
     }
 
     fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
-        let st = lock(&self.state);
-        if matches!(st.listening, Listening::None) {
+        // The group's listener (the first, in a group built for one).
+        self.set_listener_filter(0, filter)
+    }
+
+    fn add_listener(
+        &self,
+        socket: ListenSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+    ) -> io::Result<(usize, SocketAddr)> {
+        if !self.shared {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "not a listener group",
+                "this group serves one listener",
             ));
         }
-        st.filter.set(filter);
+        let mut st = lock(&self.state);
+        if st.stopping {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the engine is shutting down",
+            ));
+        }
+        let b = Bound::new(socket, st.active, self.cfg.telemetry.live().backlog())?;
+        let addr = b.addr;
+        Ok((Self::install(&mut st, b, acceptor), addr))
+    }
+
+    fn remove_listener(&self, key: usize, drain: Option<Duration>) -> io::Result<()> {
+        let mut st = lock(&self.state);
+        if st.stopping {
+            return Ok(());
+        }
+        let Some(l) = st.listeners.get_mut(key) else {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no such listener"));
+        };
+        if l.unlisted {
+            return Ok(());
+        }
+        l.unlisted = true;
+        if let Listening::Shared(base) = &mut l.listening {
+            *base = None;
+        }
+        let done = Self::post_stop(&st, Some(key), drain, false);
+        st.listeners[key].unlisting = Some(done);
+        Ok(())
+    }
+
+    fn await_listener_removed(&self, key: usize, limit: Duration) {
+        let done = lock(&self.state)
+            .listeners
+            .get_mut(key)
+            .and_then(|l| l.unlisting.take());
+        if let Some(done) = done {
+            if !crate::reactor::on_loop_thread() {
+                done.wait(limit);
+            }
+        }
+    }
+
+    fn set_listener_filter(&self, key: usize, filter: Option<AcceptFilter>) -> io::Result<()> {
+        let st = lock(&self.state);
+        let Some(l) = st.listeners.get(key) else {
+            return Err(not_listening());
+        };
+        l.ear.filter.set(filter);
         Ok(())
     }
 
@@ -553,9 +734,11 @@ impl Group for EpollGroup {
     fn shutdown(&self) {
         let mut st = lock(&self.state);
         st.stopping = true;
-        if let Listening::Shared(base) = &mut st.listening {
-            // The loops' clones close as they drain; this one must not keep the socket open.
-            *base = None;
+        for l in &mut st.listeners {
+            if let Listening::Shared(base) = &mut l.listening {
+                // The loops' clones close as they drain; this one must not keep the socket open.
+                *base = None;
+            }
         }
         for s in &st.slots {
             s.shared.post(Cmd::Shutdown);

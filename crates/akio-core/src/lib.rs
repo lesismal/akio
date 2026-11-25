@@ -58,7 +58,7 @@ pub use datagrams::{DatagramPort, DatagramsFactory, datagrams_factory};
 pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, Replies};
 pub use error::{Error, Result};
 #[doc(hidden)]
-pub use group::{AcceptFilter, FilterCell, FilterView, Group};
+pub use group::{AcceptFilter, FilterCell, FilterView, Group, ListenSocket};
 #[doc(hidden)]
 pub use group::{Countdown, CountdownToken};
 pub use group::{IcmpError, IcmpHandler, UdpBinding, UdpStats};

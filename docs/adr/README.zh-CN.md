@@ -129,3 +129,4 @@
 - [ADR-127：得知请求的结束：响应完整发出，或客户端离开](127-request-end-hooks.zh-CN.md)（2026-11-25 采纳）
 - [ADR-128：由别处的工作扣住响应头、过滤响应 body](128-held-response-heads-and-body-filters.zh-CN.md)（2026-11-25 采纳；akit A166、A167；ADR-125 的 W6）
 - [ADR-129：删除 akio-prefork](129-akio-prefork-removed.zh-CN.md)（2026-11-25 采纳）
+- [ADR-130：同一后端的 listener 共享一组 I/O 线程](130-shared-io-groups.zh-CN.md)（2026-11-25 采纳；第一阶段：epoll/kqueue 事件循环）

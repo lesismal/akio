@@ -157,7 +157,7 @@ flowchart BT
 flowchart LR
     K(("kernel<br/>SO_REUSEPORT<br/>+ optional BPF"))
     subgraph Engine
-      subgraph LA["Listener A: epoll, 2 threads"]
+      subgraph LA["shared epoll group, 2 threads: listeners A and C"]
         A0["I/O thread 0<br/>poller, conns, timer wheel"]
         A1["I/O thread 1"]
       end
@@ -177,10 +177,16 @@ flowchart LR
     P -- "completion posted back" --> A0
 ```
 
-- An `Engine` holds one **group** per listener (plus optional client groups for `dial` and
-  `dial_udp`). A group is a set of I/O threads; each thread runs one event loop that owns its
-  connections, its timer wheel (`akio-timer`, millisecond ticks) and its read buffer(s)
-  (ADR-001, ADR-004). Groups implement the internal `akio_core::Group` trait.
+- An `Engine` runs its listeners on **groups** of I/O threads (plus optional client groups for
+  `dial` and `dial_udp`). A group is a set of I/O threads; each thread runs one event loop that
+  owns its connections, its timer wheel (`akio-timer`, millisecond ticks) and its read
+  buffer(s) (ADR-001, ADR-004). Groups implement the internal `akio_core::Group` trait.
+- **Shared groups** (ADR-130): TCP listeners on epoll/kqueue loops share one group
+  (`EngineBuilder::io_threads`, one thread per core by default) unless they ask for threads of
+  their own (`Listener::threads`, `Listener::dedicated`). Each loop keeps a table of the
+  group's listeners (acceptor, accept filter, Unix-domain or not, removed or not), polls their
+  sockets under tokens naming listener and socket, and each connection remembers its listener.
+  io_uring, rounds, UDP, datagram, DPDK and BPF-steered listeners have groups of their own.
 - **Accept distribution**: on Linux every thread binds its own `SO_REUSEPORT` socket and the
   kernel (or a steering program from `akio-ebpf`) picks the thread; on macOS the threads share
   one listening socket and race to accept.
@@ -421,8 +427,10 @@ sequenceDiagram
 - One listener can go while the engine runs (ADR-099): `remove_listener` posts
   `StopListening` to its loops, which close their listening sockets and keep their connections
   until they close, then exit; `shutdown_listener` also runs `on_shutdown` on them and closes
-  the rest at its drain deadline. `add_listener` binds and starts a new group as `build` would.
-  `wait` joins those groups too, and returns only after `shutdown`.
+  the rest at its drain deadline. `add_listener` binds and starts a new group as `build` would,
+  or adds the listener to its shared group. Removing a listener of a shared group closes only
+  its sockets and drains only its connections; the threads stay for the others until
+  `shutdown`. `wait` joins those groups too, and returns only after `shutdown`.
 - The pool is stopped only after the I/O threads exit, because completions need a loop to run
   on.
 

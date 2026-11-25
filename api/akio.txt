@@ -386,6 +386,7 @@ impl akio::EngineBuilder
 pub fn akio::EngineBuilder::build(self) -> core::io::error::Result<akio::Engine>
 pub fn akio::EngineBuilder::client_threads(self, usize) -> Self
 pub fn akio::EngineBuilder::config(self, akio_core::config::Config) -> Self
+pub fn akio::EngineBuilder::io_threads(self, usize) -> Self
 pub fn akio::EngineBuilder::listen(self, akio::Listener) -> Self
 pub fn akio::EngineBuilder::max_listeners(self, usize) -> Self
 pub fn akio::EngineBuilder::numa(self, akio::numa::NumaConfig) -> Self
@@ -421,6 +422,7 @@ impl akio::Listener
 pub fn akio::Listener::accel(self, akio::Accel) -> Self
 pub fn akio::Listener::backend(self, akio::Backend) -> Self
 pub fn akio::Listener::balance(self, akio::Balance) -> Self
+pub fn akio::Listener::dedicated(self) -> Self
 pub fn akio::Listener::filter(self, impl core::ops::function::Fn(&core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn akio::Listener::scheduling(self, akio::Scheduling) -> Self
 pub fn akio::Listener::serve<A: akio_core::handler::Acceptor>(self, A) -> Self

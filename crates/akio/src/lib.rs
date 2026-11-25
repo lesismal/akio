@@ -32,6 +32,7 @@ use std::{
 
 pub mod dns;
 pub mod numa;
+mod shared;
 #[cfg(all(feature = "tun", any(target_os = "linux", target_os = "macos")))]
 mod tun_engine;
 
@@ -56,7 +57,8 @@ pub use akio_log as log;
 pub use akio_dpdk as dpdk;
 
 use akio_core::{
-    AcceptFilter, DatagramsFactory, Group, Pool, datagrams_factory, telemetry::log_or_stderr,
+    AcceptFilter, DatagramsFactory, Group, ListenSocket, Pool, datagrams_factory,
+    telemetry::log_or_stderr,
 };
 /// TUN devices (cargo feature `tun`, Linux and macOS): layer-3 virtual interfaces served on I/O
 /// threads, one IP packet per `on_data` and per `send`; see [`Engine::serve_tun`].
@@ -237,7 +239,8 @@ pub struct Listener {
     /// Set by [`Listener::backend`]; `AKIO_DEFAULT_BACKEND` applies only when it is not.
     backend_explicit: bool,
     accel: Accel,
-    threads: usize,
+    /// Set by [`Listener::threads`] / [`Listener::dedicated`]: a group of its own (ADR-130).
+    threads: Option<usize>,
     acceptor: Option<Arc<dyn DynAcceptor>>,
     /// The handler factory of a connectionless datagram listener (ADR-065).
     datagrams: Option<DatagramsFactory>,
@@ -277,7 +280,7 @@ impl Listener {
             backend: Backend::default(),
             backend_explicit: false,
             accel: Accel::default(),
-            threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+            threads: None,
             acceptor: None,
             datagrams: None,
             inherited: None,
@@ -391,11 +394,26 @@ impl Listener {
         self
     }
 
-    /// Number of I/O threads for this listener (default: one per core). Ignored with
-    /// [`Scheduling::Rounds`], whose [`RoundsConfig`] sizes its threads.
+    /// Gives this listener `n` I/O threads of its own (ADR-130). Without it (nor
+    /// [`dedicated`](Self::dedicated)), a TCP listener on epoll/kqueue with per-thread loops
+    /// shares the engine's I/O threads for its kind with the other such listeners
+    /// ([`EngineBuilder::io_threads`], one per core by default); UDP, datagram, io_uring, DPDK
+    /// and BPF-steered listeners, and those with [`Scheduling::Rounds`], always have their own
+    /// (one per core by default). Ignored with [`Scheduling::Rounds`], whose [`RoundsConfig`]
+    /// sizes its threads.
     #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
-        self.threads = n.max(1);
+        self.threads = Some(n.max(1));
+        self
+    }
+
+    /// Gives this listener I/O threads of its own, one per core, instead of sharing the
+    /// engine's (ADR-130): isolation for an admin port or a latency-critical protocol, whose
+    /// connections then never wait behind another listener's callbacks. See
+    /// [`threads`](Self::threads).
+    #[must_use]
+    pub fn dedicated(mut self) -> Self {
+        self.threads = Some(default_threads());
         self
     }
 
@@ -528,12 +546,26 @@ const UNLISTEN_WAIT: Duration = Duration::from_secs(1);
 /// Binds the group of listener `l` (as `build` and `Engine::add_listener` do) and installs its
 /// filter; returns it with its kind, the acceleration it asks for and whether it asked for
 /// accept-time balancing (ADR-105).
+/// One per core: a listener's thread count when it has its own group, and
+/// [`EngineBuilder::io_threads`]' default.
+fn default_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// Where listeners that share I/O threads get them (ADR-130).
+struct Sharing<'a> {
+    groups: &'a mut shared::SharedGroups,
+    /// The size of a shared group made now.
+    threads: usize,
+}
+
 fn bind_one(
     mut l: Listener,
     env_backend: Option<&Backend>,
     env_scheduling: Option<&Scheduling>,
     cfg: &Config,
     pool: &Arc<Pool>,
+    sharing: Sharing<'_>,
 ) -> io::Result<(Box<dyn Group>, Kind, Accel, bool)> {
     let explicit_scheduling = l.scheduling.is_some();
     // The environment's default never overrides what the listener asked for explicitly
@@ -569,6 +601,22 @@ fn bind_one(
             ));
         }
     }
+    // ADR-130: a TCP listener on epoll/kqueue loops that did not ask for threads of its own
+    // joins the shared group of its kind.
+    let shares = l.threads.is_none()
+        && !l.udp
+        && l.datagrams.is_none()
+        && matches!(l.backend, Backend::Epoll)
+        && matches!(l.accel, Accel::None)
+        && scheduling == Scheduling::Loops
+        && cfg!(any(target_os = "linux", target_os = "macos"));
+    if shares {
+        let g = bind_shared(l, balance, cfg, pool, sharing)?;
+        if filter.is_some() {
+            g.set_filter(filter)?;
+        }
+        return Ok((g, Kind::Tcp, accel, balance));
+    }
     if l.udp && explicit_scheduling && scheduling != Scheduling::Loops {
         log_or_stderr(
             akio_log::Level::Warn,
@@ -588,6 +636,57 @@ fn bind_one(
         group.set_filter(filter)?;
     }
     Ok((group, kind, accel, balance))
+}
+
+/// Adds a TCP listener to the engine's shared group of its kind (ADR-130), made now if it is
+/// the first.
+fn bind_shared(
+    l: Listener,
+    balance: bool,
+    cfg: &Config,
+    pool: &Arc<Pool>,
+    sharing: Sharing<'_>,
+) -> io::Result<Box<dyn Group>> {
+    if l.unix_mode.is_some() && !matches!(l.unix, Some(UnixSpec::Path(_))) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unix_mode applies to a Unix-domain listener akio binds (Listener::unix)",
+        ));
+    }
+    let acceptor = l.acceptor.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
+    })?;
+    let socket = match (l.unix, l.inherited) {
+        (Some(UnixSpec::Path(path)), _) => {
+            ListenSocket::Unix(listen_unix(&path, cfg.backlog, l.unix_mode)?)
+        }
+        (Some(UnixSpec::Std(u)), _) => {
+            ListenSocket::Unix(std::net::TcpListener::from(std::os::fd::OwnedFd::from(u)))
+        }
+        (None, Some(inherited)) => ListenSocket::Inherited(inherited),
+        (None, None) => ListenSocket::Bind(l.addr),
+    };
+    let key = shared::ShareKey { balance };
+    let threads = sharing.threads;
+    let group = sharing.groups.get_or_make(key, || {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let g: Arc<dyn Group> = Arc::new(akio_epoll::EpollGroup::shared(
+                threads,
+                cfg.clone(),
+                pool.clone(),
+            )?);
+            g.set_balance(balance);
+            Ok(g)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (threads, pool);
+            Err(unsupported("the epoll/kqueue backend on this platform"))
+        }
+    })?;
+    let (k, addr) = group.add_listener(socket, acceptor)?;
+    Ok(Box::new(shared::SharedListener::new(group, k, addr)))
 }
 
 /// Binds a TCP listener with [`Scheduling::Rounds`] (ADR-104).
@@ -649,7 +748,8 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
                 "serve_datagrams needs a UDP listener without .serve(..)",
             ));
         }
-        let g = bind_datagrams(l.addr, factory, &l.backend, l.threads, cfg, pool)?;
+        let threads = l.threads.unwrap_or_else(default_threads);
+        let g = bind_datagrams(l.addr, factory, &l.backend, threads, cfg, pool)?;
         return Ok((g, Kind::Datagrams));
     }
     if l.unix_mode.is_some() && !matches!(l.unix, Some(UnixSpec::Path(_))) {
@@ -661,6 +761,7 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
+    let threads = l.threads.unwrap_or_else(default_threads);
     if let Some(spec) = l.unix {
         #[cfg(feature = "dpdk")]
         if matches!(l.backend, Backend::Dpdk(_)) {
@@ -670,7 +771,7 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
             UnixSpec::Path(path) => listen_unix(&path, cfg.backlog, l.unix_mode)?,
             UnixSpec::Std(u) => std::net::TcpListener::from(std::os::fd::OwnedFd::from(u)),
         };
-        let g = bind_inherited(listener, true, acceptor, &l.backend, l.threads, cfg, pool)?;
+        let g = bind_inherited(listener, true, acceptor, &l.backend, threads, cfg, pool)?;
         return Ok((g, Kind::Tcp));
     }
     #[cfg(feature = "dpdk")]
@@ -694,7 +795,7 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
             }
             let g = akio_epoll::UdpGroup::bind(
                 Some((l.addr, acceptor)),
-                l.threads,
+                threads,
                 cfg.clone(),
                 pool.clone(),
             )?;
@@ -704,14 +805,14 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
         return Err(unsupported("UDP on this platform"));
     }
     if let Some(listener) = l.inherited {
-        let g = bind_inherited(listener, false, acceptor, &l.backend, l.threads, cfg, pool)?;
+        let g = bind_inherited(listener, false, acceptor, &l.backend, threads, cfg, pool)?;
         return Ok((g, Kind::Tcp));
     }
     let epoll = |acceptor| -> io::Result<Box<dyn Group>> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         return Ok(Box::new(akio_epoll::EpollGroup::bind(
             Some((l.addr, acceptor)),
-            l.threads,
+            threads,
             cfg.clone(),
             pool.clone(),
         )?));
@@ -730,7 +831,7 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
             match akio_uring::probe() {
                 Ok(()) => Box::new(akio_uring::UringGroup::bind(
                     Some((l.addr, acceptor)),
-                    l.threads,
+                    threads,
                     cfg.clone(),
                     pool.clone(),
                     akio_uring::UringOptions {
@@ -769,6 +870,8 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
 #[derive(Debug, Default)]
 pub struct EngineBuilder {
     listeners: Vec<Listener>,
+    /// The size of shared I/O groups (ADR-130); `None`: one thread per core.
+    io_threads: Option<usize>,
     client_threads: usize,
     udp_client_threads: usize,
     cfg: Config,
@@ -782,6 +885,18 @@ impl EngineBuilder {
     #[must_use]
     pub fn listen(mut self, l: Listener) -> Self {
         self.listeners.push(l);
+        self
+    }
+
+    /// Sizes the I/O threads the listeners share (ADR-130; default: one per core): every TCP
+    /// listener on epoll/kqueue with per-thread loops that has no
+    /// [`threads`](Listener::threads) of its own (nor [`dedicated`](Listener::dedicated)) is
+    /// served by one such group, whatever its port or protocol (listeners with and without
+    /// accept-time [`Balance`] get one group each). Resize it while the engine runs with
+    /// [`Engine::set_threads`] on any of its listeners.
+    #[must_use]
+    pub fn io_threads(mut self, n: usize) -> Self {
+        self.io_threads = Some(n.max(1));
         self
     }
 
@@ -874,6 +989,8 @@ impl EngineBuilder {
         let env_backend = env_default_backend(); // read once per build (ADR-029)
         let env_scheduling = env_default_scheduling(); // likewise (ADR-104)
         let rt_cfg = self.cfg.clone();
+        let io_threads = self.io_threads.unwrap_or_else(default_threads);
+        let mut shared_groups = shared::SharedGroups::default();
         for l in self.listeners {
             let (g, kind, accel, balance) = bind_one(
                 l,
@@ -881,6 +998,10 @@ impl EngineBuilder {
                 env_scheduling.as_ref(),
                 &self.cfg,
                 &pool,
+                Sharing {
+                    groups: &mut shared_groups,
+                    threads: io_threads,
+                },
             )?;
             balances.push(balance);
             match kind {
@@ -971,6 +1092,8 @@ impl EngineBuilder {
                     stopped: false,
                 }),
                 stopped: Condvar::new(),
+                shared: Mutex::new(shared_groups),
+                io_threads,
                 cfg: rt_cfg,
                 env_backend,
                 env_scheduling,
@@ -1380,6 +1503,10 @@ struct Runtime {
     state: Mutex<RtState>,
     /// Signalled when `shutdown` is called (`wait`).
     stopped: Condvar,
+    /// The shared I/O groups (ADR-130), which the engine shuts down and joins itself.
+    shared: Mutex<shared::SharedGroups>,
+    /// The size of a shared group made by `add_listener`.
+    io_threads: usize,
     /// The configuration listeners added later are bound with (live settings from telemetry).
     cfg: Config,
     env_backend: Option<Backend>,
@@ -1503,13 +1630,19 @@ impl Engine {
         }
         let mut cfg = rt.cfg.clone();
         cfg.backlog = self.telemetry.live().backlog();
+        let mut shared_groups = lock(&rt.shared);
         let (g, kind, accel, balance) = bind_one(
             listener,
             rt.env_backend.as_ref(),
             rt.env_scheduling.as_ref(),
             &cfg,
             &self.pool,
+            Sharing {
+                groups: &mut shared_groups,
+                threads: rt.io_threads,
+            },
         )?;
+        drop(shared_groups);
         let g: Arc<dyn Group> = Arc::from(g);
         let accel = apply_accel(&accel, g.as_ref())?;
         let placed = matches!(accel, AccelStatus::Steering(_)) || rt.numa_cfg.incoming_cpu;
@@ -1548,7 +1681,9 @@ impl Engine {
     /// Removes listener `id` (ADR-099): it stops accepting and its listening sockets are
     /// closed, while its open connections keep running on the threads that own them
     /// (connections never move). Each of its I/O threads exits once its last connection is
-    /// closed; those of a builder listener that also serve [`dial`](Self::dial) and
+    /// closed, unless they are shared I/O threads (ADR-130), which keep serving the other
+    /// listeners (only this listener's sockets close and, with a drain, only its connections);
+    /// those of a builder listener that also serve [`dial`](Self::dial) and
     /// [`adopt_tcp`](Self::adopt_tcp) (the last TCP listener when there are no
     /// [`client_threads`](EngineBuilder::client_threads)) stay up for them until shutdown.
     ///
@@ -1732,7 +1867,8 @@ impl Engine {
 
     /// Active I/O threads of each listener (and client group), in
     /// [`local_addrs`](Self::local_addrs) order. Retiring threads (see
-    /// [`set_threads`](Self::set_threads)) are not counted.
+    /// [`set_threads`](Self::set_threads)) are not counted. Listeners that share I/O threads
+    /// (ADR-130) each report the shared group's count; a removed one reports 0.
     pub fn threads(&self) -> Vec<usize> {
         self.groups.iter().map(|g| g.threads()).collect()
     }
@@ -1740,6 +1876,8 @@ impl Engine {
     /// Changes the number of I/O threads of group `index` (in [`local_addrs`](Self::local_addrs)
     /// order: the listeners, then the client groups) to `threads` (at least 1) while the engine
     /// runs (ADR-028). TCP listeners and client groups on epoll, kqueue and io_uring support it.
+    /// For a listener that shares I/O threads (ADR-130) it resizes the shared group, so every
+    /// listener of that group gets the new count.
     ///
     /// * **Growing** starts new I/O threads (or reactivates retiring ones) and gives each a
     ///   listening socket: on Linux a new `SO_REUSEPORT` socket in the listener's group, from
@@ -1796,6 +1934,8 @@ impl Engine {
                 .filter(|e| e.index.is_none())
                 .map(|e| e.group.clone()),
         );
+        // The shared groups (ADR-130), which no listener handle joins.
+        rest.extend(lock(&self.rt.shared).all());
         drop(st);
         for g in &rest {
             g.join();
@@ -1860,6 +2000,11 @@ impl Engine {
             .filter(|e| e.index.is_none())
             .for_each(|e| e.group.shutdown());
         st.leaving.iter().for_each(|g| g.shutdown());
+        // The shared groups (ADR-130): their listeners' handles leave this to the engine.
+        lock(&self.rt.shared)
+            .all()
+            .iter()
+            .for_each(|g| g.shutdown());
     }
 
     /// Starts a UDP "connection" to `addr`: a socket of its own (so its own local port) that only

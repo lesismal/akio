@@ -84,6 +84,8 @@ pub(crate) enum Cmd {
         stream: TcpStream,
         peer: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
+        /// The listener it came from (ADR-130).
+        lid: usize,
     },
     Dial {
         stream: TcpStream,
@@ -93,31 +95,100 @@ pub(crate) enum Cmd {
         /// A Unix-domain socket (ADR-120): its addresses are `UNIX_ADDR`.
         unix: bool,
     },
-    /// Thread resizing (ADR-028): accept on listening socket `.0` (the group's listener index)
-    /// from now on.
-    AddListener(usize, TcpListener),
-    /// Thread resizing: if this loop holds listener `idx`, hand it to `to`.
+    /// A listener joins the group (ADR-130): what accepting on its sockets needs. Its sockets
+    /// follow as `AddListener`.
+    Listen {
+        lid: usize,
+        ear: Arc<Ear>,
+    },
+    /// Accept on listening socket `.0` from now on (a new listener's, one passed on by thread
+    /// resizing, ADR-028, or given back to a loop the group grew again).
+    AddListener(Sock, TcpListener),
+    /// Thread resizing: if this loop holds socket `sock`, hand it to `to`.
     GiveListener {
-        idx: usize,
+        sock: Sock,
         to: Arc<LoopShared>,
     },
     /// Thread resizing: stop taking new connections, hand the listening sockets to the active
-    /// loops (`forward`; otherwise they are clones of one socket the others hold too and are
-    /// just closed), exit once the connections are gone.
-    Retire {
-        forward: bool,
-    },
+    /// loops (those of `SO_REUSEPORT` listeners; the others are clones of one socket the other
+    /// loops hold too and are just closed), exit once the connections are gone.
+    Retire,
     /// Thread resizing: a retiring loop becomes active again.
     Revive,
-    /// The listener was removed (ADR-099): close the listening sockets for good; with `drain`,
-    /// shut the connections down now and close the rest after it; with `exit`, end the thread
-    /// once no connection is left.
+    /// A listener was removed (ADR-099): listener `lid`, or with `None` every listener of the
+    /// group. Close its listening sockets for good; with `drain`, shut its connections down
+    /// now and close the rest after it; with `exit` (`lid == None` only), end the thread once
+    /// no connection is left.
     StopListening {
+        lid: Option<usize>,
         drain: Option<Duration>,
         exit: bool,
         /// Dropped once the loop's listening sockets are closed (`Group::await_unlisted`).
         done: Option<akio_core::CountdownToken>,
     },
+}
+
+/// A listening socket of a group: socket `idx` of listener `lid` (ADR-130). With
+/// `SO_REUSEPORT` (Linux) a listener has one socket per loop index and `idx` is it; its clones
+/// elsewhere all have `idx` 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Sock {
+    pub(crate) lid: usize,
+    pub(crate) idx: usize,
+}
+
+impl Sock {
+    /// Its poll token.
+    fn token(self) -> u64 {
+        LISTEN_BIT | ((self.lid as u64) << 32) | (self.idx as u64 & 0xffff_ffff)
+    }
+
+    fn of_token(t: u64) -> Sock {
+        let t = t & !LISTEN_BIT;
+        Sock {
+            lid: (t >> 32) as usize,
+            idx: (t & 0xffff_ffff) as usize,
+        }
+    }
+}
+
+/// One listener of a group (ADR-130): what a loop needs to accept on its sockets.
+pub(crate) struct Ear {
+    pub(crate) acceptor: Arc<dyn DynAcceptor>,
+    pub(crate) filter: Arc<akio_core::FilterCell>,
+    /// A Unix-domain listener (ADR-121): its connections are accepted without an address and
+    /// get `UNIX_ADDR` for both.
+    pub(crate) unix: bool,
+    /// One `SO_REUSEPORT` socket per loop index (Linux): each has a home loop and is handed on
+    /// when its loop retires. Otherwise the loops hold clones of one socket, and a retiring
+    /// loop just closes its own.
+    pub(crate) reuseport: bool,
+    /// Its address (`ConnInfo::owner.listener` of its connections).
+    pub(crate) addr: SocketAddr,
+}
+
+/// No listener: a dialed connection's `LoopConn::lid`.
+const NO_LISTENER: usize = usize::MAX;
+
+/// A loop's view of one listener of its group.
+struct LoopEar {
+    ear: Arc<Ear>,
+    filter: akio_core::FilterView,
+    /// Removed (`Cmd::StopListening`): sockets handed here later are closed.
+    unlisted: bool,
+    /// The drain deadline of its removal: its connections still open then are closed.
+    kill: Option<Instant>,
+}
+
+impl LoopEar {
+    fn new(ear: Arc<Ear>) -> LoopEar {
+        LoopEar {
+            filter: akio_core::FilterView::new(ear.filter.clone()),
+            ear,
+            unlisted: false,
+            kill: None,
+        }
+    }
 }
 
 /// `LoopShared::state`: taking new connections.
@@ -133,19 +204,15 @@ const EXITED: u8 = 2;
 pub(crate) struct Roster {
     active: RwLock<Vec<Arc<LoopShared>>>,
     rr: AtomicUsize,
-    /// Listener `idx` has a home: active loop `idx % active` (`SO_REUSEPORT` groups, one socket
-    /// per loop index). Otherwise the loops hold clones of one socket and nothing is routed.
-    routed: bool,
     /// Accept-time balancing (ADR-105, `Group::set_balance`).
     balance: AtomicBool,
 }
 
 impl Roster {
-    pub(crate) fn new(routed: bool) -> Roster {
+    pub(crate) fn new() -> Roster {
         Roster {
             active: RwLock::new(Vec::new()),
             rr: AtomicUsize::new(0),
-            routed,
             balance: AtomicBool::new(false),
         }
     }
@@ -196,28 +263,35 @@ impl Roster {
         Ok(())
     }
 
-    /// Where listener `idx` belongs, if that is not `me`: then it is posted there and `None`
-    /// returned. A socket that went to the wrong loop while the group was being resized (handed
-    /// on by a retiring loop after the group had grown again, say) thus ends up at home.
-    fn route(&self, idx: usize, l: TcpListener, me: &LoopShared) -> Option<TcpListener> {
-        if !self.routed {
+    /// Where `SO_REUSEPORT` socket `sock` belongs (its home is active loop `idx % active`), if
+    /// that is not `me`: then it is posted there and `None` returned. A socket that went to the
+    /// wrong loop while the group was being resized (handed on by a retiring loop after the
+    /// group had grown again, say) thus ends up at home. Clones of one socket have no home.
+    fn route(
+        &self,
+        sock: Sock,
+        l: TcpListener,
+        me: &LoopShared,
+        reuseport: bool,
+    ) -> Option<TcpListener> {
+        if !reuseport {
             return Some(l);
         }
         let g = self.active.read().unwrap_or_else(|p| p.into_inner());
-        match g.get(idx % g.len().max(1)) {
+        match g.get(sock.idx % g.len().max(1)) {
             Some(home) if home.uid != me.uid => {
-                home.post(Cmd::AddListener(idx, l));
+                home.post(Cmd::AddListener(sock, l));
                 None
             }
             _ => Some(l),
         }
     }
 
-    /// Hands listener `idx` to an active loop (spread by index).
-    fn forward_listener(&self, idx: usize, l: TcpListener) {
+    /// Hands listening socket `sock` to an active loop (spread by index).
+    fn forward_listener(&self, sock: Sock, l: TcpListener) {
         let g = self.active.read().unwrap_or_else(|p| p.into_inner());
         if !g.is_empty() {
-            g[idx % g.len()].post(Cmd::AddListener(idx, l));
+            g[sock.idx % g.len()].post(Cmd::AddListener(sock, l));
         }
         // No active loop: the group is gone or shutting down, and the socket closes.
     }
@@ -375,6 +449,8 @@ struct LoopConn {
     inner: Arc<ConnInner>,
     handler: Box<dyn DynHandler>,
     acceptor: Arc<dyn DynAcceptor>,
+    /// The listener it was accepted on (ADR-130), or `NO_LISTENER` when dialed.
+    lid: usize,
     reg_read: bool,
     reg_write: bool,
     /// Reads paused by backpressure (queue above the high watermark).
@@ -411,11 +487,11 @@ enum Slot {
 pub(crate) struct Loop {
     poller: Poller,
     shared: Arc<LoopShared>,
-    /// Listening sockets this loop accepts on, with their index in the group (usually one; a
-    /// loop also takes over those of retired loops until the group grows again).
-    listeners: Vec<(usize, TcpListener)>,
-    /// The acceptor of the group's listener (`None` in a client-only group).
-    acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// Listening sockets this loop accepts on (usually one per listener of the group; a loop
+    /// also takes over those of retired loops until the group grows again).
+    listeners: Vec<(Sock, TcpListener)>,
+    /// The listeners of the group, by `lid` (ADR-130; none in a client-only group).
+    ears: Vec<Option<LoopEar>>,
     /// The group's active loops (thread resizing).
     roster: Arc<Roster>,
     /// The backlog the listening sockets were last `listen`ed with.
@@ -430,18 +506,12 @@ pub(crate) struct Loop {
     /// (`Config::retire_timeout`), and, once they were, when the rest is closed.
     retire_at: Option<Instant>,
     retire_kill: Option<Instant>,
-    /// The listener is out of the poller until then, after a failed `accept`.
+    /// The listening sockets are out of the poller until then, after a failed `accept`.
     accept_paused_until: Option<Instant>,
-    /// The listener's accept filter (ADR-099), run before a connection is opened (none in a
-    /// client-only group).
-    filter: Option<akio_core::FilterView>,
-    /// The listener is a Unix-domain socket (ADR-121): connections are accepted without an
-    /// address and get `UNIX_ADDR` for both.
-    unix: bool,
-    /// The listener was removed (`Cmd::StopListening`): listening sockets handed here later are
-    /// closed; with `unlisted_exit` the thread ends once no connection is left, and at
-    /// `unlisted_kill` (the drain deadline) the connections still open are closed.
-    unlisted: bool,
+    /// Every listener of the group was removed (`Cmd::StopListening` with no `lid`): with
+    /// `unlisted_exit` the thread ends once no connection is left, and at `unlisted_kill` (the
+    /// drain deadline) the connections still open are closed and the dials aborted. (One
+    /// listener's removal has its deadline in its `LoopEar`.)
     unlisted_exit: bool,
     unlisted_kill: Option<Instant>,
     /// Idle-timeout timers (connection ids); empty unless `Config::idle_timeout` is set.
@@ -470,21 +540,21 @@ impl Loop {
     pub(crate) fn new(
         poller: Poller,
         shared: Arc<LoopShared>,
-        listeners: Vec<(usize, TcpListener)>,
-        acceptor: Option<Arc<dyn DynAcceptor>>,
+        listeners: Vec<(Sock, TcpListener)>,
+        ears: Vec<Option<Arc<Ear>>>,
         roster: Arc<Roster>,
         cfg: Arc<Config>,
     ) -> io::Result<Loop> {
-        for (idx, l) in &listeners {
+        for (sock, l) in &listeners {
             l.set_nonblocking(true)?;
-            poller.add(l.as_raw_fd(), LISTEN_BIT | *idx as u64, true, false)?;
+            poller.add(l.as_raw_fd(), sock.token(), true, false)?;
         }
         let live = cfg.telemetry.live();
         Ok(Loop {
             poller,
             shared,
             listeners,
-            acceptor,
+            ears: ears.into_iter().map(|e| e.map(LoopEar::new)).collect(),
             roster,
             backlog: live.backlog(),
             slots: Default::default(),
@@ -495,9 +565,6 @@ impl Loop {
             retire_at: None,
             retire_kill: None,
             accept_paused_until: None,
-            filter: None,
-            unix: false,
-            unlisted: false,
             unlisted_exit: false,
             unlisted_kill: None,
             wheel: Wheel::new(0),
@@ -518,7 +585,7 @@ impl Loop {
         // nothing new should arrive; this covers a command already on its way).
         for cmd in self.shared.take() {
             match cmd {
-                Cmd::AddListener(idx, l) => self.roster.forward_listener(idx, l),
+                Cmd::AddListener(sock, l) => self.roster.forward_listener(sock, l),
                 c @ Cmd::Adopt { .. } => {
                     self.shared.stats.handoff_done();
                     self.roster.hand_on(c);
@@ -548,7 +615,8 @@ impl Loop {
             let mut timeout = (self.draining.is_some()
                 || self.retire_at.is_some()
                 || self.retire_kill.is_some()
-                || self.unlisted_kill.is_some())
+                || self.unlisted_kill.is_some()
+                || self.ears.iter().flatten().any(|e| e.kill.is_some()))
             .then_some(Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 // Round up: waking a hair late is fine, spinning on a not-yet-due tick is not.
@@ -571,7 +639,7 @@ impl Loop {
             for ev in &events {
                 match ev.token {
                     WAKER => self.shared.waker.drain(),
-                    t if t & LISTEN_BIT != 0 => self.accept((t & !LISTEN_BIT) as usize),
+                    t if t & LISTEN_BIT != 0 => self.accept(Sock::of_token(t)),
                     id => self.on_event(id, *ev),
                 }
             }
@@ -583,7 +651,7 @@ impl Loop {
             if self.retiring && self.retire_step() {
                 break;
             }
-            if self.unlisted && self.draining.is_none() && self.unlisted_step() {
+            if self.draining.is_none() && self.unlisting() && self.unlisted_step() {
                 break;
             }
             if let Some(deadline) = self.draining {
@@ -846,6 +914,7 @@ impl Loop {
                 stream,
                 peer,
                 acceptor,
+                lid,
             } => {
                 self.shared.stats.handoff_done();
                 if self.draining.is_some() {
@@ -855,9 +924,10 @@ impl Loop {
                         stream,
                         peer,
                         acceptor,
+                        lid,
                     });
                 } else {
-                    self.open(stream, peer, acceptor, false, None);
+                    self.open(stream, peer, acceptor, false, None, lid);
                 }
             }
             Cmd::Dial {
@@ -867,63 +937,89 @@ impl Loop {
                 on_error,
                 unix,
             } => self.begin_dial(stream, addr, acceptor, on_error, unix),
-            Cmd::AddListener(idx, l) => self.add_listener(idx, l),
-            Cmd::GiveListener { idx, to } => {
-                if let Some(pos) = self.listeners.iter().position(|(i, _)| *i == idx) {
+            Cmd::Listen { lid, ear } => {
+                if self.ears.len() <= lid {
+                    self.ears.resize_with(lid + 1, || None);
+                }
+                self.ears[lid] = Some(LoopEar::new(ear));
+            }
+            Cmd::AddListener(sock, l) => self.add_listener(sock, l),
+            Cmd::GiveListener { sock, to } => {
+                if let Some(pos) = self.listeners.iter().position(|(s, _)| *s == sock) {
                     let (_, l) = self.listeners.swap_remove(pos);
                     self.poller.delete(l.as_raw_fd());
-                    to.post(Cmd::AddListener(idx, l));
+                    to.post(Cmd::AddListener(sock, l));
                 }
             }
-            Cmd::Retire { forward } => self.retire(forward),
+            Cmd::Retire => self.retire(),
             Cmd::Revive => {
                 self.retiring = false;
                 self.retire_at = None;
                 self.retire_kill = None;
                 self.shared.stats.set_retiring(false);
             }
-            Cmd::StopListening { drain, exit, done } => {
-                self.stop_listening(drain, exit);
+            Cmd::StopListening {
+                lid,
+                drain,
+                exit,
+                done,
+            } => {
+                self.stop_listening(lid, drain, exit);
                 drop(done);
             }
         }
     }
 
-    /// Gives a loop that has not started yet its group's accept filter.
-    pub(crate) fn set_filter(&mut self, cell: &Arc<akio_core::FilterCell>) {
-        self.filter = Some(akio_core::FilterView::new(cell.clone()));
-    }
+    // ---- removing a listener (ADR-099, ADR-130) -----------------------------------------------
 
-    /// Marks a loop that has not started yet as serving a Unix-domain listener (ADR-121).
-    pub(crate) fn set_unix(&mut self) {
-        self.unix = true;
-    }
-
-    // ---- removing the listener (ADR-099) ------------------------------------------------------
-
-    /// The listener was removed: its listening sockets close now; the connections stay (see
-    /// `Cmd::StopListening`).
-    fn stop_listening(&mut self, drain: Option<Duration>, exit: bool) {
+    /// Listener `lid` (with `None`, every listener of the group) was removed: its listening
+    /// sockets close now; the connections stay (see `Cmd::StopListening`).
+    fn stop_listening(&mut self, lid: Option<usize>, drain: Option<Duration>, exit: bool) {
         if self.draining.is_some() {
             return; // the engine is shutting down anyway
         }
-        self.unlisted = true;
-        self.unlisted_exit |= exit;
-        self.accept_paused_until = None;
-        for (_, l) in std::mem::take(&mut self.listeners) {
+        let of = |s: &Sock| lid.is_none_or(|l| s.lid == l);
+        let (gone, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.listeners)
+            .into_iter()
+            .partition(|(s, _)| of(s));
+        self.listeners = keep;
+        for (_, l) in gone {
             self.poller.delete(l.as_raw_fd()); // and dropping it closes it
         }
-        if let Some(d) = drain {
-            let at = Instant::now() + d;
-            self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
-            self.notify_shutdown();
+        let at = drain.map(|d| Instant::now() + d);
+        for (i, e) in self.ears.iter_mut().enumerate() {
+            if let Some(e) = e.as_mut().filter(|_| lid.is_none_or(|l| l == i)) {
+                e.unlisted = true;
+                if let (Some(at), Some(_)) = (at, lid) {
+                    e.kill = Some(e.kill.map_or(at, |t| t.min(at)));
+                }
+            }
+        }
+        if lid.is_none() {
+            self.unlisted_exit |= exit;
+            self.accept_paused_until = None;
+            if let Some(at) = at {
+                self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
+            }
+        }
+        if drain.is_some() {
+            self.notify_shutdown(lid);
         }
     }
 
-    /// Once per iteration after the listener was removed: closes what is left at the drain
-    /// deadline, and ends the thread (true) once no connection is left, if it may.
+    /// Whether a removal is still at work here: a drain deadline to apply, or the thread to end
+    /// once its connections are gone.
+    fn unlisting(&self) -> bool {
+        self.unlisted_exit
+            || self.unlisted_kill.is_some()
+            || self.ears.iter().flatten().any(|e| e.kill.is_some())
+    }
+
+    /// Once per iteration while a removal is at work: closes what is left at a drain deadline,
+    /// and ends the thread (true) once no connection is left, if it may.
     fn unlisted_step(&mut self) -> bool {
-        if self.unlisted_kill.is_some_and(|t| Instant::now() >= t) {
+        let now = Instant::now();
+        if self.unlisted_kill.is_some_and(|t| now >= t) {
             self.unlisted_kill = None;
             let ids: Vec<u64> = self.slots.keys().copied().collect();
             for id in ids {
@@ -933,37 +1029,62 @@ impl Loop {
                 }
             }
         }
+        let due: Vec<usize> = self
+            .ears
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                let e = e.as_mut()?;
+                e.kill.is_some_and(|t| now >= t).then(|| {
+                    e.kill = None;
+                    i
+                })
+            })
+            .collect();
+        for lid in due {
+            let ids: Vec<u64> = self
+                .slots
+                .iter()
+                .filter_map(|(id, s)| matches!(s, Slot::Conn(lc) if lc.lid == lid).then_some(*id))
+                .collect();
+            for id in ids {
+                self.finalize(id, None);
+            }
+        }
         self.unlisted_exit && self.slots.is_empty()
     }
 
     // ---- thread resizing (ADR-028) ----------------------------------------------------------
 
-    /// Starts accepting on listener `idx` (passed on by a retiring loop, or given back to a
-    /// loop the group grew again), or passes it on if this loop is retiring itself.
-    fn add_listener(&mut self, idx: usize, l: TcpListener) {
-        if self.draining.is_some() || self.unlisted {
-            return; // shutting down or removed: the socket closes
-        }
+    /// Starts accepting on socket `sock` (a new listener's, passed on by a retiring loop, or
+    /// given back to a loop the group grew again), or passes it on if this loop is retiring
+    /// itself.
+    fn add_listener(&mut self, sock: Sock, l: TcpListener) {
+        let reuseport = match self.ears.get(sock.lid).and_then(Option::as_ref) {
+            Some(e) if !e.unlisted && self.draining.is_none() => e.ear.reuseport,
+            _ => return, // shutting down, removed, or unknown: the socket closes
+        };
         if self.retiring {
-            self.roster.forward_listener(idx, l);
+            if reuseport {
+                self.roster.forward_listener(sock, l);
+            }
             return;
         }
-        let Some(l) = self.roster.route(idx, l, &self.shared) else {
+        let Some(l) = self.roster.route(sock, l, &self.shared, reuseport) else {
             return;
         };
         if l.set_nonblocking(true).is_err() {
             return;
         }
         if self.accept_paused_until.is_none() {
-            if let Err(e) = self
-                .poller
-                .add(l.as_raw_fd(), LISTEN_BIT | idx as u64, true, false)
-            {
+            if let Err(e) = self.poller.add(l.as_raw_fd(), sock.token(), true, false) {
                 log_or_stderr(
                     akio_log::Level::Warn,
                     format_args!("adding a listening socket: {e}; passing it on"),
                 );
-                self.roster.forward_listener(idx, l);
+                if reuseport {
+                    self.roster.forward_listener(sock, l);
+                }
                 return;
             }
         }
@@ -971,15 +1092,16 @@ impl Loop {
         if backlog != self.backlog {
             let _ = akio_sys::set_backlog(&l, backlog);
         }
-        self.listeners.push((idx, l));
+        self.listeners.push((sock, l));
         // Connections may have queued while the socket was on its way.
-        self.accept(idx);
+        self.accept(sock);
     }
 
-    /// This loop leaves the group's active set: its listening sockets go to the active loops
-    /// (they keep listening throughout, so queued connections wait instead of being reset),
-    /// its connections stay here until they close.
-    fn retire(&mut self, forward: bool) {
+    /// This loop leaves the group's active set: the `SO_REUSEPORT` listening sockets go to the
+    /// active loops (they keep listening throughout, so queued connections wait instead of
+    /// being reset), clones of a shared socket close; its connections stay here until they
+    /// close.
+    fn retire(&mut self) {
         if self.draining.is_some() {
             return;
         }
@@ -988,10 +1110,15 @@ impl Loop {
         let now = Instant::now();
         self.retire_at = self.cfg.telemetry.live().retire_timeout().map(|d| now + d);
         self.retire_kill = None;
-        for (idx, l) in std::mem::take(&mut self.listeners) {
+        for (sock, l) in std::mem::take(&mut self.listeners) {
             self.poller.delete(l.as_raw_fd());
-            if forward {
-                self.roster.forward_listener(idx, l);
+            let reuseport = self
+                .ears
+                .get(sock.lid)
+                .and_then(Option::as_ref)
+                .is_some_and(|e| e.ear.reuseport);
+            if reuseport {
+                self.roster.forward_listener(sock, l);
             }
         }
     }
@@ -1003,7 +1130,7 @@ impl Loop {
         if self.retire_at.is_some_and(|t| now >= t) {
             self.retire_at = None;
             self.retire_kill = Some(now + self.cfg.telemetry.live().shutdown_timeout());
-            self.notify_shutdown();
+            self.notify_shutdown(None);
         }
         if self.retire_kill.is_some_and(|t| now >= t) {
             self.retire_kill = None;
@@ -1054,6 +1181,10 @@ impl Loop {
 
     fn info(&self, id: u64, lc: &LoopConn, now: u64) -> ConnInfo {
         let mut ci = ConnInfo::new(id, &lc.inner, self.shared.stats.meta().clone());
+        // A shared group's threads serve several listeners (ADR-130): name the connection's.
+        if let Some(e) = self.ears.get(lc.lid).and_then(Option::as_ref) {
+            ci.owner.listener = Some(e.ear.addr);
+        }
         ci.age = Duration::from_millis(now.saturating_sub(lc.opened));
         ci.idle = Duration::from_millis(now.saturating_sub(lc.last_active));
         ci.bytes_in = lc.bytes_in;
@@ -1111,65 +1242,73 @@ impl Loop {
         for (_, l) in std::mem::take(&mut self.listeners) {
             self.poller.delete(l.as_raw_fd());
         }
-        self.notify_shutdown();
+        self.notify_shutdown(None);
     }
 
     /// Runs `on_shutdown` for every connection and aborts pending dials (engine shutdown, or a
-    /// retiring thread's `retire_timeout`).
-    fn notify_shutdown(&mut self) {
+    /// retiring thread's `retire_timeout`); with `only`, for the connections of that listener
+    /// alone (its removal, ADR-130).
+    fn notify_shutdown(&mut self, only: Option<usize>) {
         let ids: Vec<u64> = self.slots.keys().copied().collect();
         for id in ids {
             match self.slots.get_mut(&id) {
-                Some(Slot::Conn(lc)) => {
+                Some(Slot::Conn(lc)) if only.is_none_or(|l| l == lc.lid) => {
                     let (acc, inner) = (lc.acceptor.clone(), lc.inner.clone());
                     if catch_unwind(AssertUnwindSafe(|| acc.on_shutdown(&inner))).is_err() {
                         self.finalize(id, Some(panic_error()));
                     }
                 }
-                Some(Slot::Connecting { .. }) => self.abort_dial(id, "engine shutting down"),
-                None => {}
+                Some(Slot::Connecting { .. }) if only.is_none() => {
+                    self.abort_dial(id, "engine shutting down");
+                }
+                _ => {}
             }
         }
     }
 
     // ---- accept / dial --------------------------------------------------------------------
 
-    fn accept(&mut self, idx: usize) {
-        let Some(pos) = self.listeners.iter().position(|(i, _)| *i == idx) else {
+    fn accept(&mut self, sock: Sock) {
+        let Some(pos) = self.listeners.iter().position(|(s, _)| *s == sock) else {
             return;
         };
         for _ in 0..MAX_ACCEPT_PER_EVENT {
-            let (Some((_, l)), Some(acceptor)) = (self.listeners.get(pos), &self.acceptor) else {
+            let Some((_, l)) = self.listeners.get(pos) else {
                 return;
             };
-            let accepted = if self.unix {
+            let Some(ear) = self.ears.get_mut(sock.lid).and_then(Option::as_mut) else {
+                return;
+            };
+            let unix = ear.ear.unix;
+            let accepted = if unix {
                 akio_sys::accept_stream(l).map(|s| (s, akio_core::UNIX_ADDR))
             } else {
                 l.accept()
             };
             match accepted {
                 Ok((stream, peer)) => {
-                    if !self.filter.as_mut().is_none_or(|f| f.allows(&peer)) {
+                    if !ear.filter.allows(&peer) {
                         self.shared.stats.filtered.add_local(1);
                         akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
                         continue; // dropping the stream closes it
                     }
-                    let acceptor = acceptor.clone();
-                    let unix_local = self.unix.then_some(akio_core::UNIX_ADDR);
+                    let acceptor = ear.ear.acceptor.clone();
+                    let unix_local = unix.then_some(akio_core::UNIX_ADDR);
                     // Accept-time balancing (ADR-105): a loop holding more than its share
                     // hands the connection over before reading from it. A Unix-domain
                     // connection (ADR-121) stays: `Adopt` opens with TCP addresses.
-                    if !self.unix {
+                    if !unix {
                         if let Some(to) = self.roster.handoff_target(&self.shared) {
                             to.post(Cmd::Adopt {
                                 stream,
                                 peer,
                                 acceptor,
+                                lid: sock.lid,
                             });
                             continue;
                         }
                     }
-                    self.open(stream, peer, acceptor, false, unix_local);
+                    self.open(stream, peer, acceptor, false, unix_local, sock.lid);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -1201,11 +1340,8 @@ impl Loop {
             return;
         }
         self.accept_paused_until = None;
-        for (idx, l) in &self.listeners {
-            if let Err(e) = self
-                .poller
-                .add(l.as_raw_fd(), LISTEN_BIT | *idx as u64, true, false)
-            {
+        for (sock, l) in &self.listeners {
+            if let Err(e) = self.poller.add(l.as_raw_fd(), sock.token(), true, false) {
                 log_or_stderr(
                     akio_log::Level::Warn,
                     format_args!("re-arming the listener: {e}"),
@@ -1227,6 +1363,8 @@ impl Loop {
         dialed: bool,
         // The local address of a Unix-domain socket, which has none of its own (ADR-120).
         unix_local: Option<SocketAddr>,
+        // The listener it was accepted on (`NO_LISTENER` when dialed).
+        lid: usize,
     ) {
         if stream.set_nonblocking(true).is_err() {
             return;
@@ -1282,6 +1420,7 @@ impl Loop {
                 inner,
                 handler,
                 acceptor,
+                lid,
                 reg_read: true,
                 reg_write: false,
                 bp: false,
@@ -1352,7 +1491,14 @@ impl Loop {
         match result {
             Ok((local, peer)) => {
                 // `open` re-registers the stream under a fresh id.
-                self.open(stream, peer, acceptor, true, unix.then_some(local));
+                self.open(
+                    stream,
+                    peer,
+                    acceptor,
+                    true,
+                    unix.then_some(local),
+                    NO_LISTENER,
+                );
             }
             Err(e) => {
                 if let Some(f) = on_error {

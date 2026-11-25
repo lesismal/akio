@@ -2,8 +2,8 @@
 
 ## Engine
 
-`Engine` 是一组 listener，每个 listener 由自己的一**组**（group）I/O 线程服务，另外还有一个
-共享的逻辑线程池和一个遥测中心（telemetry hub）。用 `Engine::builder()` 构建：
+`Engine` 是一组由 I/O **线程组**（group）服务的 listener（默认同一后端的 TCP listener 共享
+一组，ADR-130），另外还有一个共享的逻辑线程池和一个遥测中心（telemetry hub）。用 `Engine::builder()` 构建：
 
 ```rust,ignore
 {{#include ../../../../crates/akio/examples/guide-basics.rs:engine}}
@@ -25,13 +25,21 @@
 | 方法 | 含义 | 默认值 |
 |---|---|---|
 | `.serve(acceptor)` | 由谁处理连接（必填） | 无：`build` 失败 |
-| `.threads(n)` | 该 listener 的 I/O 线程数 | 每核一个 |
+| `.threads(n)` | 独占 `n` 个 I/O 线程，不使用共享线程 | 共享（见下文） |
+| `.dedicated()` | 独占 I/O 线程，每核一个 | 共享（见下文） |
 | `.backend(Backend::..)` | `Epoll`（macOS 上是 kqueue）或 `IoUring(UringConfig)` | `Epoll` |
 | `.accel(Accel::..)` | `None` 或 `Ebpf(EbpfConfig)` 分流 | `None` |
 | `.balance(Balance::..)` | `LeastConnections`：持有连接超出份额的线程把新连接在首次读取之前交给连接最少的线程（ADR-105）；`Kernel`：套接字接受到哪个线程就留在哪个线程 | `LeastConnections`（有 eBPF 分流或 NUMA `incoming_cpu` 时为 `Kernel`） |
 
-每个 listener 有自己的线程，listener 之间从不共享 I/O 线程。handler 类型、后端和线程数各不
-相同的多个 listener 可以放在同一个 engine 里。
+epoll/kqueue 每线程事件循环上的 TCP listener **共享**一组 I/O 线程，即
+`EngineBuilder::io_threads(n)`（默认每核一个），无论端口、协议或 handler 类型：8 核上的 HTTP、
+gRPC 和管理三个端口运行 8 个 I/O 线程，而不是 24 个（ADR-130）。每个线程监听所有 listener 的
+socket，并运行对应的 acceptor 和 accept 过滤器；每个连接留在接受它的线程上。设置了 `.threads(n)`
+或 `.dedicated()` 的 listener 独占一组线程（隔离：它的连接不会排在其他 listener 的回调之后），
+io_uring、轮次调度、UDP、数据报、DPDK 和 BPF 引流的 listener 也独占线程组。移除共享 listener 只
+关闭它的 socket、只排空它的连接；对共享 listener 调用 `Engine::set_threads` 会调整共享组的大小，
+影响组内所有 listener。handler 类型、后端和线程数各不相同的多个 listener 可以放在同一个 engine
+里。
 
 ## 后端
 
