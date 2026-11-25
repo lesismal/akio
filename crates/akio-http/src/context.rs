@@ -4,7 +4,7 @@ use std::{
     borrow::Cow,
     net::SocketAddr,
     sync::{Arc, Mutex, PoisonError},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use akio_core::{Part, ResponseSlot, ResponseStream};
@@ -13,6 +13,7 @@ use crate::h2::{H2Responder, H2Stream};
 use akio_ws::{WsConfig, WsHandler, deflate::PmdParams};
 
 use crate::coding::StreamEncoder;
+use crate::gate::{BodyFilter, Gate, GateHandle};
 use crate::message::{Headers, Method, Request, Response, Spare, Version};
 use crate::router::RouteInfo;
 use akio_log::span::Span;
@@ -92,6 +93,7 @@ type Sink = Box<dyn FnMut(&mut Context, BodyEvent<'_>) + Send>;
 type Filter = Box<dyn FnOnce(&mut Response, &Request) + Send>;
 type EndHook = Box<dyn FnOnce(End) + Send>;
 type GoneHook = Box<dyn FnOnce() + Send>;
+type HoldHook = Box<dyn FnOnce(HeldHead, &Request) + Send>;
 
 /// How a request ended, for [`Context::on_end`] (ADR-127).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,6 +313,16 @@ impl ExtOut {
 }
 
 impl Out {
+    /// Gives the response up before its head went: closes the HTTP/1 connection, resets the
+    /// stream (ADR-128).
+    fn cut(self) {
+        match self {
+            Out::H1(r) => drop(r),
+            Out::H2(r) => r.reset(),
+            Out::Ext(e) => e.0.get().reset(e.1),
+        }
+    }
+
     fn on_gone(&mut self, f: Box<dyn FnOnce() + Send>) {
         match self {
             Out::H1(r) => r.set_gone(f),
@@ -320,9 +332,24 @@ impl Out {
     }
 
     /// Sends `resp`, its filters applied, then ends the request's hooks [`End::Sent`] (a coded
-    /// file's, streamed, once its stream finishes).
-    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request, mut end: EndGuard) -> u16 {
-        fin.apply(&mut resp, req);
+    /// file's, streamed, once its stream finishes). A response with a held head or body filters
+    /// goes through them first (ADR-128).
+    fn send(
+        self,
+        mut resp: Response,
+        fin: &mut Finish,
+        req: &mut ReqSrc<'_>,
+        end: EndGuard,
+    ) -> u16 {
+        if fin.asyncs.is_some() && req.get().method != Method::Connect {
+            return send_async(self, resp, fin, req, end, false).0;
+        }
+        fin.apply(&mut resp, req.get());
+        self.deliver(resp, req.get(), end)
+    }
+
+    /// Sends `resp`, whose filters ran, then ends the request's hooks.
+    fn deliver(self, resp: Response, req: &Request, mut end: EndGuard) -> u16 {
         let status = resp.status;
         if resp.stream_coding.is_some()
             && resp.file.is_some()
@@ -389,7 +416,7 @@ const PUMP_PIECE: usize = 64 << 10;
 const PUMP_HIGH: usize = 256 << 10;
 /// How long [`FilePump`] waits before asking a full pool again, and how many times: past
 /// that (a second of a pool that stays full), the response is cut and its connection closed.
-const PUMP_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
+const PUMP_RETRY: Duration = Duration::from_millis(5);
 const PUMP_RETRIES: u32 = 200;
 
 impl FilePump {
@@ -496,6 +523,17 @@ impl Filters {
         self.rest.push((true, f));
     }
 
+    /// Takes the ordinary filters, in registration order, leaving the outer ones.
+    fn drain_ordinary(&mut self) -> impl Iterator<Item = Filter> {
+        let [a, b] = std::mem::take(&mut self.inline);
+        let rest = std::mem::take(&mut self.rest);
+        let (outer, ordinary): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(outer, _)| *outer);
+        self.rest = outer;
+        a.into_iter()
+            .chain(b)
+            .chain(ordinary.into_iter().map(|(_, f)| f))
+    }
+
     /// Takes every filter: the ordinary ones in registration order, then the outer ones in
     /// reverse registration order.
     fn drain(&mut self) -> impl Iterator<Item = Filter> {
@@ -526,6 +564,15 @@ struct Finish {
     time_header: Option<Cow<'static, str>>,
     /// The request span (`crate::trace`), ended when the response goes out.
     span: Span,
+    /// Held heads and body filters (ADR-128), once one is registered.
+    asyncs: Option<Box<Asyncs>>,
+}
+
+/// A response's held heads and body filters (ADR-128), in registration order.
+#[derive(Default)]
+struct Asyncs {
+    holds: Vec<(Duration, HoldHook)>,
+    filters: Vec<Box<dyn BodyFilter>>,
 }
 
 impl Finish {
@@ -536,7 +583,29 @@ impl Finish {
             started: None,
             time_header: None,
             span: Span::none(),
+            asyncs: None,
         }
+    }
+
+    fn asyncs(&mut self) -> &mut Asyncs {
+        self.asyncs.get_or_insert_with(Box::default)
+    }
+
+    /// The first half of [`apply`](Self::apply) for a response with held heads or body filters
+    /// (ADR-128): the ordinary filters and the extra headers, which the hooks see.
+    fn apply_inner(&mut self, resp: &mut Response, req: &Request) {
+        if !self.span.is_none() {
+            crate::trace::responded(std::mem::take(&mut self.span), resp);
+        }
+        for f in self.filters.drain_ordinary() {
+            f(resp, req);
+        }
+        for (n, v) in self.extra.iter() {
+            if resp.headers.get(n).is_none() {
+                resp.headers.append(n, v);
+            }
+        }
+        self.extra = Headers::new();
     }
 
     /// Runs the filters, then adds the extra headers the response did not set.
@@ -649,6 +718,29 @@ impl std::ops::Deref for ReqCell {
         match self {
             ReqCell::Own(r) => r,
             ReqCell::Shared(a) => a,
+        }
+    }
+}
+
+/// The request, for the response path: the context's (shared only when a held head or a body
+/// filter needs to keep it, ADR-128), or a [`Detached`]'s.
+enum ReqSrc<'a> {
+    Cell(&'a mut ReqCell),
+    Arc(&'a Arc<Request>),
+}
+
+impl ReqSrc<'_> {
+    fn get(&self) -> &Request {
+        match self {
+            ReqSrc::Cell(c) => c,
+            ReqSrc::Arc(a) => a,
+        }
+    }
+
+    fn arc(&mut self) -> Arc<Request> {
+        match self {
+            ReqSrc::Cell(c) => c.share(),
+            ReqSrc::Arc(a) => Arc::clone(a),
         }
     }
 }
@@ -845,7 +937,7 @@ impl Context {
     /// The request, to change before the handler sees it (ADR-126): a middleware sets, adds and
     /// removes its fields, changes its target (a rewritten path), its method or its body. What
     /// reads the request afterwards sees the change: [`path`](Self::path),
-    /// [`header`](Self::header), the handlers after this middleware, [`Files`](crate::Files)'
+    /// [`header`](Self::header), the handlers after this middleware, [`Files`](crate::files::Files)'
     /// conditional and range fields, the response filters' `&Request`. Route parameters keep
     /// reading the path they were matched in ([`param`](Self::param)): a router matches before
     /// its routes' layers run, so a target changed by one of them does not route the request
@@ -948,6 +1040,53 @@ impl Context {
         f: impl FnOnce(&mut Response, &Request) + Send + 'static,
     ) {
         self.fin.filters.push_outer(Box::new(f));
+    }
+
+    /// Holds the response's head back where it would go, until work done elsewhere decides on it
+    /// (ADR-128): a WebAssembly plugin's `proxy_on_response_headers` run on its pool, say.
+    ///
+    /// `f` runs on the thread sending the response, once the response filters
+    /// ([`add_response_filter`](Self::add_response_filter)) ran and the extra headers
+    /// ([`add_response_header`](Self::add_response_header)) were added, with the response's
+    /// head in a [`HeldHead`] and the request. It must not block: it hands the head on, and
+    /// whatever takes it calls [`HeldHead::resume`] (or `respond`, or `fail`) from any thread.
+    /// The outer filters ([`add_outer_response_filter`](Self::add_outer_response_filter)) run
+    /// after, then the head goes. Several held heads go one after another, in the order they
+    /// were added.
+    ///
+    /// Meanwhile a response sent whole waits whole, and what the handler writes to a streamed
+    /// one is held, its [`BodyStream::queued_bytes`] counting it (a producer pacing itself on
+    /// them waits, as for a slow client), up to 4 MiB, past which its writes fail and the
+    /// response is cut. Past `timeout` the response is cut, as [`HeldHead::fail`] cuts it, and
+    /// a later answer does nothing. A response to `CONNECT`, and an upgrade's, go at once.
+    pub fn hold_response_head(
+        &mut self,
+        timeout: Duration,
+        f: impl FnOnce(HeldHead, &Request) + Send + 'static,
+    ) {
+        self.fin.asyncs().holds.push((timeout, Box::new(f)));
+    }
+
+    /// Passes the response's body through `filter`, whose work is done elsewhere (ADR-128): a
+    /// WebAssembly plugin's `proxy_on_response_body` and `proxy_on_response_trailers` run on its
+    /// pool, say. See [`BodyFilter`] for its calls.
+    ///
+    /// The filter is given the body once the head went (after any held head,
+    /// [`hold_response_head`](Self::hold_response_head)): a streamed body as the handler writes
+    /// it, a body sent whole in one last call, a file body as it is read (on the disk pool). Its
+    /// output goes on to the next body filter (they run in the order they were added), then
+    /// through the stream coding a response filter set and any [`BodyTap`](crate::BodyTap), to
+    /// the client. A response sent whole goes as a streamed one, without `Content-Length`, so
+    /// the response filters see a streamed head. What is written while a call is under way is
+    /// held, as under a held head, up to 4 MiB; the filter's output is paced by the client, the
+    /// next call waiting for what the connection holds of it.
+    ///
+    /// Not called for a response without a body (to `HEAD`, or `1xx`, `204`, `304`), nor for a
+    /// response to `CONNECT` or an upgrade's: the filter is dropped. The request's
+    /// [`on_end`](Self::on_end) hooks run once the filtered body finished
+    /// ([`End::Sent`]), or the response was cut.
+    pub fn add_body_filter(&mut self, filter: impl BodyFilter) {
+        self.fin.asyncs().filters.push(Box::new(filter));
     }
 
     /// Adds `header: <elapsed>ms` (time since this call; at dispatch for the `response_time`
@@ -1145,7 +1284,8 @@ impl Context {
     pub fn respond(&mut self, resp: Response) {
         if let Some(r) = self.responder.take() {
             let end = self.end_guard();
-            self.status = Some(r.send(resp, &mut self.fin, &self.req, end));
+            let mut req = ReqSrc::Cell(&mut self.req);
+            self.status = Some(r.send(resp, &mut self.fin, &mut req, end));
         }
     }
 
@@ -1175,6 +1315,7 @@ impl Context {
                 started: self.fin.started,
                 time_header: self.fin.time_header.take(),
                 span: std::mem::take(&mut self.fin.span),
+                asyncs: self.fin.asyncs.take(),
             },
             responder,
         })
@@ -1198,7 +1339,8 @@ impl Context {
         self.detached = true;
         self.status = Some(status);
         let end = self.end_guard();
-        start_stream(out, &mut self.fin, &self.req, status, headers, end)
+        let mut req = ReqSrc::Cell(&mut self.req);
+        start_stream(out, &mut self.fin, &mut req, status, headers, end)
     }
 
     /// Server push (HTTP/2): promises `GET path` to the client and serves it with the same
@@ -1673,16 +1815,18 @@ impl Detached {
     /// Sends the response. Safe from any thread.
     pub fn respond(mut self, resp: Response) {
         let end = std::mem::take(&mut self.end);
-        self.responder.send(resp, &mut self.fin, &self.req, end);
+        let mut req = ReqSrc::Arc(&self.req);
+        self.responder.send(resp, &mut self.fin, &mut req, end);
     }
 
     /// Starts a streamed response, as [`Context::stream_response`] does, from any thread.
     pub fn stream_response(mut self, status: u16, headers: Headers) -> Option<BodyStream> {
         let end = std::mem::take(&mut self.end);
+        let mut req = ReqSrc::Arc(&self.req);
         start_stream(
             self.responder,
             &mut self.fin,
-            &self.req,
+            &mut req,
             status,
             headers,
             end,
@@ -1693,7 +1837,7 @@ impl Detached {
 fn start_stream(
     out: Out,
     fin: &mut Finish,
-    req: &Request,
+    req: &mut ReqSrc<'_>,
     status: u16,
     headers: Headers,
     end: EndGuard,
@@ -1702,12 +1846,301 @@ fn start_stream(
     resp.headers = headers;
     resp.streaming = true;
     // The filters run first: the compress middleware's picks the body's coding.
-    let chunked = matches!(&out, Out::H1(r) if r.version == Version::Http11 && r.keep_alive);
+    let chunked = is_chunked(&out);
     if chunked {
         resp.headers.set("Transfer-Encoding", "chunked");
     }
-    fin.apply(&mut resp, req);
-    open_stream(out, resp, req, chunked, end)
+    if fin.asyncs.is_some() && req.get().method != Method::Connect {
+        return send_async(out, resp, fin, req, end, true).1;
+    }
+    fin.apply(&mut resp, req.get());
+    open_stream(out, resp, req.get(), chunked, end)
+}
+
+/// A status whose response has no body.
+fn bodyless(status: u16) -> bool {
+    status < 200 || status == 204 || status == 304
+}
+
+/// Sends `resp` through the held heads and body filters registered for it (ADR-128): the
+/// ordinary response filters and the extra headers first, then each held head in turn, then the
+/// outer filters, then the head goes, and the body through the filters. `streamed`: `resp` is
+/// the head of a streamed response, whose stream is returned (the writer's side of the first
+/// gate, written before the head goes). A whole response through body filters goes as a streamed
+/// one, without `Content-Length`. Returns the status the ordinary filters left.
+fn send_async(
+    out: Out,
+    mut resp: Response,
+    fin: &mut Finish,
+    req: &mut ReqSrc<'_>,
+    end: EndGuard,
+    streamed: bool,
+) -> (u16, Option<BodyStream>) {
+    let mut fin = std::mem::replace(fin, Finish::new());
+    let Asyncs { holds, mut filters } = fin.asyncs.take().map(|a| *a).unwrap_or_default();
+    let head = req.get().method == Method::Head;
+    // A body to filter goes as a stream: the response filters see a streamed head (the
+    // compress middleware's picks a stream coding, applied to what the filters let out).
+    let converted = !streamed && !filters.is_empty() && !head && !bodyless(resp.status);
+    if converted {
+        resp.streaming = true;
+        resp.headers.remove("Content-Length");
+    }
+    fin.apply_inner(&mut resp, req.get());
+    let status = resp.status;
+    if head || bodyless(status) {
+        filters.clear();
+    }
+    let converted = converted && !filters.is_empty();
+    if !converted && !streamed {
+        // Sent whole: undo the conversion when a filter made the response bodyless.
+        resp.streaming = false;
+    }
+    let mut filters = filters.into_iter();
+    let mut front = None;
+    let mut writer = None;
+    let mut file = None;
+    if streamed || converted {
+        let gate = Gate::new(filters.next());
+        if converted {
+            resp.headers.remove("Content-Length");
+            file = resp.file.take();
+            if file.is_some() {
+                writer = Some(BodyStream::gated(&gate));
+            } else {
+                let trailers = resp.trailers.take().unwrap_or_default();
+                gate.preload(std::mem::take(&mut resp.body), trailers);
+            }
+        }
+        if streamed {
+            writer = Some(BodyStream::gated(&gate));
+        }
+        front = Some(gate);
+    }
+    let going = Going {
+        out,
+        fin,
+        req: req.arc(),
+        end,
+        holds: holds.into_iter(),
+        filters: filters.collect(),
+        front,
+        file,
+        writer: if streamed { None } else { writer.take() },
+    };
+    going.advance(resp);
+    (status, if streamed { writer } else { None })
+}
+
+/// A response between its head settling and going (ADR-128).
+struct Going {
+    out: Out,
+    /// What is left of the finish: the outer filters and the time header.
+    fin: Finish,
+    req: Arc<Request>,
+    end: EndGuard,
+    /// The held heads still to go through.
+    holds: std::vec::IntoIter<(Duration, HoldHook)>,
+    /// The body filters after the first (which is the front gate's).
+    filters: Vec<Box<dyn BodyFilter>>,
+    /// The gate the body is written to, for a streamed (or converted) response.
+    front: Option<Arc<Gate>>,
+    /// A whole response's file body, read into `writer` once the head went.
+    file: Option<crate::message::FileBody>,
+    writer: Option<BodyStream>,
+}
+
+/// Past this, a held head has no deadline (an `Instant` that far would overflow).
+const HOLD_FOREVER: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
+
+impl Going {
+    /// Goes through the next held head, or sends the head.
+    fn advance(mut self, resp: Response) {
+        let Some((timeout, hook)) = self.holds.next() else {
+            return self.go(resp);
+        };
+        let req = self.req.clone();
+        let cell = Arc::new(Mutex::new(Some(self)));
+        if timeout < HOLD_FOREVER {
+            let w = Arc::downgrade(&cell);
+            crate::timer::after(timeout, move || {
+                if let Some(c) = w.upgrade() {
+                    let g = c.lock().unwrap_or_else(PoisonError::into_inner).take();
+                    drop(c);
+                    if let Some(g) = g {
+                        g.cut();
+                    }
+                }
+            });
+        }
+        hook(
+            HeldHead {
+                resp: Some(resp),
+                cell: Some(cell),
+            },
+            &req,
+        );
+    }
+
+    /// The head goes, after the outer filters; then the body, through the filters.
+    fn go(mut self, mut resp: Response) {
+        let req = self.req.clone();
+        self.fin.apply(&mut resp, &req);
+        let Some(front) = self.front.take() else {
+            self.out.deliver(resp, &req, self.end);
+            return;
+        };
+        if front.failed() {
+            // The handler gave the stream up, or wrote past the bound, while the head was held.
+            return self.out.cut();
+        }
+        resp.streaming = true;
+        resp.body = Vec::new();
+        let chunked = is_chunked(&self.out);
+        if chunked {
+            resp.headers.set("Transfer-Encoding", "chunked");
+        }
+        let Some(mut s) = open_stream(self.out, resp, &req, chunked, self.end) else {
+            front.fail();
+            return;
+        };
+        for f in self.filters.into_iter().rev() {
+            s = BodyStream::gated(&Gate::opened(f, s));
+        }
+        front.open(s);
+        if let (Some(file), Some(stream)) = (self.file.take(), self.writer.take()) {
+            if req.method == Method::Head || file.len == 0 {
+                stream.finish();
+                return;
+            }
+            FilePump {
+                stream,
+                file: file.file,
+                offset: file.offset,
+                left: file.len,
+                refused: 0,
+            }
+            .submit();
+        }
+    }
+
+    /// Cuts the response: its connection closed or stream reset, its request ended
+    /// [`End::Gone`].
+    fn cut(self) {
+        if let Some(f) = &self.front {
+            f.fail();
+        }
+        self.out.cut();
+    }
+
+    /// Sends `resp` in place of the held response, whole, after the outer filters.
+    fn replace(mut self, mut resp: Response) {
+        if let Some(f) = self.front.take() {
+            f.fail();
+        }
+        let req = self.req.clone();
+        self.fin.apply(&mut resp, &req);
+        self.out.deliver(resp, &req, self.end);
+    }
+}
+
+/// A response's head held back while work elsewhere decides on it
+/// ([`Context::hold_response_head`], ADR-128): a WebAssembly plugin's
+/// `proxy_on_response_headers` on its pool, say. Change its fields, then
+/// [`resume`](Self::resume) it, from any thread; [`respond`](Self::respond) replaces the
+/// response, [`fail`](Self::fail) cuts it. Dropped unresumed, it fails the response.
+pub struct HeldHead {
+    /// Always set until resumed, replaced or failed.
+    resp: Option<Response>,
+    /// The rest of the response; taken by whichever comes first of the hook's answer and the
+    /// deadline.
+    cell: Option<Arc<Mutex<Option<Going>>>>,
+}
+
+impl std::fmt::Debug for HeldHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldHead")
+            .field("status", &self.status())
+            .finish_non_exhaustive()
+    }
+}
+
+impl HeldHead {
+    /// The response's status.
+    pub fn status(&self) -> u16 {
+        self.resp.as_ref().map_or(0, |r| r.status)
+    }
+
+    /// The response's header fields.
+    pub fn headers(&self) -> &Headers {
+        static NONE: std::sync::LazyLock<Headers> = std::sync::LazyLock::new(Headers::new);
+        self.resp.as_ref().map_or(&NONE, |r| &r.headers)
+    }
+
+    /// The response's header fields, to change. The framing is the server's: a changed
+    /// `Content-Length` or `Transfer-Encoding` is the caller's to keep true.
+    pub fn headers_mut(&mut self) -> &mut Headers {
+        let r = self.resp.get_or_insert_with(|| Response::new(500));
+        &mut r.headers
+    }
+
+    /// The body of a response sent whole, as the response filters left it; `None` when it is
+    /// streamed, a file, or goes through body filters ([`Context::add_body_filter`]), which see it.
+    pub fn body(&self) -> Option<&[u8]> {
+        let r = self.resp.as_ref()?;
+        (!r.streaming && r.file.is_none()).then_some(r.body.as_slice())
+    }
+
+    /// Whether the response is still to go: `false` once the deadline cut it.
+    pub fn is_live(&self) -> bool {
+        self.cell
+            .as_ref()
+            .is_some_and(|c| c.lock().unwrap_or_else(PoisonError::into_inner).is_some())
+    }
+
+    fn take(&mut self) -> Option<(Going, Response)> {
+        let cell = self.cell.take()?;
+        let g = cell.lock().unwrap_or_else(PoisonError::into_inner).take()?;
+        Some((g, self.resp.take()?))
+    }
+
+    /// Lets the response go on, its head as changed: through the next held head, or to the
+    /// client, its body through the body filters. Nothing once the deadline cut it.
+    pub fn resume(mut self) {
+        if let Some((g, resp)) = self.take() {
+            g.advance(resp);
+        }
+    }
+
+    /// Sends `resp` in place of the held response, whole, after the outer response filters
+    /// (and through no held head or body filter): a plugin's local response. What the handler
+    /// writes to a streamed response's body meanwhile fails. Nothing once the deadline cut it.
+    pub fn respond(mut self, resp: Response) {
+        if let Some((g, _)) = self.take() {
+            g.replace(resp);
+        }
+    }
+
+    /// Fails the response: its HTTP/1 connection is closed, its HTTP/2 or HTTP/3 stream reset,
+    /// and the request ends [`End::Gone`].
+    pub fn fail(mut self) {
+        if let Some((g, _)) = self.take() {
+            g.cut();
+        }
+    }
+}
+
+impl Drop for HeldHead {
+    fn drop(&mut self) {
+        if let Some((g, _)) = self.take() {
+            g.cut();
+        }
+    }
+}
+
+/// A streamed body to `out` is chunked: keep-alive HTTP/1.1.
+fn is_chunked(out: &Out) -> bool {
+    matches!(out, Out::H1(r) if r.version == Version::Http11 && r.keep_alive)
 }
 
 /// [`start_stream`] once the filters ran: the stream of `resp`, a streamed head.
@@ -1794,9 +2227,22 @@ enum Inner {
     },
     H2(H2Stream),
     Ext(Box<dyn crate::transport::BodySink>),
+    /// Through held heads and body filters (ADR-128) to the response's own stream.
+    Gate(GateHandle),
 }
 
 impl BodyStream {
+    /// The writer's side of `gate`.
+    fn gated(gate: &Arc<Gate>) -> BodyStream {
+        BodyStream {
+            inner: Inner::Gate(GateHandle(Some(gate.clone()))),
+            coder: None,
+            tap: None,
+            kept: None,
+            end: EndGuard::default(),
+        }
+    }
+
     /// Appends body bytes. `Err` means the connection is gone or too far behind: stop producing.
     ///
     /// When the response is compressed, the bytes are encoded and the encoder flushed, so that
@@ -1836,12 +2282,20 @@ impl BodyStream {
         }
     }
 
+    /// Gives the body up unfinished: as dropping it, and on HTTP/3 the stream reset (ADR-128).
+    pub(crate) fn cut(self) {
+        if let Inner::Ext(s) = self.inner {
+            s.reset();
+        }
+    }
+
     /// Bytes written but not yet on the wire, for pacing the producer.
     pub fn queued_bytes(&self) -> usize {
         match &self.inner {
             Inner::H1 { stream, .. } => stream.queued_bytes(),
             Inner::H2(s) => s.queued_bytes(),
             Inner::Ext(s) => s.queued_bytes(),
+            Inner::Gate(g) => g.gate().map_or(0, |g| g.queued_bytes()),
         }
     }
 
@@ -1862,6 +2316,10 @@ impl BodyStream {
             Inner::H1 { conn: None, .. } => f(),
             Inner::H2(s) => s.on_drain(Box::new(f)),
             Inner::Ext(s) => s.on_drain(Box::new(f)),
+            Inner::Gate(g) => match g.gate() {
+                Some(g) => g.on_drain(Box::new(f)),
+                None => f(),
+            },
         }
     }
 
@@ -1907,6 +2365,10 @@ impl Inner {
             }
             Inner::H2(s) => s.write(data),
             Inner::Ext(s) => s.write(data),
+            Inner::Gate(g) => match g.gate() {
+                Some(g) => g.write(data),
+                None => Err(akio_core::Error::Closed),
+            },
         }
     }
 
@@ -1928,6 +2390,7 @@ impl Inner {
             }
             Inner::H2(s) => s.finish(),
             Inner::Ext(s) => s.finish(None),
+            Inner::Gate(g) => g.finish(Headers::new()),
         }
     }
 
@@ -1958,6 +2421,7 @@ impl Inner {
             }
             Inner::H2(s) => s.finish_with(Some(trailers)),
             Inner::Ext(s) => s.finish(Some(trailers)),
+            Inner::Gate(g) => g.finish(trailers),
         }
     }
 }

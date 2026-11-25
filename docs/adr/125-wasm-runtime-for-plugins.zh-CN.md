@@ -186,9 +186,9 @@ ABI 层本身，即 fit 自己的 ABI 和 Proxy-Wasm 的，属于 akit（`akit-p
 | 请求阶段对响应的同类操作 | 记录下来，由响应过滤器（`add_response_filter`）在响应头确定时应用 | 已有 |
 | `proxy_send_local_response` | 在 `resume` 中 `Context::respond` | 已有 |
 | `proxy_get_property`、`proxy_get_buffer_bytes`（配置）、`proxy_log`、指标 | 仅宿主状态 | – |
-| `proxy_on_response_headers` | 一个响应过滤器，扣住响应头，直到别处的调用把它交回，带截止时间；期间 body 在响应的上限内被扣住 | **新增（H1）** |
-| `proxy_on_response_body`、`proxy_on_response_trailers` | 一个流式 body 过滤器，其调用在别处完成，一次一个，通过 `done` 回调返回；写入方像遇到慢客户端一样被限速（待发字节超过水位线即扣住生产者，规则 8）；最后一次调用带 trailer，可以修改；body 最多扣住 `max_body_bytes`（1 MiB） | **新增（H2）** |
-| `proxy_on_done`、`proxy_on_log`、`proxy_on_delete` | 响应已发出或客户端已离开时：流式 body 用 body tap 的 `end`（ADR-116），其余用 akio-http 的请求结束钩子 | tap 已有；其余需 **A48**（akit I41 提出） |
+| `proxy_on_response_headers` | 一个响应过滤器，扣住响应头，直到别处的调用把它交回，带截止时间；期间 body 在响应的上限内被扣住 | W6 已实现：`Context::hold_response_head`（ADR-128，A166） |
+| `proxy_on_response_body`、`proxy_on_response_trailers` | 一个流式 body 过滤器，其调用在别处完成，一次一个，通过 `done` 回调返回；写入方像遇到慢客户端一样被限速（待发字节超过水位线即扣住生产者，规则 8）；最后一次调用带 trailer，可以修改；body 最多扣住 `max_body_bytes`（1 MiB） | W6 已实现：`Context::add_body_filter`（ADR-128，A167） |
+| `proxy_on_done`、`proxy_on_log`、`proxy_on_delete` | 响应已发出或客户端已离开时：流式 body 用 body tap 的 `end`（ADR-116），其余用 akio-http 的请求结束钩子 | `Context::on_end`（ADR-127，A48），在过滤后 body 的最后一次调用之后（ADR-128） |
 | 请求 body 和 trailer 回调、`proxy_http_call`、共享数据和队列、tick、外部函数、`set_property`、`continue_stream` | fit 也没有：`Unimplemented` | – |
 
 H1 和 H2 是 fit 的 A41（`OnHeaderAsync`）和 A46（`OnBodyFilterAsync`）在 akio 中的形态，覆盖 HTTP/1.1、HTTP/2
@@ -396,3 +396,27 @@ crate `akio-wasm`（`#![forbid(unsafe_code)]`，无依赖）：`Module::new(&byt
   的 `TrapStats`（截止时间、燃料、中断、栈、内存越界、`unreachable`、宿主、退出、其他）。
 - 一把互斥锁保护队列与计数器；每个线程等待自己的条件变量，所以 `submit_to` 唤醒它指定的实例，`submit` 唤醒最近空闲的实例。
   W5 会测量这把锁相对解释器是否重要。
+
+### W6：扣住的响应头与异步 body 过滤器（2026-11-25）
+
+以 ADR-128 实现（akit 的 A166 和 A167），位于 akio-http `Context` 的响应路径中、各传输层之上：HTTP/1.1、HTTP/2
+和 HTTP/3 共用一份实现。
+
+- **H1** 即 `Context::hold_response_head(timeout, f)`：普通响应过滤器运行之后，`f` 得到一个 `HeldHead`（状态码、
+  可修改的字段、整体发送时的 body），从任意线程恢复（resume）后响应继续，经过外层过滤器发出。也可以用本地响应替换它
+  （`HeldHead::respond`，fit 做不到）或使其失败；截止时间一到即切断（关闭连接、重置流）。
+- **H2** 即 `Context::add_body_filter(impl BodyFilter)`：一次一个调用，带上次以来写入的全部内容，从任意线程经
+  `FilterDone::done(data, trailers)` 应答；最后一次调用带 trailer。响应头被扣住或有调用未返回时，写入的字节最多扣住
+  4 MiB（计入 `BodyStream::queued_bytes`，按其限速的生产者像遇到慢客户端一样等待）；过滤器的输出由客户端限速。整体
+  body 与文件 body 以流的形式经过它，不带 `Content-Length`（文件在磁盘池上读取，不用 `sendfile`）；流编码作用于过滤器
+  的输出。多个过滤器按添加顺序串联。
+- **done、log 与 delete** 回调只需要 A48 的 `on_end`（ADR-127）：过滤后的流的结束就是响应的结束，`End::Sent`
+  在最后一次调用的输出之后。
+- 与第 5 节草案的不同：响应头在普通过滤器之后、外层过滤器之前扣住（缓存能看到插件的修改）；被扣住 body 的上限是
+  akio-http 的 4 MiB，插件自己的 `max_body_bytes` 仍由 akit 执行；在 HTTP/2（`H2Responder::reset`）和 HTTP/3
+  （不公开的传输接口中的 `ConnSink::reset`、`BodySink::reset`，由 akio-h3 实现）上，切断需要显式重置，因为在那里
+  丢弃未应答的响应会让流保持打开。
+- 测试：`crates/akio-http/tests/response_hooks.rs`（HTTP/1.1 与 h2）和 `crates/akio-h3/tests/response_hooks.rs`
+  （h3）：扣住并恢复的响应头（整体、流式、两次）、本地响应、截止时间、带 trailer 的流式/整体/文件 body 过滤、扣到末尾
+  的 body、串联的过滤器、过滤器之后的 `compress`、失败的调用、不受影响的 `HEAD` 与 `204`、经过过滤器限速的
+  2–3 MiB body，以及 h3 上一次写出超过流发送缓冲区的 2 MiB 输出。

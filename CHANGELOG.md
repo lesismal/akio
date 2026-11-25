@@ -10,6 +10,26 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: response heads held, and response bodies filtered, by work done elsewhere (akio-http, akio-h3)
+
+ADR-128, ADR-125's milestone W6 (akit's A166 and A167, for I72's Proxy-Wasm response callbacks),
+over HTTP/1.1, HTTP/2 and HTTP/3 alike:
+
+- `Context::hold_response_head(timeout, f)`: `f` gets the response's head in a `HeldHead` once
+  the ordinary response filters ran, and hands it on (to a plugin's pool, say); the response goes
+  on when it is `resume`d from any thread (through the outer filters), or is replaced by
+  `respond(Response)`, or cut by `fail`, a drop or the deadline (HTTP/1 connection closed, HTTP/2
+  and HTTP/3 stream reset, the request ended `End::Gone`). A streamed body written meanwhile is
+  held (up to 4 MiB, in `BodyStream::queued_bytes`).
+- `Context::add_body_filter(impl BodyFilter)`, with `BodyChunk` and `FilterDone`: the body goes
+  through calls answered elsewhere, one at a time, what is written meanwhile held and given to the
+  next call; the last call carries the trailers, which it may change or add; the output is paced
+  by the client and then coded (`compress`) and tapped. Whole and file bodies go through as
+  streams, without `Content-Length`. `BodyFilter::abort` hears a response that ended before its
+  last call. Not called for `HEAD`, `1xx`, `204`, `304`, `CONNECT` or upgrades.
+- The doc-hidden transport seam gains `ConnSink::reset` and `BodySink::reset` (defaulted), which
+  akio-h3 implements, so a cut response resets its HTTP/3 stream.
+
 ### Added: akio-wasm's instance pool, milestone W4 (akio-wasm, akio)
 
 ADR-125, fourth milestone: WebAssembly runs on threads that own instances, never on the I/O

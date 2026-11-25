@@ -227,9 +227,9 @@ provide is how a request and its response reach the pool and come back:
 | the same on the response, in the request phase | recorded, applied by a response filter (`add_response_filter`) as the header is settled | exists |
 | `proxy_send_local_response` | `Context::respond` in `resume` | exists |
 | `proxy_get_property`, `proxy_get_buffer_bytes` (config), `proxy_log`, metrics | host state only | – |
-| `proxy_on_response_headers` | a response filter that holds the head until a call elsewhere hands it back, with a deadline; the body held meanwhile within the response's bound | **new (H1)** |
-| `proxy_on_response_body`, `proxy_on_response_trailers` | a streamed body filter whose calls complete elsewhere, one at a time, through a `done` callback; the writer paced as by a slow client (pending bytes past the watermark hold the producer, rule 8); the last call carries the trailers, which it may change; the body may be held up to `max_body_bytes` (1 MiB) | **new (H2)** |
-| `proxy_on_done`, `proxy_on_log`, `proxy_on_delete` | when the response has gone or the client went: a body tap's `end` (ADR-116) for streamed bodies, or akio-http's end-of-request hook | tap exists; **A48** (requested by akit I41) for the rest |
+| `proxy_on_response_headers` | a response filter that holds the head until a call elsewhere hands it back, with a deadline; the body held meanwhile within the response's bound | built in W6: `Context::hold_response_head` (ADR-128, A166) |
+| `proxy_on_response_body`, `proxy_on_response_trailers` | a streamed body filter whose calls complete elsewhere, one at a time, through a `done` callback; the writer paced as by a slow client (pending bytes past the watermark hold the producer, rule 8); the last call carries the trailers, which it may change; the body may be held up to `max_body_bytes` (1 MiB) | built in W6: `Context::add_body_filter` (ADR-128, A167) |
+| `proxy_on_done`, `proxy_on_log`, `proxy_on_delete` | when the response has gone or the client went: a body tap's `end` (ADR-116) for streamed bodies, or akio-http's end-of-request hook | `Context::on_end` (ADR-127, A48), after a filtered body's last call (ADR-128) |
 | request body and trailer callbacks, `proxy_http_call`, shared data and queues, ticks, foreign functions, `set_property`, `continue_stream` | not in fit either: `Unimplemented` | – |
 
 H1 and H2 are fit's A41 (`OnHeaderAsync`) and A46 (`OnBodyFilterAsync`) in akio's shape, for
@@ -539,3 +539,35 @@ akio-http. Section 4 as written, with these decisions:
 - One mutex guards the queues and counters; each thread waits on a condition variable of its own,
   so `submit_to` wakes the instance it names and `submit` the most recently idle one. W5 measures
   whether that lock matters next to the interpreter.
+
+### W6: held response heads and asynchronous body filters (2026-11-25)
+
+Built as ADR-128 (akit's A166 and A167), in akio-http's `Context` response path, above the
+transports: one implementation for HTTP/1.1, HTTP/2 and HTTP/3.
+
+- **H1** is `Context::hold_response_head(timeout, f)`: `f` gets a `HeldHead` (status, fields to
+  change, the whole body when there is one) after the ordinary response filters, and the response
+  goes on when it is resumed, from any thread, through the outer filters. It may also be replaced
+  by a local response (`HeldHead::respond`, which fit could not do) or failed; its deadline cuts
+  it (connection closed, stream reset).
+- **H2** is `Context::add_body_filter(impl BodyFilter)`: one call at a time with all that was
+  written since the last, answered through `FilterDone::done(data, trailers)` from any thread;
+  the last call carries the trailers. Written bytes are held up to 4 MiB while the head is held
+  or a call is out (counted in `BodyStream::queued_bytes`, so a paced producer waits as for a slow
+  client); the filter's output is paced by the client. Whole and file bodies go through it as
+  streams, without `Content-Length` (file bodies read on the disk pool, without `sendfile`); a
+  stream coding applies to the filter's output. Several filters chain in the order added.
+- The **done, log and delete** callbacks need only A48's `on_end` (ADR-127): the filtered
+  stream's end is the response's, so `End::Sent` follows the last call's output.
+- Differences from section 5's sketch: the head is held after the ordinary filters and before the
+  outer ones (a cache sees the plugin's changes); the held body's bound is akio-http's 4 MiB, the
+  plugin's own `max_body_bytes` staying akit's to enforce; and a cut needed an explicit reset on
+  HTTP/2 (`H2Responder::reset`) and HTTP/3 (`ConnSink::reset`, `BodySink::reset` in the
+  doc-hidden transport seam, implemented by akio-h3), since dropping an unanswered response there
+  left the stream open.
+- Tests: `crates/akio-http/tests/response_hooks.rs` (HTTP/1.1 and h2) and
+  `crates/akio-h3/tests/response_hooks.rs` (h3): held and resumed heads (whole, streamed,
+  twice), local responses, deadlines, filtered streamed, whole and file bodies with trailers,
+  a body held to its end, chained filters, `compress` after a filter, failing calls, `HEAD` and
+  `204` untouched, 2–3 MiB bodies paced through a filter, and on h3 a 2 MiB output written at
+  once past the stream's send buffer.

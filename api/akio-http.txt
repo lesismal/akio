@@ -1026,6 +1026,19 @@ impl core::marker::Sync for akio_http::message::Version
 impl core::marker::Unpin for akio_http::message::Version
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Version
 impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Version
+#[non_exhaustive] pub struct akio_http::BodyChunk
+pub akio_http::BodyChunk::data: alloc::vec::Vec<u8>
+pub akio_http::BodyChunk::end: bool
+pub akio_http::BodyChunk::trailers: akio_http::message::Headers
+impl core::default::Default for akio_http::BodyChunk
+pub fn akio_http::BodyChunk::default() -> Self
+impl core::fmt::Debug for akio_http::BodyChunk
+pub fn akio_http::BodyChunk::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_http::BodyChunk
+impl core::marker::Sync for akio_http::BodyChunk
+impl core::marker::Unpin for akio_http::BodyChunk
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::BodyChunk
+impl core::panic::unwind_safe::UnwindSafe for akio_http::BodyChunk
 pub struct akio_http::BodyReads(_)
 impl akio_http::BodyReads
 pub fn akio_http::BodyReads::hold(&self, bool)
@@ -1075,6 +1088,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_http::Coding
 impl core::panic::unwind_safe::UnwindSafe for akio_http::Coding
 pub struct akio_http::Context
 impl akio_http::Context
+pub fn akio_http::Context::add_body_filter(&mut self, impl akio_http::BodyFilter)
 pub fn akio_http::Context::add_outer_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
 pub fn akio_http::Context::add_response_filter(&mut self, impl core::ops::function::FnOnce(&mut akio_http::message::Response, &akio_http::message::Request) + core::marker::Send + 'static)
 pub fn akio_http::Context::add_response_header(&mut self, &str, impl core::convert::AsRef<str>)
@@ -1083,6 +1097,7 @@ pub fn akio_http::Context::body_reads(&mut self) -> core::option::Option<akio_ht
 pub fn akio_http::Context::bytes(&mut self, u16, &str, alloc::vec::Vec<u8>)
 pub fn akio_http::Context::detach(&mut self) -> core::option::Option<akio_http::Detached>
 pub fn akio_http::Context::header(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Context::hold_response_head(&mut self, core::time::Duration, impl core::ops::function::FnOnce(akio_http::HeldHead, &akio_http::message::Request) + core::marker::Send + 'static)
 pub fn akio_http::Context::local(&self, &str) -> core::option::Option<&str>
 pub fn akio_http::Context::method(&self) -> &akio_http::message::Method
 pub fn akio_http::Context::on_body(&mut self, impl core::ops::function::FnMut(&mut akio_http::Context, akio_http::BodyEvent<'_>) + core::marker::Send + 'static)
@@ -1163,6 +1178,19 @@ impl core::marker::Sync for akio_http::message::FileBody
 impl core::marker::Unpin for akio_http::message::FileBody
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::FileBody
 impl core::panic::unwind_safe::UnwindSafe for akio_http::message::FileBody
+pub struct akio_http::FilterDone
+impl akio_http::FilterDone
+pub fn akio_http::FilterDone::done(self, alloc::vec::Vec<u8>, akio_http::message::Headers)
+pub fn akio_http::FilterDone::fail(self)
+impl core::fmt::Debug for akio_http::FilterDone
+pub fn akio_http::FilterDone::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_http::FilterDone
+pub fn akio_http::FilterDone::drop(&mut self)
+impl core::marker::Send for akio_http::FilterDone
+impl core::marker::Sync for akio_http::FilterDone
+impl core::marker::Unpin for akio_http::FilterDone
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::FilterDone
+impl core::panic::unwind_safe::UnwindSafe for akio_http::FilterDone
 #[non_exhaustive] pub struct akio_http::H2Config
 pub akio_http::H2Config::conn_window: u32
 pub akio_http::H2Config::enable_connect_protocol: bool
@@ -1215,6 +1243,25 @@ impl core::marker::Sync for akio_http::message::Headers
 impl core::marker::Unpin for akio_http::message::Headers
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::message::Headers
 impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Headers
+pub struct akio_http::HeldHead
+impl akio_http::HeldHead
+pub fn akio_http::HeldHead::body(&self) -> core::option::Option<&[u8]>
+pub fn akio_http::HeldHead::fail(self)
+pub fn akio_http::HeldHead::headers(&self) -> &akio_http::message::Headers
+pub fn akio_http::HeldHead::headers_mut(&mut self) -> &mut akio_http::message::Headers
+pub fn akio_http::HeldHead::is_live(&self) -> bool
+pub fn akio_http::HeldHead::respond(self, akio_http::message::Response)
+pub fn akio_http::HeldHead::resume(self)
+pub fn akio_http::HeldHead::status(&self) -> u16
+impl core::fmt::Debug for akio_http::HeldHead
+pub fn akio_http::HeldHead::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for akio_http::HeldHead
+pub fn akio_http::HeldHead::drop(&mut self)
+impl core::marker::Send for akio_http::HeldHead
+impl core::marker::Sync for akio_http::HeldHead
+impl core::marker::Unpin for akio_http::HeldHead
+impl core::panic::unwind_safe::RefUnwindSafe for akio_http::HeldHead
+impl core::panic::unwind_safe::UnwindSafe for akio_http::HeldHead
 pub struct akio_http::HttpAcceptor<S>
 impl<S: akio_http::Service> akio_core::handler::Acceptor for akio_http::HttpAcceptor<S>
 pub type akio_http::HttpAcceptor<S>::Handler = akio_http::Session<S>
@@ -1406,6 +1453,9 @@ impl core::marker::Sync for akio_http::WsOptions
 impl core::marker::Unpin for akio_http::WsOptions
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::WsOptions
 impl core::panic::unwind_safe::UnwindSafe for akio_http::WsOptions
+pub trait akio_http::BodyFilter: core::marker::Send + 'static
+pub fn akio_http::BodyFilter::abort(&mut self)
+pub fn akio_http::BodyFilter::filter(&mut self, akio_http::BodyChunk, akio_http::FilterDone)
 pub trait akio_http::BodyTap: core::marker::Send + 'static
 pub fn akio_http::BodyTap::data(&mut self, &[u8])
 pub fn akio_http::BodyTap::end(&mut self, akio_http::TapEnd)

@@ -10,6 +10,22 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：由别处的工作扣住响应头、过滤响应 body（akio-http、akio-h3）
+
+ADR-128，ADR-125 的里程碑 W6（akit 的 A166 和 A167，用于 I72 的 Proxy-Wasm 响应回调），HTTP/1.1、HTTP/2 和
+HTTP/3 一致：
+
+- `Context::hold_response_head(timeout, f)`：普通响应过滤器运行之后，`f` 以 `HeldHead` 得到响应头并把它交出去
+  （例如交给插件的池）；从任意线程 `resume` 后响应继续（经过外层过滤器），也可以用 `respond(Response)` 替换，或经
+  `fail`、丢弃或截止时间切断（关闭 HTTP/1 连接，重置 HTTP/2 和 HTTP/3 的流，请求以 `End::Gone` 结束）。期间写入的
+  流式 body 被扣住（最多 4 MiB，计入 `BodyStream::queued_bytes`）。
+- `Context::add_body_filter(impl BodyFilter)`，以及 `BodyChunk` 和 `FilterDone`：body 经过在别处应答的调用，
+  一次一个，期间写入的内容被扣住并交给下一次调用；最后一次调用带 trailer，可修改或添加；输出由客户端限速，然后编码
+  （`compress`）并经过 tap。整体与文件 body 以流的形式经过它，不带 `Content-Length`。`BodyFilter::abort` 得知在最后
+  一次调用之前结束的响应。对 `HEAD`、`1xx`、`204`、`304`、`CONNECT` 和升级不调用。
+- 不公开的传输接口增加带默认实现的 `ConnSink::reset` 和 `BodySink::reset`，由 akio-h3 实现，使被切断的响应重置其
+  HTTP/3 流。
+
 ### 新增：akio-wasm 的实例池，里程碑 W4（akio-wasm、akio）
 
 ADR-125 的第四个里程碑：WebAssembly 在拥有实例的线程上运行，绝不在 I/O 线程上运行。至此 akit 的 I71 需要的 API 已经完整；

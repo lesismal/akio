@@ -1816,6 +1816,17 @@ impl H2Responder {
         }
     }
 
+    /// Gives the response up before its head went: resets the stream (ADR-128).
+    pub(crate) fn reset(&self) {
+        if let Some(core) = self.core.upgrade() {
+            let mut c = lock(&core);
+            if c.streams.contains_key(&self.sid) {
+                c.rst(self.sid, err::INTERNAL);
+                c.flush();
+            }
+        }
+    }
+
     /// Holds the reads of this stream's request body.
     pub(crate) fn reads(&self) -> H2Reads {
         H2Reads {

@@ -1825,6 +1825,13 @@ impl ConnSink for H3Out {
         let id = StreamId::new(akio_quic::Side::Client, Dir::Bi, tag >> 1);
         let _ = self.c.hold_reads(id, hold);
     }
+
+    /// Resets the request stream, its response given up before its head went (ADR-128).
+    fn reset(&self, tag: u64) {
+        let id = Sink::of(self, tag).id;
+        let _ = self.c.stop(id, code::INTERNAL_ERROR);
+        let _ = self.c.reset(id, code::INTERNAL_ERROR);
+    }
 }
 
 /// Answers one request stream.
@@ -2084,6 +2091,12 @@ impl BodySink for StreamBody {
         if now {
             run_drain(&self.o.drains, self.id);
         }
+    }
+
+    /// Resets the request stream, the body given up unfinished (ADR-128).
+    fn reset(self: Box<Self>) {
+        let _ = self.o.c.stop(self.id, code::INTERNAL_ERROR);
+        let _ = self.o.c.reset(self.id, code::INTERNAL_ERROR);
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
