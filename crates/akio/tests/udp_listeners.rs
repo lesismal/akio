@@ -235,7 +235,7 @@ fn a_removed_listener_that_serves_dial_udp_keeps_its_threads() {
     e.shutdown_listener(id, Duration::ZERO).unwrap();
     thread::sleep(Duration::from_millis(200));
     assert_eq!(e.threads()[0], 1);
-    let bound = e.bind_udp(localhost(), peers.clone()).unwrap();
+    let bound = e.bind_udp(localhost(), peers).unwrap();
     let c = client(bound.local_addr());
     c.send(b"still").unwrap();
     assert_eq!(recv(&c), b"still");
@@ -272,7 +272,7 @@ fn a_udp_listener_added_before_start_is_served_from_start() {
     let e = Engine::builder().config(quick()).build().unwrap();
     let peers = Peers::default();
     let id = e
-        .add_listener(Listener::udp(localhost()).serve(peers.clone()))
+        .add_listener(Listener::udp(localhost()).serve(peers))
         .unwrap();
     let addr = e.listeners()[0].local_addr;
     e.start().unwrap();
