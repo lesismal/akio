@@ -2425,7 +2425,9 @@ impl Engine {
     /// # use std::time::Duration;
     /// # use akio::{Conn, DialOptions, Engine, Handler, fn_acceptor};
     /// # struct Up;
-    /// # impl Handler for Up {}
+    /// # impl Handler for Up {
+    /// #     fn on_data(&mut self, _: &Conn<Self>, _: &[u8]) {}
+    /// # }
     /// # fn demo(engine: &Engine) {
     /// let opts = DialOptions::new().connect_timeout(Duration::from_millis(500));
     /// engine.dial_with(
