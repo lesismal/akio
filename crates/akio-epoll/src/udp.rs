@@ -788,7 +788,7 @@ impl UdpLoop {
                 self.stats.peers.fetch_sub(1, Ordering::Relaxed);
             }
             inner.mark_closed();
-            self.cfg.telemetry.conn_closed();
+            self.cfg.telemetry.conn_closed(false);
             return None;
         };
         self.shared.stats.accepted.add_local(1);
@@ -1360,7 +1360,7 @@ impl UdpLoop {
         let _ = catch_unwind(AssertUnwindSafe(|| p.handler.on_close(err)));
         self.check_slow("on_close", id, t0);
         self.shared.stats.closed.add_local(1);
-        self.cfg.telemetry.conn_closed();
+        self.cfg.telemetry.conn_closed(false);
         self.update_interest();
     }
 

@@ -668,6 +668,9 @@ pub struct Telemetry {
     gone: Mutex<LoopCounters>,
     slow: Mutex<VecDeque<SlowRecord>>,
     open: AtomicUsize,
+    /// Of `open`, the connections that are not accepted TCP ones: dialed connections, UDP
+    /// peers, TUN devices (akit A30). Kept apart so that an accept costs no second atomic.
+    open_other: AtomicUsize,
     pool: Mutex<Weak<Pool>>,
     started: Instant,
     log_level: Mutex<Option<akio_log::LevelFilter>>,
@@ -696,6 +699,7 @@ impl Default for Telemetry {
             gone: Mutex::new(LoopCounters::default()),
             slow: Mutex::new(VecDeque::new()),
             open: AtomicUsize::new(0),
+            open_other: AtomicUsize::new(0),
             pool: Mutex::new(Weak::new()),
             started: Instant::now(),
             log_level: Mutex::new(None),
@@ -900,30 +904,53 @@ impl Telemetry {
 
     // ---- connection accounting --------------------------------------------------------------
 
-    /// Counts a new connection. `limited`: refuse it (return `false`) when `max_connections` is
-    /// reached. Backend-facing.
+    /// Counts a new connection. `limited`: an accepted TCP connection (the only kind
+    /// `max_connections` refuses, and the kind [`open_accepted`](Self::open_accepted) counts);
+    /// refused (`false` returned, nothing counted) when `max_connections` is reached. Every
+    /// other kind (dialed, UDP peer, TUN device) passes `false`. Backend-facing.
     #[doc(hidden)]
     #[inline]
     pub fn conn_opened(&self, limited: bool) -> bool {
+        if !limited {
+            self.open_other.fetch_add(1, Ordering::Relaxed);
+            self.open.fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
         let n = self.open.fetch_add(1, Ordering::Relaxed);
         let max = self.live.max_connections();
-        if limited && max != 0 && n >= max {
+        if max != 0 && n >= max {
             self.open.fetch_sub(1, Ordering::Relaxed);
             return false;
         }
         true
     }
 
-    /// Counts a closed connection. Backend-facing.
+    /// Counts a closed connection. `accepted`: what [`conn_opened`](Self::conn_opened) was
+    /// given as `limited` for it (an accepted TCP connection). Backend-facing.
     #[doc(hidden)]
     #[inline]
-    pub fn conn_closed(&self) {
+    pub fn conn_closed(&self, accepted: bool) {
         self.open.fetch_sub(1, Ordering::Relaxed);
+        if !accepted {
+            self.open_other.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     /// Connections open right now (all listeners, dialed ones and UDP peers included).
     pub fn open_connections(&self) -> usize {
         self.open.load(Ordering::Relaxed)
+    }
+
+    /// Accepted TCP connections open right now, on every TCP listener of the engine (Unix-domain
+    /// listeners included): [`open_connections`](Self::open_connections) without the dialed
+    /// connections (`Engine::dial` and the other dials, `adopt_tcp`), the UDP peers (of UDP
+    /// listeners, `dial_udp`, `bind_udp`) and TUN devices (akit A30). What a server reports as
+    /// its client connections open, apart from the upstream connections it dials on the same
+    /// engine. Two counters read without a lock: exact when no connection opens or closes
+    /// during the call, off by those that do otherwise.
+    pub fn open_accepted(&self) -> usize {
+        let other = self.open_other.load(Ordering::Relaxed);
+        self.open.load(Ordering::Relaxed).saturating_sub(other)
     }
 
     // ---- slow callbacks ---------------------------------------------------------------------
@@ -1064,6 +1091,7 @@ impl Telemetry {
             loops,
             total,
             open_connections: self.open_connections(),
+            open_accepted: self.open_accepted(),
             pool: lock(&self.pool).upgrade().map(|p| p.stats()),
             uptime: self.started.elapsed(),
         }
@@ -1194,6 +1222,8 @@ pub struct Metrics {
     pub total: LoopCounters,
     /// Connections open now.
     pub open_connections: usize,
+    /// Accepted TCP connections open now ([`Telemetry::open_accepted`]).
+    pub open_accepted: usize,
     /// The logical pool, when the engine has one.
     pub pool: Option<PoolStats>,
     /// Time since the hub was created.
@@ -1455,8 +1485,9 @@ impl Metrics {
         o.push_str("{\"open_connections\":");
         let _ = write!(
             o,
-            "{},\"uptime_secs\":{:.3},\"total\":",
+            "{},\"open_accepted\":{},\"uptime_secs\":{:.3},\"total\":",
             self.open_connections,
+            self.open_accepted,
             self.uptime.as_secs_f64()
         );
         counters_json(&mut o, &self.total);
@@ -1640,5 +1671,23 @@ mod tests {
                 .to_prometheus()
                 .contains("akio_connections_filtered_total")
         );
+    }
+
+    #[test]
+    fn open_accepted_leaves_out_other_kinds() {
+        let t = Telemetry::new();
+        t.live().set_max_connections(2);
+        assert!(t.conn_opened(true));
+        assert!(t.conn_opened(false)); // dialed
+        assert!(t.conn_opened(false)); // a UDP peer
+        assert_eq!((t.open_accepted(), t.open_connections()), (1, 3));
+        // Over `max_connections`: refused and not counted.
+        assert!(!t.conn_opened(true));
+        assert_eq!((t.open_accepted(), t.open_connections()), (1, 3));
+        t.conn_closed(false);
+        assert_eq!((t.open_accepted(), t.open_connections()), (1, 2));
+        t.conn_closed(true);
+        t.conn_closed(false);
+        assert_eq!((t.open_accepted(), t.open_connections()), (0, 0));
     }
 }
