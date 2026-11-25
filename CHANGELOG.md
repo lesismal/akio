@@ -10,6 +10,27 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: the HTTP/3 client no longer deadlocks resuming, cancelling or timing out a request (akio-h3)
+
+A call on a QUIC connection from outside its handler drives the connection on the calling thread,
+which runs the handler for whatever is pending, the calling request's own events included. The
+client made such calls while holding a lock the handler then took on the same thread, which waited
+on itself for good:
+
+- `H3Upload::hold_reads(false)` held the request's lock while resuming the stream; when what was
+  held included the response's end, the handler, ending the request, took that lock. A response
+  that had nearly all arrived before reads were held hung its resuming thread every time.
+- `H3Upload::cancel` held it while resetting the stream; a body piece pending for the stream (a
+  receive thread had read the datagram but not handed its events on yet) did the same. So could
+  a writable stream pending during `write` or `finish`.
+- The request-timeout thread reset an expired stream under the connection's request table, which
+  the handler locks for any response.
+
+The handler no longer waits for a request's lock (a request's failure and held flag are atomic,
+and a flush it cannot take the lock for is left to the lock's holder), and cancelling and the
+timeout reset streams after letting go of their locks. No public API changed; `hold_reads(false)`
+may report what was held on the calling thread before it returns, as before.
+
 ### Added: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down (akio-http, akio-h3, akio-socks, akio-core)
 
 ADR-122, requested by akit (A134):

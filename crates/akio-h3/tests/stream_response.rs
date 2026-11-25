@@ -47,12 +47,15 @@ struct Srv {
     sent: Arc<AtomicUsize>,
     /// Requests parked unanswered.
     parked: Arc<Mutex<Vec<akio_http::Detached>>>,
+    /// The streamed response of `/gate`, its head sent, its body left to the test.
+    gate: Arc<Mutex<Option<akio_http::BodyStream>>>,
 }
 
 fn server(cfg: H3Config) -> Srv {
     let sent = Arc::new(AtomicUsize::new(0));
     let parked = Arc::new(Mutex::new(Vec::new()));
-    let (s2, p2) = (sent.clone(), parked.clone());
+    let gate = Arc::new(Mutex::new(None));
+    let (s2, p2, g2) = (sent.clone(), parked.clone(), gate.clone());
     let app = Router::new()
         .get("/big/:n", move |ctx: &mut Context| {
             let n: usize = ctx.param("n").unwrap_or("0").parse().unwrap();
@@ -62,6 +65,9 @@ fn server(cfg: H3Config) -> Srv {
             produce(s, pattern(n, 5), s2.clone());
         })
         .get("/small", |ctx: &mut Context| ctx.text(200, "small body"))
+        .get("/gate", move |ctx: &mut Context| {
+            *g2.lock().unwrap() = Some(ctx.stream_response(200, Headers::new()).unwrap());
+        })
         .get("/never", move |ctx: &mut Context| {
             p2.lock().unwrap().push(ctx.detach().unwrap());
         })
@@ -113,6 +119,7 @@ fn server(cfg: H3Config) -> Srv {
         addr,
         sent,
         parked,
+        gate,
     }
 }
 
@@ -167,6 +174,18 @@ fn record(
             _ => {}
         }
     }
+}
+
+/// Runs `f` on a thread of its own and fails the test if it does not return within `T`: a
+/// call that deadlocks fails the test instead of hanging it. Its thread is the caller's kind
+/// (not the connection's), so the call drives the connection as the caller's would.
+fn bounded<R: Send + 'static>(what: &str, f: impl FnOnce() -> R + Send + 'static) -> R {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(T)
+        .unwrap_or_else(|_| panic!("{what} did not return within {T:?}"))
 }
 
 fn get(c: &H3Client, path: &str) -> (Arc<Mutex<Seen>>, mpsc::Receiver<()>, H3Upload) {
@@ -289,7 +308,11 @@ fn cancel_and_head_timeout() {
     up.hold_reads(true);
     std::thread::sleep(Duration::from_millis(2000));
     assert!(seen.lock().unwrap().error.is_none());
-    up.hold_reads(false);
+    // Resuming may deliver the rest, the end included, on the resuming thread (it hung there).
+    let _up = bounded("hold_reads(false)", move || {
+        up.hold_reads(false);
+        up
+    });
     rx.recv_timeout(T).unwrap();
     assert!(seen.lock().unwrap().end);
     // Cancelled mid-body: nothing more is reported, writes fail.
@@ -298,12 +321,18 @@ fn cancel_and_head_timeout() {
     while seen.lock().unwrap().body.is_empty() && start.elapsed() < T {
         std::thread::sleep(Duration::from_millis(2));
     }
-    up.cancel();
+    // Cancelling may deliver what is pending on the cancelling thread (it hung there too).
+    let up = bounded("cancel", move || {
+        up.cancel();
+        up
+    });
     let len = seen.lock().unwrap().body.len();
     assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
-    let seen = seen.lock().unwrap();
-    assert!(!seen.end && seen.error.is_none());
-    assert!(seen.body.len() < 8 << 20, "{} of {len}", seen.body.len());
+    {
+        let seen = seen.lock().unwrap();
+        assert!(!seen.end && seen.error.is_none());
+        assert!(seen.body.len() < 8 << 20, "{} of {len}", seen.body.len());
+    }
     assert!(!up.write(b"x"));
     // The connection goes on.
     assert_eq!(c.get("/small", T).unwrap().status, 200);
@@ -318,15 +347,51 @@ fn cancel_and_head_timeout() {
     c.close();
     rx.recv_timeout(T).unwrap();
     assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
-    let seen = seen.lock().unwrap();
-    assert!(!seen.end);
-    assert!(
-        matches!(seen.error, Some(H3Error::Closed(_))),
-        "{:?}",
-        seen.error
-    );
+    {
+        let seen = seen.lock().unwrap();
+        assert!(!seen.end);
+        assert!(
+            matches!(seen.error, Some(H3Error::Closed(_))),
+            "{:?}",
+            seen.error
+        );
+    }
     assert!(!up.write(b"x"));
     s.parked.lock().unwrap().clear();
+    s.e.shutdown();
+}
+
+/// Resuming held reads can deliver what was held on the resuming thread, the response's end
+/// included; the request's own lock is not held meanwhile (it was, and the thread waited on
+/// itself for good).
+#[test]
+fn resuming_delivers_on_the_calling_thread() {
+    let s = server(H3Config::default());
+    let c = client(&s, 64 << 10, H3ClientOptions::default());
+    for round in 0..20 {
+        let (seen, rx, up) = get(&c, "/gate");
+        let start = Instant::now();
+        while seen.lock().unwrap().status == 0 {
+            assert!(start.elapsed() < T, "no head");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        up.hold_reads(true);
+        let body = s.gate.lock().unwrap().take().unwrap();
+        body.write(b"held body").unwrap();
+        body.finish();
+        // The body and the end arrive, held.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!seen.lock().unwrap().end);
+        let up = bounded(&format!("round {round}: hold_reads(false)"), move || {
+            up.hold_reads(false);
+            up
+        });
+        rx.recv_timeout(T).unwrap();
+        let seen = seen.lock().unwrap();
+        assert!(seen.end, "{:?}", seen.error);
+        assert_eq!(seen.body, b"held body");
+        assert!(!up.write(b"x"));
+    }
     s.e.shutdown();
 }
 

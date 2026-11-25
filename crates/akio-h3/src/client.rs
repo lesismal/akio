@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, mpsc};
 use std::time::{Duration, Instant};
 
 use akio_http::message::{Headers, Method, Response};
@@ -455,11 +455,24 @@ impl std::fmt::Debug for H3Upload {
     }
 }
 
+/// A request body's state, shared by its [`H3Upload`] and the connection's handler.
+///
+/// A call on the [`Connection`] from outside its handler (`send`, `finish`, `reset`, `stop`,
+/// resuming reads) drives the connection on the calling thread, which runs the handler for
+/// whatever is pending, this stream's events included. So the handler never waits for this
+/// lock, which that very thread may hold: what it changes is atomic (`failed`, `held`), and a
+/// flush it cannot do for want of the lock is left to the lock's holder (`again`).
 struct UpState {
     c: Connection,
     s: Mutex<Up>,
     /// [`H3Upload::cancel`] was called: nothing more is reported.
     cancelled: AtomicBool,
+    /// No more writes: the request failed or was cancelled, or its response ended.
+    failed: AtomicBool,
+    /// The response's reads are held ([`H3Upload::hold_reads`]); written under the lock.
+    held: AtomicBool,
+    /// The stream became writable while the lock was held: whoever releases it flushes.
+    again: AtomicBool,
 }
 
 #[derive(Default)]
@@ -472,9 +485,6 @@ struct Up {
     finished: bool,
     /// The stream's end was sent.
     ended: bool,
-    failed: bool,
-    /// The response's reads are held ([`H3Upload::hold_reads`]).
-    held: bool,
 }
 
 impl UpState {
@@ -487,6 +497,9 @@ impl UpState {
             c: c.clone(),
             s: Mutex::new(Up::default()),
             cancelled: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+            held: AtomicBool::new(false),
+            again: AtomicBool::new(false),
         }
     }
 
@@ -496,24 +509,31 @@ impl UpState {
         let mut u = self.lock();
         u.id = Some(id);
         if self.cancelled() {
+            drop(u);
             let _ = self.c.reset(id, code::REQUEST_CANCELLED);
             let _ = self.c.stop(id, code::REQUEST_CANCELLED);
             return;
         }
-        if u.held {
+        if self.held.load(Ordering::Acquire) {
+            // Holding drives nothing.
             let _ = self.c.hold_reads(id, true);
         }
         self.flush(&mut u);
+        drop(u);
+        self.released();
     }
 
     fn cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
     /// Puts the stream's reads back as the application wants them (after QPACK held them).
     fn restore_hold(&self, id: StreamId) {
-        let held = self.lock().held;
-        let _ = self.c.hold_reads(id, held);
+        let _ = self.c.hold_reads(id, self.held.load(Ordering::Acquire));
     }
 
     /// Sends what waits (as far as the send buffer takes it), then the end if finished.
@@ -525,7 +545,7 @@ impl UpState {
                 Ok(()) => {}
                 // Again once the stream is writable (`on_stream_writable`).
                 Err(akio_quic::Error::Overloaded) => return u.queued = q.to_vec(),
-                Err(_) => return u.failed = true,
+                Err(_) => return self.fail(),
             }
         }
         if u.finished && !u.ended {
@@ -534,8 +554,30 @@ impl UpState {
         }
     }
 
+    /// The stream became writable (the handler): flushes, or leaves it to the thread holding
+    /// the lock, maybe this one, driving the connection from a call made under it.
+    fn writable(&self) {
+        self.again.store(true, Ordering::SeqCst);
+        self.released();
+    }
+
+    /// After the lock was let go: a flush left to its holder runs now.
+    fn released(&self) {
+        while self.again.load(Ordering::SeqCst) {
+            let mut u = match self.s.try_lock() {
+                Ok(u) => u,
+                Err(TryLockError::Poisoned(e)) => e.into_inner(),
+                // Its holder checks again once it lets go.
+                Err(TryLockError::WouldBlock) => return,
+            };
+            if self.again.swap(false, Ordering::SeqCst) {
+                self.flush(&mut u);
+            }
+        }
+    }
+
     fn fail(&self) {
-        self.lock().failed = true;
+        self.failed.store(true, Ordering::Release);
     }
 }
 
@@ -545,13 +587,13 @@ impl H3Upload {
     /// writer with [`queued_bytes`](Self::queued_bytes).
     pub fn write(&self, data: &[u8]) -> bool {
         let mut u = self.up.lock();
-        if u.failed || u.finished {
+        if self.up.failed() || u.finished {
             return false;
         }
         if data.is_empty() {
             return true;
         }
-        match u.id {
+        let ok = match u.id {
             Some(id) if u.queued.is_empty() => match self.up.c.send(id, crate::data_frame(data)) {
                 Ok(()) => true,
                 Err(akio_quic::Error::Overloaded) => {
@@ -564,19 +606,24 @@ impl H3Upload {
                 frame::put_frame(&mut u.queued, frame::DATA, data);
                 true
             }
-        }
+        };
+        drop(u);
+        self.up.released();
+        ok
     }
 
     /// Ends the body. `false` if the request already failed.
     pub fn finish(&self) -> bool {
         let mut u = self.up.lock();
-        if u.failed {
+        if self.up.failed() {
             return false;
         }
         if !std::mem::replace(&mut u.finished, true) {
             self.up.flush(&mut u);
         }
-        !u.failed
+        drop(u);
+        self.up.released();
+        !self.up.failed()
     }
 
     /// Bytes written but not yet sent, for pacing the writer.
@@ -590,23 +637,29 @@ impl H3Upload {
     /// received may still be) and QUIC flow control stops the server once the stream's receive
     /// window is used, so a slow consumer bounds the memory a response takes. Holding before
     /// the head arrives holds the head too (and [`H3ClientOptions::request_timeout`] still
-    /// runs). Callable from any thread, the event callback included.
+    /// runs). Callable from any thread, the event callback included; resuming may report what
+    /// was held, its end included, on the calling thread before it returns.
     pub fn hold_reads(&self, hold: bool) {
-        let mut u = self.up.lock();
-        u.held = hold;
+        let u = self.up.lock();
+        self.up.held.store(hold, Ordering::Release);
         if let Some(id) = u.id {
             let _ = self.up.c.hold_reads(id, hold);
         }
+        drop(u);
+        self.up.released();
     }
 
     /// Abandons the request: its stream is reset and the server asked to stop sending
     /// (`H3_REQUEST_CANCELLED`); nothing more is reported (an event callback already running
     /// finishes). Writes fail from then on.
     pub fn cancel(&self) {
-        let mut u = self.up.lock();
+        let u = self.up.lock();
         self.up.cancelled.store(true, Ordering::Release);
-        u.failed = true;
-        if let Some(id) = u.id {
+        self.up.fail();
+        let id = u.id;
+        // Resetting drives the connection, whose handler may run here: not under the lock.
+        drop(u);
+        if let Some(id) = id {
             let _ = self.up.c.reset(id, code::REQUEST_CANCELLED);
             let _ = self.up.c.stop(id, code::REQUEST_CANCELLED);
         }
@@ -1075,6 +1128,7 @@ fn expire(conn: &Connection, sh: &Arc<Shared>, armed: Instant) {
     s.armed_at = None;
     let now = Instant::now();
     let mut kinds = Vec::new();
+    let mut reset = Vec::new();
     while s.deadlines.front().is_some_and(|d| d.0 <= now) {
         let Some((_, token, true)) = s.pop_front() else {
             continue;
@@ -1098,13 +1152,18 @@ fn expire(conn: &Connection, sh: &Arc<Shared>, armed: Instant) {
                 }
                 kinds.extend(f.take_kind());
             }
-            let _ = conn.reset(id, code::REQUEST_CANCELLED);
-            let _ = conn.stop(id, code::REQUEST_CANCELLED);
+            reset.push(id);
         }
     }
     s.prune();
     arm(conn, sh, &mut s);
     drop(s);
+    // Resetting drives the connection, whose handler may run on this thread and lock the
+    // state: not under it.
+    for id in reset {
+        let _ = conn.reset(id, code::REQUEST_CANCELLED);
+        let _ = conn.stop(id, code::REQUEST_CANCELLED);
+    }
     for k in kinds {
         k.fail(H3Error::Timeout);
     }
@@ -1927,8 +1986,7 @@ impl QuicHandler for ClientConn {
                 .and_then(|f| f.up().cloned()),
         };
         if let Some(up) = up {
-            let mut u = up.lock();
-            up.flush(&mut u);
+            up.writable();
         }
     }
 
