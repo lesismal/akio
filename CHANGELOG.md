@@ -10,6 +10,28 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a connect timeout per dial, `Engine::dial_with` (akio, akio-core, backends, akio-http; akit A12, A79)
+
+ADR-154. `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)`
+bounds one dial's TCP handshake by its own timeout, shorter or longer than the engine's
+`Config::connect_timeout` (`TimedOut` to `on_error` past it), so each upstream of a proxy is
+dialed within its own on one engine. Every TCP backend honours it: epoll/kqueue loops, rounds
+scheduling, io_uring, and DPDK (in place of its stack's 10 s). `HappyEyeballs::dial` and
+`connect` now dial every attempt with their `connect_timeout`, a lone address and the addresses
+dialed in turn when the racer is full included (they used the engine's), and so do the clients
+that dial through them (akio-http `Client`, `H2Client::connect`, akio-ws); `H2Client::dial` uses
+`H2Options::happy_eyeballs.connect_timeout` too. `dial_udp` takes none: UDP has no handshake.
+
+### Added: `akio::timer::after_send`, a timer any thread may set (akio-core; akit A45)
+
+ADR-154. `timer::after_send(delay, f: FnOnce() + Send)` runs `f` on akio's one process-wide
+timer thread (`akio-timer`, started on first use, leaving after 30 s idle), from whatever thread
+sets it; `SendTimer::cancel()` works from any thread and says whether the timer was still
+pending. Bounded (`MAX_SEND_TIMERS`, 2^20 pending, then `Error::Overloaded`), never early, a
+panicking job caught and logged. For control-plane code with no loop of its own (probes and
+their deadlines, sweeps, refreshes); jobs must be quick and non-blocking, posting real work
+elsewhere. On an I/O thread the loop-local `timer::after` remains the cheaper choice.
+
 ### Added: `akio::Pool` for an application's own blocking work (akio, akio-core; akit A117)
 
 The `akio` facade re-exports `Pool`, `Rejected` and `Job` beside `PoolConfig` and `PoolStats`:

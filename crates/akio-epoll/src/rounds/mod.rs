@@ -586,7 +586,27 @@ impl Group for RoundsGroup {
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
         match akio_sys::connect_nonblocking(addr) {
-            Ok(s) => poller::post_dial(self.next_poller(), s, acceptor, on_error, false),
+            Ok(s) => poller::post_dial(self.next_poller(), s, acceptor, on_error, false, None),
+            Err(e) => on_error(e),
+        }
+    }
+
+    fn dial_with(
+        &self,
+        addr: SocketAddr,
+        opts: akio_core::DialOptions,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        match akio_sys::connect_nonblocking(addr) {
+            Ok(s) => poller::post_dial(
+                self.next_poller(),
+                s,
+                acceptor,
+                on_error,
+                false,
+                opts.connect_timeout,
+            ),
             Err(e) => on_error(e),
         }
     }
@@ -598,7 +618,7 @@ impl Group for RoundsGroup {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        poller::post_dial(self.next_poller(), stream, acceptor, on_error, false);
+        poller::post_dial(self.next_poller(), stream, acceptor, on_error, false, None);
     }
 
     fn dial_unix(
@@ -607,7 +627,7 @@ impl Group for RoundsGroup {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        poller::post_dial(self.next_poller(), stream, acceptor, on_error, true);
+        poller::post_dial(self.next_poller(), stream, acceptor, on_error, true, None);
     }
 
     fn adopt(
@@ -619,6 +639,6 @@ impl Group for RoundsGroup {
         if let Err(e) = stream.set_nonblocking(true) {
             return on_error(e);
         }
-        poller::post_dial(self.next_poller(), stream, acceptor, on_error, false);
+        poller::post_dial(self.next_poller(), stream, acceptor, on_error, false, None);
     }
 }

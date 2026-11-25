@@ -73,11 +73,13 @@ pub use akio_wasm as wasm;
 
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
-    DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,
-    LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, Replies, ResponseSlot,
-    ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
-    UNIX_ADDR, UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
+    DatagramsIter, DialOptions, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters,
+    LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, Replies,
+    ResponseSlot, ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry,
+    Transport, UNIX_ADDR, UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
 };
+#[doc(hidden)]
+pub use akio_core::{DynAcceptor, DynHandler};
 /// A bounded thread pool for an application's own blocking work (akit A117): the same pool as
 /// the engine's logical pool (`Conn::spawn_blocking`, [`EngineBuilder::pool`]), built apart
 /// from it so that blocking work of one kind (a disk tier, say) holds up neither the handlers on
@@ -114,8 +116,6 @@ pub use akio_core::{
 /// pool.join();
 /// ```
 pub use akio_core::{Job, Pool, Rejected};
-#[doc(hidden)]
-pub use akio_core::{DynAcceptor, DynHandler};
 pub use numa::{NumaConfig, NumaPlacement, NumaReport, NumaStatus, ThreadPlacement};
 
 /// I/O backend of one listener (ADR-004).
@@ -2133,7 +2133,8 @@ impl Engine {
     /// has no handshake), `on_data` once per datagram received, `Conn::send` sends one datagram,
     /// and an ICMP "port unreachable" or `Config::udp_idle_timeout` of silence closes it. On
     /// failure to create the socket `on_error` is called. Needs [`EngineBuilder::udp_client_threads`]
-    /// or a UDP listener. The engine must have been [`start`](Self::start)ed.
+    /// or a UDP listener. The engine must have been [`start`](Self::start)ed. There is no
+    /// connect timeout to set: UDP has no handshake.
     pub fn dial_udp<A: Acceptor>(
         &self,
         addr: SocketAddr,
@@ -2377,8 +2378,9 @@ impl Engine {
     }
 
     /// Connects to `addr` without blocking. When established, `acceptor.on_open` runs on an I/O
-    /// thread exactly as for an accepted connection; on failure `on_error` is called instead.
-    /// The engine must have been [`start`](Self::start)ed.
+    /// thread exactly as for an accepted connection; on failure `on_error` is called instead,
+    /// with `TimedOut` once [`Config::connect_timeout`] passes. The engine must have been
+    /// [`start`](Self::start)ed. [`dial_with`](Self::dial_with) sets a timeout for one dial.
     pub fn dial<A: Acceptor>(
         &self,
         addr: SocketAddr,
@@ -2388,6 +2390,48 @@ impl Engine {
         match self.tcp_dial.and_then(|i| self.groups.get(i)) {
             // The client group when `client_threads` was set, else the last TCP listener's.
             Some(g) => g.dial(addr, Arc::new(acceptor), Box::new(on_error)),
+            None => on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no I/O threads",
+            )),
+        }
+    }
+
+    /// [`dial`](Self::dial) with options of its own (ADR-154): `opts.connect_timeout`, when set,
+    /// bounds this dial's TCP handshake in place of [`Config::connect_timeout`] (shorter or
+    /// longer), so that each upstream of a proxy is dialed within its own timeout on one engine;
+    /// past it `on_error` gets `TimedOut`. Every TCP backend honours it (epoll/kqueue loops,
+    /// rounds scheduling, io_uring, DPDK, where `None` means its stack's own 10 s).
+    /// [`dns::HappyEyeballs`] dials each attempt with it.
+    ///
+    /// ```no_run
+    /// # use std::time::Duration;
+    /// # use akio::{Conn, DialOptions, Engine, Handler, fn_acceptor};
+    /// # struct Up;
+    /// # impl Handler for Up {}
+    /// # fn demo(engine: &Engine) {
+    /// let opts = DialOptions::new().connect_timeout(Duration::from_millis(500));
+    /// engine.dial_with(
+    ///     "10.0.0.7:8080".parse().unwrap(),
+    ///     opts,
+    ///     fn_acceptor(|_c: &Conn<Up>| Up),
+    ///     |e| eprintln!("upstream down: {e}"),
+    /// );
+    /// # }
+    /// ```
+    ///
+    /// [`dial_udp`](Self::dial_udp) takes no connect timeout: UDP has no handshake (the socket
+    /// is connected at once and `on_open` runs right away), and a peer that never answers is
+    /// ended by [`Config::udp_idle_timeout`].
+    pub fn dial_with<A: Acceptor>(
+        &self,
+        addr: SocketAddr,
+        opts: DialOptions,
+        acceptor: A,
+        on_error: impl FnOnce(io::Error) + Send + 'static,
+    ) {
+        match self.tcp_dial.and_then(|i| self.groups.get(i)) {
+            Some(g) => g.dial_with(addr, opts, Arc::new(acceptor), Box::new(on_error)),
             None => on_error(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "engine has no I/O threads",

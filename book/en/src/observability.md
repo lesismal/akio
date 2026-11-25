@@ -14,7 +14,7 @@ locked or allocated per event); snapshots are assembled on demand.
 
 | Call | Returns |
 |---|---|
-| `Engine::metrics()` | `Metrics`: per-thread `LoopMetrics` (owner, running, counters), `total`, `open_connections`, `pool`, `uptime`; `to_prometheus()`, `to_json()` |
+| `Engine::metrics()` | `Metrics`: per-thread `LoopMetrics` (owner, running, counters), `total`, `open_connections`, `open_accepted` (accepted TCP connections only, without dialed ones and UDP peers; also `Telemetry::open_accepted()`), `pool`, `uptime`; `to_prometheus()`, `to_json()` |
 | `Engine::connections(timeout)` | the connection table: one `ConnInfo` per connection (id, peer, local, owning thread, age, idle, bytes in/out, queued bytes, read-held, backpressure, transport, udp). Gathered by asking each I/O thread; never call it from an I/O thread's callback |
 | `Engine::slow_callbacks()` | the most recent slow callbacks (up to 256), oldest first |
 | `Engine::pool_stats()` | logical pool threads, idle, queued, completed, panicked, rejected |

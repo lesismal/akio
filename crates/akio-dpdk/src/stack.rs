@@ -36,6 +36,8 @@ pub(crate) enum Cmd {
         udp: bool,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        /// A TCP dial's own connect timeout (`DialOptions`, ADR-154); `None`: the stack's.
+        timeout: Option<std::time::Duration>,
     },
     /// The last group is gone: the thread ends.
     Exit,

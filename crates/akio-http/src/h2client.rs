@@ -96,8 +96,8 @@ pub struct H2Options {
     /// cancel apply. Default 1024.
     pub max_pending_streams: usize,
     /// How [`H2Client::connect`] races the addresses of its host, and how long one connect may
-    /// take ([`akio::dns::HappyEyeballs::connect_timeout`], 10 s by default).
-    /// [`H2Client::dial`] uses the engine's connect timeout.
+    /// take ([`akio::dns::HappyEyeballs::connect_timeout`], 10 s by default, for any number of
+    /// addresses). [`H2Client::dial`] connects within the same `connect_timeout`.
     pub happy_eyeballs: akio::dns::HappyEyeballs,
 }
 
@@ -878,7 +878,8 @@ impl H2Client {
     /// Connects (prior knowledge, or TLS with ALPN `h2` when `tls` is given: the client config's
     /// `alpn_protocols` must contain `h2`), then calls `ready`. Over TLS, `ready` is called once
     /// the server's first frame came (its SETTINGS, so [`max_concurrent_streams`] is known), and
-    /// fails with [`NotH2`] when the server chose another protocol in ALPN, or none.
+    /// fails with [`NotH2`] when the server chose another protocol in ALPN, or none. The TCP
+    /// connect is bounded by `opts.happy_eyeballs.connect_timeout` ([`Engine::dial_with`]).
     ///
     /// [`max_concurrent_streams`]: Self::max_concurrent_streams
     pub fn dial(
@@ -898,6 +899,7 @@ impl H2Client {
                 }
             }
         };
+        let dial = akio::DialOptions::new().connect_timeout(opts.happy_eyeballs.connect_timeout);
         let mut acceptor = H2Acceptor {
             opts,
             ready,
@@ -908,10 +910,10 @@ impl H2Client {
                 acceptor.alpn_check = true;
                 acceptor
             }) {
-                Ok(a) => engine.dial(addr, a, fail),
+                Ok(a) => engine.dial_with(addr, dial, a, fail),
                 Err(e) => fail(e),
             },
-            None => engine.dial(addr, acceptor, fail),
+            None => engine.dial_with(addr, dial, acceptor, fail),
         }
     }
 

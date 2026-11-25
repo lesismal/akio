@@ -14,6 +14,25 @@
 //! later, normally within a millisecond (the wheel counts milliseconds), later if the thread is
 //! busy. Timers still pending when the loop exits are dropped without running.
 //!
+//! **Off the I/O threads**, [`after_send`] (ADR-154) runs a `Send` closure on akio's one
+//! process-wide timer thread (`akio-timer`, started on first use), and [`SendTimer::cancel`]
+//! works from any thread. It is for control-plane code with no loop of its own (health probes
+//! and their deadlines, periodic sweeps, refreshes); its jobs must be quick and must not block,
+//! since they share the thread: a job that has real work to do posts it elsewhere (to a
+//! connection's loop with `Conn::run_on_loop`, to a pool, to a channel). On an I/O thread,
+//! [`after`] is cheaper (no lock, no other thread).
+//!
+//! ```
+//! use std::time::Duration;
+//! let (tx, rx) = std::sync::mpsc::channel();
+//! let t = akio_core::timer::after_send(Duration::from_millis(5), move || {
+//!     let _ = tx.send("fired");
+//! })
+//! .expect("overloaded");
+//! assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok("fired"));
+//! assert!(!t.cancel(), "it already ran");
+//! ```
+//!
 //! ```no_run
 //! use std::time::Duration;
 //! # fn demo(c: &akio_core::Conn<impl akio_core::Handler>) {
@@ -37,6 +56,24 @@ use std::{
 use akio_timer::{TimerId, Wheel};
 
 use crate::{Error, Result};
+
+mod send;
+pub use send::{MAX_SEND_TIMERS, SendTimer};
+
+/// Runs `f` once `delay` has passed, on akio's process-wide timer thread, whatever the calling
+/// thread (ADR-154; see the [module docs](self)). Never blocks for long: it takes the timers'
+/// lock for one insert (and starts the thread on first use, or after it left idle).
+///
+/// `f` must be quick and must not block: every timer of the process runs on that one thread.
+/// It never runs early; it runs once the thread gets to it, normally within a millisecond. A
+/// panic in `f` is caught and logged; the thread goes on. A delay over [`MAX_DELAY`] is clamped
+/// to it. Timers still pending when the process exits do not run.
+///
+/// Errors: [`Error::Overloaded`] when [`MAX_SEND_TIMERS`] timers are pending (`f` is dropped
+/// unrun); [`Error::Io`] when the timer thread cannot be started.
+pub fn after_send(delay: Duration, f: impl FnOnce() + Send + 'static) -> Result<SendTimer> {
+    send::after_send(delay, Box::new(f))
+}
 
 /// Timers one loop may hold at once; past it [`after`] returns [`Error::Overloaded`].
 pub const MAX_TIMERS_PER_LOOP: usize = 1 << 20;

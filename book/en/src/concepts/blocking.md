@@ -83,6 +83,26 @@ Choose `max_threads` by what the blocking work waits on: a database pool of 50 c
 nothing from 200 pool threads. Choose `queue_capacity` by how much latency you accept before
 shedding load: `Overloaded` is the signal to answer "busy" (HTTP 503) instead of queueing more.
 
+## A pool of your own
+
+Blocking work of one kind that must hold up nothing else (a cache's disk tier, whose disk may
+hang) gets a pool of its own, apart from the engine's: `akio::Pool`, the same bounded pool.
+
+```rust,ignore
+let mut cfg = akio::PoolConfig::default();
+cfg.max_threads = 16;
+cfg.queue_capacity = 4096;
+let disk = akio::Pool::new(cfg);                          // Arc<Pool>
+match disk.try_execute(Box::new(move || { /* read the file, then conn.run_on_loop(..) */ })) {
+    Ok(()) => {}
+    Err(akio::Rejected(_job)) => { /* full or shut down: answer "busy" */ }
+}
+// at the end: disk.shutdown(); disk.join();
+```
+
+`try_execute` never blocks; `Rejected` gives the job back when the queue is full or the pool is
+shut down. `Pool::stats()` reports it as `Engine::pool_stats()` does the engine's.
+
 ## In protocol crates
 
 Protocol crates expose the same idea in their own terms; the handler never blocks and the answer

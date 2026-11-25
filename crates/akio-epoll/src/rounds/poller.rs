@@ -67,6 +67,8 @@ pub(crate) enum RCmd {
         on_error: Box<dyn FnOnce(io::Error) + Send>,
         /// A Unix-domain socket (ADR-120): its addresses are `UNIX_ADDR`.
         unix: bool,
+        /// The dial's own connect timeout (`DialOptions`, ADR-154); `None`: the engine's.
+        timeout: Option<Duration>,
     },
 }
 
@@ -987,6 +989,7 @@ impl RLoop {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
         unix: bool,
+        timeout: Option<Duration>,
     ) {
         if self.draining.is_some() {
             return on_error(io::Error::new(
@@ -1007,7 +1010,9 @@ impl RLoop {
                 unix,
             },
         );
-        if let Some(ct) = self.cfg().connect_timeout {
+        // The dial's own timeout (ADR-154), else the engine's.
+        if let Some(ct) = timeout.or(self.cfg().connect_timeout) {
+            let ct = ct.min(akio_core::timer::MAX_DELAY); // a deadline that cannot overflow
             let at = self.tick() + (ct.as_millis() as u64).max(1);
             if self.wheel.is_empty() {
                 self.wheel.advance(self.tick(), drop);
@@ -1101,7 +1106,8 @@ impl RLoop {
                 acceptor,
                 on_error,
                 unix,
-            } => self.begin_dial(stream, acceptor, on_error, unix),
+                timeout,
+            } => self.begin_dial(stream, acceptor, on_error, unix, timeout),
         }
     }
 
@@ -1260,19 +1266,22 @@ impl RLoop {
     }
 }
 
-/// Posts a dial to `sh`'s poller; `unix` for a Unix-domain socket (ADR-120).
+/// Posts a dial to `sh`'s poller; `unix` for a Unix-domain socket (ADR-120); `timeout`: its
+/// own connect timeout (ADR-154), `None` for the engine's.
 pub(crate) fn post_dial(
     sh: &PollerShared,
     stream: TcpStream,
     acceptor: Arc<dyn DynAcceptor>,
     on_error: Box<dyn FnOnce(io::Error) + Send>,
     unix: bool,
+    timeout: Option<Duration>,
 ) {
     sh.post(RCmd::Dial {
         stream,
         acceptor,
         on_error,
         unix,
+        timeout,
     });
 }
 

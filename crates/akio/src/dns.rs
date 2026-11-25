@@ -23,8 +23,10 @@
 //! before any byte is sent. The race runs on one dedicated thread (`akio-connect`, started on
 //! demand, leaving after [`IDLE`] without races) that waits for at most [`MAX_RACES`] races at
 //! once; the winning socket is handed to the engine ([`Engine::adopt_tcp`]), so the acceptor
-//! sees an ordinary dialed connection. A single address is dialed by the engine directly. The
-//! clients of akio-http and akio-ws dial this way.
+//! sees an ordinary dialed connection. A single address is dialed by the engine directly, and
+//! so are the addresses of a race the racer is too busy to take (one after another); every
+//! attempt, these included, is bounded by [`HappyEyeballs::connect_timeout`]
+//! ([`Engine::dial_with`], ADR-154). The clients of akio-http and akio-ws dial this way.
 //!
 //! ```no_run
 //! akio::dns::resolve("example.com", 443, |r| match r {
@@ -42,7 +44,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{Acceptor, Conn, Engine};
+use crate::{Acceptor, Conn, DialOptions, Engine};
 
 /// Most resolver threads running at once.
 pub const MAX_THREADS: usize = 4;
@@ -357,8 +359,10 @@ pub struct HappyEyeballs {
     /// recommends 250 ms, at least 100 ms, at most 2 s). Clamped to 10 ms ..= 2 s. Default
     /// [`ATTEMPT_DELAY`].
     pub attempt_delay: Duration,
-    /// How long one attempt may take before it counts as failed. Default [`CONNECT_TIMEOUT`]
-    /// (10 s).
+    /// How long one attempt may take before it counts as failed, whatever the number of
+    /// addresses: a lone address, and the addresses dialed in turn when the racer is full, are
+    /// dialed with it too ([`Engine::dial_with`], ADR-154), not with the engine's
+    /// `Config::connect_timeout`. Default [`CONNECT_TIMEOUT`] (10 s).
     pub connect_timeout: Duration,
 }
 
@@ -389,17 +393,23 @@ impl<A: Acceptor> Acceptor for Shared<A> {
 
 type OnError = Box<dyn FnOnce(io::Error) + Send>;
 
-/// Dials `addrs[i..]` one after another (the racer is full).
+/// Dials `addrs[i..]` one after another (the racer is full), each within `opts`' timeout.
 fn in_turn<A: Acceptor>(
     engine: &Engine,
     weak: Weak<Engine>,
     addrs: Arc<Vec<SocketAddr>>,
     i: usize,
+    opts: DialOptions,
     acceptor: Arc<A>,
     on_error: OnError,
 ) {
-    let addr = addrs[i];
-    engine.dial(addr, Shared(acceptor.clone()), move |e| {
+    let Some(&addr) = addrs.get(i) else {
+        return on_error(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no address to connect to",
+        ));
+    };
+    engine.dial_with(addr, opts, Shared(acceptor.clone()), move |e| {
         match weak.upgrade() {
             Some(engine) if i + 1 < addrs.len() => {
                 in_turn(
@@ -407,6 +417,7 @@ fn in_turn<A: Acceptor>(
                     Arc::downgrade(&engine),
                     addrs,
                     i + 1,
+                    opts,
                     acceptor,
                     on_error,
                 );
@@ -431,6 +442,10 @@ impl HappyEyeballs {
     ) {
         let mut addrs = interleave(&addrs);
         addrs.truncate(MAX_RACE_ADDRS);
+        let timeout = self
+            .connect_timeout
+            .clamp(Duration::from_millis(1), crate::timer::MAX_DELAY);
+        let opts = DialOptions::new().connect_timeout(timeout);
         match addrs.len() {
             0 => {
                 return on_error(io::Error::new(
@@ -438,7 +453,7 @@ impl HappyEyeballs {
                     "no address to connect to",
                 ));
             }
-            1 => return engine.dial(addrs[0], acceptor, on_error),
+            1 => return engine.dial_with(addrs[0], opts, acceptor, on_error),
             _ => {}
         }
         let weak = Arc::downgrade(engine);
@@ -456,6 +471,7 @@ impl HappyEyeballs {
                         weak,
                         Arc::new(addrs),
                         0,
+                        opts,
                         Arc::new(acceptor),
                         Box::new(on_error),
                     ),
@@ -471,7 +487,7 @@ impl HappyEyeballs {
             delay: self
                 .attempt_delay
                 .clamp(Duration::from_millis(10), Duration::from_secs(2)),
-            timeout: self.connect_timeout.max(Duration::from_millis(1)),
+            timeout,
             err: None,
             finish: Some(finish),
         });

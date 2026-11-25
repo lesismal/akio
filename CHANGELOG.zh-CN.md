@@ -10,6 +10,25 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：每次拨号自己的连接超时，`Engine::dial_with`（akio、akio-core、各后端、akio-http；akit A12、A79）
+
+ADR-154。`Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)` 用自己的
+超时约束一次拨号的 TCP 握手，可比引擎的 `Config::connect_timeout` 短或长（超时后 `on_error` 收到
+`TimedOut`），这样代理的每个上游都能在同一个引擎上按自己的超时拨号。所有 TCP 后端都支持：epoll/kqueue
+事件循环、轮次调度、io_uring，以及 DPDK（代替其协议栈的 10 s）。`HappyEyeballs::dial` 和 `connect` 现在
+每次尝试都使用其 `connect_timeout`，包括单个地址和竞速线程已满时依次拨的地址（过去用引擎的），经由它们
+拨号的客户端（akio-http 的 `Client`、`H2Client::connect`、akio-ws）也是如此；`H2Client::dial` 同样使用
+`H2Options::happy_eyeballs.connect_timeout`。`dial_udp` 没有连接超时：UDP 没有握手。
+
+### 新增：`akio::timer::after_send`，任何线程都能设置的定时器（akio-core；akit A45）
+
+ADR-154。`timer::after_send(delay, f: FnOnce() + Send)` 在 akio 唯一的进程级定时器线程（`akio-timer`，
+首次使用时启动，空闲 30 s 后退出）上执行 `f`，无论由哪个线程设置；`SendTimer::cancel()` 可在任何线程
+调用，并说明定时器是否仍在等待。有界（`MAX_SEND_TIMERS`，最多 2^20 个待执行，超出返回
+`Error::Overloaded`），从不提前，panic 的任务会被捕获并记录。供没有自己事件循环的控制面代码使用（探测及其
+截止时间、清理、刷新）；任务必须很快且不阻塞，把实际工作投递到别处。在 I/O 线程上，事件循环内的
+`timer::after` 仍然更便宜。
+
 ### 新增：供应用自身阻塞任务使用的 `akio::Pool`（akio、akio-core；akit A117）
 
 `akio` 门面在 `PoolConfig`、`PoolStats` 之外再导出 `Pool`、`Rejected` 和 `Job`：应用可以在引擎的

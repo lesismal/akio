@@ -32,3 +32,52 @@ pub(crate) fn read_retry(s: &mut impl std::io::Read, buf: &mut [u8]) -> std::io:
         }
     }
 }
+
+/// An address whose connects hang (their SYNs go unanswered), held open while this lives.
+pub(crate) struct BlackHole {
+    pub(crate) addr: std::net::SocketAddr,
+    _listener: Option<std::net::TcpListener>,
+    _held: Vec<std::net::TcpStream>,
+}
+
+/// Whether a blocking connect to `at` is still pending after 400 ms.
+fn hangs(at: std::net::SocketAddr) -> bool {
+    matches!(
+        std::net::TcpStream::connect_timeout(&at, std::time::Duration::from_millis(400)),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+    )
+}
+
+/// A black hole for connect-timeout tests: a loopback listener whose accept queue is full
+/// (Linux drops the SYNs past it), else a documentation address (TEST-NET, RFC 5737) the
+/// network drops (macOS answers a full queue with a reset). `None`, with a message, where
+/// every candidate answers at once (no route, a refusing gateway): the caller skips.
+pub(crate) fn black_hole() -> Option<BlackHole> {
+    if let Ok(l) = akio_sys::listen("127.0.0.1:0".parse().unwrap(), false, 1) {
+        if let Ok(at) = l.local_addr() {
+            let held: Vec<_> = (0..16)
+                .filter_map(|_| akio_sys::connect_nonblocking(at).ok())
+                .collect();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if hangs(at) {
+                return Some(BlackHole {
+                    addr: at,
+                    _listener: Some(l),
+                    _held: held,
+                });
+            }
+        }
+    }
+    for at in ["192.0.2.1:81", "198.51.100.1:81", "203.0.113.1:81"] {
+        let at: std::net::SocketAddr = at.parse().unwrap();
+        if hangs(at) {
+            return Some(BlackHole {
+                addr: at,
+                _listener: None,
+                _held: Vec::new(),
+            });
+        }
+    }
+    eprintln!("skipped: no black hole here (every candidate answers a connect at once)");
+    None
+}

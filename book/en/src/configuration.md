@@ -32,7 +32,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `udp_idle_timeout` | 60 s | yes | drop a silent UDP peer (`idle_timeout` wins when set and shorter) |
 | `udp_max_peers` | 65536 | no | most peers per UDP listener; new peers beyond are dropped and counted; `None` = no limit |
 | `udp_gro` | true | no | Linux UDP GRO where the kernel supports it; needs `read_buffer` >= 64 KiB |
-| `connect_timeout` | 10 s | no | `Engine::dial` gives up (`TimedOut` to `on_error`) when not connected after this long; `None` leaves it to the OS |
+| `connect_timeout` | 10 s | no | `Engine::dial` gives up (`TimedOut` to `on_error`) when not connected after this long; `None` leaves it to the OS. One dial sets its own with `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), ..)`; `HappyEyeballs::connect_timeout` bounds every attempt it makes |
 | `shutdown_timeout` | 10 s | yes | after `shutdown`, force-close what is still open after this long |
 | `retire_timeout` | `None` | yes | an I/O thread retired by `Engine::set_threads` serves its connections this long, then shuts the rest down gracefully (`on_shutdown`, force-closed after `shutdown_timeout`); `None`: until they close |
 | `max_connections` | 0 (none) | yes | accepted connections beyond this many open ones are closed right away (engine-wide count, dialed and UDP peers included) |

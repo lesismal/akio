@@ -250,3 +250,69 @@ fn udp_loops_have_timers_too() {
     assert!(t0.elapsed() >= Duration::from_millis(30));
     stop(&e);
 }
+
+/// `timer::after_send` (ADR-154, akit A45): set from a thread that is not an I/O thread, run
+/// once on the process-wide timer thread, never early; cancelled from yet another thread.
+#[test]
+fn after_send_from_any_thread() {
+    assert!(!timer::on_loop());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t0 = Instant::now();
+    let t = timer::after_send(Duration::from_millis(40), move || {
+        let _ = tx.send((t0.elapsed(), thread::current().name().map(str::to_owned)));
+    })
+    .unwrap();
+    let (took, name) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(took >= Duration::from_millis(40), "{took:?}");
+    assert_eq!(name.as_deref(), Some("akio-timer"));
+    assert!(
+        rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "runs once"
+    );
+    assert!(!t.cancel(), "it already ran");
+
+    // Cancelled before it is due (from another thread): never runs.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h = hits.clone();
+    let t = timer::after_send(Duration::from_millis(50), move || {
+        h.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
+    assert!(thread::spawn(move || t.cancel()).join().unwrap());
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+/// `timer::after_send` from an I/O thread's callback: the job runs on the timer thread and
+/// reaches the connection back with `Conn::run_on_loop`.
+#[test]
+fn after_send_from_an_io_thread_comes_back_with_run_on_loop() {
+    struct Later;
+    impl Handler for Later {
+        fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+            let (c, data) = (c.clone(), data.to_vec());
+            let _ = timer::after_send(Duration::from_millis(10), move || {
+                assert!(!timer::on_loop());
+                let _ = c.run_on_loop(move |_h, c| {
+                    let _ = c.send(&data);
+                });
+            })
+            .unwrap();
+        }
+    }
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Later>| Later)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(b"back\n").unwrap();
+    assert_eq!(read_lines(&mut s, 1), ["back"]);
+    stop(&e);
+}

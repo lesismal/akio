@@ -961,6 +961,27 @@ impl Group for UringGroup {
             acceptor,
             on_error,
             unix: false,
+            timeout: None,
+        });
+    }
+
+    fn dial_with(
+        &self,
+        addr: SocketAddr,
+        opts: akio_core::DialOptions,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        let stream = match akio_sys::connect_nonblocking(addr) {
+            Ok(s) => s,
+            Err(e) => return on_error(e),
+        };
+        self.post_dial(Cmd::Dial {
+            stream,
+            acceptor,
+            on_error,
+            unix: false,
+            timeout: opts.connect_timeout,
         });
     }
 
@@ -976,6 +997,7 @@ impl Group for UringGroup {
             acceptor,
             on_error,
             unix: false,
+            timeout: None,
         });
     }
 
@@ -990,6 +1012,7 @@ impl Group for UringGroup {
             acceptor,
             on_error,
             unix: true,
+            timeout: None,
         });
     }
 
@@ -1009,6 +1032,7 @@ impl Group for UringGroup {
             acceptor,
             on_error,
             unix: false,
+            timeout: None,
         });
     }
 }

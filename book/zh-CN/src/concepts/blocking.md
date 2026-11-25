@@ -79,6 +79,26 @@ panic 和被拒绝的任务数。
 任何好处。`queue_capacity` 按你能接受多少排队延迟来定：`Overloaded` 是该回复"忙"（HTTP 503）
 而不是继续排队的信号。
 
+## 自己的线程池
+
+某一类不能拖住其他任何事情的阻塞任务（例如缓存的磁盘层，其磁盘可能卡住）应有一个自己的线程池，
+与 engine 的分开：`akio::Pool`，同一种有界线程池。
+
+```rust,ignore
+let mut cfg = akio::PoolConfig::default();
+cfg.max_threads = 16;
+cfg.queue_capacity = 4096;
+let disk = akio::Pool::new(cfg);                          // Arc<Pool>
+match disk.try_execute(Box::new(move || { /* 读文件，然后 conn.run_on_loop(..) */ })) {
+    Ok(()) => {}
+    Err(akio::Rejected(_job)) => { /* 已满或已关闭：回复"忙" */ }
+}
+// 结束时：disk.shutdown(); disk.join();
+```
+
+`try_execute` 从不阻塞；队列已满或线程池已关闭时，`Rejected` 把任务交还。`Pool::stats()` 报告它的
+状态，就像 `Engine::pool_stats()` 报告 engine 的线程池一样。
+
 ## 在协议 crate 中
 
 协议 crate 用各自的方式提供同样的思路；handler 从不阻塞，答复可以稍后从任何线程发出：

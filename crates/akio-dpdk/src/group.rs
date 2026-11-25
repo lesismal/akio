@@ -155,6 +155,7 @@ impl DpdkGroup {
         udp: bool,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        timeout: Option<std::time::Duration>,
     ) {
         // With several queues the NIC's RSS decides which queue a reply lands on: the dialing
         // queue picks a local port with `port % queues == queue`, and a reply that lands on
@@ -166,6 +167,7 @@ impl DpdkGroup {
             udp,
             acceptor,
             on_error,
+            timeout,
         });
     }
 }
@@ -215,7 +217,17 @@ impl Group for DpdkGroup {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        self.post_dial(addr, false, acceptor, on_error);
+        self.post_dial(addr, false, acceptor, on_error, None);
+    }
+
+    fn dial_with(
+        &self,
+        addr: SocketAddr,
+        opts: akio_core::DialOptions,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        self.post_dial(addr, false, acceptor, on_error, opts.connect_timeout);
     }
 
     fn dial_udp(
@@ -224,6 +236,6 @@ impl Group for DpdkGroup {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        self.post_dial(addr, true, acceptor, on_error);
+        self.post_dial(addr, true, acceptor, on_error, None);
     }
 }

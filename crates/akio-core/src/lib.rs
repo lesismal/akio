@@ -20,6 +20,7 @@ pub mod balance;
 mod config;
 mod conn;
 mod datagrams;
+mod dial;
 mod error;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -56,6 +57,7 @@ pub use conn::{Offloaded, SocketOp};
 #[doc(hidden)]
 pub use datagrams::{DatagramPort, DatagramsFactory, datagrams_factory};
 pub use datagrams::{DatagramSender, Datagrams, DatagramsHandler, DatagramsIter, Replies};
+pub use dial::DialOptions;
 pub use error::{Error, Result};
 #[doc(hidden)]
 pub use group::{AcceptFilter, FilterCell, FilterView, Group, ListenSocket};

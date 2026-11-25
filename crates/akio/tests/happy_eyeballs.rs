@@ -3,6 +3,8 @@
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
+mod common;
+
 use std::{
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{Arc, Mutex, mpsc},
@@ -223,4 +225,45 @@ fn connect_resolves_then_races() {
     );
     let got = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
     assert_eq!(got, SocketAddr::new([127, 0, 0, 1].into(), port));
+}
+
+/// A lone address is dialed within `connect_timeout` too (ADR-154, akit A12/A79), not the
+/// engine's `Config::connect_timeout`: here 300 ms against the engine's 30 s, on the backend
+/// under test.
+#[test]
+fn a_lone_address_gets_the_connect_timeout() {
+    let Some(hole) = common::black_hole() else {
+        return;
+    };
+    let mut cfg = akio::Config::default();
+    cfg.connect_timeout = Some(Duration::from_secs(30));
+    cfg.shutdown_timeout = Duration::from_millis(300);
+    let e = Arc::new(
+        Engine::builder()
+            .config(cfg)
+            .listen(
+                akio::Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .backend(common::backend())
+                    .threads(1)
+                    .serve(fn_acceptor(|_c: &Conn<Nop>| Nop)),
+            )
+            .build()
+            .unwrap(),
+    );
+    e.start().unwrap();
+    let mut he = HappyEyeballs::default();
+    he.connect_timeout = Duration::from_millis(300);
+    let (rx, start) = race(&e, he, vec![hole.addr]);
+    let err = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("no outcome")
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    let took = start.elapsed();
+    assert!(
+        took >= Duration::from_millis(290) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    e.shutdown();
+    e.wait();
 }

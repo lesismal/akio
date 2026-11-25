@@ -330,7 +330,8 @@ impl Loop {
                     udp,
                     acceptor,
                     on_error,
-                } => self.dial(gid, addr, udp, acceptor, on_error),
+                    timeout,
+                } => self.dial(gid, addr, udp, acceptor, on_error, timeout),
                 Cmd::Exit => return true,
             }
         }
@@ -412,6 +413,8 @@ impl Loop {
         udp: bool,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
+        // A TCP dial's own connect timeout (ADR-154); `None`: `CONNECT_TIMEOUT`.
+        timeout: Option<Duration>,
     ) {
         // The stack has one interface: a scope id (or flow label) means nothing to it.
         let remote = SocketAddr::new(addr.ip(), addr.port());
@@ -458,7 +461,10 @@ impl Loop {
                             gid,
                             acceptor,
                             on_error,
-                            deadline: Instant::now() + crate::CONNECT_TIMEOUT,
+                            deadline: Instant::now()
+                                + timeout
+                                    .unwrap_or(crate::CONNECT_TIMEOUT)
+                                    .min(akio_core::timer::MAX_DELAY),
                         },
                     );
                     return;

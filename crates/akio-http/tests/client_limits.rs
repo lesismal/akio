@@ -477,3 +477,99 @@ fn shorter_timeout_after_a_longer_one_on_the_same_connection() {
     assert_eq!(srv.conns.load(Ordering::SeqCst), 1);
     stop(&e);
 }
+
+/// Whether a blocking connect to `at` is still pending after 400 ms.
+fn hangs(at: std::net::SocketAddr) -> bool {
+    matches!(
+        TcpStream::connect_timeout(&at, Duration::from_millis(400)),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+    )
+}
+
+/// An address whose connects hang: a loopback listener with its accept queue full (Linux drops
+/// the SYNs past it), else a TEST-NET address the network drops. With what keeps it so.
+fn black_hole() -> Option<(std::net::SocketAddr, Option<TcpListener>, Vec<TcpStream>)> {
+    if let Ok(l) = akio_sys::listen("127.0.0.1:0".parse().unwrap(), false, 1) {
+        let at = l.local_addr().unwrap();
+        let held: Vec<_> = (0..16)
+            .filter_map(|_| akio_sys::connect_nonblocking(at).ok())
+            .collect();
+        thread::sleep(Duration::from_millis(100));
+        if hangs(at) {
+            return Some((at, Some(l), held));
+        }
+    }
+    ["192.0.2.1:81", "198.51.100.1:81", "203.0.113.1:81"]
+        .into_iter()
+        .map(|a| a.parse().unwrap())
+        .find(|&a| hangs(a))
+        .map(|a| (a, None, Vec::new()))
+}
+
+/// `ClientOptions::happy_eyeballs.connect_timeout` bounds the connect to a lone address too
+/// (akit A12, ADR-154), not the engine's `Config::connect_timeout` (30 s here).
+#[test]
+fn connect_timeout_bounds_a_lone_address() {
+    let Some((hole, _l, _held)) = black_hole() else {
+        eprintln!("skipped: no black hole here (every candidate answers a connect at once)");
+        return;
+    };
+    let mut cfg = akio::Config::default();
+    cfg.connect_timeout = Some(Duration::from_secs(30));
+    cfg.shutdown_timeout = Duration::from_millis(300);
+    let e = Engine::builder()
+        .config(cfg)
+        .client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let e = Arc::new(e);
+    let c = client(&e, |o| {
+        o.happy_eyeballs.connect_timeout = Duration::from_millis(300);
+    });
+    let t0 = Instant::now();
+    let r = get(&c, &format!("http://{hole}/"));
+    let took = t0.elapsed();
+    match r {
+        Err(ClientError::Io(err)) => assert_eq!(err.kind(), std::io::ErrorKind::TimedOut),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        took >= Duration::from_millis(290) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    stop(&e);
+}
+
+/// `H2Client::dial` (an address, no race) connects within `H2Options::happy_eyeballs`'
+/// `connect_timeout` as `H2Client::connect` does (ADR-154).
+#[test]
+fn h2_dial_gets_the_connect_timeout() {
+    use akio_http::h2client::{H2Client, H2Options};
+    let Some((hole, _l, _held)) = black_hole() else {
+        eprintln!("skipped: no black hole here (every candidate answers a connect at once)");
+        return;
+    };
+    let mut cfg = akio::Config::default();
+    cfg.connect_timeout = Some(Duration::from_secs(30));
+    cfg.shutdown_timeout = Duration::from_millis(300);
+    let e = Engine::builder()
+        .config(cfg)
+        .client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut opts = H2Options::default();
+    opts.happy_eyeballs.connect_timeout = Duration::from_millis(300);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t0 = Instant::now();
+    H2Client::dial(&e, hole, None, opts, move |r| {
+        let _ = tx.send(r.err().map(|e| e.kind()));
+    });
+    let kind = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("no outcome");
+    assert_eq!(kind, Some(std::io::ErrorKind::TimedOut));
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    stop(&e);
+}

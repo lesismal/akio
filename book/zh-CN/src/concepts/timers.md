@@ -48,6 +48,25 @@ fn delayed(ctx: &mut Context) {
 HTTP/1.1 流水线请求仍按请求顺序应答；HTTP/2 和 HTTP/3 的流在各自定时器触发时应答。在非 I/O 线程上
 调用时，`Context::after` 退回到 akio-http 共享的定时器线程。
 
+## 在任意线程上：`after_send`
+
+在 I/O 线程之外运行的代码（控制面：健康探测及其截止时间、周期性清理、刷新、锁过期）没有自己的事件循环。
+`akio::timer::after_send` 在 akio 唯一的进程级定时器线程（`akio-timer`，首次使用时启动，没有待执行的
+定时器 30 s 后退出）上执行一个 `Send` 闭包，无论由哪个线程设置：
+
+```rust,ignore
+pub fn after_send(delay: Duration, f: impl FnOnce() + Send + 'static) -> Result<SendTimer>
+```
+
+- 它从不提前执行，且只执行一次。`SendTimer::cancel()` 可在任何线程调用，返回定时器是否仍在等待
+  （此时其闭包被丢弃而不执行）。
+- 整个进程最多同时有 `timer::MAX_SEND_TIMERS`（约一百万）个待执行；超出后 `after_send` 返回
+  `Error::Overloaded` 并丢弃 `f`。
+- 进程中所有这类定时器都在这一个线程上执行，所以 `f` 必须很快且不能阻塞：有实际工作时把它投递到别处
+  （用 `Conn::run_on_loop` 投递到某个连接的事件循环、投递到[线程池](blocking.md)、投递到 channel）。
+  `f` 中的 panic 会被捕获并记录，线程继续运行。
+- 设置定时器要取一把所有线程共享的锁：在 I/O 线程上请优先用 `after`。
+
 ## 怎么选
 
 | 你想要 | 用 |
@@ -55,7 +74,7 @@ HTTP/1.1 流水线请求仍按请求顺序应答；HTTP/2 和 HTTP/3 的流在�
 | 稍后在这个连接的线程上做点事（延迟回复、重试、单请求截止时间、心跳） | `akio::timer::after` / `Context::after` |
 | 关闭长时间没有动静或写阻塞的连接 | `Config::idle_timeout`、`Config::write_timeout` |
 | 执行阻塞任务再回来 | [`spawn_blocking`](blocking.md) |
-| 从引擎外部触发（调度器，与任何连接无关的时钟） | 自己的线程，通过 `Conn` 发送 |
+| 从引擎外部触发（调度器、探测的截止时间、与任何连接无关的时钟） | `akio::timer::after_send`，用 `Conn::run_on_loop` 回到连接 |
 
 自己的定时器线程仍然可用，但每个回复都要跨线程：加锁入队、在别的线程上写、唤醒循环。在 HttpArena 的
 `async` 场景（32,000 个连接，每个请求等待 10 ms）中，这条路径大约损失五分之一的吞吐；测量数据见

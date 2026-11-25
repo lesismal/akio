@@ -94,6 +94,8 @@ pub(crate) enum Cmd {
         on_error: Box<dyn FnOnce(io::Error) + Send>,
         /// A Unix-domain socket (ADR-120): its addresses are `UNIX_ADDR`.
         unix: bool,
+        /// The dial's own connect timeout (`DialOptions`, ADR-154); `None`: the engine's.
+        timeout: Option<Duration>,
     },
     /// A listener joins the group (ADR-130): what accepting on its sockets needs. Its sockets
     /// follow as `AddListener`.
@@ -746,13 +748,14 @@ impl Loop {
         lc.write_timer = Some(self.wheel.schedule(at, id | WRITE_TIMER));
     }
 
-    /// Arms the connect deadline of a pending dial (if `connect_timeout` is set). The timer is
-    /// not cancelled when the dial completes: the connection then lives under a new id, and a
-    /// stale deadline finds no pending dial.
-    fn arm_connect(&mut self, id: u64) {
-        let Some(ct) = self.cfg.connect_timeout else {
+    /// Arms the connect deadline of a pending dial: its own `timeout` (`DialOptions`, ADR-154),
+    /// else `connect_timeout` if set. The timer is not cancelled when the dial completes: the
+    /// connection then lives under a new id, and a stale deadline finds no pending dial.
+    fn arm_connect(&mut self, id: u64, timeout: Option<Duration>) {
+        let Some(ct) = timeout.or(self.cfg.connect_timeout) else {
             return;
         };
+        let ct = ct.min(akio_core::timer::MAX_DELAY); // a deadline that cannot overflow
         let now = self.tick();
         if self.wheel.is_empty() {
             self.wheel.advance(now, drop);
@@ -936,7 +939,8 @@ impl Loop {
                 acceptor,
                 on_error,
                 unix,
-            } => self.begin_dial(stream, addr, acceptor, on_error, unix),
+                timeout,
+            } => self.begin_dial(stream, addr, acceptor, on_error, unix, timeout),
             Cmd::Listen { lid, ear } => {
                 if self.ears.len() <= lid {
                     self.ears.resize_with(lid + 1, || None);
@@ -1447,6 +1451,7 @@ impl Loop {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
         unix: bool,
+        timeout: Option<Duration>,
     ) {
         if self.draining.is_some() {
             return on_error(io::Error::new(
@@ -1467,7 +1472,7 @@ impl Loop {
                 unix,
             },
         );
-        self.arm_connect(id);
+        self.arm_connect(id, timeout);
     }
 
     fn finish_connect(&mut self, id: u64) {

@@ -13,7 +13,7 @@
 
 | 调用 | 返回 |
 |---|---|
-| `Engine::metrics()` | `Metrics`：每线程的 `LoopMetrics`（所属、是否运行、计数器）、`total`、`open_connections`、`pool`、`uptime`；`to_prometheus()`、`to_json()` |
+| `Engine::metrics()` | `Metrics`：每线程的 `LoopMetrics`（所属、是否运行、计数器）、`total`、`open_connections`、`open_accepted`（只计 accept 的 TCP 连接，不含拨出的连接和 UDP 对端；也可用 `Telemetry::open_accepted()`）、`pool`、`uptime`；`to_prometheus()`、`to_json()` |
 | `Engine::connections(timeout)` | 连接表：每个连接一个 `ConnInfo`（id、对端、本端、所属线程、存活时长、空闲时长、收发字节、排队字节、是否暂停读、是否背压、transport、是否 UDP）。通过询问每个 I/O 线程收集；不要在 I/O 线程的回调里调用 |
 | `Engine::slow_callbacks()` | 最近的慢回调（最多 256 条），由旧到新 |
 | `Engine::pool_stats()` | 逻辑线程池的线程数、空闲数、排队数、完成数、panic 数、拒绝数 |

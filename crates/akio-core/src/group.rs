@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{DatagramSender, DynAcceptor, LoopStats};
+use crate::{DatagramSender, DialOptions, DynAcceptor, LoopStats};
 
 /// A listener's accept filter (ADR-099): called on the I/O thread with the peer's address
 /// right after `accept`; `false` closes the connection before anything else runs.
@@ -246,10 +246,9 @@ pub trait Group: Send + Sync {
     fn shutdown(&self);
     /// Blocks until the I/O threads have exited.
     fn join(&self);
-    /// Starts a non-blocking connect to `addr` served by `acceptor`; `on_error` is called
-    /// (on an I/O thread, or inline) if the connection cannot be established.
     /// Starts a UDP "connection" to `addr` with its own socket, served by `acceptor`. Only UDP
-    /// groups implement it.
+    /// groups implement it. It takes no connect timeout: UDP has no handshake, the socket is
+    /// connected at once, and a silent peer is ended by `Config::udp_idle_timeout`.
     fn dial_udp(
         &self,
         _addr: SocketAddr,
@@ -289,12 +288,28 @@ pub trait Group: Send + Sync {
         self.bind_udp(sock, acceptor)
     }
 
+    /// Starts a non-blocking connect to `addr` served by `acceptor`; `on_error` is called
+    /// (on an I/O thread, or inline) if the connection cannot be established, with `TimedOut`
+    /// once the engine's `Config::connect_timeout` passes.
     fn dial(
         &self,
         addr: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     );
+
+    /// [`dial`](Self::dial) with options of its own (ADR-154): `opts.connect_timeout`, when
+    /// set, in place of the engine's. TCP groups implement it; the default ignores the options.
+    fn dial_with(
+        &self,
+        addr: SocketAddr,
+        opts: DialOptions,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        let _ = opts;
+        self.dial(addr, acceptor, on_error);
+    }
 
     /// Serves `stream`, whose non-blocking connect to `addr` is in progress (made by the
     /// caller, e.g. from a bound local port), exactly like a [`dial`](Self::dial)ed one:

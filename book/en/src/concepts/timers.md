@@ -53,6 +53,27 @@ Pipelined HTTP/1.1 requests are still answered in request order; HTTP/2 and HTTP
 answered as their timers fire. Called somewhere that is not an I/O thread, `Context::after`
 falls back to akio-http's shared timer thread.
 
+## From any thread: `after_send`
+
+Code that runs off the I/O threads (a control plane: health probes and their deadlines, periodic
+sweeps, refreshes, lock expiries) has no loop of its own. `akio::timer::after_send` runs a `Send`
+closure on akio's one process-wide timer thread (`akio-timer`, started on first use, leaving
+after 30 s with nothing pending), from whatever thread sets it:
+
+```rust,ignore
+pub fn after_send(delay: Duration, f: impl FnOnce() + Send + 'static) -> Result<SendTimer>
+```
+
+- It never runs early, and runs once. `SendTimer::cancel()` works from any thread and returns
+  whether the timer was still pending (its closure is then dropped unrun).
+- At most `timer::MAX_SEND_TIMERS` (about a million) are pending in the process; past that
+  `after_send` returns `Error::Overloaded` and drops `f`.
+- Every such timer of the process runs on that one thread, so `f` must be quick and must not
+  block: when there is real work, it posts it elsewhere (to a connection's loop with
+  `Conn::run_on_loop`, to a [pool](blocking.md), to a channel). A panic in `f` is caught and
+  logged; the thread goes on.
+- Setting one takes a lock shared by every thread: on an I/O thread, prefer `after`.
+
 ## When to use which
 
 | You want | Use |
@@ -60,7 +81,7 @@ falls back to akio-http's shared timer thread.
 | Do something on this connection's thread later (a delayed reply, a retry, a per-request deadline, a heartbeat) | `akio::timer::after` / `Context::after` |
 | Close connections that go quiet, or whose writes stall | `Config::idle_timeout`, `Config::write_timeout` |
 | Run blocking work and come back | [`spawn_blocking`](blocking.md) |
-| Fire from outside the engine (a scheduler, a clock unrelated to any connection) | a thread of your own, sending through a `Conn` |
+| Fire from outside the engine (a scheduler, a probe's deadline, a clock unrelated to any connection) | `akio::timer::after_send`, reaching a connection with `Conn::run_on_loop` |
 
 A timer thread of your own still works, but each reply then crosses threads: a lock to queue
 it, a write from the wrong thread, a wakeup of the loop. On HttpArena's `async` profile

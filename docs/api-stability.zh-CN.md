@@ -25,7 +25,7 @@
 | 级别 | Crate | 承诺 |
 |---|---|---|
 | 公开 | `akio`、`akio-core`、`akio-log`、`akio-tls`、`akio-http`、`akio-ws`、`akio-mux`、`akio-socks`、`akio-arpc`、`akio-grpc`、`akio-protobuf`、`akio-protobuf-build`、`akio-kcp`、`akio-quic`、`akio-h3`、`akio-ebpf`、`akio-turn`、`akio-webrtc`、`akio-media` | 其公开 API（见下）完整遵循 semver。 |
-| 内部 | `akio-sys`、`akio-buf`、`akio-timer`、`akio-pool`、`akio-epoll`、`akio-uring`、`akio-crypto`、`akio-x509`、`akio-dtls`、`akio-srtp`、`akio-rtp`、`akio-sctp`、`akio-ice`、`akio-deflate`、`akio-brotli`、`akio-zstd`、`akio-regex` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `akio` / `akio-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `akio-core` 和 `akio` 中的再导出受到保护。 |
+| 内部 | `akio-sys`、`akio-buf`、`akio-timer`、`akio-pool`、`akio-epoll`、`akio-uring`、`akio-crypto`、`akio-x509`、`akio-dtls`、`akio-srtp`、`akio-rtp`、`akio-sctp`、`akio-ice`、`akio-deflate`、`akio-brotli`、`akio-zstd`、`akio-regex` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `akio` / `akio-core`。它们贡献给公开 API 的类型（`SharedBuf`、`Pool`、`PoolConfig`、`PoolStats`、`Rejected`、`Job`）通过 `akio-core` 和 `akio` 中的再导出受到保护。 |
 | 实验性 | `akio-dpdk`，以及 `akio` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`akio::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/akio-dpdk.txt` 只用于让变化可见。 |
 | 实验性 | `akio-wasm`，以及 `akio` 的 `wasm` feature（`akio::wasm`） | WebAssembly 运行时按里程碑实现（ADR-125），在最后一个塑造其 API 的里程碑（W4，实例池）之前，API 可能在任何发布中变化；快照 `api/akio-wasm.txt` 只用于让变化可见。 |
 
@@ -40,7 +40,7 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
 
 - 标记为 `#[doc(hidden)]` 的条目以及只能经由它们访问的一切。这些是 workspace 内各 crate 共享的、
   面向后端的管道代码（`ConnInner`、`LoopLink`、`Group`、`DynAcceptor`、`DynHandler`、`LoopStats`、
-  `Pool`、`akio_http::transport`、`akio_ws::WsSession`、`akio_ebpf::cbpf`、`Conn::inner`、
+  `akio_http::transport`、`akio_ws::WsSession`、`akio_ebpf::cbpf`、`Conn::inner`、
   遥测辅助函数等），可能在任何发布中变化。
 - `fuzzing` cargo feature 及其启用的 `fuzzing` 模块（`fuzz/` 的入口）。
 - `unstable` cargo feature（`akio`、`akio-tls`、`akio-quic`、`akio-webrtc`）及其启用的一切：

@@ -1245,3 +1245,101 @@ fn a_close_posted_from_a_timer_callback_is_not_lost() {
     drop(stalled);
     stop(&e);
 }
+
+/// An engine with one TCP listener on the backend under test (so dials run on it) and `ct` as
+/// its `connect_timeout`.
+fn dial_engine(ct: Duration) -> Engine {
+    let mut c = cfg();
+    c.connect_timeout = Some(ct);
+    let e = Engine::builder()
+        .config(c)
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e
+}
+
+/// `dial_with` and how long its error took to come.
+fn dial_with_error(
+    e: &Engine,
+    addr: SocketAddr,
+    opts: akio::DialOptions,
+) -> (std::io::ErrorKind, Duration) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t0 = std::time::Instant::now();
+    e.dial_with(
+        addr,
+        opts,
+        fn_acceptor(|_c: &Conn<Echo>| Echo),
+        move |err| {
+            let _ = tx.send((err.kind(), t0.elapsed()));
+        },
+    );
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("on_error not called")
+}
+
+/// `DialOptions::connect_timeout` (ADR-154, akit A12/A79): a dial into a black hole fails with
+/// `TimedOut` at its own timeout, long before the engine's, and at a longer one past it.
+#[test]
+fn dial_with_its_own_connect_timeout() {
+    let Some(hole) = common::black_hole() else {
+        return;
+    };
+    let e = dial_engine(Duration::from_secs(30));
+    let opts = akio::DialOptions::new().connect_timeout(Duration::from_millis(300));
+    let (kind, took) = dial_with_error(&e, hole.addr, opts);
+    assert_eq!(kind, std::io::ErrorKind::TimedOut);
+    assert!(
+        took >= Duration::from_millis(290) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    stop(&e);
+
+    // Longer than the engine's: the dial's own wins.
+    let e = dial_engine(Duration::from_millis(100));
+    let opts = akio::DialOptions::new().connect_timeout(Duration::from_millis(1200));
+    let (kind, took) = dial_with_error(&e, hole.addr, opts);
+    assert_eq!(kind, std::io::ErrorKind::TimedOut);
+    assert!(took >= Duration::from_millis(1150), "{took:?}");
+    // Without one, the engine's.
+    let (kind, took) = dial_with_error(&e, hole.addr, akio::DialOptions::new());
+    assert_eq!(kind, std::io::ErrorKind::TimedOut);
+    assert!(took < Duration::from_millis(1000), "{took:?}");
+    stop(&e);
+}
+
+/// `dial_with` connects as `dial` does when the peer answers.
+#[test]
+fn dial_with_connects() {
+    let e = dial_engine(Duration::from_secs(10));
+    let outside = std::net::TcpListener::bind(localhost()).unwrap();
+    let opts = akio::DialOptions::new().connect_timeout(Duration::from_secs(2));
+    let (tx, rx) = std::sync::mpsc::channel();
+    e.dial_with(
+        outside.local_addr().unwrap(),
+        opts,
+        fn_acceptor(move |c: &Conn<Echo>| {
+            let _ = tx.send(c.peer_addr());
+            Echo
+        }),
+        |err| panic!("dial failed: {err}"),
+    );
+    let (mut far, _) = outside.accept().unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        outside.local_addr().unwrap()
+    );
+    far.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    far.write_all(b"ping").unwrap();
+    let mut b = [0u8; 4];
+    far.read_exact(&mut b).unwrap();
+    assert_eq!(&b, b"ping");
+    stop(&e);
+}

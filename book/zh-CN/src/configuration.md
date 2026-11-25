@@ -32,7 +32,7 @@
 | `udp_idle_timeout` | 60 s | 是 | 丢弃静默的 UDP 对端（设置了更短的 `idle_timeout` 时以它为准） |
 | `udp_max_peers` | 65536 | 否 | 每个 UDP listener 的最大对端数；超出后新对端被丢弃并计数；`None` 为不限 |
 | `udp_gro` | true | 否 | 内核支持时启用 Linux UDP GRO；需要 `read_buffer` >= 64 KiB |
-| `connect_timeout` | 10 s | 否 | `Engine::dial` 这么久仍未连上时放弃（`on_error` 收到 `TimedOut`）；`None` 交给操作系统 |
+| `connect_timeout` | 10 s | 否 | `Engine::dial` 这么久仍未连上时放弃（`on_error` 收到 `TimedOut`）；`None` 交给操作系统。单次拨号可用 `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), ..)` 设置自己的超时；`HappyEyeballs::connect_timeout` 约束它发起的每一次尝试 |
 | `shutdown_timeout` | 10 s | 是 | `shutdown` 之后，超过这么久仍未关闭的连接被强制关闭 |
 | `retire_timeout` | `None` | 是 | 被 `Engine::set_threads` 退役的 I/O 线程继续服务其连接这么久，然后优雅关闭剩下的（`on_shutdown`，`shutdown_timeout` 后强制关闭）；`None`：直到它们自己关闭 |
 | `max_connections` | 0（不限） | 是 | 打开的连接数达到此值后，新 accept 的连接立即关闭（全 engine 计数，含 dial 的连接和 UDP 对端） |

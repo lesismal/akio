@@ -153,6 +153,16 @@ impl Group for SharedListener {
         self.group.dial(addr, acceptor, on_error);
     }
 
+    fn dial_with(
+        &self,
+        addr: SocketAddr,
+        opts: akio_core::DialOptions,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        self.group.dial_with(addr, opts, acceptor, on_error);
+    }
+
     fn dial_stream(
         &self,
         stream: std::net::TcpStream,
