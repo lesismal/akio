@@ -36,7 +36,8 @@ epoll/kqueue 每线程事件循环上的 TCP listener **共享**一组 I/O 线�
 gRPC 和管理三个端口运行 8 个 I/O 线程，而不是 24 个（ADR-130）。每个线程监听所有 listener 的
 socket，并运行对应的 acceptor 和 accept 过滤器；每个连接留在接受它的线程上。设置了 `.threads(n)`
 或 `.dedicated()` 的 listener 独占一组线程（隔离：它的连接不会排在其他 listener 的回调之后），
-io_uring、轮次调度、UDP、数据报、DPDK 和 BPF 引流的 listener 也独占线程组。移除共享 listener 只
+io_uring、UDP、数据报、DPDK 和 BPF 引流的 listener 也独占线程组；轮次调度的 listener 按相同的
+`RoundsConfig` 共享 worker。移除共享 listener 只
 关闭它的 socket、只排空它的连接；对共享 listener 调用 `Engine::set_threads` 会调整共享组的大小，
 影响组内所有 listener。handler 类型、后端和线程数各不相同的多个 listener 可以放在同一个 engine
 里。

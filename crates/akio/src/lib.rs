@@ -397,10 +397,12 @@ impl Listener {
     /// Gives this listener `n` I/O threads of its own (ADR-130). Without it (nor
     /// [`dedicated`](Self::dedicated)), a TCP listener on epoll/kqueue with per-thread loops
     /// shares the engine's I/O threads for its kind with the other such listeners
-    /// ([`EngineBuilder::io_threads`], one per core by default); UDP, datagram, io_uring, DPDK
-    /// and BPF-steered listeners, and those with [`Scheduling::Rounds`], always have their own
-    /// (one per core by default). Ignored with [`Scheduling::Rounds`], whose [`RoundsConfig`]
-    /// sizes its threads.
+    /// ([`EngineBuilder::io_threads`], one per core by default), and one with
+    /// [`Scheduling::Rounds`] shares the workers of the other rounds listeners with the same
+    /// [`RoundsConfig`]; UDP, datagram, io_uring, DPDK and BPF-steered listeners (and
+    /// Unix-domain ones with rounds) always have their own (one per core by default). With
+    /// rounds the count itself is ignored, [`RoundsConfig`] sizes the threads: it only keeps the
+    /// listener's workers to itself.
     #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = Some(n.max(1));
@@ -603,15 +605,20 @@ fn bind_one(
     }
     // ADR-130: a TCP listener on epoll/kqueue loops that did not ask for threads of its own
     // joins the shared group of its kind.
+    // Rounds listeners (not Unix-domain ones) share a group per `RoundsConfig`.
+    let rounds = match &scheduling {
+        Scheduling::Rounds(rc) => Some(*rc),
+        Scheduling::Loops => None,
+    };
     let shares = l.threads.is_none()
         && !l.udp
         && l.datagrams.is_none()
         && matches!(l.backend, Backend::Epoll)
         && matches!(l.accel, Accel::None)
-        && scheduling == Scheduling::Loops
+        && (rounds.is_none() || l.unix.is_none())
         && cfg!(any(target_os = "linux", target_os = "macos"));
     if shares {
-        let g = bind_shared(l, balance, cfg, pool, sharing)?;
+        let g = bind_shared(l, balance, rounds, cfg, pool, sharing)?;
         if filter.is_some() {
             g.set_filter(filter)?;
         }
@@ -643,6 +650,7 @@ fn bind_one(
 fn bind_shared(
     l: Listener,
     balance: bool,
+    rounds: Option<RoundsConfig>,
     cfg: &Config,
     pool: &Arc<Pool>,
     sharing: Sharing<'_>,
@@ -666,22 +674,39 @@ fn bind_shared(
         (None, Some(inherited)) => ListenSocket::Inherited(inherited),
         (None, None) => ListenSocket::Bind(l.addr),
     };
-    let key = shared::ShareKey { balance };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let key = shared::ShareKey {
+        // Accept-time balancing is a loops feature; rounds listeners share by thread counts.
+        balance: balance && rounds.is_none(),
+        rounds: rounds.map(|rc| rc.epoll().resolved()),
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let key = shared::ShareKey {
+        balance,
+        rounds: None,
+    };
     let threads = sharing.threads;
     let group = sharing.groups.get_or_make(key, || {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            let g: Arc<dyn Group> = Arc::new(akio_epoll::EpollGroup::shared(
-                threads,
-                cfg.clone(),
-                pool.clone(),
-            )?);
-            g.set_balance(balance);
+            let g: Arc<dyn Group> = match rounds {
+                Some(rc) => Arc::new(akio_epoll::RoundsGroup::shared(
+                    rc.epoll(),
+                    cfg.clone(),
+                    pool.clone(),
+                )?),
+                None => Arc::new(akio_epoll::EpollGroup::shared(
+                    threads,
+                    cfg.clone(),
+                    pool.clone(),
+                )?),
+            };
+            g.set_balance(key.balance);
             Ok(g)
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = (threads, pool);
+            let _ = (threads, pool, rounds);
             Err(unsupported("the epoll/kqueue backend on this platform"))
         }
     })?;

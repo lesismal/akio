@@ -70,6 +70,8 @@ struct St {
 pub(crate) struct RConn {
     pub(crate) id: u64,
     pub(crate) inner: Arc<ConnInner>,
+    /// The listener of the group it was accepted on (ADR-130), or `NO_LISTENER` when dialed.
+    pub(crate) lid: usize,
     pending: AtomicU32,
     scheduled: AtomicBool,
     /// When the connection was last queued (tracing, ADR-104 diagnostics).
@@ -141,6 +143,7 @@ impl RConn {
         home: Arc<PollerShared>,
         workers: Arc<Workers>,
         now: u64,
+        lid: usize,
     ) -> Arc<RConn> {
         Arc::new_cyclic(|me| {
             let link = Arc::new(Link {
@@ -155,6 +158,7 @@ impl RConn {
             RConn {
                 id,
                 inner,
+                lid,
                 pending: AtomicU32::new(OPEN),
                 // Scheduled from birth: events that arrive between the registration and
                 // `start` only add bits, and `start` queues the one first round.

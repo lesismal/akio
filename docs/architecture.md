@@ -186,7 +186,9 @@ flowchart LR
   their own (`Listener::threads`, `Listener::dedicated`). Each loop keeps a table of the
   group's listeners (acceptor, accept filter, Unix-domain or not, removed or not), polls their
   sockets under tokens naming listener and socket, and each connection remembers its listener.
-  io_uring, rounds, UDP, datagram, DPDK and BPF-steered listeners have groups of their own.
+  Rounds-scheduled listeners share workers and pollers per `RoundsConfig` (each listener's
+  sockets are accept jobs carrying its acceptor). io_uring, UDP, datagram, DPDK and BPF-steered
+  listeners have groups of their own.
 - **Accept distribution**: on Linux every thread binds its own `SO_REUSEPORT` socket and the
   kernel (or a steering program from `akio-ebpf`) picks the thread; on macOS the threads share
   one listening socket and race to accept.

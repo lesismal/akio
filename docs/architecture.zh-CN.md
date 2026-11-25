@@ -181,7 +181,9 @@ flowchart LR
   （`EngineBuilder::io_threads`，默认每核一个线程），除非它们要求独占线程（`Listener::threads`、
   `Listener::dedicated`）。每个事件循环保存组内 listener 的表（acceptor、accept 过滤器、是否为
   Unix 域、是否已移除），以标明 listener 和 socket 的令牌监听它们的 socket，每个连接记住自己的
-  listener。io_uring、轮次调度、UDP、数据报、DPDK 和 BPF 引流的 listener 独占线程组。
+  listener。轮次调度的 listener 按相同的 `RoundsConfig` 共享 worker 和 poller（每个 listener 的
+  监听 socket 是自带 acceptor 的 accept 任务）。io_uring、UDP、数据报、DPDK 和 BPF 引流的 listener
+  独占线程组。
 - **连接分发**：Linux 上每个线程绑定自己的 `SO_REUSEPORT` socket，由内核（或 `akio-ebpf` 的
   分流程序）选择线程；macOS 上各线程共享一个监听 socket 并竞争 accept。
 - **连接从不迁移。** 它的 handler 在它的线程上创建，也只在那里被访问，所以

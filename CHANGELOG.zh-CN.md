@@ -12,15 +12,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ### 变更：TCP listener 默认共享一组 I/O 线程（akio、akio-epoll、akio-core）
 
-ADR-130 第一阶段。epoll/kqueue 每线程事件循环上的 TCP listener（绑定的、继承的或 Unix 域的）
+ADR-130 第一、二阶段。epoll/kqueue 每线程事件循环上的 TCP listener（绑定的、继承的或 Unix 域的）
 不再各自获得每核一个 I/O 线程，而是共享一组，大小由新增的 `EngineBuilder::io_threads(n)` 决定
 （默认每核一个线程）。8 核上的 HTTP、gRPC 和管理三个端口现在运行 8 个 I/O 线程，而不是 24 个。
 每个线程监听所有 listener 的 socket，并运行该 listener 的 acceptor 和 accept 过滤器；连接留在
 接受它的线程上。
 
 - `Listener::threads(n)` 和新增的 `Listener::dedicated()`（每核一个）照旧让 listener 独占一组
-  线程：为管理端口或对延迟敏感的协议提供隔离。io_uring、轮次调度、UDP、数据报、DPDK 和 BPF 引流
-  的 listener 仍独占线程组（io_uring 和轮次调度的共享在后续阶段）。
+  线程：为管理端口或对延迟敏感的协议提供隔离。io_uring、UDP、数据报、DPDK 和 BPF 引流的 listener
+  仍独占线程组（io_uring 的共享在后续阶段）。
+- 轮次调度（ADR-104）：`RoundsConfig`（解析后的 poller 数和 worker 数）相同的 listener 共享其
+  worker 和 poller，而不是各自一个池；每个 listener 保留自己的 accept 任务和过滤器，之后加入的
+  listener 的 accept 任务投递给 poller，移除一个 listener 只关闭它的任务、只排空它的连接。使用
+  轮次调度的 Unix 域 listener 仍独占线程组。
 - 按 listener 的 API 仍然每个 listener 一项：`local_addrs`、`listeners`、`threads` 以及各个
   `ListenerId`。`threads()` 为共享组的每个 listener 报告该组的大小（移除后为 0）；对共享 listener
   调用 `set_threads` / `set_listener_threads` 会调整共享组的大小，影响组内所有 listener。
@@ -29,7 +33,8 @@ ADR-130 第一阶段。epoll/kqueue 每线程事件循环上的 TCP listener（�
 - 遥测：共享线程的 `LoopMeta::listener` 为 `None`；`ConnInfo::owner.listener` 标明每个被 accept
   的连接来自哪个 listener。
 - 面向后端：`Group::add_listener`、`remove_listener`、`await_listener_removed`、
-  `set_listener_filter` 和 `akio_core::ListenSocket`；`EpollGroup::shared`。一个 epoll/kqueue
+  `set_listener_filter` 和 `akio_core::ListenSocket`；`EpollGroup::shared` 和
+  `RoundsGroup::shared`。一个 epoll/kqueue
   事件循环现在保存所在组的 listener 表。
 
 ### 修复：在逻辑线程池上调用 HTTP 客户端不再使线程池死锁（akio-core、akio-http、akio-ws）

@@ -303,3 +303,126 @@ fn a_listener_added_at_run_time_joins_the_shared_group() {
     assert_eq!(tag_of(&mut connect(e.local_addrs()[0])), b'a');
     stop(&e);
 }
+
+// ---- rounds scheduling (ADR-104): listeners with one `RoundsConfig` share its workers ----------
+
+/// Rounds listeners need epoll/kqueue: runs that force io_uring skip.
+fn skip_rounds() -> bool {
+    std::env::var("AKIO_TEST_BACKEND").as_deref() == Ok("uring")
+        || std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
+}
+
+/// One poller and `workers` workers.
+fn rounds(workers: usize) -> akio::Scheduling {
+    akio::Scheduling::Rounds(akio::RoundsConfig::new(1, workers))
+}
+
+/// Threads of the engine: workers and pollers of rounds groups, loops of the others.
+fn all_threads(e: &Engine) -> usize {
+    e.metrics().loops.len()
+}
+
+#[test]
+fn rounds_listeners_share_their_workers() {
+    if skip_rounds() {
+        return;
+    }
+    let closed = Arc::new(AtomicUsize::new(0));
+    let e = Engine::builder()
+        .config(quick())
+        .listen(tagged(b'a', &closed).scheduling(rounds(2)))
+        .listen(tagged(b'b', &closed).scheduling(rounds(2)))
+        .listen(tagged(b'c', &closed).scheduling(rounds(3)))
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    // `a` and `b` share 2 workers and a poller; `c` has 3 workers and a poller of its own.
+    assert_eq!(e.threads(), vec![2, 2, 3]);
+    assert_eq!(all_threads(&e), (2 + 1) + (3 + 1));
+    for _ in 0..8 {
+        for (a, want) in e.local_addrs().into_iter().zip(*b"abc") {
+            assert_eq!(tag_of(&mut connect(a)), want);
+        }
+    }
+    // Each connection names its listener, though the threads name none.
+    let mut conns: Vec<TcpStream> = e.local_addrs().into_iter().map(connect).collect();
+    for (s, want) in conns.iter_mut().zip(*b"abc") {
+        assert_eq!(tag_of(s), want);
+    }
+    let infos = e.connections(Duration::from_secs(2));
+    assert_eq!(infos.len(), 3);
+    for ci in &infos {
+        assert_eq!(ci.owner.listener, Some(ci.local), "{ci:?}");
+    }
+    drop(conns);
+    stop(&e);
+}
+
+#[test]
+fn removing_a_shared_rounds_listener_leaves_the_others() {
+    if skip_rounds() {
+        return;
+    }
+    let (ca, cb) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let e = Engine::builder()
+        .config(quick())
+        .listen(tagged(b'a', &ca).scheduling(rounds(2)))
+        .listen(tagged(b'b', &cb).scheduling(rounds(2)))
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let ids: Vec<_> = e.listeners().iter().map(|l| l.id).collect();
+    let (aa, ab) = (e.local_addrs()[0], e.local_addrs()[1]);
+    let mut a = connect(aa);
+    let mut b = connect(ab);
+    assert_eq!(tag_of(&mut a), b'a');
+    assert_eq!(tag_of(&mut b), b'b');
+    e.shutdown_listener(ids[0], Duration::from_millis(100))
+        .unwrap();
+    wait_for("a's connection closed", || ca.load(Ordering::SeqCst) == 1);
+    assert_eq!(cb.load(Ordering::SeqCst), 0);
+    assert_eq!(tag_of(&mut b), b'b');
+    assert!(TcpStream::connect(aa).is_err());
+    assert_eq!(tag_of(&mut connect(ab)), b'b');
+    assert_eq!(all_threads(&e), 3, "the workers stay for b");
+    drop((a, b));
+    stop(&e);
+}
+
+#[test]
+fn rounds_filters_and_run_time_listeners_are_per_listener() {
+    if skip_rounds() {
+        return;
+    }
+    let closed = Arc::new(AtomicUsize::new(0));
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            tagged(b'a', &closed)
+                .scheduling(rounds(2))
+                .filter(|_| false),
+        )
+        .listen(tagged(b'b', &closed).scheduling(rounds(2)))
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let (aa, ab) = (e.local_addrs()[0], e.local_addrs()[1]);
+    let mut a = connect(aa);
+    let _ = a.write_all(b"x");
+    let mut buf = [0u8; 2];
+    assert!(matches!(a.read(&mut buf), Ok(0) | Err(_)));
+    assert_eq!(tag_of(&mut connect(ab)), b'b');
+    // Added at run time: it joins the same workers.
+    let id = e
+        .add_listener(tagged(b'n', &closed).scheduling(rounds(2)))
+        .unwrap();
+    let info = e.listeners().into_iter().find(|l| l.id == id).unwrap();
+    assert_eq!(info.threads, 2);
+    assert_eq!(all_threads(&e), 3, "no new threads");
+    for _ in 0..8 {
+        assert_eq!(tag_of(&mut connect(info.local_addr)), b'n');
+    }
+    e.remove_listener(id).unwrap();
+    assert_eq!(tag_of(&mut connect(ab)), b'b');
+    stop(&e);
+}

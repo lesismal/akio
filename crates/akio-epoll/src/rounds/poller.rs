@@ -50,13 +50,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) enum RCmd {
     Shutdown,
     Core(LoopCmd),
-    /// The listener was removed (ADR-099): its sockets are already closed (by the group); the
-    /// connections stay. With `drain` they get `on_shutdown` now and are closed at the deadline;
-    /// with `exit` the poller finishes once none is left.
+    /// A listener was removed (ADR-099): listener `lid` of the group, or with `None` every one.
+    /// Its sockets are already closed (by the group); its connections stay. With `drain` they
+    /// get `on_shutdown` now and are closed at the deadline; with `exit` (`lid == None` only)
+    /// the poller finishes once none is left.
     StopListening {
+        lid: Option<usize>,
         drain: Option<Duration>,
         exit: bool,
     },
+    /// A listening socket joins this poller (a listener added to a shared group, ADR-130).
+    AddJob(Arc<ListenJob>),
     Dial {
         stream: TcpStream,
         acceptor: Arc<dyn DynAcceptor>,
@@ -228,6 +232,7 @@ impl PollerShared {
 
     /// Opens an accepted or connected socket: registers it (edge-triggered, once) and queues its
     /// first round. Runs on the worker that accepted it, or on the poller (dials).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open(
         self: &Arc<Self>,
         stream: TcpStream,
@@ -237,6 +242,8 @@ impl PollerShared {
         // The local address of a Unix-domain socket, which has none of its own (ADR-120).
         unix_local: Option<SocketAddr>,
         workers: &Arc<Workers>,
+        // The listener it was accepted on (`NO_LISTENER` when dialed).
+        lid: usize,
     ) {
         if stream.set_nonblocking(true).is_err() {
             return;
@@ -269,6 +276,7 @@ impl PollerShared {
             self.clone(),
             workers.clone(),
             now,
+            lid,
         );
         let idle = tel.live().idle_ms();
         // Into the table before the registration, so the first event finds it.
@@ -541,6 +549,10 @@ impl PollerShared {
 /// A listening socket. Its readiness queues it on the workers like a connection: one worker at a
 /// time accepts from it, opens what it accepted, and registers it with the poller.
 pub(crate) struct ListenJob {
+    /// Its listener in the group (ADR-130), and that listener's address (the connection
+    /// table's `owner.listener`).
+    lid: usize,
+    addr: SocketAddr,
     listener: Mutex<Accepting>,
     /// The listener's accept filter (ADR-099). Outside `listener`: the filter is user code, and
     /// one that removes its own listener closes this job, which locks `listener`. Only the
@@ -562,7 +574,36 @@ struct Accepting {
     listener: Option<TcpListener>,
 }
 
+/// No listener: a dialed connection's `RConn::lid`.
+pub(crate) const NO_LISTENER: usize = usize::MAX;
+
 impl ListenJob {
+    /// The accept job of socket `l` of listener `lid`, polled by `home` under `token`.
+    pub(crate) fn new(
+        l: TcpListener,
+        lid: usize,
+        addr: SocketAddr,
+        token: u64,
+        acceptor: Arc<dyn DynAcceptor>,
+        filter: &Arc<FilterCell>,
+        home: Arc<PollerShared>,
+    ) -> io::Result<Arc<ListenJob>> {
+        l.set_nonblocking(true)?;
+        Ok(Arc::new(ListenJob {
+            lid,
+            addr,
+            filter: Mutex::new(FilterView::new(filter.clone())),
+            fd: l.as_raw_fd(),
+            listener: Mutex::new(Accepting { listener: Some(l) }),
+            token: LISTEN_BIT | token,
+            acceptor,
+            home,
+            pending: AtomicBool::new(false),
+            scheduled: AtomicBool::new(false),
+            paused_until: AtomicU64::new(0),
+        }))
+    }
+
     /// Readiness: queues an accept job unless one is queued or running.
     fn notify(self: &Arc<Self>, workers: &Workers) {
         self.pending.store(true, Ordering::SeqCst);
@@ -609,6 +650,7 @@ impl ListenJob {
                             false,
                             None,
                             &ctx.workers,
+                            self.lid,
                         );
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -682,12 +724,16 @@ pub(crate) struct RLoop {
     draining: Option<Instant>,
     /// Remaining connections were told to close (the drain deadline passed).
     killed: bool,
-    /// The listener was removed (`RCmd::StopListening`, ADR-099): with `unlisted_exit` the
-    /// poller finishes once no connection is left, and at `unlisted_kill` (the drain deadline)
-    /// the connections still open are closed.
+    /// Every listener was removed (`RCmd::StopListening` with no `lid`, ADR-099): with
+    /// `unlisted_exit` the poller finishes once no connection is left, and at `unlisted_kill`
+    /// (the drain deadline) the connections still open are closed and the dials aborted.
     unlisted: bool,
     unlisted_exit: bool,
     unlisted_kill: Option<Instant>,
+    /// One listener's removal (ADR-130): its connections still open at the deadline are closed.
+    listener_kills: Vec<(usize, Instant)>,
+    /// The address of each listener whose sockets this poller got, by `lid`.
+    listener_addrs: Vec<Option<SocketAddr>>,
     spare: Vec<RCmd>,
     due: Vec<u64>,
     events: Vec<Event>,
@@ -700,30 +746,11 @@ impl RLoop {
     pub(crate) fn new(
         poller: Poller,
         shared: Arc<PollerShared>,
-        listeners: Vec<TcpListener>,
-        acceptor: Option<Arc<dyn DynAcceptor>>,
-        filter: &Arc<FilterCell>,
+        jobs: Vec<Arc<ListenJob>>,
         workers: Arc<Workers>,
     ) -> io::Result<RLoop> {
-        let mut jobs = Vec::new();
-        if let Some(acceptor) = acceptor {
-            for (i, l) in listeners.into_iter().enumerate() {
-                l.set_nonblocking(true)?;
-                let token = LISTEN_BIT | i as u64;
-                let fd = l.as_raw_fd();
-                shared.registry.add_edge(fd, token)?;
-                jobs.push(Arc::new(ListenJob {
-                    filter: Mutex::new(FilterView::new(filter.clone())),
-                    listener: Mutex::new(Accepting { listener: Some(l) }),
-                    fd,
-                    token,
-                    acceptor: acceptor.clone(),
-                    home: shared.clone(),
-                    pending: AtomicBool::new(false),
-                    scheduled: AtomicBool::new(false),
-                    paused_until: AtomicU64::new(0),
-                }));
-            }
+        for j in &jobs {
+            shared.registry.add_edge(j.fd, j.token)?;
         }
         let backlog = shared.cfg.telemetry.live().backlog();
         Ok(RLoop {
@@ -739,6 +766,8 @@ impl RLoop {
             unlisted: false,
             unlisted_exit: false,
             unlisted_kill: None,
+            listener_kills: Vec::new(),
+            listener_addrs: Vec::new(),
             spare: Vec::new(),
             due: Vec::new(),
             events: Vec::with_capacity(1024),
@@ -749,11 +778,6 @@ impl RLoop {
 
     fn tick(&self) -> u64 {
         self.shared.tick()
-    }
-
-    /// Its listening sockets (one accept job each).
-    pub(crate) fn jobs(&self) -> &[Arc<ListenJob>] {
-        &self.jobs
     }
 
     fn cfg(&self) -> &Arc<Config> {
@@ -779,7 +803,8 @@ impl RLoop {
             let wait = Duration::from_millis(next.saturating_sub(now) + 1);
             timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
         }
-        if let Some(kill) = self.unlisted_kill {
+        let kills = self.listener_kills.iter().map(|(_, t)| *t);
+        if let Some(kill) = self.unlisted_kill.into_iter().chain(kills).min() {
             let left = kill.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
             timeout = Some(timeout.map_or(left, |t| t.min(left)));
         }
@@ -845,7 +870,7 @@ impl RLoop {
             match ev.token {
                 WAKER => self.shared.waker.drain(),
                 t if t & LISTEN_BIT != 0 => {
-                    if let Some(j) = self.jobs.get((t & !LISTEN_BIT) as usize) {
+                    if let Some(j) = self.jobs.iter().find(|j| j.token == t) {
                         j.notify(&self.workers);
                     }
                 }
@@ -867,7 +892,10 @@ impl RLoop {
                 n_events,
             );
         }
-        if self.unlisted && self.draining.is_none() && self.unlisted_step() {
+        if (self.unlisted || !self.listener_kills.is_empty())
+            && self.draining.is_none()
+            && self.unlisted_step()
+        {
             self.finished = true;
             return true;
         }
@@ -1002,6 +1030,7 @@ impl RLoop {
                 true,
                 unix.then_some(akio_core::UNIX_ADDR),
                 &self.workers,
+                NO_LISTENER,
             ),
             Err(e) => {
                 if let Some(f) = on_error {
@@ -1036,8 +1065,13 @@ impl RLoop {
                 let now = self.tick();
                 let meta = self.shared.stats.meta().clone();
                 let mut infos = Vec::new();
+                let addrs = &self.listener_addrs;
                 self.shared.each(|id, c| {
                     let mut ci = ConnInfo::new(id, &c.inner, meta.clone());
+                    // A shared group serves several listeners (ADR-130): name the connection's.
+                    if let Some(a) = addrs.get(c.lid).copied().flatten() {
+                        ci.owner.listener = Some(a);
+                    }
                     ci.age = Duration::from_millis(now.saturating_sub(c.opened));
                     ci.idle = Duration::from_millis(
                         now.saturating_sub(c.last_active.load(Ordering::Relaxed)),
@@ -1049,7 +1083,8 @@ impl RLoop {
                 reply(infos);
             }
             RCmd::Core(LoopCmd::Reload) => self.on_reload(),
-            RCmd::StopListening { drain, exit } => self.stop_listening(drain, exit),
+            RCmd::StopListening { lid, drain, exit } => self.stop_listening(lid, drain, exit),
+            RCmd::AddJob(j) => self.add_job(j),
             RCmd::Dial {
                 stream,
                 acceptor,
@@ -1097,33 +1132,73 @@ impl RLoop {
         }
     }
 
-    // ---- removing the listener (ADR-099) ------------------------------------------------------
+    // ---- removing a listener (ADR-099, ADR-130) -----------------------------------------------
 
-    /// The listener was removed: its sockets are closed (the group closed them before posting
-    /// this); the connections stay (see `RCmd::StopListening`).
-    fn stop_listening(&mut self, drain: Option<Duration>, exit: bool) {
+    /// Listener `lid` (with `None`, every listener) was removed: its sockets are closed (the
+    /// group closed them before posting this); the connections stay (see `RCmd::StopListening`).
+    fn stop_listening(&mut self, lid: Option<usize>, drain: Option<Duration>, exit: bool) {
         if self.draining.is_some() {
             return; // the engine is shutting down anyway
         }
-        self.unlisted = true;
-        self.unlisted_exit |= exit;
-        if exit {
-            self.shared.exit_when_empty.store(true, Ordering::SeqCst);
-        }
-        for j in std::mem::take(&mut self.jobs) {
+        let (gone, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.jobs)
+            .into_iter()
+            .partition(|j| lid.is_none_or(|l| j.lid == l));
+        self.jobs = keep;
+        for j in gone {
             j.close();
         }
-        if let Some(d) = drain {
-            let at = Instant::now() + d;
-            self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
-            self.shared.each(|_, c| c.shutdown_notice());
+        let at = drain.map(|d| Instant::now() + d);
+        match lid {
+            None => {
+                self.unlisted = true;
+                self.unlisted_exit |= exit;
+                if exit {
+                    self.shared.exit_when_empty.store(true, Ordering::SeqCst);
+                }
+                if let Some(at) = at {
+                    self.unlisted_kill = Some(self.unlisted_kill.map_or(at, |t| t.min(at)));
+                    self.shared.each(|_, c| c.shutdown_notice());
+                }
+            }
+            Some(l) => {
+                if let Some(at) = at {
+                    self.listener_kills.push((l, at));
+                    self.shared.each(|_, c| {
+                        if c.lid == l {
+                            c.shutdown_notice();
+                        }
+                    });
+                }
+            }
         }
     }
 
-    /// Once per poll after the listener was removed: closes what is left at the drain deadline,
+    /// A socket of a listener added to a shared group (ADR-130): polled from now on, and
+    /// accepted from at once (connections may be queued already).
+    fn add_job(&mut self, j: Arc<ListenJob>) {
+        if self.draining.is_some() || lock(&j.listener).listener.is_none() {
+            return; // shutting down, or the listener was removed meanwhile
+        }
+        if let Err(e) = self.shared.registry.add_edge(j.fd, j.token) {
+            log_or_stderr(
+                akio_log::Level::Warn,
+                format_args!("adding a listening socket: {e}"),
+            );
+            return;
+        }
+        j.notify(&self.workers);
+        if self.listener_addrs.len() <= j.lid {
+            self.listener_addrs.resize(j.lid + 1, None);
+        }
+        self.listener_addrs[j.lid] = Some(j.addr);
+        self.jobs.push(j);
+    }
+
+    /// Once per poll after a listener was removed: closes what is left at a drain deadline,
     /// and finishes the poller (true) once no connection is left, if it may.
     fn unlisted_step(&mut self) -> bool {
-        if self.unlisted_kill.is_some_and(|t| Instant::now() >= t) {
+        let now = Instant::now();
+        if self.unlisted_kill.is_some_and(|t| now >= t) {
             self.unlisted_kill = None;
             self.shared.each(|_, c| c.close_with(None));
             for (_, d) in self.connecting.drain() {
@@ -1135,6 +1210,17 @@ impl RLoop {
                     ));
                 }
             }
+        }
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.listener_kills)
+            .into_iter()
+            .partition(|(_, t)| now >= *t);
+        self.listener_kills = later;
+        for (l, _) in due {
+            self.shared.each(|_, c| {
+                if c.lid == l {
+                    c.close_with(None);
+                }
+            });
         }
         self.unlisted_exit && self.connecting.is_empty() && self.shared.table_is_empty()
     }

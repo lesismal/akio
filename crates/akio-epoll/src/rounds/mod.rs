@@ -14,13 +14,15 @@ use std::{
     os::fd::AsRawFd,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
 };
 
-use akio_core::{AcceptFilter, Config, DynAcceptor, FilterCell, Group, LoopMeta, LoopStats, Pool};
+use akio_core::{
+    AcceptFilter, Config, DynAcceptor, FilterCell, Group, ListenSocket, LoopMeta, LoopStats, Pool,
+};
 use akio_sys::Poller;
 
 use poller::{ListenJob, PollerShared, RCmd, RLoop};
@@ -81,8 +83,21 @@ struct Slot {
     handle: Option<JoinHandle<()>>,
 }
 
-/// A listener (or a client-only group) served by rounds scheduling.
+/// One listener of the group (ADR-130).
+struct RListener {
+    /// Its sockets, one accept job each, over the pollers.
+    jobs: Vec<Arc<ListenJob>>,
+    /// Its accept filter (ADR-099).
+    filter: Arc<FilterCell>,
+    /// Removed (`Group::remove_listener` or `stop_listening`).
+    unlisted: bool,
+}
+
+/// A group served by rounds scheduling: one listener, several (a shared group, ADR-130), or
+/// only dialed connections.
 pub struct RoundsGroup {
+    /// The listener's address when the group was built for one; the unspecified address for
+    /// shared and client-only groups.
     addr: SocketAddr,
     fds: Vec<i32>,
     slots: Mutex<Vec<Slot>>,
@@ -92,12 +107,15 @@ pub struct RoundsGroup {
     rr: AtomicUsize,
     started: AtomicBool,
     pins: Mutex<Vec<Vec<usize>>>,
-    /// Every listening socket of the group (one accept job each, over all pollers); empty for a
-    /// client-only group.
-    jobs: Vec<Arc<ListenJob>>,
-    /// The accept filter every accept job runs (ADR-099).
-    filter: Arc<FilterCell>,
-    /// The listener was removed (`Group::stop_listening`, ADR-099).
+    /// The listeners, by key; removed ones stay, marked.
+    listeners: Mutex<Vec<RListener>>,
+    /// Poll tokens of the accept jobs (unique in the group).
+    next_token: AtomicU64,
+    /// Serves listeners (not a client-only group).
+    listens: bool,
+    /// A shared group: listeners are added and removed, the threads stay until shutdown.
+    shared: bool,
+    /// Every listener was removed (`Group::stop_listening`, ADR-099).
     unlisted: AtomicBool,
     /// The engine is shutting down (`Group::shutdown`).
     stopping: AtomicBool,
@@ -113,6 +131,53 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+fn not_listening() -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, "not a listener group")
+}
+
+/// Binds a listener's sockets for `pollers` pollers and `workers` workers: on Linux one
+/// `SO_REUSEPORT` socket per worker (at least one per poller), so that accepts run on several
+/// workers at once; elsewhere one socket, cloned for each poller. Socket `i` goes to poller
+/// `i % pollers`.
+fn bind_socks(
+    socket: ListenSocket,
+    pollers: usize,
+    workers: usize,
+    backlog: i32,
+) -> io::Result<(SocketAddr, Vec<TcpListener>)> {
+    let clones = |first: TcpListener| -> io::Result<Vec<TcpListener>> {
+        let mut v = Vec::with_capacity(pollers);
+        for _ in 1..pollers {
+            v.push(first.try_clone()?);
+        }
+        v.insert(0, first);
+        Ok(v)
+    };
+    match socket {
+        ListenSocket::Bind(a) if cfg!(target_os = "linux") => {
+            let first = akio_sys::listen(a, true, backlog)?;
+            let addr = first.local_addr()?;
+            let mut v = vec![first];
+            for _ in 1..workers.max(pollers) {
+                v.push(akio_sys::listen(addr, true, backlog)?);
+            }
+            Ok((addr, v))
+        }
+        ListenSocket::Bind(a) => {
+            let first = akio_sys::listen(a, false, backlog)?;
+            Ok((first.local_addr()?, clones(first)?))
+        }
+        ListenSocket::Inherited(l) => {
+            l.set_nonblocking(true)?;
+            Ok((l.local_addr()?, clones(l)?))
+        }
+        ListenSocket::Unix(_) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a Unix-domain listener with rounds scheduling",
+        )),
+    }
+}
+
 impl RoundsGroup {
     /// Binds `listen` (if any) with `rc`'s pollers and workers. Nothing runs until
     /// [`Group::start`].
@@ -125,34 +190,10 @@ impl RoundsGroup {
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<RoundsGroup> {
-        let (pollers, workers) = rc.resolved();
-        let mut listeners: Vec<Vec<TcpListener>> = (0..pollers).map(|_| Vec::new()).collect();
-        let mut addr = SocketAddr::from(([0, 0, 0, 0], 0));
-        let mut acceptor = None;
-        if let Some((a, acc)) = listen {
-            let first = akio_sys::listen(a, cfg!(target_os = "linux"), cfg.backlog)?;
-            addr = first.local_addr()?;
-            let n = if cfg!(target_os = "linux") {
-                workers.max(pollers)
-            } else {
-                pollers
-            };
-            for i in 1..n {
-                listeners[i % pollers].push(if cfg!(target_os = "linux") {
-                    akio_sys::listen(addr, true, cfg.backlog)?
-                } else {
-                    first.try_clone()?
-                });
-            }
-            listeners[0].insert(0, first);
-            acceptor = Some(acc);
+        match listen {
+            Some((a, acc)) => Self::one(ListenSocket::Bind(a), acc, rc, cfg, pool),
+            None => Self::assemble(rc, None, false, false, cfg, pool),
         }
-        let fds = if cfg!(target_os = "linux") {
-            listeners.iter().flatten().map(|l| l.as_raw_fd()).collect()
-        } else {
-            Vec::new()
-        };
-        Self::assemble(listeners, addr, fds, acceptor, rc, cfg, pool)
     }
 
     /// Serves an already bound and listening socket: every poller polls a clone of it.
@@ -163,49 +204,60 @@ impl RoundsGroup {
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<RoundsGroup> {
-        listener.set_nonblocking(true)?;
-        let addr = listener.local_addr()?;
-        let (pollers, _) = rc.resolved();
-        let mut listeners = Vec::with_capacity(pollers);
-        for _ in 1..pollers {
-            listeners.push(vec![listener.try_clone()?]);
-        }
-        listeners.insert(0, vec![listener]);
-        Self::assemble(listeners, addr, Vec::new(), Some(acceptor), rc, cfg, pool)
+        Self::one(ListenSocket::Inherited(listener), acceptor, rc, cfg, pool)
+    }
+
+    /// A shared group with `rc`'s pollers and workers (ADR-130): it starts with no listener;
+    /// listeners join with [`Group::add_listener`] and leave with [`Group::remove_listener`],
+    /// and the workers serve them all until shutdown. Its `local_addr` is the unspecified
+    /// address and its threads report no listener in their `LoopMeta`.
+    pub fn shared(rc: RoundsConfig, cfg: Config, pool: Arc<Pool>) -> io::Result<RoundsGroup> {
+        Self::assemble(rc, None, true, true, cfg, pool)
+    }
+
+    /// A group serving the one listener `socket`.
+    fn one(
+        socket: ListenSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+        rc: RoundsConfig,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<RoundsGroup> {
+        let (pollers, workers) = rc.resolved();
+        let inherited = matches!(socket, ListenSocket::Inherited(_));
+        let (addr, socks) = bind_socks(socket, pollers, workers, cfg.backlog)?;
+        let fds = if cfg!(target_os = "linux") && !inherited {
+            socks.iter().map(|l| l.as_raw_fd()).collect()
+        } else {
+            Vec::new()
+        };
+        let mut g = Self::assemble(rc, Some(addr), true, false, cfg, pool)?;
+        g.addr = addr;
+        g.fds = fds;
+        g.install(addr, socks, acceptor)?;
+        Ok(g)
     }
 
     fn assemble(
-        listeners: Vec<Vec<TcpListener>>,
-        addr: SocketAddr,
-        fds: Vec<i32>,
-        acceptor: Option<Arc<dyn DynAcceptor>>,
         rc: RoundsConfig,
+        listener_addr: Option<SocketAddr>,
+        listens: bool,
+        shared: bool,
         cfg: Config,
         pool: Arc<Pool>,
     ) -> io::Result<RoundsGroup> {
         cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
-        let (_, nworkers) = rc.resolved();
-        let listener_addr = acceptor.as_ref().map(|_| addr);
+        let (npollers, nworkers) = rc.resolved();
         let workers = Workers::new(nworkers, &cfg, listener_addr);
-        let filter = Arc::new(FilterCell::default());
-        let mut jobs = Vec::new();
-        let mut slots = Vec::with_capacity(listeners.len());
-        for (i, l) in listeners.into_iter().enumerate() {
+        let mut slots = Vec::with_capacity(npollers);
+        for i in 0..npollers {
             let poller = Poller::new()?;
             // Pollers are numbered after the workers in the metrics of the listener.
             let meta = LoopMeta::new(BACKEND, listener_addr, nworkers + i);
             let stats = Arc::new(LoopStats::new(meta));
             let sh = PollerShared::new(&poller, pool.clone(), cfg.clone(), stats, nworkers)?;
-            let lp = RLoop::new(
-                poller,
-                sh.clone(),
-                l,
-                acceptor.clone(),
-                &filter,
-                workers.clone(),
-            )?;
-            jobs.extend(lp.jobs().iter().cloned());
+            let lp = RLoop::new(poller, sh.clone(), Vec::new(), workers.clone())?;
             slots.push(Slot {
                 shared: sh,
                 pending: Some(lp),
@@ -229,8 +281,8 @@ impl RoundsGroup {
             workers.set_drivers(drivers);
         }
         Ok(RoundsGroup {
-            addr,
-            fds,
+            addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+            fds: Vec::new(),
             shareds: slots.iter().map(|s| s.shared.clone()).collect(),
             slots: Mutex::new(slots),
             workers,
@@ -238,11 +290,40 @@ impl RoundsGroup {
             rr: AtomicUsize::new(0),
             started: AtomicBool::new(false),
             pins: Mutex::new(Vec::new()),
-            jobs,
-            filter,
+            listeners: Mutex::new(Vec::new()),
+            next_token: AtomicU64::new(0),
+            listens,
+            shared,
             unlisted: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
         })
+    }
+
+    /// Makes `socks` a listener of the group: socket `i` becomes an accept job of poller
+    /// `i % pollers`, which registers it when it gets it. Its key.
+    fn install(
+        &self,
+        addr: SocketAddr,
+        socks: Vec<TcpListener>,
+        acceptor: Arc<dyn DynAcceptor>,
+    ) -> io::Result<usize> {
+        let mut ls = lock(&self.listeners);
+        let lid = ls.len();
+        let filter = Arc::new(FilterCell::default());
+        let mut jobs = Vec::with_capacity(socks.len());
+        for (i, l) in socks.into_iter().enumerate() {
+            let home = &self.shareds[i % self.shareds.len()];
+            let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+            let j = ListenJob::new(l, lid, addr, token, acceptor.clone(), &filter, home.clone())?;
+            home.post(RCmd::AddJob(j.clone()));
+            jobs.push(j);
+        }
+        ls.push(RListener {
+            jobs,
+            filter,
+            unlisted: false,
+        });
+        Ok(lid)
     }
 
     fn next_poller(&self) -> &Arc<PollerShared> {
@@ -309,11 +390,8 @@ impl Group for RoundsGroup {
     }
 
     fn stop_listening(&self, drain: Option<Duration>, exit_when_idle: bool) -> io::Result<()> {
-        if self.jobs.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "not a listener group",
-            ));
+        if !self.listens {
+            return Err(not_listening());
         }
         if self.stopping.load(Ordering::SeqCst) || self.unlisted.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -322,13 +400,17 @@ impl Group for RoundsGroup {
         // `SO_REUSEPORT` group) is closed when this returns, so a connection made afterwards
         // cannot land on one, and an accept job queued or run later finds no socket. `close`
         // waits for an accept job in progress (a short one: it never runs handler code).
-        for j in &self.jobs {
-            j.close();
+        for l in lock(&self.listeners).iter_mut() {
+            l.unlisted = true;
+            for j in &l.jobs {
+                j.close();
+            }
         }
         // The pollers keep the connections: they notify and drain them, and finish once none is
         // left when they may.
         for sh in &self.shareds {
             sh.post(RCmd::StopListening {
+                lid: None,
                 drain,
                 exit: exit_when_idle,
             });
@@ -337,13 +419,66 @@ impl Group for RoundsGroup {
     }
 
     fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
-        if self.jobs.is_empty() {
+        // The group's listener (the first, in a group built for one).
+        self.set_listener_filter(0, filter)
+    }
+
+    fn add_listener(
+        &self,
+        socket: ListenSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+    ) -> io::Result<(usize, SocketAddr)> {
+        if !self.shared {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "not a listener group",
+                "this group serves one listener",
             ));
         }
-        self.filter.set(filter);
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the engine is shutting down",
+            ));
+        }
+        let backlog = self.cfg.telemetry.live().backlog();
+        let (addr, socks) = bind_socks(socket, self.shareds.len(), self.workers.len(), backlog)?;
+        Ok((self.install(addr, socks, acceptor)?, addr))
+    }
+
+    fn remove_listener(&self, key: usize, drain: Option<Duration>) -> io::Result<()> {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        {
+            let mut ls = lock(&self.listeners);
+            let Some(l) = ls.get_mut(key) else {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "no such listener"));
+            };
+            if l.unlisted {
+                return Ok(());
+            }
+            l.unlisted = true;
+            // Closed here, as `stop_listening` does: no wait is left for `await_listener_removed`.
+            for j in &l.jobs {
+                j.close();
+            }
+        }
+        for sh in &self.shareds {
+            sh.post(RCmd::StopListening {
+                lid: Some(key),
+                drain,
+                exit: false,
+            });
+        }
+        Ok(())
+    }
+
+    fn set_listener_filter(&self, key: usize, filter: Option<AcceptFilter>) -> io::Result<()> {
+        let ls = lock(&self.listeners);
+        let Some(l) = ls.get(key) else {
+            return Err(not_listening());
+        };
+        l.filter.set(filter);
         Ok(())
     }
 

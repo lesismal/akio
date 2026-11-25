@@ -2,8 +2,8 @@
 
 English | [简体中文](130-shared-io-groups.zh-CN.md)
 
-Status: accepted (2026-11-25). Phase 1 (epoll/kqueue, per-thread loops) built; io_uring and
-rounds scheduling still give each listener a group of its own.
+Status: accepted (2026-11-25). Phase 1 (epoll/kqueue, per-thread loops) and phase 2 (rounds
+scheduling) built; io_uring still gives each listener a group of its own.
 
 ## Context
 
@@ -22,13 +22,16 @@ on one loop.
    (bound, inherited or Unix-domain) joins the engine's shared group for its key: backend,
    scheduling and accept-time balancing (`Balance`). The engine creates that group with the
    first listener of the key and sizes it with `EngineBuilder::io_threads(n)` (default: one per
-   core). One HTTP and one gRPC listener on 8 cores now run 8 I/O threads, not 16.
+   core). One HTTP and one gRPC listener on 8 cores now run 8 I/O threads, not 16. With rounds
+   scheduling (ADR-104) the key is the resolved `RoundsConfig` (pollers and workers), which
+   also sizes the group: listeners with one configuration share its workers and pollers.
 2. **A listener can still have its own group.** `Listener::threads(n)` (any explicit count) or
    the new `Listener::dedicated()` (one per core) keeps the ADR-004 arrangement for that
    listener: isolation for an admin port or a latency-critical protocol, or a size of its own.
    Listeners that need per-listener threads always get their own group: BPF steering
    (`Accel::Ebpf`, whose program steers to the listener's own sockets), UDP and datagram
-   listeners and DPDK (other loop types).
+   listeners and DPDK (other loop types), io_uring (a later phase) and Unix-domain listeners
+   with rounds scheduling.
 3. **One loop, several listeners.** An epoll/kqueue loop keeps, per listener of its group, the
    acceptor, the accept filter, whether it is Unix-domain and whether it was removed, and polls
    the listener's sockets under a token that names the listener and the socket. Accepting runs
@@ -61,10 +64,18 @@ on one loop.
 - `set_threads` on one listener can now change the threads of others; the docs say so.
 - The `Group` trait gains keyed listener operations (backend-facing, `#[doc(hidden)]`).
 
+## Phase 2: rounds scheduling (built 2026-11-25)
+
+A rounds group's listening sockets were already accept jobs of their own, each with its
+acceptor. A shared rounds group keeps a listener table (each listener's accept jobs and accept
+filter); a listener added later gets accept jobs posted to the pollers (`RCmd::AddJob`), which
+register them; each connection remembers its listener, so removing one listener closes its
+accept jobs and drains its connections only (`RCmd::StopListening` names it), and the
+connection table names each connection's listener. Unix-domain listeners with rounds keep a
+group of their own (rounds accepts TCP sockets only).
+
 ## Not done (later phases)
 
 - io_uring: a ring can poll several listeners the same way (multishot accept per listener);
   until then io_uring listeners keep groups of their own.
-- Rounds scheduling (ADR-104): its workers are one pool per listener group; sharing them needs
-  the listener table of point 3 in its pollers.
 - UDP and datagram listeners: their loops are of another type.
