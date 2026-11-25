@@ -8,14 +8,15 @@
 //!
 //! HTTP/2 is served on the same port (prior knowledge / h2c upgrade, or ALPN `h2` with `tls`).
 //! `AKIO_KTLS=off|hardware|software|software-tx` sets the kernel TLS mode of `tls` (`Ktls`;
-//! takes effect with akio's `ktls` feature on Linux).
+//! takes effect with akio's `ktls` feature on Linux). `AKIO_H2_RUN_ON_POOL=0` runs HTTP/2
+//! handlers inline on the I/O thread (`H2Config::run_on_pool` off; on by default).
 
 use akio::{
     Backend, Engine, Listener,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 use akio_http::{
-    Context, Router, WsOptions, serve,
+    Context, HttpConfig, Router, WsOptions, serve_with,
     ws::{Message, WsHandler, WsSender},
 };
 
@@ -74,6 +75,12 @@ fn main() -> std::io::Result<()> {
         .get("/ws", move |ctx: &mut Context| {
             ctx.upgrade_websocket(Echo, &opts);
         });
+    let mut http = HttpConfig::default();
+    if std::env::var("AKIO_H2_RUN_ON_POOL").as_deref() == Ok("0") {
+        if let Some(h2) = http.h2.as_mut() {
+            h2.run_on_pool = false;
+        }
+    }
     let l = Listener::tcp(addr).backend(backend).threads(threads);
     let l = if a.get(3).map(String::as_str) == Some("tls") {
         let ck =
@@ -90,9 +97,9 @@ fn main() -> std::io::Result<()> {
             _ => akio::tls::Ktls::Off,
         })
         .build()?;
-        l.serve(Tls::server(cfg, serve(app)))
+        l.serve(Tls::server(cfg, serve_with(http, app)))
     } else {
-        l.serve(serve(app))
+        l.serve(serve_with(http, app))
     };
     let engine = Engine::builder().listen(l).build()?;
     println!("listening on {:?}", engine.local_addrs());

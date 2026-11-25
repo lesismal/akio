@@ -2841,6 +2841,84 @@ receive and its sends submitted through the ring. akio's io_uring backend receiv
 ring but still writes with `writev`, so `new uring` gets 5–6% over epoll and stays behind
 aegon, most on echo-ws.
 
+### Request checks and client timer cancel (akit A169, A171, same-run A/B, 2026-11-26)
+
+Measured on gpu51 after the merge (rule 16 asks for it before). A169 refuses malformed requests:
+HTTP/1 counts `Host` fields, and HTTP/2 and HTTP/3 check every field name and value byte
+(`h2::valid_field` / `invalid_value`, akio-h3's `header_list`). A171 cancels a client request's
+timer job when the request ends: one more message to akio-http's timer thread per request with a
+timeout. `A` is `main` at `111004f8` (before the merge), `B` is `0fc8f3a7`. Both were built in one
+session, each with its own target directory, and run interleaved under `quiet.sh`; the order
+within a round was reversed every other round. Server: `tools/bench/http.sh` with `BASE_DIR`
+(server on CPUs 0–3 with 4 threads, `h2load` with 8 threads on CPUs 4–7 and 12–15, 5 s runs, a
+fresh server per run). Client: `client-bench 5 64 2 <backend> <h1|h2> 10000` on CPUs 2–9: 64
+request loops, 2 client and 2 server threads in one process, a 10 s timeout on every request,
+through `Client` (`h1`) or one `H2Client` connection per client thread (`h2`); `uring` runs the
+server and the client connections on io_uring. Medians; `per round` is the median of the
+per-round B/A ratios, with their range; `±` is half the min–max spread where it is over 3%.
+
+| Load | backend | rounds | A | B / A | per round |
+|---|---|---:|---:|---:|---|
+| HTTP/1.1 plaintext, 256 conns | epoll | 11 | 734,297 | 1.001 | 1.001 (0.755–1.010) |
+| HTTP/1.1 plaintext, 256 conns | io_uring | 11 | 871,090 (±7%) | 0.983 | 0.999 (0.764–1.123) |
+| HTTP/1.1 pipelined ×16, 256 conns | epoll | 11 | 4,491,286 | 1.004 | 1.003 (0.998–1.025) |
+| HTTP/1.1 pipelined ×16, 256 conns | io_uring | 11 | 4,932,585 | 1.022 | 1.025 (1.013–1.027) |
+| h2c 64 conns × 16 streams | epoll | 11 | 485,806 | 0.996 | 0.996 (0.978–1.000) |
+| h2c 64 conns × 16 streams | io_uring | 11 | 497,450 | 0.996 | 0.997 (0.987–1.006) |
+| h2c 16 conns × 128 streams | epoll | 11 | 468,498 | 0.995 | 0.996 (0.979–1.002) |
+| h2c 16 conns × 128 streams | io_uring | 11 | 529,664 | 0.999 | 1.000 (0.993–1.017) |
+| h2c 64 × 16, handlers inline ¹ | epoll | 9 | 4,393,379 (±13%) | **0.929** | 0.933 (0.908–1.242) |
+| h2c 64 × 16, handlers inline ¹ | io_uring | 9 | 4,578,646 (±13%) | **0.934** | 0.941 (0.815–1.053) |
+| h2c 16 × 128, handlers inline ¹ | epoll | 9 | 6,131,699 | **0.907** | 0.905 (0.869–0.948) |
+| h2c 16 × 128, handlers inline ¹ | io_uring | 9 | 5,952,345 | **0.917** | 0.918 (0.882–0.961) |
+| HTTP/3 GET, `quic-bench h3 10 64` (CPUs 2–5) | – | 11 | 726,321 | 0.990 | 0.989 (0.968–1.018) |
+| client HTTP/1.1, 10 s timeout | epoll | 11 | 252,953 (±4%) | 1.008 | 1.008 (0.930–1.039) |
+| client HTTP/1.1, 10 s timeout | io_uring | 11 | 307,139 (±4%) | **0.938** | 0.931 (0.900–1.006) |
+| client h2, 10 s timeout | epoll | 11 | 281,072 | 1.040 | 1.032 (1.014–1.054) |
+| client h2, 10 s timeout | io_uring | 11 | 554,447 (±4%) | 1.070 | 1.030 (0.944–1.110) |
+| client HTTP/1.1, 10 s timeout (control run) | io_uring | 9 | 305,889 | **0.944** | 0.942 (0.933–0.956) |
+| client HTTP/1.1, no timeout (control run) | io_uring | 9 | 328,058 (±4%) | 0.992 | 0.992 (0.944–1.070) |
+| client HTTP/1.1, 10 s timeout (control run) | epoll | 9 | 254,381 | 1.003 | 1.006 (0.980–1.040) |
+| client HTTP/1.1, no timeout (control run) | epoll | 9 | 302,496 | 1.006 | 1.008 (0.994–1.017) |
+
+¹ `AKIO_H2_RUN_ON_POOL=0`: `http-bench` with `H2Config::run_on_pool` off.
+
+**A169: no measurable cost on HTTP/1.1, 7–9% on h2c with inline handlers.** HTTP/1.1 is
+unchanged. The io_uring plaintext 0.983 comes from single runs that fell to 0.75–0.87 of the
+usual rate, on both builds (B three times, A once, and one epoll B run); its per-round median is 0.999. Pipelined
+io_uring +2.5% in every round is layout, since HTTP/1 only gained a `Host` counter. With h2c on
+the pool (the default) the pool is the limit and the change shows only as −0.4%. With the
+handlers inline, B is slower in 33 of 36 runs. `perf` on the inline 64 × 16 server (epoll,
+twice each) puts `h2::Core::headers_complete`, where the checks are inlined, at 6.7–6.8% of the
+server's samples on A and 10.1–10.2% on B (`h2load` 4.27 → 4.06 M req/s in those runs). The
+per-byte `matches!` loops over every name (`valid_field`) and every value, pseudo-headers too
+(`invalid_value`), each a separate pass beside the UTF-8 check, cost about 3.5% of the CPU at
+4–6 M requests/s. A lookup table, or folding the checks into the UTF-8 pass or the HPACK
+decoder, would be the place to win it back. HTTP/3 −1% (B slower in 9 of 11 rounds) is at the
+edge of the noise: the same checks behind a whole QUIC stack.
+
+**A171: a cost of about 6% on the HTTP/1.1 client over io_uring with a timeout; none
+elsewhere.** The control run shows that it comes with the timeout: without one the same case is
+0.992, with one 0.944 (B slower in 9 of 9 rounds). On epoll the HTTP/1.1 client is unchanged,
+and the h2 client is 3–7% faster with B: before A171 the timer thread kept every request of the
+last 10 s (3–5 million jobs at these rates), and each h2 job held the request's callback and
+stream state. The likely cause on HTTP/1.1: `Exchange::drop` (`client.rs`) now calls
+`timer::cancel`, a second `mpsc` send per request from the client's I/O thread that wakes the
+parked timer thread (`timer::run` waits in `recv_timeout`) a second time, and `timer::after`
+takes its key from one process-wide `AtomicU64` (`NEXT.fetch_add`). On epoll the I/O thread
+already makes a `read` and a `write` per request; on io_uring it makes almost no system call of
+its own, so the extra wake-up weighs more. The timeout costs 16% on the epoll client and 7% on
+io_uring on `A` already (one send and one wake per request), so a timer kept on the client's
+own loop (akio-timer) rather than a thread fed through a channel would remove both costs.
+
+**The h2c drop since `d33d4dd3`.** The h2c rows on the pool are 9–13× below the inline ones
+and the campaign's h2c figures (4.1–5.4 M req/s): since `d33d4dd3` (2026-11-25, ADR-094 update)
+`H2Config::run_on_pool` is on by default, so every h2c request of `http-bench` goes through the
+logical pool. Same host, same binaries: 0.47–0.53 M req/s on the pool against 4.4–6.1 M inline
+(A). This is the cost of the new default for handlers that never block, not of A169 or A171;
+`http-bench` gained `AKIO_H2_RUN_ON_POOL=0` to measure the inline path, and h2c benchmarks from
+before 2026-11-25 compare with those numbers, not with the default.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and
