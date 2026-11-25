@@ -322,6 +322,14 @@ impl Started {
     /// sink hears nothing more, and nothing is sent.
     pub fn abort(self) {}
 
+    /// Whether the body was refused (`Context::limit_body` found it past its bound, akit
+    /// A49): the request was answered (or its handler, holding it, was told), and the sink
+    /// hears nothing more. The transport stops reading the body: asks the client to stop
+    /// sending (HTTP/3: `STOP_SENDING` with `H3_NO_ERROR`) and drops this.
+    pub fn body_refused(&self) -> bool {
+        self.ctx.body_stopped()
+    }
+
     /// The WebSocket the handler accepted with `Context::upgrade_websocket` (RFC 9220), its
     /// `200` already sent: the stream's bytes from now on go to [`WsSession::on_data`], and its
     /// frames go out through `link`.

@@ -90,7 +90,7 @@ fn server(cfg: H3Config) -> Srv {
                 ctx.on_body(move |_ctx, ev| {
                     let _ = tx.send(match ev {
                         BodyEvent::Chunk(d) => Some(d.to_vec()),
-                        BodyEvent::End(_) => None,
+                        BodyEvent::End(_) | BodyEvent::TooLarge => None,
                     });
                 });
             }),

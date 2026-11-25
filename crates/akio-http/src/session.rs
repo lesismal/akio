@@ -647,6 +647,17 @@ impl<S: Service> Session<S> {
                             }
                         }
                     };
+                    if ctx.body_stopped() || ctx.closes() {
+                        // Refused (`Context::limit_body`), or answered with `Connection: close`:
+                        // the rest of the body is not read (akit A24, A49).
+                        let State::Stream { ctx, gone, .. } =
+                            std::mem::replace(&mut self.state, State::Closed)
+                        else {
+                            unreachable!()
+                        };
+                        stop_body(c, ctx, gone);
+                        return src.len();
+                    }
                     if !done {
                         return pos;
                     }
@@ -754,6 +765,7 @@ impl<S: Service> Session<S> {
             trailers: Headers::new(),
             body: Vec::new(),
             peer: akio_mux::proxy::client_addr(c),
+            local: c.local_addr(),
             protocol: None,
             peer_certificates: peer_chain(&mut self.peer_known, &mut self.peer_chain, c.inner()),
         };
@@ -789,6 +801,12 @@ impl<S: Service> Session<S> {
         let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
         drop(g);
+        if ctx.body_stopped() || ctx.closes() {
+            // Refused before its body (a declared length past `Context::limit_body`), or
+            // answered with `Connection: close`: the body is not read (akit A24, A49).
+            self.state = State::Closed;
+            return stop_body(c, ctx, 0);
+        }
         // A client that stops sending (EOF) mid-body cannot complete the request, and the
         // response it waits for may never come (a detached handler waiting on the body): close
         // the connection, which drops the context and its sink (ADR-108).
@@ -869,7 +887,9 @@ impl<S: Service> Session<S> {
             self.ws = Some(Box::new(ws));
             return;
         }
-        if !keep_alive {
+        // A response that said `Connection: close` ends the connection's requests (akit A24):
+        // the ones pipelined behind it are not served.
+        if !keep_alive || ctx.ends_connection() {
             self.state = State::Closed;
         }
     }
@@ -888,6 +908,20 @@ impl<S: Service> Session<S> {
             slot.fill_close(out);
         }
     }
+}
+
+/// A streamed request body that is not read on: refused ([`Context::limit_body`]), or answered
+/// with `Connection: close` (akit A24, A49). Its context (and sink) goes, and the connection
+/// stops reading and closes once the responses before now, this request's included, are out.
+fn stop_body<S: Service>(c: &Conn<Session<S>>, ctx: Box<Context>, gone: u64) {
+    if gone != 0 {
+        c.inner().forget_peer_gone(gone);
+    }
+    // Ending the body's reads releases a hold its handler took: the hold below comes after.
+    ctx.end_reads();
+    drop(ctx);
+    h1_shutdown(c);
+    c.inner().hold_reads(true);
 }
 
 /// Whether the handler of `req` may take the connection over (`upgrade_raw`,

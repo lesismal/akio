@@ -97,6 +97,7 @@ fn held(ctx: &mut Context) {
             let t = total.load(Ordering::Relaxed);
             ctx.text(200, format!("{t},{}", at_release.load(Ordering::Relaxed)));
         }
+        BodyEvent::TooLarge => {}
     });
 }
 
@@ -118,6 +119,7 @@ fn app() -> Router {
                         let tr = t.get("x-sum").unwrap_or("-").to_owned();
                         ctx.text(200, format!("{sum},{hash},{tr}"));
                     }
+                    BodyEvent::TooLarge => {}
                 });
             }),
         )

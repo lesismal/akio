@@ -233,6 +233,7 @@ fn streamed_request_bodies_arrive_in_chunks_without_a_size_limit() {
                     let tr = trailers.get("x-done").unwrap_or("-").to_owned();
                     ctx.text(200, format!("got {sum} {tr}"));
                 }
+                BodyEvent::TooLarge => {}
             });
         }),
     );

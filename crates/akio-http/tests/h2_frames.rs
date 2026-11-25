@@ -102,6 +102,7 @@ fn app() -> Router {
                         let t = tr.get("x-trailer").unwrap_or("-").to_owned();
                         ctx.text(200, format!("{sum} {t}"));
                     }
+                    BodyEvent::TooLarge => {}
                 });
             }),
         )

@@ -96,6 +96,7 @@ fn app() -> Router {
                         let tr = t.get("x-done").unwrap_or("-").to_owned();
                         ctx.text(200, format!("{} {:x} {} {tr}", s.0, s.1, s.2 > 1));
                     }
+                    BodyEvent::TooLarge => {}
                 });
             }),
         )

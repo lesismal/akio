@@ -130,3 +130,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-128: Response heads held, and response bodies filtered, by work done elsewhere](128-held-response-heads-and-body-filters.md) (accepted 2026-11-25; akit A166, A167; ADR-125's W6)
 - [ADR-129: akio-prefork removed](129-akio-prefork-removed.md) (accepted 2026-11-25)
 - [ADR-130: Listeners of one backend share an I/O thread group](130-shared-io-groups.md) (accepted 2026-11-25; phases 1 to 3: epoll/kqueue loops, rounds, io_uring)
+- [ADR-157: Responses that close their connection or carry their length, request bodies a middleware bounds](157-http1-close-length-body-limit.md) (accepted 2026-11-26; akit A24, A49, A35, A148)

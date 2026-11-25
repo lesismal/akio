@@ -10,6 +10,48 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: an HTTP/1 response's `Connection: close` closes the connection and stops reading the body (akio-http; akit A24)
+
+ADR-157. A response whose `Connection` field says `close` (sent with `respond`, from a `Detached`,
+after a held head, or as a streamed head) now closes the HTTP/1 connection once it is written,
+whatever the request asked, and the connection reads nothing more: the rest of a request body the
+service refused (a `413`, a `401`) is not read, and the requests pipelined behind it are not
+served. A whole response stops the reads as it is sent, a streamed one once it finishes. Before,
+the field was sent but keep-alive came from the request alone, and the body was read on until the
+body timeout. HTTP/2 and HTTP/3 drop the field, as before.
+
+### Added: `Context::limit_body`, a request body bounded by a middleware (akio-http, akio-h3; akit A49)
+
+ADR-157. `Context::limit_body(max) -> bool` lowers the bound of a request's body, before or after
+the handler sets its sink. A body already here (buffered) longer than `max` is answered `413`. A
+streamed body (`BodyMode::Stream`) declared longer is refused at once, and one that grows past
+`max` is refused as it does: its sink gets the new `BodyEvent::TooLarge` and nothing more, the
+request is answered `413` unless its response was taken (the handler answers then), and the rest of
+the body is not read: HTTP/1 closes the connection after the answer, HTTP/2 stops the stream's
+window and resets it (`NO_ERROR`) once answered, HTTP/3 sends `STOP_SENDING` (`H3_NO_ERROR`).
+`transport::Started::body_refused` tells a transport outside akio-http. `false` when refused: the
+middleware does not call the handler.
+
+**Breaking (before 1.0.0):** `BodyEvent` has a new variant, `TooLarge`; an exhaustive `match` on it
+needs an arm (it comes only after `limit_body`).
+
+### Added: a streamed HTTP/1 response framed by its `Content-Length` (akio-http; akit A35)
+
+ADR-157. `stream_response` (and `Detached::stream_response`) on HTTP/1 now frames the body by the
+`Content-Length` its head gives: no chunked framing, the pieces written as they are, a write past
+the length refused (`Error::Io` of kind `InvalidInput`, nothing written), and `finish` on a body
+short of its length closing the connection (the request ends `End::Gone`, its tap `TapEnd::Cut`).
+A stream coding a response filter sets (the `compress` middleware's) or a body filter drops the
+field and goes chunked, as the body is no longer that length. Without a length, the framing is as
+before (chunked on keep-alive HTTP/1.1, close-delimited otherwise); a chunked head no longer
+carries a `Content-Length` beside `Transfer-Encoding`. HTTP/2 and HTTP/3 are unchanged.
+
+### Added: `Request::local` and `Context::local_addr`, the address a request came to (akio-http, akio-h3, akio-quic; akit A148)
+
+ADR-157. Filled as `Request::peer` is: the connection's local address on HTTP/1.1 and HTTP/2, the
+UDP socket's on HTTP/3, unspecified where there is none (`Request::new`, a Unix-domain socket).
+`akio_quic::Connection::local_addr` gives a QUIC connection's.
+
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 
 A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain

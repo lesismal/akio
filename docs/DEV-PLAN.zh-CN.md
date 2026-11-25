@@ -395,6 +395,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 消息体旁路、外层响应过滤器 | akio-http `context`、`message`、`tap`（ADR-116） | 否 | 否 | 待测：普通响应（`Response` 与 `BodyStream` 各多一个 `None` 字，过滤器多一次判空）的 A/B，以及有旁路的流（每次写入一次加锁）与无旁路的流的对比；其余由 akit 缓存（I67）的命中与未命中基准覆盖。 |
 | 请求的对端取自受信任的 PROXY 头 | akio-http `session`（ADR-118） | 否 | 否 | 要测：没有 PROXY 层时 HTTP/1.1 与 h2c 请求速率的 A/B（每个请求一次 `OnceLock::get`），在安静主机上。 |
 | WebAssembly 插件：解码、验证与解释器 | akio-wasm（ADR-125） | 否 | 否 | 要测（W5）：在基准机上，经 fit 的 `headers` 和 Proxy-Wasm `http_routing` guest 的一次 guest 调用和一个请求，与 wazero 上的 fit 对比；以及 fit 的 Go guest（2.6–4.6 MB）的加载时间。 |
+| HTTP/1 遵从 `Connection: close`、`limit_body`、有长度的流式响应、`Request::local` | akio-http `context`、`session`、`message`、`h2`，akio-h3，akio-quic（ADR-157） | 否 | 否 | 要测：HTTP/1.1（keep-alive 和流水线）、h2c 和 h3 请求率的 A/B（`Request` 因 `local` 大 32 字节、每个请求读一次本地地址、`Context` 大约 24 字节、关闭标志来自编码器已有的字段扫描），以及有无 `limit_body` 的流式上传（每个 chunk 一次加法和一次比较）、有长度与 chunked 的流式下载（每次写一次原子操作），在安静主机上。 |
 | HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s） | 部分（每连接一个截止时间定时器，`95bca264`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
 | 路由与路由正则 | akio-http、akio-regex（ADR-051） | 是（`router-bench`，“编解码微基准”） | 是（每次查找约 28 ns、0 次分配；路由正则快于 `regex`） | – |
 | 日志过滤正则 | akio-regex、akio-log（ADR-047） | 是（“编解码微基准”，`logregex`） | 部分 | 对比 `regex`：无匹配的多选分支 92 对 16 ns，`\b\d+ms\b` 93 对 33 ns；编译更慢。不在热路径上（只用于过滤）。 |

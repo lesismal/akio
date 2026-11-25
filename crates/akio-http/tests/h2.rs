@@ -57,6 +57,7 @@ fn app() -> Router {
                 ctx.on_body(move |ctx, ev| match ev {
                     BodyEvent::Chunk(b) => sum += b.len(),
                     BodyEvent::End(_) => ctx.text(200, sum.to_string()),
+                    BodyEvent::TooLarge => {}
                 });
             }),
         )

@@ -70,6 +70,7 @@ fn upload(ctx: &mut Context) {
     ctx.on_body(move |ctx, ev| match ev {
         BodyEvent::Chunk(b) => total += b.len(),
         BodyEvent::End(_trailers) => ctx.text(200, format!("received {total} bytes\n")),
+        BodyEvent::TooLarge => {}
     });
 }
 // ANCHOR_END: handlers

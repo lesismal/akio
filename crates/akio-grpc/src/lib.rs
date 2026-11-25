@@ -805,6 +805,10 @@ impl Service for GrpcServer {
                     }
                     call.push(None);
                 }
+                // A limit a middleware set (`Context::limit_body`).
+                BodyEvent::TooLarge => {
+                    sink.finish(Status::new(Code::ResourceExhausted, "request too large"));
+                }
             });
         }
         let mut on_msg = open(&md, sink.clone());
@@ -825,6 +829,10 @@ impl Service for GrpcServer {
                     return sink.finish(Status::new(Code::Internal, "truncated message"));
                 }
                 on_msg(None);
+            }
+            // A limit a middleware set (`Context::limit_body`).
+            BodyEvent::TooLarge => {
+                sink.finish(Status::new(Code::ResourceExhausted, "request too large"));
             }
         });
     }

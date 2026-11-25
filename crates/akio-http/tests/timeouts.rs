@@ -38,6 +38,7 @@ fn app() -> Router {
                 ctx.on_body(move |ctx, ev| match ev {
                     BodyEvent::Chunk(b) => n += b.len(),
                     BodyEvent::End(_) => ctx.text(200, n.to_string()),
+                    BodyEvent::TooLarge => {}
                 });
             }),
         )
