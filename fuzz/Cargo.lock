@@ -197,6 +197,7 @@ dependencies = [
  "akio-sys",
  "akio-tls",
  "akio-turn",
+ "akio-wasm",
  "akio-webrtc",
  "akio-ws",
  "akio-x509",
@@ -254,6 +255,7 @@ dependencies = [
  "akio-crypto",
  "akio-deflate",
  "akio-log",
+ "akio-mux",
  "akio-regex",
  "akio-sys",
  "akio-ws",
@@ -351,6 +353,7 @@ dependencies = [
  "akio",
  "akio-core",
  "akio-http",
+ "akio-mux",
  "akio-ws",
 ]
 
@@ -406,6 +409,10 @@ dependencies = [
  "akio-sys",
  "akio-timer",
 ]
+
+[[package]]
+name = "akio-wasm"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "akio-webrtc"

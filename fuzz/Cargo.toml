@@ -69,6 +69,7 @@ akio-deflate = { path = "../crates/akio-deflate", features = ["fuzzing"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 akio-brotli = { path = "../crates/akio-brotli", features = ["fuzzing"] }
 akio-zstd = { path = "../crates/akio-zstd", features = ["fuzzing"] }
+akio-wasm = { path = "../crates/akio-wasm", features = ["fuzzing"] }
 # Differential oracles for the brotli and zstd targets only (Google's brotli in Rust, libzstd).
 brotli-decompressor = "5"
 zstd = { version = "0.13", default-features = false }
@@ -947,6 +948,13 @@ bench = false
 [[bin]]
 name = "sys_icmp_error"
 path = "fuzz_targets/sys_icmp_error.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm_decode"
+path = "fuzz_targets/wasm_decode.rs"
 test = false
 doc = false
 bench = false

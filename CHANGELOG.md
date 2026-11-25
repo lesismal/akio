@@ -10,6 +10,33 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: akio-wasm, a WebAssembly runtime for plugins, milestone W1: decoder and validator (akio-wasm, akio)
+
+ADR-125 (accepted), requested by akit (A165) for its WASM plugins (I71) and Proxy-Wasm (I72).
+New crate `akio-wasm`, in safe Rust (`#![forbid(unsafe_code)]`) without dependencies, experimental
+until its API is complete (W4); `akio::wasm` behind the facade feature `wasm`. This first milestone
+loads modules; running them is W2.
+
+- `Module::new(&bytes, &ModuleLimits)` decodes and validates a binary module in one pass, linear in
+  its size: WebAssembly 2.0 without SIMD (1.0 with mutable globals, sign extension, non-trapping
+  float-to-int, bulk memory, multi-value, reference types; one 32-bit memory), what Go, TinyGo and
+  Rust's `wasm32-wasip1` emit. `Module` lists the imports, exports (`export(name)`), types,
+  function types, tables, memory, globals and start function.
+- Anything else is refused at load with `ErrorKind::Unsupported(Feature)` naming it: SIMD
+  (relaxed included), threads, exception handling, tail calls, memory64, several memories,
+  extended constants, typed function references, GC, custom page sizes, wide arithmetic,
+  components. Other refusals are `Malformed` or `Invalid` with the specification's wording and
+  the byte offset.
+- `ModuleLimits`, each checked before anything is allocated for what it counts: module size
+  (64 MiB), types (100 000) and their arity (1 000), functions (100 000), imports and exports
+  (10 000 each), tables (100) and their initial size (10 M), globals (100 000), locals per function
+  (50 000), block nesting (1 000), `br_table` targets (100 000), element and data segments
+  (100 000 each). Refusals are `ErrorKind::Limit(Limit)`.
+- Tests: the decoding and validation commands of the WebAssembly 2.0 specification suite
+  (converted by `tools/wasm-spec/convert.sh`, committed under `crates/akio-wasm/tests/spec`), the
+  refused features' proposal files as refusal checks, every limit under, at and over, modules at
+  the default limits in bounded time. Fuzz target `wasm_decode` (dictionary `fuzz/dict/wasm.dict`).
+
 ### Fixed: the HTTP/3 client no longer deadlocks resuming, cancelling or timing out a request (akio-h3)
 
 A call on a QUIC connection from outside its handler drives the connection on the calling thread,

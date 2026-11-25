@@ -2,7 +2,7 @@
 
 English | [简体中文](125-wasm-runtime-for-plugins.zh-CN.md)
 
-Status: proposed (2026-11-25). Design only: nothing here is built until the maintainer says go.
+Status: accepted (2026-11-25). Built in the milestones of section 8; W1 (decoder and validator) is done, see "As built" at the end.
 
 ## Context
 
@@ -313,3 +313,45 @@ tested before akit uses it.
   loop, not only WASM.
 - Open until built: the exact API names, the fuel slice, and whether `externref` is worth keeping
   before a guest needs it (it costs little; the specification tests cover it).
+
+## As built
+
+### W1: decoder and validator (2026-11-25)
+
+Crate `akio-wasm` (`#![forbid(unsafe_code)]`, no dependencies): `Module::new(&bytes, &ModuleLimits)`
+decodes and validates in one pass, bodies validated as they are decoded; `Module` describes the
+imports, exports, types, functions, tables, memory, globals and start function, and keeps the
+code for W2. Refusals are an `Error` with an `ErrorKind` (`Malformed`, `Invalid`,
+`Unsupported(Feature)`, `Limit(Limit)`), the byte offset and the specification's wording. The
+facade re-exports it as `akio::wasm` behind the feature `wasm`. Decided while building it:
+
+- **The specification tests are WebAssembly 2.0's**: `WebAssembly/testsuite` pinned at
+  `a8101597` (2025-09-11), the last commit whose top level is the 2.0 suite; after it the top level
+  is the 3.0 draft, which re-tests 2.0 under 3.0's rules (any immutable global in a constant
+  expression, for one) that section 2 does not adopt. All 2.0 files run;
+  its `simd_*` files and the proposals of refused features (threads, relaxed SIMD, custom page
+  sizes, wide arithmetic, and the 3.0 draft's files for memory64, multi-memory, tail calls,
+  exceptions, GC and typed function references) run as refusal checks: every module accepted or
+  refused as unsupported, none refused as malformed or invalid. One exception: the threads
+  proposal predates reference types, so its three "multiple tables" modules are valid here. The
+  converted suite is 5.7 MB in `crates/akio-wasm/tests/spec` (excluded from the published crate);
+  `tools/wasm-spec/convert.sh` drops the action commands of the refused files, which could never
+  run. W1 runs the decoding and validation commands (1 598 modules, 2 146 `assert_invalid`, 719
+  binary `assert_malformed`, 117 modules that fail only when linked or instantiated); the rest
+  waits for W2.
+- **Constant expressions follow 2.0**: `global.get` names an imported, immutable global only.
+- **Load limits beyond section 3's list**, so that every count is bounded: types (100 000),
+  parameters and results of a type (1 000 each), tables (100), globals (100 000). The table
+  limit (10 M) bounds a table's initial size; its maximum may be larger, and growing it is an
+  instance's limit (W3). "The translated form at most a fixed multiple of the input" is W2's.
+  Locals count the parameters. A local count past `u32::MAX` is malformed before it is over the
+  limit, as the specification has it.
+- **Refused features**: as section 2, plus custom page sizes and wide arithmetic, each named.
+  Relaxed SIMD is reported as SIMD: its instructions take `v128` values, so a module meets SIMD
+  first.
+- **The crate is experimental** (docs/api-stability.md) until W4 settles its API; the snapshot
+  `api/akio-wasm.txt` makes changes visible. The facade's `wasm` feature is outside akio's
+  snapshot, as `dpdk` is.
+- **Fuzzing**: `wasm_decode` loads each input under the default limits and under small ones; a
+  module accepted under the small limits is inside each, and one refused under them for another
+  reason than a limit is refused the same way, at the same offset, under the defaults.

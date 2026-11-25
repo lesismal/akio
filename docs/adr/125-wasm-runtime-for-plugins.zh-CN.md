@@ -2,7 +2,7 @@
 
 [English](125-wasm-runtime-for-plugins.md) | 简体中文
 
-状态：提议中（2026-11-25）。仅为设计：维护者同意之前不实现。
+状态：已采纳（2026-11-25）。按第 8 节的里程碑实现；W1（解码器与验证器）已完成，见文末“实现记录”。
 
 ## 背景
 
@@ -252,3 +252,30 @@ I81 之前的状态）。body 为流式的请求不能挂起（ADR-109）；插�
 - akio-http 为 I72 获得的（H1、H2）可服务于任何需要在事件循环之外处理响应的过滤器，不仅是 WASM。
 - 实现前仍待定：确切的 API 名字、fuel 片的大小，以及在有 guest 需要之前是否值得保留 `externref`（代价很小；
   规范测试覆盖它）。
+
+## 实现记录
+
+### W1：解码器与验证器（2026-11-25）
+
+crate `akio-wasm`（`#![forbid(unsafe_code)]`，无依赖）：`Module::new(&bytes, &ModuleLimits)` 一遍完成解码与验证，
+函数体边解码边验证；`Module` 给出导入、导出、类型、函数、表、内存、全局变量和 start 函数，并保留代码供 W2 使用。
+拒绝时返回 `Error`，带 `ErrorKind`（`Malformed`、`Invalid`、`Unsupported(Feature)`、`Limit(Limit)`）、字节偏移和规范的措辞。
+门面 crate 在 `wasm` feature 下以 `akio::wasm` 重新导出。实现中做出的决定：
+
+- **规范测试用 WebAssembly 2.0 的**：`WebAssembly/testsuite` 固定在 `a8101597`（2025-09-11），这是顶层仍为 2.0
+  测试集的最后一个提交；其后顶层换成 3.0 草案，它按 3.0 的规则重测 2.0（例如常量表达式可用任意不可变全局变量），而第 2 节没有采纳这些。2.0 的文件全部运行；其中的 `simd_*` 文件以及被拒绝特性的提案（threads、relaxed SIMD、
+  custom page sizes、wide arithmetic，以及 3.0 草案中 memory64、多内存、尾调用、异常、GC 和类型化函数引用的文件）作为拒绝检查运行：
+  每个模块要么被接受，要么以“不支持”拒绝，不得以“格式错误”或“无效”拒绝。一个例外：threads 提案早于引用类型，
+  它的三个“multiple tables”模块在这里是有效的。转换后的测试集 5.7 MB，位于 `crates/akio-wasm/tests/spec`（不随 crate 发布）；
+  `tools/wasm-spec/convert.sh` 去掉被拒绝特性文件中的动作命令（它们永远不会运行）。W1 运行解码与验证命令（1 598 个模块、
+  2 146 个 `assert_invalid`、719 个二进制 `assert_malformed`、117 个只在链接或实例化时失败的模块）；其余命令等 W2。
+- **常量表达式遵循 2.0**：`global.get` 只能引用导入的、不可变的全局变量。
+- **第 3 节之外的加载上限**，使每个计数都有界：类型（100 000）、一个类型的参数和结果（各 1 000）、表（100）、
+  全局变量（100 000）。表的上限（10 M）限制的是表的初始大小；其最大值可以更大，增长属于实例的上限（W3）。
+  “翻译后的形式至多是输入的固定倍数”属于 W2。局部变量计数包括参数。局部变量总数超过 `u32::MAX` 时按规范判为格式错误，先于上限检查。
+- **拒绝的特性**：第 2 节所列，另加 custom page sizes 和 wide arithmetic，各自给出名字。relaxed SIMD 报告为 SIMD：
+  它的指令操作 `v128` 值，模块总会先遇到 SIMD。
+- **crate 属于实验层**（docs/api-stability.zh-CN.md），直到 W4 定下 API；快照 `api/akio-wasm.txt` 让改动可见。
+  门面的 `wasm` feature 不在 akio 的快照中，与 `dpdk` 相同。
+- **模糊测试**：`wasm_decode` 对每个输入分别在默认上限和小上限下加载；在小上限下接受的模块满足每个上限，
+  在小上限下因上限以外的原因被拒的模块，在默认上限下以同样的方式、在同样的偏移被拒。

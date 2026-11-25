@@ -63,6 +63,11 @@ use akio_core::{
 #[cfg(all(feature = "tun", any(target_os = "linux", target_os = "macos")))]
 pub use akio_tun as tun;
 
+/// WebAssembly for plugins (experimental, cargo feature `wasm`, ADR-125): a safe interpreter
+/// built in milestones; this release decodes and validates modules ([`wasm::Module`]).
+#[cfg(feature = "wasm")]
+pub use akio_wasm as wasm;
+
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
     DatagramsIter, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters, LoopMeta,

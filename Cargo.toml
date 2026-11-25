@@ -41,6 +41,7 @@ members = [
     "crates/akio-webrtc",
     "crates/akio-media",
     "crates/akio-bittorrent",
+    "crates/akio-wasm",
     "crates/akio",
     "tools/ct-dudect",
     "tools/echo-bench",
@@ -98,6 +99,7 @@ akio-dpdk = { path = "crates/akio-dpdk", version = "=1.0.0-rc.1" }
 akio-tun = { path = "crates/akio-tun", version = "=1.0.0-rc.1" }
 akio-turn = { path = "crates/akio-turn", version = "=1.0.0-rc.1" }
 akio-webrtc = { path = "crates/akio-webrtc", version = "=1.0.0-rc.1" }
+akio-wasm = { path = "crates/akio-wasm", version = "=1.0.0-rc.1" }
 akio = { path = "crates/akio", version = "=1.0.0-rc.1" }
 
 [workspace.lints.rust]

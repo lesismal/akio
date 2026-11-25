@@ -60,6 +60,7 @@ dependencies = [
  "akio-tls",
  "akio-tun",
  "akio-uring",
+ "akio-wasm",
  "akio-x509",
  "libc",
  "log",
@@ -428,6 +429,10 @@ dependencies = [
  "akio-sys",
  "akio-timer",
 ]
+
+[[package]]
+name = "akio-wasm"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "akio-webrtc"

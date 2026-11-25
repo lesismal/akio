@@ -1,0 +1,24 @@
+[package]
+name = "akio-wasm"
+description = "akio: a WebAssembly runtime for plugins, in safe Rust without dependencies (decoder and validator)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/akio-wasm"
+keywords = ["wasm", "webassembly", "interpreter", "sandbox", "plugin"]
+categories = ["wasm"]
+# The converted specification tests (Apache 2.0, tests/spec/LICENSE) stay in the repository.
+exclude = ["tests/spec"]
+
+[dependencies]
+
+[features]
+# Entry points for `fuzz/` (`akio_wasm::fuzzing`); not a public API.
+fuzzing = []
+
+[lints]
+workspace = true

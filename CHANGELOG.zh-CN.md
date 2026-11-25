@@ -10,6 +10,25 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：akio-wasm，插件用的 WebAssembly 运行时，里程碑 W1：解码器与验证器（akio-wasm、akio）
+
+ADR-125（已采纳），akit 为其 WASM 插件（I71）和 Proxy-Wasm（I72）提出（A165）。新 crate `akio-wasm`，
+安全 Rust（`#![forbid(unsafe_code)]`）、无依赖，在 API 完整（W4）之前属于实验层；门面 crate 在 `wasm` feature 下提供
+`akio::wasm`。这个里程碑只加载模块，运行模块是 W2。
+
+- `Module::new(&bytes, &ModuleLimits)` 一遍完成二进制模块的解码与验证，时间与模块大小成线性：WebAssembly 2.0 去掉 SIMD
+  （1.0 加可变全局变量、符号扩展、不陷入的浮点转整数、批量内存、多返回值、引用类型；一个 32 位内存），即 Go、TinyGo
+  和 Rust `wasm32-wasip1` 生成的内容。`Module` 列出导入、导出（`export(name)`）、类型、函数类型、表、内存、全局变量和 start 函数。
+- 其他特性在加载时以 `ErrorKind::Unsupported(Feature)` 拒绝并给出名字：SIMD（含 relaxed）、线程、异常处理、尾调用、
+  memory64、多内存、扩展常量、类型化函数引用、GC、custom page sizes、wide arithmetic、组件。其余拒绝为 `Malformed` 或
+  `Invalid`，带规范的措辞和字节偏移。
+- `ModuleLimits`，每个计数在为其分配任何东西之前检查：模块大小（64 MiB）、类型（100 000）及其元数（1 000）、
+  函数（100 000）、导入和导出（各 10 000）、表（100）及其初始大小（10 M）、全局变量（100 000）、每个函数的局部变量（50 000）、
+  块嵌套（1 000）、`br_table` 目标（100 000）、元素段和数据段（各 100 000）。超限时为 `ErrorKind::Limit(Limit)`。
+- 测试：WebAssembly 2.0 规范测试集的解码与验证命令（由 `tools/wasm-spec/convert.sh` 转换，提交在
+  `crates/akio-wasm/tests/spec`）、被拒绝特性的提案文件作为拒绝检查、每个上限的低于/等于/超过、默认上限处的模块在有界时间内加载。
+  模糊测试目标 `wasm_decode`（字典 `fuzz/dict/wasm.dict`）。
+
 ### 修复：HTTP/3 客户端恢复读取、取消或超时一个请求时不再死锁（akio-h3）
 
 在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，为待处理的事件运行

@@ -1,0 +1,379 @@
+pub mod akio_wasm
+#[non_exhaustive] pub enum akio_wasm::ErrorKind
+pub akio_wasm::ErrorKind::Invalid
+pub akio_wasm::ErrorKind::Limit(akio_wasm::Limit)
+pub akio_wasm::ErrorKind::Malformed
+pub akio_wasm::ErrorKind::Unsupported(akio_wasm::Feature)
+impl core::clone::Clone for akio_wasm::ErrorKind
+pub fn akio_wasm::ErrorKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::ErrorKind
+impl core::cmp::PartialEq for akio_wasm::ErrorKind
+pub fn akio_wasm::ErrorKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::ErrorKind
+pub fn akio_wasm::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::ErrorKind
+pub fn akio_wasm::ErrorKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::ErrorKind
+impl core::marker::StructuralPartialEq for akio_wasm::ErrorKind
+impl core::marker::Send for akio_wasm::ErrorKind
+impl core::marker::Sync for akio_wasm::ErrorKind
+impl core::marker::Unpin for akio_wasm::ErrorKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::ErrorKind
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::ErrorKind
+pub enum akio_wasm::ExportKind
+pub akio_wasm::ExportKind::Func
+pub akio_wasm::ExportKind::Global
+pub akio_wasm::ExportKind::Memory
+pub akio_wasm::ExportKind::Table
+impl core::clone::Clone for akio_wasm::ExportKind
+pub fn akio_wasm::ExportKind::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::ExportKind
+impl core::cmp::PartialEq for akio_wasm::ExportKind
+pub fn akio_wasm::ExportKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::ExportKind
+pub fn akio_wasm::ExportKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::ExportKind
+pub fn akio_wasm::ExportKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::ExportKind
+impl core::marker::StructuralPartialEq for akio_wasm::ExportKind
+impl core::marker::Send for akio_wasm::ExportKind
+impl core::marker::Sync for akio_wasm::ExportKind
+impl core::marker::Unpin for akio_wasm::ExportKind
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::ExportKind
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::ExportKind
+pub enum akio_wasm::ExternType
+pub akio_wasm::ExternType::Func(akio_wasm::FuncType)
+pub akio_wasm::ExternType::Global(akio_wasm::GlobalType)
+pub akio_wasm::ExternType::Memory(akio_wasm::MemoryType)
+pub akio_wasm::ExternType::Table(akio_wasm::TableType)
+impl core::clone::Clone for akio_wasm::ExternType
+pub fn akio_wasm::ExternType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::ExternType
+impl core::cmp::PartialEq for akio_wasm::ExternType
+pub fn akio_wasm::ExternType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::ExternType
+pub fn akio_wasm::ExternType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::ExternType
+pub fn akio_wasm::ExternType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_wasm::ExternType
+impl core::marker::Send for akio_wasm::ExternType
+impl core::marker::Sync for akio_wasm::ExternType
+impl core::marker::Unpin for akio_wasm::ExternType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::ExternType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::ExternType
+#[non_exhaustive] pub enum akio_wasm::Feature
+pub akio_wasm::Feature::ComponentModel
+pub akio_wasm::Feature::CustomPageSizes
+pub akio_wasm::Feature::ExceptionHandling
+pub akio_wasm::Feature::ExtendedConst
+pub akio_wasm::Feature::FunctionReferences
+pub akio_wasm::Feature::Gc
+pub akio_wasm::Feature::Memory64
+pub akio_wasm::Feature::MultiMemory
+pub akio_wasm::Feature::Simd
+pub akio_wasm::Feature::TailCalls
+pub akio_wasm::Feature::Threads
+pub akio_wasm::Feature::WideArithmetic
+impl akio_wasm::Feature
+pub const fn akio_wasm::Feature::name(self) -> &'static str
+impl core::clone::Clone for akio_wasm::Feature
+pub fn akio_wasm::Feature::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Feature
+impl core::cmp::PartialEq for akio_wasm::Feature
+pub fn akio_wasm::Feature::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::Feature
+pub fn akio_wasm::Feature::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::Feature
+pub fn akio_wasm::Feature::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::Feature
+impl core::marker::StructuralPartialEq for akio_wasm::Feature
+impl core::marker::Send for akio_wasm::Feature
+impl core::marker::Sync for akio_wasm::Feature
+impl core::marker::Unpin for akio_wasm::Feature
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Feature
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Feature
+#[non_exhaustive] pub enum akio_wasm::Limit
+pub akio_wasm::Limit::BrTableTargets
+pub akio_wasm::Limit::DataSegments
+pub akio_wasm::Limit::ElemSegments
+pub akio_wasm::Limit::Exports
+pub akio_wasm::Limit::Funcs
+pub akio_wasm::Limit::Globals
+pub akio_wasm::Limit::Imports
+pub akio_wasm::Limit::Locals
+pub akio_wasm::Limit::ModuleBytes
+pub akio_wasm::Limit::Nesting
+pub akio_wasm::Limit::TableElements
+pub akio_wasm::Limit::Tables
+pub akio_wasm::Limit::TypeArity
+pub akio_wasm::Limit::Types
+impl akio_wasm::Limit
+pub const fn akio_wasm::Limit::field(self) -> &'static str
+impl core::clone::Clone for akio_wasm::Limit
+pub fn akio_wasm::Limit::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Limit
+impl core::cmp::PartialEq for akio_wasm::Limit
+pub fn akio_wasm::Limit::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::Limit
+pub fn akio_wasm::Limit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::Limit
+pub fn akio_wasm::Limit::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::Limit
+impl core::marker::StructuralPartialEq for akio_wasm::Limit
+impl core::marker::Send for akio_wasm::Limit
+impl core::marker::Sync for akio_wasm::Limit
+impl core::marker::Unpin for akio_wasm::Limit
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Limit
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Limit
+pub enum akio_wasm::RefType
+pub akio_wasm::RefType::ExternRef
+pub akio_wasm::RefType::FuncRef
+impl core::clone::Clone for akio_wasm::RefType
+pub fn akio_wasm::RefType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::RefType
+impl core::cmp::PartialEq for akio_wasm::RefType
+pub fn akio_wasm::RefType::eq(&self, &Self) -> bool
+impl core::convert::From<akio_wasm::RefType> for akio_wasm::ValType
+pub fn akio_wasm::ValType::from(akio_wasm::RefType) -> Self
+impl core::fmt::Debug for akio_wasm::RefType
+pub fn akio_wasm::RefType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::RefType
+pub fn akio_wasm::RefType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::RefType
+impl core::marker::StructuralPartialEq for akio_wasm::RefType
+impl core::marker::Send for akio_wasm::RefType
+impl core::marker::Sync for akio_wasm::RefType
+impl core::marker::Unpin for akio_wasm::RefType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::RefType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::RefType
+pub enum akio_wasm::ValType
+pub akio_wasm::ValType::ExternRef
+pub akio_wasm::ValType::F32
+pub akio_wasm::ValType::F64
+pub akio_wasm::ValType::FuncRef
+pub akio_wasm::ValType::I32
+pub akio_wasm::ValType::I64
+impl akio_wasm::ValType
+pub const fn akio_wasm::ValType::is_ref(self) -> bool
+impl core::clone::Clone for akio_wasm::ValType
+pub fn akio_wasm::ValType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::ValType
+impl core::cmp::PartialEq for akio_wasm::ValType
+pub fn akio_wasm::ValType::eq(&self, &Self) -> bool
+impl core::convert::From<akio_wasm::RefType> for akio_wasm::ValType
+pub fn akio_wasm::ValType::from(akio_wasm::RefType) -> Self
+impl core::fmt::Debug for akio_wasm::ValType
+pub fn akio_wasm::ValType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::ValType
+pub fn akio_wasm::ValType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::ValType
+pub fn akio_wasm::ValType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::ValType
+impl core::marker::StructuralPartialEq for akio_wasm::ValType
+impl core::marker::Send for akio_wasm::ValType
+impl core::marker::Sync for akio_wasm::ValType
+impl core::marker::Unpin for akio_wasm::ValType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::ValType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::ValType
+pub struct akio_wasm::Error
+impl akio_wasm::Error
+pub const fn akio_wasm::Error::kind(&self) -> akio_wasm::ErrorKind
+pub const fn akio_wasm::Error::message(&self) -> &'static str
+pub const fn akio_wasm::Error::offset(&self) -> usize
+impl core::clone::Clone for akio_wasm::Error
+pub fn akio_wasm::Error::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Error
+impl core::cmp::PartialEq for akio_wasm::Error
+pub fn akio_wasm::Error::eq(&self, &Self) -> bool
+impl core::error::Error for akio_wasm::Error
+impl core::fmt::Debug for akio_wasm::Error
+pub fn akio_wasm::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::Error
+pub fn akio_wasm::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::Error
+impl core::marker::Send for akio_wasm::Error
+impl core::marker::Sync for akio_wasm::Error
+impl core::marker::Unpin for akio_wasm::Error
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Error
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Error
+pub struct akio_wasm::Export
+pub akio_wasm::Export::index: u32
+pub akio_wasm::Export::kind: akio_wasm::ExportKind
+pub akio_wasm::Export::name: alloc::boxed::Box<str>
+impl core::clone::Clone for akio_wasm::Export
+pub fn akio_wasm::Export::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Export
+impl core::cmp::PartialEq for akio_wasm::Export
+pub fn akio_wasm::Export::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::Export
+pub fn akio_wasm::Export::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::Export
+impl core::marker::Send for akio_wasm::Export
+impl core::marker::Sync for akio_wasm::Export
+impl core::marker::Unpin for akio_wasm::Export
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Export
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Export
+pub struct akio_wasm::FuncType
+impl akio_wasm::FuncType
+pub fn akio_wasm::FuncType::new(&[akio_wasm::ValType], &[akio_wasm::ValType]) -> Self
+pub fn akio_wasm::FuncType::params(&self) -> &[akio_wasm::ValType]
+pub fn akio_wasm::FuncType::results(&self) -> &[akio_wasm::ValType]
+impl core::clone::Clone for akio_wasm::FuncType
+pub fn akio_wasm::FuncType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::FuncType
+impl core::cmp::PartialEq for akio_wasm::FuncType
+pub fn akio_wasm::FuncType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::FuncType
+pub fn akio_wasm::FuncType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::FuncType
+pub fn akio_wasm::FuncType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::FuncType
+pub fn akio_wasm::FuncType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for akio_wasm::FuncType
+impl core::marker::Send for akio_wasm::FuncType
+impl core::marker::Sync for akio_wasm::FuncType
+impl core::marker::Unpin for akio_wasm::FuncType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::FuncType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::FuncType
+pub struct akio_wasm::GlobalType
+pub akio_wasm::GlobalType::mutable: bool
+pub akio_wasm::GlobalType::val: akio_wasm::ValType
+impl core::clone::Clone for akio_wasm::GlobalType
+pub fn akio_wasm::GlobalType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::GlobalType
+impl core::cmp::PartialEq for akio_wasm::GlobalType
+pub fn akio_wasm::GlobalType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::GlobalType
+pub fn akio_wasm::GlobalType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::GlobalType
+pub fn akio_wasm::GlobalType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::GlobalType
+impl core::marker::StructuralPartialEq for akio_wasm::GlobalType
+impl core::marker::Send for akio_wasm::GlobalType
+impl core::marker::Sync for akio_wasm::GlobalType
+impl core::marker::Unpin for akio_wasm::GlobalType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::GlobalType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::GlobalType
+pub struct akio_wasm::Import
+pub akio_wasm::Import::module: alloc::boxed::Box<str>
+pub akio_wasm::Import::name: alloc::boxed::Box<str>
+pub akio_wasm::Import::ty: akio_wasm::ExternType
+impl core::clone::Clone for akio_wasm::Import
+pub fn akio_wasm::Import::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Import
+impl core::cmp::PartialEq for akio_wasm::Import
+pub fn akio_wasm::Import::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::Import
+pub fn akio_wasm::Import::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::Import
+impl core::marker::Send for akio_wasm::Import
+impl core::marker::Sync for akio_wasm::Import
+impl core::marker::Unpin for akio_wasm::Import
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Import
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Import
+pub struct akio_wasm::Limits
+pub akio_wasm::Limits::max: core::option::Option<u32>
+pub akio_wasm::Limits::min: u32
+impl core::clone::Clone for akio_wasm::Limits
+pub fn akio_wasm::Limits::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Limits
+impl core::cmp::PartialEq for akio_wasm::Limits
+pub fn akio_wasm::Limits::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::Limits
+pub fn akio_wasm::Limits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::Limits
+pub fn akio_wasm::Limits::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::Limits
+impl core::marker::StructuralPartialEq for akio_wasm::Limits
+impl core::marker::Send for akio_wasm::Limits
+impl core::marker::Sync for akio_wasm::Limits
+impl core::marker::Unpin for akio_wasm::Limits
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Limits
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Limits
+pub struct akio_wasm::MemoryType
+pub akio_wasm::MemoryType::limits: akio_wasm::Limits
+impl core::clone::Clone for akio_wasm::MemoryType
+pub fn akio_wasm::MemoryType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::MemoryType
+impl core::cmp::PartialEq for akio_wasm::MemoryType
+pub fn akio_wasm::MemoryType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::MemoryType
+pub fn akio_wasm::MemoryType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::MemoryType
+pub fn akio_wasm::MemoryType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::MemoryType
+impl core::marker::StructuralPartialEq for akio_wasm::MemoryType
+impl core::marker::Send for akio_wasm::MemoryType
+impl core::marker::Sync for akio_wasm::MemoryType
+impl core::marker::Unpin for akio_wasm::MemoryType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::MemoryType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::MemoryType
+pub struct akio_wasm::Module
+impl akio_wasm::Module
+pub fn akio_wasm::Module::export(&self, &str) -> core::option::Option<&akio_wasm::Export>
+pub fn akio_wasm::Module::exports(&self) -> &[akio_wasm::Export]
+pub fn akio_wasm::Module::func_count(&self) -> u32
+pub fn akio_wasm::Module::func_type(&self, u32) -> core::option::Option<&akio_wasm::FuncType>
+pub fn akio_wasm::Module::globals(&self) -> &[akio_wasm::GlobalType]
+pub fn akio_wasm::Module::imports(&self) -> &[akio_wasm::Import]
+pub const fn akio_wasm::Module::memory(&self) -> core::option::Option<akio_wasm::MemoryType>
+pub fn akio_wasm::Module::new(&[u8], &akio_wasm::ModuleLimits) -> core::result::Result<Self, akio_wasm::Error>
+pub const fn akio_wasm::Module::start(&self) -> core::option::Option<u32>
+pub fn akio_wasm::Module::tables(&self) -> &[akio_wasm::TableType]
+pub fn akio_wasm::Module::types(&self) -> &[akio_wasm::FuncType]
+impl core::fmt::Debug for akio_wasm::Module
+pub fn akio_wasm::Module::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_wasm::Module
+impl core::marker::Sync for akio_wasm::Module
+impl core::marker::Unpin for akio_wasm::Module
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Module
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Module
+#[non_exhaustive] pub struct akio_wasm::ModuleLimits
+pub akio_wasm::ModuleLimits::max_br_table_targets: u32
+pub akio_wasm::ModuleLimits::max_data_segments: u32
+pub akio_wasm::ModuleLimits::max_elem_segments: u32
+pub akio_wasm::ModuleLimits::max_exports: u32
+pub akio_wasm::ModuleLimits::max_funcs: u32
+pub akio_wasm::ModuleLimits::max_globals: u32
+pub akio_wasm::ModuleLimits::max_imports: u32
+pub akio_wasm::ModuleLimits::max_locals: u32
+pub akio_wasm::ModuleLimits::max_module_bytes: usize
+pub akio_wasm::ModuleLimits::max_nesting: u32
+pub akio_wasm::ModuleLimits::max_table_elements: u32
+pub akio_wasm::ModuleLimits::max_tables: u32
+pub akio_wasm::ModuleLimits::max_type_arity: u32
+pub akio_wasm::ModuleLimits::max_types: u32
+impl core::clone::Clone for akio_wasm::ModuleLimits
+pub fn akio_wasm::ModuleLimits::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::ModuleLimits
+impl core::cmp::PartialEq for akio_wasm::ModuleLimits
+pub fn akio_wasm::ModuleLimits::eq(&self, &Self) -> bool
+impl core::default::Default for akio_wasm::ModuleLimits
+pub fn akio_wasm::ModuleLimits::default() -> Self
+impl core::fmt::Debug for akio_wasm::ModuleLimits
+pub fn akio_wasm::ModuleLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::ModuleLimits
+impl core::marker::Send for akio_wasm::ModuleLimits
+impl core::marker::Sync for akio_wasm::ModuleLimits
+impl core::marker::Unpin for akio_wasm::ModuleLimits
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::ModuleLimits
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::ModuleLimits
+pub struct akio_wasm::TableType
+pub akio_wasm::TableType::elem: akio_wasm::RefType
+pub akio_wasm::TableType::limits: akio_wasm::Limits
+impl core::clone::Clone for akio_wasm::TableType
+pub fn akio_wasm::TableType::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::TableType
+impl core::cmp::PartialEq for akio_wasm::TableType
+pub fn akio_wasm::TableType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::TableType
+pub fn akio_wasm::TableType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::TableType
+pub fn akio_wasm::TableType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::TableType
+impl core::marker::StructuralPartialEq for akio_wasm::TableType
+impl core::marker::Send for akio_wasm::TableType
+impl core::marker::Sync for akio_wasm::TableType
+impl core::marker::Unpin for akio_wasm::TableType
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::TableType
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::TableType
