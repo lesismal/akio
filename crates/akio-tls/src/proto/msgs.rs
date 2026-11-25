@@ -270,7 +270,7 @@ impl<'a> ClientHello<'a> {
                             if ch.sni.is_some() {
                                 return fatal(Alert::IllegalParameter, "two host names");
                             }
-                            ch.sni = Some(parse_host_name(name)?);
+                            ch.sni = parse_host_name(name)?;
                         }
                     }
                 }
@@ -393,14 +393,21 @@ pub(crate) fn cert_comp_body(out: &mut Vec<u8>, algs: CompAlgs) {
     });
 }
 
-/// A host name of a server_name extension: ASCII, no trailing dot, lowercased.
-fn parse_host_name(name: &[u8]) -> DResult<String> {
+/// A host name of a server_name extension: ASCII, lowercased, without a trailing dot. An IP
+/// address literal, which RFC 6066 does not allow there but clients such as wrk and older
+/// OpenSSL send for a URL like `https://127.0.0.1/`, counts as no name, as Go's, OpenSSL's and
+/// nginx's servers take it, rather than failing the handshake (akit's A172).
+fn parse_host_name(name: &[u8]) -> DResult<Option<String>> {
     let s = std::str::from_utf8(name)
         .map_err(|_| Fatal::new(Alert::DecodeError, "server name is not ASCII"))?;
-    if s.is_empty() || !s.is_ascii() || s.ends_with('.') || s.parse::<std::net::IpAddr>().is_ok() {
+    let s = s.strip_suffix('.').unwrap_or(s);
+    if s.is_empty() || !s.is_ascii() {
         return fatal(Alert::DecodeError, "invalid server name");
     }
-    Ok(s.to_ascii_lowercase())
+    if s.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(None);
+    }
+    Ok(Some(s.to_ascii_lowercase()))
 }
 
 fn parse_alpn<'a>(x: &mut Reader<'a>) -> DResult<Vec<&'a [u8]>> {
@@ -752,10 +759,16 @@ mod tests {
 
     #[test]
     fn host_names() {
-        assert_eq!(parse_host_name(b"Example.COM").unwrap(), "example.com");
-        assert!(parse_host_name(b"a.").is_err());
-        assert!(parse_host_name(b"127.0.0.1").is_err());
+        assert_eq!(
+            parse_host_name(b"Example.COM").unwrap().as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(parse_host_name(b"a.").unwrap().as_deref(), Some("a"));
+        // An IP literal is no name (A172): the handshake goes on without SNI.
+        assert_eq!(parse_host_name(b"127.0.0.1").unwrap(), None);
+        assert_eq!(parse_host_name(b"::1").unwrap(), None);
         assert!(parse_host_name(b"").is_err());
+        assert!(parse_host_name(b".").is_err());
         assert!(parse_host_name(&[0xff]).is_err());
     }
 

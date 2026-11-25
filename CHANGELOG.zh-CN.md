@@ -10,6 +10,10 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：TLS 服务端接受 server name 为 IP 地址的 ClientHello（akio-tls）
+
+akit 的 A172，由 akit I25 的基准测试发现：wrk 对 `https://127.0.0.1/` 的 HTTPS 请求全部失败。wrk（OpenSSL）即使在主机是 IP 地址时也把 URL 的主机作为 SNI 发送（RFC 6066 不允许），akio-tls 的服务端随即以 `decode_error` 应答。现在这样的名字被视为没有名字，与 Go、OpenSSL 和 nginx 的服务端一致；主机名末尾的点被去掉，而不再使握手失败。空名字或非 ASCII 名字仍会使握手失败。
+
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
 使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在
