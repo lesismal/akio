@@ -1190,14 +1190,23 @@ fn check_request_frame(ty: u64) -> Result<(), Fail> {
 #[doc(hidden)]
 pub mod fuzzing;
 
-/// Appends regular fields to `out`; `None` if one is malformed (a pseudo-header, an uppercase
-/// or connection-specific name, `te` other than `trailers`, not UTF-8).
+/// Appends regular fields to `out`; `None` if one is malformed (a pseudo-header, a name with an
+/// uppercase letter or a byte no token holds, a connection-specific name, a value with a NUL, CR
+/// or LF, `te` other than `trailers`, not UTF-8).
 fn header_list<'a>(
     fields: impl Iterator<Item = (&'a str, &'a str)>,
     out: &mut Headers,
 ) -> Option<()> {
     for (n, v) in fields {
-        if n.starts_with(':') || n.bytes().any(|b| b.is_ascii_uppercase()) {
+        // RFC 9114 §4.2 (and RFC 9113 §8.2.1, which it follows): a name with a byte in
+        // 0x00-0x20, 0x41-0x5A (uppercase), 0x7F-0xFF or a colon, or a value with a NUL, CR or
+        // LF, is malformed; an HTTP/1.1 hop behind this server would read it differently.
+        if n.is_empty()
+            || !n
+                .bytes()
+                .all(|b| matches!(b, 0x21..=0x40 | 0x5b..=0x7e) && b != b':')
+            || v.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n'))
+        {
             return None;
         }
         if matches!(
@@ -1223,6 +1232,9 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
     // field is refused by `header_list`.
     let mut fs = fields.strs()?.peekable();
     while let Some((n, v)) = fs.next_if(|(n, _)| n.starts_with(':')) {
+        if v.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n')) {
+            return None;
+        }
         let slot = match n {
             ":method" => &mut method,
             ":scheme" => &mut scheme,
@@ -2526,6 +2538,11 @@ mod tests {
             [&base[..], &[("X-Up", "1")]].concat(),
             [&base[..], &[("connection", "close")]].concat(),
             [&base[..], &[("te", "gzip")]].concat(),
+            [&base[..], &[("x a", "1")]].concat(),
+            [&base[..], &[("x\u{e9}", "1")]].concat(),
+            [&base[..], &[("x-a", "a\0b")]].concat(),
+            [&base[..], &[("x-a", "a\rb")]].concat(),
+            [&base[..], &[("x-a", "a\nb")]].concat(),
         ] {
             assert!(head(&bad).is_none(), "{bad:?}");
         }

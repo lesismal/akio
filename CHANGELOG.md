@@ -10,6 +10,19 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: requests RFC 9112, RFC 9113 and RFC 9114 call malformed are refused (akio-http, akio-h3)
+
+akit's A169, found by akit's I25 conformance suite, where an akio server let these through to
+an application, and a proxy on akio passed them to its upstream:
+
+- HTTP/1: a request with more than one `Host` field is answered 400 and the connection closed,
+  as RFC 9112 §3.2 asks (one was accepted, and an intermediary could route by either).
+- HTTP/2: a request or trailer field whose name holds a byte in 0x00-0x20, 0x41-0x5A or
+  0x7F-0xFF, or whose value (a pseudo-header's too) holds a NUL, CR or LF, resets the stream with
+  `PROTOCOL_ERROR` (RFC 9113 §8.2.1). Only uppercase names were refused; a NUL in a value reached
+  the application, and an HTTP/1.1 client then wrote it to its upstream.
+- HTTP/3: the same, as RFC 9114 §4.2 asks.
+
 ### Fixed: an HTTP client request's timeout no longer holds the request until it would pass (akio-http)
 
 akit's A171, found by akit's I25 benchmarks, where akit's proxy grew by about 240 bytes a request
