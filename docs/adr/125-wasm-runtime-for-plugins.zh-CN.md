@@ -364,3 +364,35 @@ crate `akio-wasm`（`#![forbid(unsafe_code)]`，无依赖）：`Module::new(&byt
 - **TinyGo 的客户模块**（fit 的同步插件，由 TinyGo 0.44 构建）尚未提交：构建脚本在 `tinygo` 位于 PATH 中时会构建它。
 - **模糊测试**：`wasm_exec` 的导入函数现在每隔一次调用就回调进调用方实例（按计数选择一个导出），所以嵌套调用、其上限与陷入
   也一并被模糊测试。
+
+### W4：实例池（2026-11-25）
+
+`InstancePool<S>` 位于 `src/pool.rs`，没有超出 W3 的依赖：线程是它自己的（每个实例一个，另加一个 reaper），不是 akio 的逻辑线程池，
+它也不了解 akio-core 或 akio-http。按第 4 节实现，并作出以下决定：
+
+- **任务与其完成回调是两个参数，拒绝时两者都交还**：`submit(job, done) -> Result<(), Refused<J, D>>`，而不是
+  `submit(job) -> Result<(), Overloaded>`。akit 的完成回调持有挂起的请求；被立即拒绝时（`Refusal::Overloaded`、`Closed`、`Failed`、
+  `Remade`）它拿回请求，自己在 I/O 线程上应答 `503`。被接受后，`done` 恰好调用一次，参数为 `Result<R, JobError>`：结果，或者
+  `Expired`、`Remade`、`Closed`、`Failed`、`Panicked`。
+- **交回方式**：`done` 在任务结束后立即在池的线程上运行：任务已计入统计，失败的实例尚未重建（或者在 reaper 上，或在关闭池的线程上），不阻塞地把结果交出去：akit 在那里
+  调用 akio-http 的 `Suspended::resume`，挂起到 akio 逻辑线程池的请求也是这样回来的。所以 akio-wasm 不需要自己的 I/O 线程 API。
+- **任务看到的是 `Pooled<S>`**，而不是第 3 节的 `Instance<S>`（W2 已把句柄命名为 `Instance`）：store、实例、它的 `InstanceId`、
+  任务的 `Budget`，以及 `call`、`call_typed`、`typed_func`、`export_func`、`state_mut` 和 `discard`（不经陷入而重建，用于宿主发现
+  客户代码状态有误的情形）。
+- **截止时间按任务计**：从任务开始起 `call_timeout`（100 ms，与 fit 相同），覆盖任务发出的每次调用，并带池的中断。创建实例
+  （实例化、reactor 的 `_initialize`、供 Proxy-Wasm 的 `proxy_on_vm_start` 与 `proxy_on_configure` 使用的 `on_start` 钩子）
+  总共 `init_timeout`（1 s）。
+- **按时过期**：在 `wait_timeout`（1 s）内没有开始的任务，在等待到期时交回，由一个 reaper 线程负责，它睡到最早排队任务的过期时间，
+  所以 akit 的 `503` 不必等忙碌的实例空出来。线程取出已过期的任务时也会交回。
+- **实例有代数**：`InstanceId { index, generation }`。Proxy-Wasm 上下文随实例一起消亡，所以对 id 取得之后已经重建的实例
+  `submit_to` 会被拒绝（`Refusal::Remade`），实例被丢弃时排给它的任务得到 `JobError::Remade`。
+- **重建**：发生陷入（store 新增的 `Store::trap()` 说明是哪种，用于统计）、任务或完成回调 panic（`JobError::Panicked`；宿主状态
+  可能只更新了一半）或 `discard` 之后，线程在任务的完成回调运行后丢弃实例，并在取下一个任务之前创建新实例。同一实例连续
+  `start_attempts`（3）次创建失败会使池失败。`build()` 等待每个实例的首次创建，池失败时返回 `StartError`（无法实例化的模块在这里
+  失败，而不是在第一个请求时）。
+- **关闭**（`close()` 或丢弃池）拒绝新任务，以 `Closed` 交回排队的任务，触发每个实例的中断，让运行中的客户代码在一个切片内停止，
+  并 join 各线程；如果最后一个句柄是在完成回调中丢弃的，则不 join 调用者自己的线程。
+- **统计**（`PoolStats`）：就绪的实例、共享队列与每个实例队列的深度、运行中、调用数、拒绝、过期、panic、重建、创建失败，以及按种类
+  的 `TrapStats`（截止时间、燃料、中断、栈、内存越界、`unreachable`、宿主、退出、其他）。
+- 一把互斥锁保护队列与计数器；每个线程等待自己的条件变量，所以 `submit_to` 唤醒它指定的实例，`submit` 唤醒最近空闲的实例。
+  W5 会测量这把锁相对解释器是否重要。

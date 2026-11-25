@@ -443,6 +443,8 @@ pub struct Store<S> {
     hosts: Vec<HostFn<S>>,
     state: S,
     ended: bool,
+    /// The trap that ended the store.
+    ended_by: Option<Trap>,
     trap_ends: bool,
     fuel_used: u64,
     /// Host functions running guest code, one inside another (`Caller::call`).
@@ -502,6 +504,7 @@ impl<S> Store<S> {
             hosts: Vec::new(),
             state,
             ended: false,
+            ended_by: None,
             trap_ends: true,
             fuel_used: 0,
             reentry: 0,
@@ -538,6 +541,13 @@ impl<S> Store<S> {
     #[must_use]
     pub const fn ended(&self) -> bool {
         self.ended
+    }
+
+    /// The trap that ended the store, if one did: what an owner that finds it
+    /// [`ended`](Self::ended) counts or logs.
+    #[must_use]
+    pub const fn trap(&self) -> Option<&Trap> {
+        self.ended_by.as_ref()
     }
 
     /// Whether a trap ends the store (by default it does). Off, a trap leaves the store usable
@@ -829,8 +839,9 @@ impl<S> Store<S> {
     }
 
     fn end_on(&mut self, t: &Trap) {
-        if t.ends_store() && self.trap_ends {
+        if t.ends_store() && self.trap_ends && !self.ended {
             self.ended = true;
+            self.ended_by = Some(t.clone());
         }
     }
 

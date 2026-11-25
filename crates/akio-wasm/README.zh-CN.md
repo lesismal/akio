@@ -7,7 +7,7 @@
 所有资源都有上界：没有 `unsafe`，没有可执行内存，所以缺陷只会是错误的结果或陷入（trap），不会破坏宿主进程的内存。
 它是 akit WASM 插件（fit 的 ABI 与 Proxy-Wasm）的运行时。也可通过 `akio::wasm`（feature `wasm`）使用。
 
-**实验性**：按里程碑实现，在 W4 之前其 API 可能在任何发布中变化（docs/api-stability.zh-CN.md）。本次发布包含 **W1**：解码器与验证器，**W2**：翻译与解释器，以及 **W3**：宿主 API 与 WASI preview 1 子集。
+**实验性**：按里程碑实现，在 W4 之前其 API 可能在任何发布中变化（docs/api-stability.zh-CN.md）。本次发布包含 **W1**：解码器与验证器，**W2**：翻译与解释器，**W3**：宿主 API 与 WASI preview 1 子集，以及 **W4**：实例池。
 
 - `Module::new(&bytes, &ModuleLimits)`：一遍完成二进制模块的解码与验证，时间与模块大小成线性。`Module` 列出导入、导出
   （`export(name)`）、类型、函数类型、表、内存、全局变量和 start 函数；它是 `Send + Sync`，由从它创建的所有实例共享。
@@ -39,10 +39,19 @@
 - **WASI preview 1**，插件需要的子集（`Linker::wasi_preview1(WasiConfig)`）：参数与环境变量、实时与单调时钟、随机字节、
   标准输出与标准错误送往一个接收函数、`poll_oneoff` 的睡眠不晚于调用的截止时间、`proc_exit` 即 `Trap::Exit`。没有文件系统，
   没有套接字（`EBADF`、`ENOSYS`）。`Store::initialize_reactor` 运行 reactor 的 `_initialize`。
+- **`InstancePool<S>`**：每个线程拥有一个实例，绝不在 I/O 线程上运行。I/O 线程 `submit` 一个任务（`FnOnce(&mut Pooled<S>) -> R`）
+  和一个完成回调后继续工作；任务在空闲实例上、在每次调用的截止时间（100 ms）内运行，完成回调在池的线程上运行，不阻塞地把结果交回
+  （akio-http 的 `Suspended::resume`、一个通道）。有界队列：一个共享队列（1024）和每个实例各自的队列（`submit_to`，优先处理，用于
+  Proxy-Wasm 上下文之后的回调）；队列满时立即拒绝（`Refused`，交还任务与完成回调），等待超过 `wait_timeout`（1 s）的任务以
+  `JobError::Expired` 交回。被陷入结束的实例在其线程处理下一个任务前重建；无法启动的实例使整个池失败。`stats()`：队列深度、
+  运行中、调用数、按种类的陷入数、重建、过期、拒绝。
 
 ```rust
 use std::{sync::Arc, time::{Duration, Instant}};
-use akio_wasm::{Budget, Caller, InstanceLimits, Linker, Module, ModuleLimits, Store, Trap, WasiConfig};
+use akio_wasm::{
+    Budget, Caller, InstanceLimits, InstancePool, Linker, Module, ModuleLimits, PoolConfig, Store,
+    Trap, WasiConfig,
+};
 
 // 一次：加载插件，定义宿主函数。
 let bytes = std::fs::read("plugin.wasm")?;
@@ -67,13 +76,26 @@ match run.call(&mut store, (), &Budget::deadline(Instant::now() + Duration::from
     Err(Trap::Deadline) => eprintln!("太慢：另建一个 store"),
     Err(t) => eprintln!("陷入：{t}"),
 }
+
+// 或者，用于服务器：在独立线程上运行的实例池。
+let pool = InstancePool::builder(module, linker, |_| Vec::new())
+    .config(PoolConfig::default())
+    .build()?;
+pool.submit(
+    |inst| {
+        let run = inst.typed_func::<(), i32>("run")?;
+        inst.call_typed(run, ()) // 在池的每次调用截止时间内
+    },
+    |r| { /* 在池的线程上：把 `r` 交回请求所在的 I/O 线程 */ },
+)?;
 ```
 
 测试：WebAssembly 2.0 规范测试集的全部命令（`tests/spec`，由 `tools/wasm-spec/convert.sh` 从 `WebAssembly/testsuite`
 转换，Apache 2.0）：21 453 个 `assert_return`、2 354 个 `assert_trap`、链接与实例化；被拒绝特性的提案作为拒绝检查；
 每个加载与运行上限的低于/等于/超过；预算；线性时间的翻译；链接器、调用方的内存视图、回调进客户代码，以及每个 WASI 函数；
 fit 的客户模块（`tests/guests`，Go 与 Rust，由 `tests/guests/build.sh` 重新构建）：fit 的头部插件、同步插件和一个 Proxy-Wasm
-过滤器能够加载、初始化并运行，死循环在截止时间停止，内存增长超过上限与 panic 都会陷入。模糊测试目标 `wasm_decode`、
+过滤器能够加载、初始化并运行，死循环在截止时间停止，内存增长超过上限与 panic 都会陷入；实例池：卡住的客户代码在截止时间停止并重建实例、队列满时拒绝、等待过期、
+`submit_to` 先于共享队列、无法启动的实例使池失败、关闭时仍有排队任务。模糊测试目标 `wasm_decode`、
 `wasm_exec`（`wasm-smith` 生成的模块，小上限下运行，其导入会回调进模块）和 `wasm_diff`（与 wasmi 对比）在 `fuzz/` 中。
 
-后续：W4 实例池，W5 性能优化，W6 为 Proxy-Wasm 响应回调提供的 akio-http 钩子。
+后续：W5 性能优化，W6 为 Proxy-Wasm 响应回调提供的 akio-http 钩子。

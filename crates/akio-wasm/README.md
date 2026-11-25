@@ -11,7 +11,8 @@ result or a trap, never memory corruption in the host. It is the runtime under a
 
 **Experimental**: built in milestones, its API may change in any release until W4
 (docs/api-stability.md). This release has **W1**, the decoder and the validator, **W2**, the
-translation and the interpreter, and **W3**, the host API and WASI preview 1's subset.
+translation and the interpreter, **W3**, the host API and WASI preview 1's subset, and **W4**, the
+instance pool.
 
 - `Module::new(&bytes, &ModuleLimits)`: decodes and validates a binary module in one pass, in
   time linear in its size. `Module` lists the imports, exports (`export(name)`), types, function
@@ -60,10 +61,23 @@ translation and the interpreter, and **W3**, the host API and WASI preview 1's s
   sink, `poll_oneoff` sleeping no later than the call's deadline, `proc_exit` as `Trap::Exit`. No
   file system and no sockets (`EBADF`, `ENOSYS`). `Store::initialize_reactor` runs a reactor's
   `_initialize`.
+- **`InstancePool<S>`**: threads that each own one instance, never the I/O threads. An I/O thread
+  `submit`s a job (`FnOnce(&mut Pooled<S>) -> R`) and a completion, and goes on; the job runs on a
+  free instance under a per-call deadline (100 ms), and the completion, run on the pool's thread,
+  hands the result back without blocking (akio-http's `Suspended::resume`, a channel). Bounded
+  queues: a shared one (1024) and one per instance (`submit_to`, served first, for a Proxy-Wasm
+  context's later callbacks); a full queue refuses the job at once (`Refused`, the job and its
+  completion handed back), a job that waits past `wait_timeout` (1 s) comes back as
+  `JobError::Expired`. An instance a trap ended is remade before its thread's next job; one that
+  will not start fails the pool. `stats()`: queue depths, running, calls, traps by kind, remakes,
+  expiries, refusals.
 
 ```rust
 use std::{sync::Arc, time::{Duration, Instant}};
-use akio_wasm::{Budget, Caller, InstanceLimits, Linker, Module, ModuleLimits, Store, Trap, WasiConfig};
+use akio_wasm::{
+    Budget, Caller, InstanceLimits, InstancePool, Linker, Module, ModuleLimits, PoolConfig, Store,
+    Trap, WasiConfig,
+};
 
 // Once: load the plugin and define the host's functions.
 let bytes = std::fs::read("plugin.wasm")?;
@@ -88,6 +102,18 @@ match run.call(&mut store, (), &Budget::deadline(Instant::now() + Duration::from
     Err(Trap::Deadline) => eprintln!("too slow: make another store"),
     Err(t) => eprintln!("trapped: {t}"),
 }
+
+// Or, for a server: a pool of instances on threads of their own.
+let pool = InstancePool::builder(module, linker, |_| Vec::new())
+    .config(PoolConfig::default())
+    .build()?;
+pool.submit(
+    |inst| {
+        let run = inst.typed_func::<(), i32>("run")?;
+        inst.call_typed(run, ()) // under the pool's per-call deadline
+    },
+    |r| { /* on the pool's thread: hand `r` back to the request's I/O thread */ },
+)?;
 ```
 
 Tests: the WebAssembly 2.0 specification suite, every command (`tests/spec`, converted by
@@ -97,9 +123,11 @@ checks; every load and run limit just under, at and over it; budgets; translatio
 the linker, the caller's views, calls back into the guest, and each WASI function; fit's guests
 (`tests/guests`, Go and Rust, rebuilt by `tests/guests/build.sh`): fit's header plugin, its sync
 plugin and a Proxy-Wasm filter load, initialize and run, a loop stops at its deadline, growing
-past the memory limit and panicking trap. Fuzz targets `wasm_decode`, `wasm_exec` (modules from
+past the memory limit and panicking trap; the pool: a hung guest stopped at its deadline and its
+instance remade, a full queue refused, a wait expiring, `submit_to` ahead of the shared queue, a
+pool failed by an instance that will not start, closing with jobs queued. Fuzz targets `wasm_decode`, `wasm_exec` (modules from
 `wasm-smith` under small limits, their imports calling back into them) and `wasm_diff` (against
 wasmi) in `fuzz/`.
 
-Next: W4 the instance pool, W5 a performance pass, W6 akio-http's hooks for Proxy-Wasm's
+Next: W5 a performance pass, W6 akio-http's hooks for Proxy-Wasm's
 response callbacks.

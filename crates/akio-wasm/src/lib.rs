@@ -4,8 +4,9 @@
 //! module is decoded, validated and translated once, to a register form that an interpreter runs,
 //! with every resource bounded. It is the runtime under akit's WASM plugins (fit's ABI and
 //! Proxy-Wasm), and is built in milestones; this release has **W1**, the decoder and the validator,
-//! **W2**, the translation and the interpreter, with metering and budgets, and **W3**, the host API
-//! (a [`Linker`], typed host functions, WASI preview 1's subset). The instance pool is W4.
+//! **W2**, the translation and the interpreter, with metering and budgets, **W3**, the host API
+//! (a [`Linker`], typed host functions, WASI preview 1's subset), and **W4**, the
+//! [`InstancePool`] that runs calls on threads of its own.
 //!
 //! ```
 //! use std::{sync::Arc, time::{Duration, Instant}};
@@ -115,6 +116,22 @@
 //! preopened directories, and the other functions return `EBADF` or `ENOSYS`. A WASI reactor
 //! (Go's `-buildmode=c-shared`, TinyGo's, a Rust `cdylib`) is initialized once, with
 //! [`Store::initialize_reactor`], before its other exports are called.
+//!
+//! # The instance pool
+//!
+//! A store is not `Sync`, and WebAssembly must not run on an I/O thread: an [`InstancePool`]
+//! has a fixed number of threads, each owning one instance of a module (its store, its memory),
+//! made with a [`Linker`] they share. An I/O thread [`submit`](InstancePool::submit)s a job,
+//! `FnOnce(&mut Pooled<S>) -> R`, and goes on; the job runs on a free instance under a per-call
+//! deadline ([`PoolConfig::call_timeout`]), and its result goes to a completion the caller gave,
+//! run on the pool's thread, which hands it back to the I/O thread without blocking (akio-http's
+//! `Suspended::resume`, a `ResponseSlot`, a channel a loop reads). The queues are bounded: one
+//! shared, and one per instance for [`submit_to`](InstancePool::submit_to) (a Proxy-Wasm
+//! context's later callbacks), served first; a full queue refuses the job at once
+//! ([`Refused`]), and a job that waited past [`PoolConfig::wait_timeout`] is handed back as
+//! [`JobError::Expired`]. An instance a trap ended (a guest past its deadline included) is
+//! dropped and made again before its thread's next job; one that will not start fails the pool.
+//! [`InstancePool::stats`] counts calls, traps by kind, remakes, expiries and refusals.
 
 mod budget;
 mod error;
@@ -124,6 +141,7 @@ mod limits;
 mod linker;
 mod module;
 mod ops;
+mod pool;
 mod reader;
 mod store;
 mod translate;
@@ -143,6 +161,10 @@ pub use error::{Error, ErrorKind, Feature, Limit};
 pub use limits::ModuleLimits;
 pub use linker::{LinkError, Linker};
 pub use module::Module;
+pub use pool::{
+    InstanceId, InstancePool, JobError, PoolBuilder, PoolConfig, PoolStats, Pooled, Refusal,
+    Refused, StartError, TrapStats,
+};
 pub use store::{Caller, InstantiateError, Store};
 pub use trap::Trap;
 pub use typed::{TypedFunc, WasmParams, WasmResults, WasmTy};

@@ -10,6 +10,42 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: akio-wasm's instance pool, milestone W4 (akio-wasm, akio)
+
+ADR-125, fourth milestone: WebAssembly runs on threads that own instances, never on the I/O
+threads. With it the API that akit's I71 needs is complete; the crate stays in the experimental
+tier until the maintainer moves it (docs/api-stability.md).
+
+- `InstancePool<S>`, made by `InstancePool::builder(module, linker, |index| state)` with
+  `PoolConfig` (instances: the CPUs, at most 16; `queue` 1024; `instance_queue` 1024;
+  `wait_timeout` 1 s; `call_timeout` 100 ms; `init_timeout` 1 s; `start_attempts` 3; the
+  `InstanceLimits`) and an optional `on_start` hook (Proxy-Wasm's `proxy_on_vm_start`);
+  `build()` waits until every instance is made (a WASI reactor's `_initialize` included) or
+  fails with a `StartError`.
+- `submit(job, done)` to any free instance through one bounded queue, `submit_to(InstanceId, job,
+  done)` to a given one through its own bounded queue, served first; a full queue, a closed or
+  failed pool, or an instance remade since its id was taken refuses the job at once with
+  `Refused { reason: Refusal, job, done }`, nothing waits. The job, `FnOnce(&mut Pooled<S>) ->
+  R`, runs under a deadline `call_timeout` from its start (`Pooled::call`, `call_typed`,
+  `typed_func`, `budget`, `discard`); `done` gets `Result<R, JobError>` on the pool's thread, to
+  hand back to the caller's I/O thread without blocking (akio-http's `Suspended::resume`). A job
+  not started within `wait_timeout` gets `JobError::Expired` when the wait passes, even while every
+  instance is busy (a reaper thread watches the queues).
+- An instance a trap ended (a guest past its deadline included), whose job panicked, or that was
+  discarded is dropped and made again before its thread's next job; jobs queued for it get
+  `JobError::Remade`. An instance that fails to be made `start_attempts` times in a row fails the
+  pool: queued and later jobs get `JobError::Failed`. `close()` (or dropping the pool) hands queued
+  jobs back as `JobError::Closed` and interrupts the running ones.
+- `stats()`: `PoolStats` with the shared and per-instance queue depths, running jobs, calls,
+  refusals, expiries, `TrapStats` (traps by kind), panics, remakes, failed makings.
+- `Store::trap()`: the trap that ended a store.
+- Tests (`tests/pool.rs`): a hung guest stopped at its deadline and its instance remade, a full
+  queue refused, a wait expiring while the instance is busy, `submit_to` ahead of the shared
+  queue, jobs for a remade instance, a panicking job, a module that cannot be instantiated and an
+  initialization past its deadline failing the build, a pool failed by an instance that will not
+  be remade, closing with jobs queued and a guest running, the last handle dropped in a
+  completion, four submitting threads.
+
 ### Added: akio-wasm's host API and WASI, milestone W3 (akio-wasm, akio)
 
 ADR-125, third milestone: plugins get the host's functions and WASI, and fit's guests run.

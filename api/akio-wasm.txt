@@ -182,6 +182,28 @@ impl core::marker::Sync for akio_wasm::InstantiateError
 impl core::marker::Unpin for akio_wasm::InstantiateError
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::InstantiateError
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::InstantiateError
+#[non_exhaustive] pub enum akio_wasm::JobError
+pub akio_wasm::JobError::Closed
+pub akio_wasm::JobError::Expired
+pub akio_wasm::JobError::Failed(alloc::rcs::arc::Arc<akio_wasm::StartError>)
+pub akio_wasm::JobError::Panicked
+pub akio_wasm::JobError::Remade
+impl core::clone::Clone for akio_wasm::JobError
+pub fn akio_wasm::JobError::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::JobError
+impl core::cmp::PartialEq for akio_wasm::JobError
+pub fn akio_wasm::JobError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_wasm::JobError
+impl core::fmt::Debug for akio_wasm::JobError
+pub fn akio_wasm::JobError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::JobError
+pub fn akio_wasm::JobError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::JobError
+impl core::marker::Send for akio_wasm::JobError
+impl core::marker::Sync for akio_wasm::JobError
+impl core::marker::Unpin for akio_wasm::JobError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::JobError
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::JobError
 #[non_exhaustive] pub enum akio_wasm::Limit
 pub akio_wasm::Limit::BrTableTargets
 pub akio_wasm::Limit::DataSegments
@@ -275,6 +297,48 @@ impl core::marker::Sync for akio_wasm::RefType
 impl core::marker::Unpin for akio_wasm::RefType
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::RefType
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::RefType
+#[non_exhaustive] pub enum akio_wasm::Refusal
+pub akio_wasm::Refusal::Closed
+pub akio_wasm::Refusal::Failed(alloc::rcs::arc::Arc<akio_wasm::StartError>)
+pub akio_wasm::Refusal::Overloaded
+pub akio_wasm::Refusal::Remade
+impl core::clone::Clone for akio_wasm::Refusal
+pub fn akio_wasm::Refusal::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::Refusal
+impl core::cmp::PartialEq for akio_wasm::Refusal
+pub fn akio_wasm::Refusal::eq(&self, &Self) -> bool
+impl core::error::Error for akio_wasm::Refusal
+impl core::fmt::Debug for akio_wasm::Refusal
+pub fn akio_wasm::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::Refusal
+pub fn akio_wasm::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::Refusal
+impl core::marker::Send for akio_wasm::Refusal
+impl core::marker::Sync for akio_wasm::Refusal
+impl core::marker::Unpin for akio_wasm::Refusal
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Refusal
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Refusal
+#[non_exhaustive] pub enum akio_wasm::StartError
+pub akio_wasm::StartError::Instantiate(akio_wasm::InstantiateError)
+pub akio_wasm::StartError::Panicked
+pub akio_wasm::StartError::Thread(alloc::boxed::Box<str>)
+pub akio_wasm::StartError::Trap(akio_wasm::Trap)
+impl core::clone::Clone for akio_wasm::StartError
+pub fn akio_wasm::StartError::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::StartError
+impl core::cmp::PartialEq for akio_wasm::StartError
+pub fn akio_wasm::StartError::eq(&self, &Self) -> bool
+impl core::error::Error for akio_wasm::StartError
+impl core::fmt::Debug for akio_wasm::StartError
+pub fn akio_wasm::StartError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_wasm::StartError
+pub fn akio_wasm::StartError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::StartError
+impl core::marker::Send for akio_wasm::StartError
+impl core::marker::Sync for akio_wasm::StartError
+impl core::marker::Unpin for akio_wasm::StartError
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::StartError
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::StartError
 #[non_exhaustive] pub enum akio_wasm::Trap
 pub akio_wasm::Trap::BadCall(&'static str)
 pub akio_wasm::Trap::CallStackExhausted
@@ -590,6 +654,26 @@ impl core::marker::Sync for akio_wasm::Instance
 impl core::marker::Unpin for akio_wasm::Instance
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Instance
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::Instance
+pub struct akio_wasm::InstanceId
+impl akio_wasm::InstanceId
+pub const fn akio_wasm::InstanceId::generation(&self) -> u64
+pub const fn akio_wasm::InstanceId::index(&self) -> usize
+impl core::clone::Clone for akio_wasm::InstanceId
+pub fn akio_wasm::InstanceId::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::InstanceId
+impl core::cmp::PartialEq for akio_wasm::InstanceId
+pub fn akio_wasm::InstanceId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_wasm::InstanceId
+pub fn akio_wasm::InstanceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_wasm::InstanceId
+pub fn akio_wasm::InstanceId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_wasm::InstanceId
+impl core::marker::StructuralPartialEq for akio_wasm::InstanceId
+impl core::marker::Send for akio_wasm::InstanceId
+impl core::marker::Sync for akio_wasm::InstanceId
+impl core::marker::Unpin for akio_wasm::InstanceId
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::InstanceId
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::InstanceId
 #[non_exhaustive] pub struct akio_wasm::InstanceLimits
 pub akio_wasm::InstanceLimits::max_call_depth: u32
 pub akio_wasm::InstanceLimits::max_memory: usize
@@ -610,6 +694,24 @@ impl core::marker::Sync for akio_wasm::InstanceLimits
 impl core::marker::Unpin for akio_wasm::InstanceLimits
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::InstanceLimits
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::InstanceLimits
+pub struct akio_wasm::InstancePool<S: 'static>
+impl<S: 'static> akio_wasm::InstancePool<S>
+pub fn akio_wasm::InstancePool<S>::builder(alloc::rcs::arc::Arc<akio_wasm::Module>, akio_wasm::Linker<S>, impl core::ops::function::Fn(usize) -> S + core::marker::Send + core::marker::Sync + 'static) -> akio_wasm::PoolBuilder<S>
+pub fn akio_wasm::InstancePool<S>::close(&self)
+pub fn akio_wasm::InstancePool<S>::config(&self) -> &akio_wasm::PoolConfig
+pub fn akio_wasm::InstancePool<S>::module(&self) -> &alloc::rcs::arc::Arc<akio_wasm::Module>
+pub fn akio_wasm::InstancePool<S>::stats(&self) -> akio_wasm::PoolStats
+pub fn akio_wasm::InstancePool<S>::submit<R, J, D>(&self, J, D) -> core::result::Result<(), akio_wasm::Refused<J, D>> where R: 'static, J: core::ops::function::FnOnce(&mut akio_wasm::Pooled<S>) -> R + core::marker::Send + 'static, D: core::ops::function::FnOnce(core::result::Result<R, akio_wasm::JobError>) + core::marker::Send + 'static
+pub fn akio_wasm::InstancePool<S>::submit_to<R, J, D>(&self, akio_wasm::InstanceId, J, D) -> core::result::Result<(), akio_wasm::Refused<J, D>> where R: 'static, J: core::ops::function::FnOnce(&mut akio_wasm::Pooled<S>) -> R + core::marker::Send + 'static, D: core::ops::function::FnOnce(core::result::Result<R, akio_wasm::JobError>) + core::marker::Send + 'static
+impl<S: 'static> core::ops::drop::Drop for akio_wasm::InstancePool<S>
+pub fn akio_wasm::InstancePool<S>::drop(&mut self)
+impl<S> core::fmt::Debug for akio_wasm::InstancePool<S>
+pub fn akio_wasm::InstancePool<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for akio_wasm::InstancePool<S> where alloc::rcs::arc::Arc<Shared<S>>: core::marker::Send
+impl<S> core::marker::Sync for akio_wasm::InstancePool<S> where alloc::rcs::arc::Arc<Shared<S>>: core::marker::Sync
+impl<S> core::marker::Unpin for akio_wasm::InstancePool<S> where alloc::rcs::arc::Arc<Shared<S>>: core::marker::Unpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::InstancePool<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for akio_wasm::InstancePool<S>
 pub struct akio_wasm::InterruptHandle(_)
 impl akio_wasm::InterruptHandle
 pub fn akio_wasm::InterruptHandle::clear(&self)
@@ -752,6 +854,106 @@ impl core::marker::Sync for akio_wasm::ModuleLimits
 impl core::marker::Unpin for akio_wasm::ModuleLimits
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::ModuleLimits
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::ModuleLimits
+pub struct akio_wasm::PoolBuilder<S>
+impl<S: 'static> akio_wasm::PoolBuilder<S>
+pub fn akio_wasm::PoolBuilder<S>::build(self) -> core::result::Result<akio_wasm::InstancePool<S>, akio_wasm::StartError>
+pub fn akio_wasm::PoolBuilder<S>::config(self, akio_wasm::PoolConfig) -> Self
+pub fn akio_wasm::PoolBuilder<S>::on_start(self, impl core::ops::function::Fn(&mut akio_wasm::Pooled<S>) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync + 'static) -> Self
+impl<S> core::fmt::Debug for akio_wasm::PoolBuilder<S>
+pub fn akio_wasm::PoolBuilder<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for akio_wasm::PoolBuilder<S> where akio_wasm::Linker<S>: core::marker::Send, alloc::boxed::Box<(dyn core::ops::function::Fn(usize) -> S + core::marker::Send + core::marker::Sync)>: core::marker::Send, core::option::Option<alloc::boxed::Box<(dyn core::ops::function::Fn(&mut akio_wasm::Pooled<S>) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Send
+impl<S> core::marker::Sync for akio_wasm::PoolBuilder<S> where akio_wasm::Linker<S>: core::marker::Sync, alloc::boxed::Box<(dyn core::ops::function::Fn(usize) -> S + core::marker::Send + core::marker::Sync)>: core::marker::Sync, core::option::Option<alloc::boxed::Box<(dyn core::ops::function::Fn(&mut akio_wasm::Pooled<S>) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Sync
+impl<S> core::marker::Unpin for akio_wasm::PoolBuilder<S> where akio_wasm::Linker<S>: core::marker::Unpin, alloc::boxed::Box<(dyn core::ops::function::Fn(usize) -> S + core::marker::Send + core::marker::Sync)>: core::marker::Unpin, core::option::Option<alloc::boxed::Box<(dyn core::ops::function::Fn(&mut akio_wasm::Pooled<S>) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Unpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::PoolBuilder<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for akio_wasm::PoolBuilder<S>
+#[non_exhaustive] pub struct akio_wasm::PoolConfig
+pub akio_wasm::PoolConfig::call_timeout: core::time::Duration
+pub akio_wasm::PoolConfig::init_timeout: core::time::Duration
+pub akio_wasm::PoolConfig::instance_queue: usize
+pub akio_wasm::PoolConfig::instances: usize
+pub akio_wasm::PoolConfig::limits: akio_wasm::InstanceLimits
+pub akio_wasm::PoolConfig::queue: usize
+pub akio_wasm::PoolConfig::start_attempts: u32
+pub akio_wasm::PoolConfig::thread_name: alloc::string::String
+pub akio_wasm::PoolConfig::wait_timeout: core::time::Duration
+impl core::clone::Clone for akio_wasm::PoolConfig
+pub fn akio_wasm::PoolConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::PoolConfig
+impl core::cmp::PartialEq for akio_wasm::PoolConfig
+pub fn akio_wasm::PoolConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio_wasm::PoolConfig
+pub fn akio_wasm::PoolConfig::default() -> Self
+impl core::fmt::Debug for akio_wasm::PoolConfig
+pub fn akio_wasm::PoolConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::PoolConfig
+impl core::marker::Send for akio_wasm::PoolConfig
+impl core::marker::Sync for akio_wasm::PoolConfig
+impl core::marker::Unpin for akio_wasm::PoolConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::PoolConfig
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::PoolConfig
+#[non_exhaustive] pub struct akio_wasm::PoolStats
+pub akio_wasm::PoolStats::calls: u64
+pub akio_wasm::PoolStats::expired: u64
+pub akio_wasm::PoolStats::failed: bool
+pub akio_wasm::PoolStats::instance_queued: alloc::vec::Vec<usize>
+pub akio_wasm::PoolStats::instances: usize
+pub akio_wasm::PoolStats::panics: u64
+pub akio_wasm::PoolStats::queued: usize
+pub akio_wasm::PoolStats::refused: u64
+pub akio_wasm::PoolStats::remade: u64
+pub akio_wasm::PoolStats::running: usize
+pub akio_wasm::PoolStats::start_failures: u64
+pub akio_wasm::PoolStats::traps: akio_wasm::TrapStats
+impl core::clone::Clone for akio_wasm::PoolStats
+pub fn akio_wasm::PoolStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::PoolStats
+impl core::cmp::PartialEq for akio_wasm::PoolStats
+pub fn akio_wasm::PoolStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_wasm::PoolStats
+pub fn akio_wasm::PoolStats::default() -> Self
+impl core::fmt::Debug for akio_wasm::PoolStats
+pub fn akio_wasm::PoolStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::PoolStats
+impl core::marker::Send for akio_wasm::PoolStats
+impl core::marker::Sync for akio_wasm::PoolStats
+impl core::marker::Unpin for akio_wasm::PoolStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::PoolStats
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::PoolStats
+pub struct akio_wasm::Pooled<S>
+impl<S> akio_wasm::Pooled<S>
+pub const fn akio_wasm::Pooled<S>::budget(&self) -> &akio_wasm::Budget
+pub fn akio_wasm::Pooled<S>::call(&mut self, akio_wasm::Func, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap>
+pub fn akio_wasm::Pooled<S>::call_typed<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults>(&mut self, akio_wasm::TypedFunc<P, R>, P) -> core::result::Result<R, akio_wasm::Trap>
+pub fn akio_wasm::Pooled<S>::discard(&mut self)
+pub fn akio_wasm::Pooled<S>::export_func(&self, &str) -> core::option::Option<akio_wasm::Func>
+pub const fn akio_wasm::Pooled<S>::id(&self) -> akio_wasm::InstanceId
+pub const fn akio_wasm::Pooled<S>::instance(&self) -> akio_wasm::Instance
+pub const fn akio_wasm::Pooled<S>::state(&self) -> &S
+pub fn akio_wasm::Pooled<S>::state_mut(&mut self) -> &mut S
+pub const fn akio_wasm::Pooled<S>::store(&self) -> &akio_wasm::Store<S>
+pub fn akio_wasm::Pooled<S>::store_mut(&mut self) -> &mut akio_wasm::Store<S>
+pub fn akio_wasm::Pooled<S>::typed_func<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults>(&self, &str) -> core::result::Result<akio_wasm::TypedFunc<P, R>, akio_wasm::Trap>
+impl<S> core::fmt::Debug for akio_wasm::Pooled<S>
+pub fn akio_wasm::Pooled<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for akio_wasm::Pooled<S> where akio_wasm::Store<S>: core::marker::Send
+impl<S> core::marker::Sync for akio_wasm::Pooled<S> where akio_wasm::Store<S>: core::marker::Sync
+impl<S> core::marker::Unpin for akio_wasm::Pooled<S> where akio_wasm::Store<S>: core::marker::Unpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Pooled<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for akio_wasm::Pooled<S>
+pub struct akio_wasm::Refused<J, D>
+pub akio_wasm::Refused::done: D
+pub akio_wasm::Refused::job: J
+pub akio_wasm::Refused::reason: akio_wasm::Refusal
+impl<J, D> core::error::Error for akio_wasm::Refused<J, D>
+impl<J, D> core::fmt::Debug for akio_wasm::Refused<J, D>
+pub fn akio_wasm::Refused<J, D>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<J, D> core::fmt::Display for akio_wasm::Refused<J, D>
+pub fn akio_wasm::Refused<J, D>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<J, D> core::marker::Send for akio_wasm::Refused<J, D> where J: core::marker::Send, D: core::marker::Send
+impl<J, D> core::marker::Sync for akio_wasm::Refused<J, D> where J: core::marker::Sync, D: core::marker::Sync
+impl<J, D> core::marker::Unpin for akio_wasm::Refused<J, D> where J: core::marker::Unpin, D: core::marker::Unpin
+impl<J, D> core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Refused<J, D> where J: core::panic::unwind_safe::RefUnwindSafe, D: core::panic::unwind_safe::RefUnwindSafe
+impl<J, D> core::panic::unwind_safe::UnwindSafe for akio_wasm::Refused<J, D> where J: core::panic::unwind_safe::UnwindSafe, D: core::panic::unwind_safe::UnwindSafe
 pub struct akio_wasm::Store<S>
 impl<S> akio_wasm::Store<S>
 pub fn akio_wasm::Store<S>::call(&mut self, akio_wasm::Func, &[akio_wasm::Value], &mut [akio_wasm::Value], &akio_wasm::Budget) -> core::result::Result<(), akio_wasm::Trap>
@@ -780,6 +982,7 @@ pub fn akio_wasm::Store<S>::state_mut(&mut self) -> &mut S
 pub fn akio_wasm::Store<S>::table_get(&self, akio_wasm::Table, u32) -> core::option::Option<akio_wasm::Value>
 pub fn akio_wasm::Store<S>::table_new(&mut self, akio_wasm::TableType, akio_wasm::Value) -> core::result::Result<akio_wasm::Table, akio_wasm::Trap>
 pub fn akio_wasm::Store<S>::table_size(&self, akio_wasm::Table) -> u32
+pub const fn akio_wasm::Store<S>::trap(&self) -> core::option::Option<&akio_wasm::Trap>
 impl<S> akio_wasm::Store<S>
 pub fn akio_wasm::Store<S>::typed_func<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults>(&self, akio_wasm::Func) -> core::result::Result<akio_wasm::TypedFunc<P, R>, akio_wasm::Trap>
 impl<S> core::fmt::Debug for akio_wasm::Store<S>
@@ -825,6 +1028,33 @@ impl core::marker::Sync for akio_wasm::TableType
 impl core::marker::Unpin for akio_wasm::TableType
 impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::TableType
 impl core::panic::unwind_safe::UnwindSafe for akio_wasm::TableType
+#[non_exhaustive] pub struct akio_wasm::TrapStats
+pub akio_wasm::TrapStats::deadline: u64
+pub akio_wasm::TrapStats::exit: u64
+pub akio_wasm::TrapStats::host: u64
+pub akio_wasm::TrapStats::interrupted: u64
+pub akio_wasm::TrapStats::memory_out_of_bounds: u64
+pub akio_wasm::TrapStats::other: u64
+pub akio_wasm::TrapStats::out_of_fuel: u64
+pub akio_wasm::TrapStats::stack_exhausted: u64
+pub akio_wasm::TrapStats::unreachable: u64
+impl akio_wasm::TrapStats
+pub const fn akio_wasm::TrapStats::total(&self) -> u64
+impl core::clone::Clone for akio_wasm::TrapStats
+pub fn akio_wasm::TrapStats::clone(&self) -> Self
+impl core::cmp::Eq for akio_wasm::TrapStats
+impl core::cmp::PartialEq for akio_wasm::TrapStats
+pub fn akio_wasm::TrapStats::eq(&self, &Self) -> bool
+impl core::default::Default for akio_wasm::TrapStats
+pub fn akio_wasm::TrapStats::default() -> Self
+impl core::fmt::Debug for akio_wasm::TrapStats
+pub fn akio_wasm::TrapStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for akio_wasm::TrapStats
+impl core::marker::Send for akio_wasm::TrapStats
+impl core::marker::Sync for akio_wasm::TrapStats
+impl core::marker::Unpin for akio_wasm::TrapStats
+impl core::panic::unwind_safe::RefUnwindSafe for akio_wasm::TrapStats
+impl core::panic::unwind_safe::UnwindSafe for akio_wasm::TrapStats
 pub struct akio_wasm::TypedFunc<P, R>
 impl<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults> akio_wasm::TypedFunc<P, R>
 pub fn akio_wasm::TypedFunc<P, R>::call<S>(&self, &mut akio_wasm::Store<S>, P, &akio_wasm::Budget) -> core::result::Result<R, akio_wasm::Trap>

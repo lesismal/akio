@@ -491,3 +491,51 @@ published crate). Decided while building it:
 - **Fuzzing**: `wasm_exec`'s imported functions now call back into the calling instance every
   other call (an export chosen by a counter), so nested calls, their limits and their traps are
   fuzzed with the rest.
+
+### W4: the instance pool (2026-11-25)
+
+`InstancePool<S>` in `src/pool.rs`, with no dependency beyond W3's: its threads are its own
+(one per instance, plus a reaper), not akio's logical pool, and it knows nothing of akio-core or
+akio-http. Section 4 as written, with these decisions:
+
+- **A job and its completion are two arguments, and a refusal hands both back**:
+  `submit(job, done) -> Result<(), Refused<J, D>>`, not `submit(job) -> Result<(), Overloaded>`.
+  akit's completion holds the suspended request; refused at once (`Refusal::Overloaded`,
+  `Closed`, `Failed`, `Remade`), it gets it back and answers `503` on the I/O thread itself.
+  Accepted, `done` is called exactly once, with `Result<R, JobError>`: the result, or `Expired`,
+  `Remade`, `Closed`, `Failed`, `Panicked`.
+- **The handoff**: `done` runs on the pool's thread right after the job, once the job is counted
+  in the stats and before a failed instance is remade (or on the reaper, or on the thread that
+  closed the pool), and hands the result on without blocking: akit calls
+  akio-http's `Suspended::resume` there, which is how a request suspended to akio's logical pool
+  comes back too. So akio-wasm needs no I/O-thread API of its own.
+- **What a job sees is `Pooled<S>`**, not section 3's `Instance<S>` (W2 named the handle
+  `Instance`): the store, the instance, its `InstanceId`, the job's `Budget`, and `call`,
+  `call_typed`, `typed_func`, `export_func`, `state_mut` and `discard` (remake without a trap,
+  for a host that finds the guest's state wrong).
+- **The deadline is per job**: `call_timeout` (100 ms, fit's) from the job's start covers every
+  call the job makes, with the pool's interrupt. Making an instance (instantiating, a reactor's
+  `_initialize`, the `on_start` hook for Proxy-Wasm's `proxy_on_vm_start` and
+  `proxy_on_configure`) has `init_timeout` (1 s) in all.
+- **Expiry on time**: a job not started within `wait_timeout` (1 s) is handed back when the wait
+  passes, by a reaper thread that sleeps until the oldest queued job's expiry, so akit's `503`
+  does not wait for a busy instance to free up. A thread that pops an expired job hands it back
+  too.
+- **Instances have generations**: `InstanceId { index, generation }`. A Proxy-Wasm context dies
+  with its instance, so `submit_to` an instance remade since its id was taken is refused
+  (`Refusal::Remade`), and jobs queued for an instance when it is dropped get `JobError::Remade`.
+- **Remaking**: after a trap (the store's new `Store::trap()` says which, for the stats), a
+  panicking job or completion (`JobError::Panicked`; the host's state may be half-updated), or
+  `discard`, the thread drops the instance once the job's completion has run and makes the next
+  before taking another job. `start_attempts` (3) failed makings in a row of one instance fail
+  the pool. `build()` waits for every instance's first making and returns the `StartError` if
+  the pool failed (a module that cannot be instantiated fails there, not on the first request).
+- **Closing** (`close()`, or dropping the pool) refuses new jobs, hands queued ones back as
+  `Closed`, raises every instance's interrupt so a running guest stops within a slice, and joins
+  the threads, except the caller's own when the last handle goes in a completion.
+- **Stats** (`PoolStats`): instances ready, the shared and per-instance queue depths, running,
+  calls, refusals, expiries, panics, remakes, failed makings, and `TrapStats` by kind (deadline,
+  fuel, interrupt, stack, memory bounds, `unreachable`, host, exit, other).
+- One mutex guards the queues and counters; each thread waits on a condition variable of its own,
+  so `submit_to` wakes the instance it names and `submit` the most recently idle one. W5 measures
+  whether that lock matters next to the interpreter.

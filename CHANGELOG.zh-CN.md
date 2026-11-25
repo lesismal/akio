@@ -10,6 +10,31 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：akio-wasm 的实例池，里程碑 W4（akio-wasm、akio）
+
+ADR-125 的第四个里程碑：WebAssembly 在拥有实例的线程上运行，绝不在 I/O 线程上运行。至此 akit 的 I71 需要的 API 已经完整；
+本 crate 仍属实验层，何时调整由维护者决定（docs/api-stability.zh-CN.md）。
+
+- `InstancePool<S>`，由 `InstancePool::builder(module, linker, |index| state)` 创建，配合 `PoolConfig`（实例数：CPU 数，至多 16；
+  `queue` 1024；`instance_queue` 1024；`wait_timeout` 1 s；`call_timeout` 100 ms；`init_timeout` 1 s；`start_attempts` 3；
+  `InstanceLimits`）与可选的 `on_start` 钩子（Proxy-Wasm 的 `proxy_on_vm_start`）；`build()` 等到每个实例都创建完成（包括 WASI
+  reactor 的 `_initialize`），否则以 `StartError` 失败。
+- `submit(job, done)` 经一个有界共享队列交给任一空闲实例，`submit_to(InstanceId, job, done)` 经该实例自己的有界队列交给指定实例，
+  优先处理；队列已满、池已关闭或失败、或者 id 取得之后实例已重建时，立即以 `Refused { reason: Refusal, job, done }` 拒绝，从不等待。
+  任务 `FnOnce(&mut Pooled<S>) -> R` 在开始后 `call_timeout` 的截止时间内运行（`Pooled::call`、`call_typed`、`typed_func`、
+  `budget`、`discard`）；`done` 在池的线程上得到 `Result<R, JobError>`，不阻塞地交回调用方的 I/O 线程（akio-http 的
+  `Suspended::resume`）。在 `wait_timeout` 内没有开始的任务，在等待到期时得到 `JobError::Expired`，即使所有实例都忙（由一个
+  reaper 线程看守队列）。
+- 被陷入结束的实例（包括超过截止时间的客户代码）、任务 panic 的实例或被 discard 的实例，在其线程处理下一个任务之前丢弃并重建；
+  排给它的任务得到 `JobError::Remade`。连续 `start_attempts` 次无法创建的实例使池失败：排队中与之后的任务得到 `JobError::Failed`。
+  `close()`（或丢弃池）以 `JobError::Closed` 交回排队的任务，并中断正在运行的任务。
+- `stats()`：`PoolStats`，含共享队列与每个实例队列的深度、运行中的任务、调用数、拒绝、过期、`TrapStats`（按种类的陷入）、panic、
+  重建、创建失败。
+- `Store::trap()`：结束 store 的那次陷入。
+- 测试（`tests/pool.rs`）：卡住的客户代码在截止时间停止并重建实例、队列满时拒绝、实例忙时等待过期、`submit_to` 先于共享队列、
+  发往已重建实例的任务、panic 的任务、无法实例化的模块与超过截止时间的初始化使构建失败、无法重建的实例使池失败、带排队任务与运行中
+  客户代码的关闭、在完成回调中丢弃最后一个句柄、四个线程同时提交。
+
 ### 新增：akio-wasm 的宿主 API 与 WASI，里程碑 W3（akio-wasm、akio）
 
 ADR-125 的第三个里程碑：插件可以使用宿主函数与 WASI，fit 的客户模块能够运行。W4 之前属于实验层。
