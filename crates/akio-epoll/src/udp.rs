@@ -53,8 +53,8 @@ use std::{
 use akio_buf::slab::ChunkMut;
 use akio_core::{
     Config, ConnInfo, ConnInner, DatagramPort, DatagramSender, DatagramsFactory, DynAcceptor,
-    DynHandler, Error, Group, IdHasher, IdMap, LoopMeta, Pool, Task, UdpStats, hash::KeyedMap,
-    telemetry::LoopCmd,
+    DynHandler, Error, Group, IdHasher, IdMap, IdleCheck, IdleRule, LoopMeta, Pool, Task, UdpStats,
+    hash::KeyedMap, telemetry::LoopCmd,
 };
 use akio_sys::{Event, Poller, RecvInfo};
 use akio_timer::{TimerId, Wheel};
@@ -120,6 +120,8 @@ struct Peer {
     addr: SocketAddr,
     last_active: u64,
     timer: Option<TimerId>,
+    /// Its own idle timeout, if it set one (ADR-155); else the loop's.
+    idle: IdleRule,
     /// Tick when it opened, and bytes received (connection table).
     opened: u64,
     bytes_in: u64,
@@ -382,14 +384,40 @@ impl UdpLoop {
             }
         }
         let idle = self.idle_ms();
+        let now = self.tick();
+        if self.wheel.is_empty() {
+            self.wheel.advance(now, drop);
+        }
         let ids: Vec<u64> = self.conns.keys().copied().collect();
         for id in ids {
             if let Some(p) = self.conns.get_mut(&id) {
                 if let Some(t) = p.timer.take() {
                     self.wheel.cancel(t);
                 }
-                p.timer = Some(self.wheel.schedule(p.last_active + idle, id));
+                if let Some(at) = p.idle.first_check(idle, p.last_active, now) {
+                    p.timer = Some(self.wheel.schedule(at, id));
+                }
             }
+        }
+    }
+
+    /// Peer `id` set an idle timeout of its own (ADR-155): re-arms its timer from its last
+    /// activity.
+    fn retime(&mut self, id: u64) {
+        let idle = self.idle_ms();
+        let now = self.tick();
+        let Some(p) = self.conns.get_mut(&id) else {
+            return;
+        };
+        p.idle = IdleRule::of(&p.inner);
+        if let Some(t) = p.timer.take() {
+            self.wheel.cancel(t);
+        }
+        if let Some(at) = p.idle.first_check(idle, p.last_active, now) {
+            if self.wheel.is_empty() {
+                self.wheel.advance(now, drop);
+            }
+            p.timer = Some(self.wheel.schedule(at, id));
         }
     }
 
@@ -818,6 +846,7 @@ impl UdpLoop {
                 addr: peer,
                 last_active: now,
                 timer,
+                idle: IdleRule::ENGINE,
                 opened: now,
                 bytes_in: 0,
                 in_batch: false,
@@ -883,6 +912,7 @@ impl UdpLoop {
                 addr: peer,
                 last_active: now,
                 timer,
+                idle: IdleRule::ENGINE,
                 opened: now,
                 bytes_in: 0,
                 in_batch: false,
@@ -1374,6 +1404,7 @@ impl UdpLoop {
             for cmd in batch.drain(..) {
                 match cmd {
                     Cmd::Wake(id) => self.on_wake(id),
+                    Cmd::Retime(id) => self.retime(id),
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
@@ -1509,13 +1540,14 @@ impl UdpLoop {
                 continue;
             };
             p.timer = None;
-            let expires = p.last_active + idle;
-            if expires <= now {
-                self.shared.stats.idle_timeouts.add_local(1);
-                let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
-                self.finalize(id, Some(Error::Io(e)));
-            } else {
-                p.timer = Some(self.wheel.schedule(expires, id));
+            match p.idle.check(idle, &mut p.last_active, now, &p.inner) {
+                IdleCheck::Off => {}
+                IdleCheck::Expired => {
+                    self.shared.stats.idle_timeouts.add_local(1);
+                    let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
+                    self.finalize(id, Some(Error::Io(e)));
+                }
+                IdleCheck::At(at) => p.timer = Some(self.wheel.schedule(at, id)),
             }
         }
     }
