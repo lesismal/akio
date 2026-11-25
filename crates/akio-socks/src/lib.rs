@@ -43,7 +43,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -58,7 +58,7 @@ pub use splice::spliced_tunnels;
 use akio::{Acceptor, Conn, EngineRef, Handler};
 use akio_core::ConnInner;
 use akio_http::{
-    Context, Method, Response, Service,
+    BodyEvent, BodyReads, BodyStream, Context, Detached, Headers, Method, Response, Service,
     raw::{RawConn, RawHandler},
 };
 
@@ -1629,6 +1629,16 @@ impl Handler for SocksSession {
 
 /// An HTTP proxy service for `CONNECT host:port` tunnels (use it as a `akio-http` service, or
 /// mount it in a router's fallback). Other methods get 405.
+///
+/// A `CONNECT` on an HTTP/1.1 connection takes the connection over; one on an HTTP/2 or
+/// HTTP/3 stream (RFC 9113 §8.5, RFC 9114 §4.4; ADR-122) is relayed on its stream, next to
+/// the connection's other requests: the stream's DATA goes to the upstream as it arrives and the
+/// upstream's bytes come back in a streamed `200`, each way paced by the other side (the
+/// stream's reads held while the upstream is behind, the upstream's while the stream is). The
+/// halves close separately: the client's END_STREAM shuts the upstream's send direction down
+/// (a FIN) once what it sent is written, and the upstream's close ends our half. Its failures
+/// are answered as on HTTP/1.1, its timeouts and checks are the same, and a timeout or an
+/// early-data overrun resets the stream.
 pub fn connect_proxy(engine: EngineRef) -> impl Service {
     connect_proxy_with(engine, ProxyConfig::default())
 }
@@ -1658,6 +1668,12 @@ pub fn connect_proxy_with(engine: EngineRef, cfg: ProxyConfig) -> impl Service {
         {
             return ctx.text(403, "destination not allowed");
         }
+        if matches!(
+            ctx.req().version,
+            akio_http::Version::Http2 | akio_http::Version::Http3
+        ) {
+            return stream_tunnel(ctx, &engine, &cfg, host, port);
+        }
         ctx.upgrade_raw(Tunnel {
             engine: engine.clone(),
             host: Some((host, port)),
@@ -1668,6 +1684,379 @@ pub fn connect_proxy_with(engine: EngineRef, cfg: ProxyConfig) -> impl Service {
             watch: None,
             client: None,
         });
+    }
+}
+
+// ---- HTTP CONNECT on an HTTP/2 or HTTP/3 stream (A134) ---------------------------------------
+
+/// The client end of a `CONNECT` on an HTTP/2 or HTTP/3 stream: the request's streamed body is
+/// what the client sends, a streamed response what it receives.
+struct StreamSide {
+    /// Spreads the watchdog's shards (streams have no connection id of their own).
+    id: u64,
+    /// Cleared when the client goes (its stream reset, its connection closed) or the tunnel is
+    /// torn down.
+    open: AtomicBool,
+    /// Holds the stream's reads while the upstream is behind (or not connected yet).
+    reads: Option<BodyReads>,
+    upstream: UpstreamSlot,
+    /// Before the answer: the right to answer, and what the client sent meanwhile. Never held
+    /// while calling into akio-http (whose callbacks may come back here), only while sending to
+    /// the upstream, which keeps the client's bytes in order.
+    st: Mutex<StreamSt>,
+    /// After the `200`: the stream's half towards the client. Held while writing to it; what
+    /// runs under it never takes `st`.
+    out: Mutex<Option<BodyStream>>,
+}
+
+#[derive(Default)]
+struct StreamSt {
+    reply: Option<Detached>,
+    /// Sent before the upstream was connected (bounded by [`HIGH_WATER`]).
+    early: Vec<u8>,
+    /// The client ended its half before the upstream was connected.
+    ended: bool,
+}
+
+impl StreamSide {
+    fn lock(&self) -> std::sync::MutexGuard<'_, StreamSt> {
+        self.st.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn lock_out(&self) -> std::sync::MutexGuard<'_, Option<BodyStream>> {
+        self.out.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn up(&self) -> Option<Arc<ConnInner>> {
+        self.upstream
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    fn hold(&self, hold: bool) {
+        if let Some(r) = &self.reads {
+            r.hold(hold);
+        }
+    }
+
+    /// The client's bytes (or the end of its half), on the stream's thread.
+    fn client_sent(&self, ev: BodyEvent<'_>, watch: Option<&Watch>) {
+        if !self.is_open() {
+            return; // the tunnel is over: nowhere to go
+        }
+        let mut st = self.lock();
+        let Some(up) = self.up() else {
+            match ev {
+                BodyEvent::Chunk(b) if st.early.len() + b.len() > HIGH_WATER => {
+                    drop(st);
+                    self.abort(400, "too much sent before the tunnel opened");
+                }
+                BodyEvent::Chunk(b) => st.early.extend_from_slice(b),
+                BodyEvent::End(_) => st.ended = true,
+            }
+            return;
+        };
+        if !st.early.is_empty() {
+            let early = std::mem::take(&mut st.early);
+            let _ = up.send(&early);
+        }
+        match ev {
+            BodyEvent::Chunk(b) => {
+                if let Some(w) = watch {
+                    w.touch();
+                }
+                // Sent under the lock, so early bytes flushed by `connected` stay first; the
+                // stream's reads are held outside it (holding may drive the stream inline).
+                let sent = up.send(b).is_ok();
+                drop(st);
+                if !sent {
+                    return self.abort(502, "upstream gone");
+                }
+                if up.queued_bytes() > HIGH_WATER
+                    && let Some(r) = self.reads.clone()
+                {
+                    r.hold(true);
+                    up.on_drain(Box::new(move || r.hold(false)));
+                }
+            }
+            // The client ended its half: the upstream's ends too (a FIN once what it sent is
+            // written, RFC 9113 §8.5); its answer still comes, until it closes, which ends ours.
+            BodyEvent::End(_) => up.shutdown_write_after_send(),
+        }
+    }
+
+    /// The upstream is connected (on its thread): the `200` goes out and the tunnel opens.
+    fn connected(&self, up: &Arc<ConnInner>) {
+        let reply = self.lock().reply.take();
+        let out = match reply {
+            Some(r) if self.is_open() => r.stream_response(200, Headers::new()),
+            _ => None,
+        };
+        let Some(out) = out else {
+            return up.close();
+        };
+        *self.lock_out() = Some(out);
+        {
+            let mut st = self.lock();
+            if !st.early.is_empty() {
+                let early = std::mem::take(&mut st.early);
+                let _ = up.send(&early);
+            }
+            if st.ended {
+                up.shutdown_write_after_send();
+            }
+        }
+        self.hold(false);
+    }
+
+    /// The upstream failed to connect: the client gets `status`.
+    fn failed(&self, status: u16, why: &str) {
+        let reply = self.lock().reply.take();
+        if let Some(r) = reply {
+            r.respond(Response::text(status, why));
+        }
+        self.open.store(false, Ordering::Release);
+    }
+
+    /// The upstream's bytes, on its thread.
+    fn upstream_sent(&self, up: &Arc<ConnInner>, data: &[u8]) {
+        let out = self.lock_out();
+        let Some(s) = out.as_ref() else {
+            drop(out);
+            return up.close();
+        };
+        if s.write(data).is_err() {
+            drop(out);
+            return up.close();
+        }
+        if s.queued_bytes() > HIGH_WATER {
+            up.hold_reads(true);
+            let u = up.clone();
+            s.on_drain(move || u.hold_reads(false));
+        }
+    }
+
+    /// The upstream closed: our half ends (the client's may go on until it ends it; HTTP/2
+    /// resets a stream whose peer never does, a few seconds on).
+    fn upstream_closed(&self) {
+        // The tunnel is over for the proxy: what the client still sends has nowhere to go.
+        self.gone();
+        let out = self.lock_out().take();
+        if let Some(s) = out {
+            s.finish();
+        }
+    }
+
+    /// Tears the tunnel down: a stream not answered yet gets `status`, one that is is reset
+    /// (its response dropped unfinished), and the upstream is closed.
+    fn abort(&self, status: u16, why: &str) {
+        self.gone();
+        let reply = self.lock().reply.take();
+        if let Some(r) = reply {
+            r.respond(Response::text(status, why));
+        }
+        let out = self.lock_out().take();
+        drop(out);
+    }
+
+    /// The client went: the upstream goes too.
+    fn gone(&self) {
+        self.open.store(false, Ordering::Release);
+        let up = self
+            .upstream
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(up) = up {
+            up.close();
+        }
+    }
+}
+
+impl guard::Side for StreamSide {
+    fn is_open(&self) -> bool {
+        self.open.load(Ordering::Acquire)
+    }
+
+    /// A timeout: see [`StreamSide::abort`].
+    fn close(&self) {
+        self.abort(504, "tunnel timed out");
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+use guard::Side as _;
+
+/// The far side of a stream's tunnel.
+struct StreamUpstream {
+    side: Arc<StreamSide>,
+    watch: Option<Arc<Watch>>,
+}
+
+impl Handler for StreamUpstream {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if let Some(w) = &self.watch {
+            w.touch();
+        }
+        self.side.upstream_sent(c.inner(), data);
+    }
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<akio::Error>) {
+        self.side.upstream_closed();
+    }
+}
+
+struct StreamUpAcceptor {
+    side: Arc<StreamSide>,
+    pending: Arc<Pending>,
+    check: Option<Check>,
+    watch: Option<Arc<Watch>>,
+}
+
+impl Acceptor for StreamUpAcceptor {
+    type Handler = StreamUpstream;
+    fn on_open(&self, c: &Conn<StreamUpstream>) -> StreamUpstream {
+        c.inner().set_relayed(true);
+        let handler = StreamUpstream {
+            side: self.side.clone(),
+            watch: self.watch.clone(),
+        };
+        if let Some((check, dest)) = &self.check
+            && !check(dest, udp::canon(c.peer_addr()), udp::canon(c.local_addr()))
+        {
+            self.pending.fail(Failure::Refused);
+            c.close();
+            return handler;
+        }
+        let Some((up, _)) = self.pending.settle() else {
+            c.close();
+            return handler;
+        };
+        *self.side.upstream.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
+        if let Some(w) = &self.watch {
+            w.established();
+        }
+        up(c.inner());
+        handler
+    }
+}
+
+fn dial_stream(
+    engine: Option<Arc<akio::Engine>>,
+    addrs: Arc<Vec<SocketAddr>>,
+    i: usize,
+    acceptor: Arc<StreamUpAcceptor>,
+) {
+    if !acceptor.side.is_open() {
+        return;
+    }
+    let (Some(e), Some(&addr)) = (engine, addrs.get(i)) else {
+        return acceptor.pending.fail(Failure::Unreachable);
+    };
+    let e2 = e.clone();
+    let next = acceptor.clone();
+    e.dial(addr, ArcAcceptor(acceptor), move |_err| {
+        dial_stream(Some(e2), addrs, i + 1, next);
+    });
+}
+
+/// Lets one [`StreamUpAcceptor`] serve the dial of each address tried.
+struct ArcAcceptor(Arc<StreamUpAcceptor>);
+
+impl Acceptor for ArcAcceptor {
+    type Handler = StreamUpstream;
+    fn on_open(&self, c: &Conn<StreamUpstream>) -> StreamUpstream {
+        self.0.on_open(c)
+    }
+}
+
+/// Serves a `CONNECT` on an HTTP/2 or HTTP/3 stream (A134).
+fn stream_tunnel(
+    ctx: &mut Context,
+    engine: &EngineRef,
+    cfg: &Arc<ProxyConfig>,
+    host: String,
+    port: u16,
+) {
+    static IDS: AtomicU64 = AtomicU64::new(0);
+    let reads = ctx.body_reads();
+    let Some(mut reply) = ctx.detach() else {
+        return;
+    };
+    let side = Arc::new(StreamSide {
+        id: IDS.fetch_add(1, Ordering::Relaxed),
+        open: AtomicBool::new(true),
+        reads,
+        upstream: Arc::new(Mutex::new(None)),
+        st: Mutex::new(StreamSt::default()),
+        out: Mutex::new(None),
+    });
+    // Nothing more from the client until the upstream is there.
+    side.hold(true);
+    let s = side.clone();
+    reply.on_gone(move || s.gone());
+    side.lock().reply = Some(reply);
+    let watch = Watch::start_side(
+        side.clone(),
+        &side.upstream,
+        cfg.handshake_timeout,
+        cfg.idle_timeout,
+        cfg.connect_timeout,
+    );
+    let (s, w) = (side.clone(), watch.clone());
+    ctx.on_body(move |_ctx, ev| s.client_sent(ev, w.as_deref()));
+    let (s_ok, s_fail) = (side.clone(), side.clone());
+    let pending = Pending::new(
+        Box::new(move |up| s_ok.connected(up)),
+        Box::new(move |why| match why {
+            Failure::TimedOut => s_fail.failed(504, "upstream connect timed out"),
+            Failure::Busy => s_fail.failed(503, "resolver busy"),
+            _ => s_fail.failed(502, "upstream unreachable"),
+        }),
+    );
+    time_connect(watch.as_deref(), cfg.connect_timeout, &pending);
+    let dest = match host.parse::<IpAddr>() {
+        Ok(ip) => Dest::Addr(SocketAddr::new(ip, port)),
+        Err(_) => Dest::Name(host.clone(), port),
+    };
+    let acceptor = Arc::new(StreamUpAcceptor {
+        side,
+        pending: pending.clone(),
+        check: cfg.connected.clone().map(|f| (f, Arc::new(dest))),
+        watch,
+    });
+    let (engine, cfg, p) = (engine.clone(), cfg.clone(), pending.clone());
+    // Resolution may block: it runs on the proxy's resolver threads, never on the I/O thread.
+    let queued = guard::resolve(
+        host,
+        port,
+        Box::new(move |res| {
+            if !acceptor.side.is_open() {
+                return;
+            }
+            let addrs: Vec<SocketAddr> = res.unwrap_or_default();
+            if addrs.is_empty() {
+                return p.fail(Failure::Unresolved);
+            }
+            let allowed: Vec<SocketAddr> = addrs
+                .into_iter()
+                .filter(|a| cfg.destinations.allows(*a))
+                .collect();
+            if allowed.is_empty() {
+                // A name whose every address the policy denies: 403, as a literal one.
+                if p.settle().is_some() {
+                    acceptor.side.failed(403, "destination not allowed");
+                }
+                return;
+            }
+            dial_stream(engine.get(), Arc::new(allowed), 0, acceptor);
+        }),
+    );
+    if queued.is_err() {
+        pending.fail(Failure::Busy);
     }
 }
 

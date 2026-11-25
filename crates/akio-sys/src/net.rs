@@ -481,13 +481,10 @@ pub fn connect_nonblocking(addr: SocketAddr) -> io::Result<TcpStream> {
     Ok(TcpStream::from(fd))
 }
 
-/// Starts a non-blocking connect to the Unix-domain stream socket at `path` (ADR-120), as the
-/// Docker daemon's `/var/run/docker.sock`. The socket is non-blocking and close-on-exec; as with
-/// [`connect_nonblocking`] it becomes writable once connected (a Unix-domain connect usually
-/// finishes at once); check `SO_ERROR` then. A path longer than `sun_path` holds (107 bytes on
-/// Linux, 103 on macOS), or one with a NUL byte, is `InvalidInput`; a listener whose backlog is
-/// full is `WouldBlock`.
-pub fn connect_unix_nonblocking(path: &std::path::Path) -> io::Result<OwnedFd> {
+/// The `sockaddr_un` of `path` and its length. A path that is empty, has a NUL byte or is
+/// longer than `sun_path` holds (107 bytes on Linux, 103 on macOS) is `InvalidInput`; abstract
+/// sockets are not supported.
+fn unix_sockaddr(path: &std::path::Path) -> io::Result<(ffi::sockaddr_un, ffi::socklen_t)> {
     use std::os::unix::ffi::OsStrExt;
     let bytes = path.as_os_str().as_bytes();
     // SAFETY: sockaddr_un is plain-old-data; all-zero is a valid value.
@@ -508,8 +505,13 @@ pub fn connect_unix_nonblocking(path: &std::path::Path) -> io::Result<OwnedFd> {
     {
         sun.sun_len = len as u8;
     }
+    Ok((sun, len as ffi::socklen_t))
+}
+
+/// A new non-blocking, close-on-exec `AF_UNIX` stream socket.
+fn unix_socket() -> io::Result<OwnedFd> {
     #[cfg(target_os = "linux")]
-    let fd = {
+    {
         // SAFETY: plain syscall with valid constant arguments.
         let fd = cvt(unsafe {
             ffi::socket(
@@ -519,26 +521,31 @@ pub fn connect_unix_nonblocking(path: &std::path::Path) -> io::Result<OwnedFd> {
             )
         })?;
         // SAFETY: `fd` was just created by socket(2) and is owned by no one else.
-        unsafe { OwnedFd::from_raw_fd(fd) }
-    };
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
     #[cfg(not(target_os = "linux"))]
-    let fd = {
+    {
         // SAFETY: plain syscall with valid constant arguments.
         let fd = cvt(unsafe { ffi::socket(ffi::AF_UNIX, ffi::SOCK_STREAM, 0) })?;
         // SAFETY: `fd` was just created by socket(2) and is owned by no one else.
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         crate::poller::set_nonblock_cloexec(std::os::fd::AsRawFd::as_raw_fd(&fd))?;
-        fd
-    };
+        Ok(fd)
+    }
+}
+
+/// Starts a non-blocking connect to the Unix-domain stream socket at `path` (ADR-120), as the
+/// Docker daemon's `/var/run/docker.sock`. The socket is non-blocking and close-on-exec; as with
+/// [`connect_nonblocking`] it becomes writable once connected (a Unix-domain connect usually
+/// finishes at once); check `SO_ERROR` then. A path longer than `sun_path` holds (107 bytes on
+/// Linux, 103 on macOS), or one with a NUL byte, is `InvalidInput`; a listener whose backlog is
+/// full is `WouldBlock`.
+pub fn connect_unix_nonblocking(path: &std::path::Path) -> io::Result<OwnedFd> {
+    let (sun, len) = unix_sockaddr(path)?;
+    let fd = unix_socket()?;
     let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
     // SAFETY: `sun` is a valid sockaddr_un and `len` does not pass its end.
-    let r = unsafe {
-        ffi::connect(
-            raw,
-            (&raw const sun).cast::<ffi::sockaddr>(),
-            len as ffi::socklen_t,
-        )
-    };
+    let r = unsafe { ffi::connect(raw, (&raw const sun).cast::<ffi::sockaddr>(), len) };
     if r < 0 {
         let e = io::Error::last_os_error();
         if e.raw_os_error() != Some(ffi::EINPROGRESS) {
@@ -546,6 +553,66 @@ pub fn connect_unix_nonblocking(path: &std::path::Path) -> io::Result<OwnedFd> {
         }
     }
     Ok(fd)
+}
+
+/// A non-blocking, close-on-exec Unix-domain stream socket listening at `path` (ADR-121), held
+/// as a `TcpListener` so the backends serve it as any listening socket. With `mode`, the socket
+/// file gets those permission bits after `bind` and before `listen`, so no one connects while
+/// it has the process umask's. A file already at `path` is `AddrInUse`; the path's rules are
+/// [`connect_unix_nonblocking`]'s. Blocking (`chmod`): call it off the I/O threads.
+pub fn listen_unix(
+    path: &std::path::Path,
+    backlog: i32,
+    mode: Option<u32>,
+) -> io::Result<TcpListener> {
+    let (sun, len) = unix_sockaddr(path)?;
+    let fd = unix_socket()?;
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    // SAFETY: `sun` is a valid sockaddr_un and `len` does not pass its end.
+    cvt(unsafe { ffi::bind(raw, (&raw const sun).cast::<ffi::sockaddr>(), len) })?;
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
+    }
+    // SAFETY: plain syscall on an owned fd.
+    if let Err(e) = cvt(unsafe { ffi::listen(raw, backlog) }) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(TcpListener::from(fd))
+}
+
+/// Accepts one connection of a listening socket without reading the peer's address (ADR-121):
+/// what a Unix-domain listener needs, whose peers have no `SocketAddr`. The stream is
+/// non-blocking and close-on-exec. `WouldBlock` when none is queued.
+pub fn accept_stream(listener: &TcpListener) -> io::Result<TcpStream> {
+    let raw = std::os::fd::AsRawFd::as_raw_fd(listener);
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: plain syscall on a descriptor `listener` keeps open; a null address is allowed.
+        let fd = cvt(unsafe {
+            ffi::accept4(
+                raw,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                ffi::SOCK_NONBLOCK | ffi::SOCK_CLOEXEC,
+            )
+        })?;
+        // SAFETY: `fd` was just created by accept4(2) and is owned by no one else.
+        Ok(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: plain syscall on a descriptor `listener` keeps open; a null address is allowed.
+        let fd = cvt(unsafe { ffi::accept(raw, std::ptr::null_mut(), std::ptr::null_mut()) })?;
+        // SAFETY: `fd` was just created by accept(2) and is owned by no one else.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        crate::poller::set_nonblock_cloexec(std::os::fd::AsRawFd::as_raw_fd(&fd))?;
+        Ok(TcpStream::from(fd))
+    }
 }
 
 /// Starts a non-blocking connect to `addr` from `local`, bound with `SO_REUSEADDR` and

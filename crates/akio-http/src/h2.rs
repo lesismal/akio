@@ -115,7 +115,7 @@ pub struct H2Config {
     /// Run each stream's service (middleware and handler) on the engine's logical pool instead
     /// of the connection's I/O thread, so handlers may block and the streams of one connection
     /// are served at the same time. Requests whose body the service takes as a stream, and
-    /// extended CONNECTs, stay on the I/O thread. When the pool's queue is full the stream is
+    /// CONNECTs (extended or not), stay on the I/O thread. When the pool's queue is full the stream is
     /// answered `503`. Default `false`.
     pub run_on_pool: bool,
 }
@@ -195,7 +195,8 @@ struct Stream {
     /// An accepted extended CONNECT (RFC 8441): the stream is a tunnel, half-closed in each
     /// direction on its own (END_STREAM from us does not cancel the peer's half).
     tunnel: bool,
-    /// The request is an extended CONNECT (RFC 8441): a `2xx` answer makes it a tunnel.
+    /// The request is a CONNECT or an extended CONNECT (RFC 9113 §8.5, RFC 8441): a streamed
+    /// `2xx` answer makes it a tunnel.
     connect: bool,
     /// The context of a streamed request, or the WebSocket of a tunnel, parked here between
     /// body events.
@@ -1577,9 +1578,10 @@ impl Core {
         let mut st = Stream::new(state, self.remote.initial_window, self.local.initial_window);
         st.content_length = content_length;
         st.head_only = req.method == Method::Head;
-        if req.protocol.is_some() {
-            // Extended CONNECT (RFC 8441): dispatched now; the stream's DATA follows as the
-            // body of a streamed request, or to the WebSocket the handler accepts.
+        if req.method == Method::Connect {
+            // A CONNECT (RFC 9113 §8.5, A134) or an extended CONNECT (RFC 8441): dispatched now;
+            // the stream's DATA follows as the body of a streamed request, or to the WebSocket
+            // the handler accepts. A streamed `2xx` makes the stream a tunnel.
             st.streaming = true;
             st.connect = true;
             let resp = H2Responder::new(self.me.clone(), sid, false);
@@ -1745,15 +1747,28 @@ impl Core {
         if let Some(c) = cookies {
             headers.append("cookie", c);
         }
-        let (method, path) = (method.ok_or(())?, path.ok_or(())?);
-        scheme.ok_or(())?;
-        if method != "CONNECT" && path.is_empty() {
-            return Err(());
-        }
-        // An extended CONNECT carries every pseudo-header field (RFC 8441 §4).
-        if protocol.is_some() && (method != "CONNECT" || path.is_empty() || authority.is_none()) {
-            return Err(());
-        }
+        let method = method.ok_or(())?;
+        let path = if method == "CONNECT" && protocol.is_none() {
+            // A CONNECT (RFC 9113 §8.5): `:authority` alone names the tunnel's host and port,
+            // `:scheme` and `:path` are omitted; the target is the authority, as an HTTP/1.1
+            // CONNECT's (A134).
+            if scheme.is_some() || path.is_some() {
+                return Err(());
+            }
+            authority.ok_or(())?
+        } else {
+            let path = path.ok_or(())?;
+            scheme.ok_or(())?;
+            if method != "CONNECT" && path.is_empty() {
+                return Err(());
+            }
+            // An extended CONNECT carries every pseudo-header field (RFC 8441 §4).
+            if protocol.is_some() && (method != "CONNECT" || path.is_empty() || authority.is_none())
+            {
+                return Err(());
+            }
+            path
+        };
         if let Some(a) = authority {
             if headers.get("host").is_none() {
                 headers.append("host", a);
@@ -1801,6 +1816,17 @@ impl H2Responder {
         }
     }
 
+    /// Gives the response up before its head went: resets the stream (ADR-128).
+    pub(crate) fn reset(&self) {
+        if let Some(core) = self.core.upgrade() {
+            let mut c = lock(&core);
+            if c.streams.contains_key(&self.sid) {
+                c.rst(self.sid, err::INTERNAL);
+                c.flush();
+            }
+        }
+    }
+
     /// Holds the reads of this stream's request body.
     pub(crate) fn reads(&self) -> H2Reads {
         H2Reads {
@@ -1842,8 +1868,9 @@ impl H2Responder {
             c.write_headers(self.sid, Some(resp.status), &resp.headers, true, None, end);
             if let Some(st) = c.streams.get_mut(&self.sid) {
                 st.head_sent = true;
-                // A `2xx` streamed to an extended CONNECT opens the tunnel (RFC 8441 section 5,
-                // ADR-113): the stream's halves close separately from now on.
+                // A `2xx` streamed to a CONNECT or an extended CONNECT opens the tunnel (RFC 9113
+                // §8.5, RFC 8441 section 5, ADR-113, ADR-122): the stream's halves close
+                // separately from now on.
                 if st.connect && (200..300).contains(&resp.status) {
                     st.tunnel = true;
                 }

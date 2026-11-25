@@ -3,7 +3,7 @@
 English | [简体中文](028-hot-reload-buffers-backlog-threads.zh-CN.md)
 
 Status: accepted (2026-11-17). The "akio-prefork" part is superseded by
-[ADR-121](121-akio-prefork-removed.md) (2026-11-25): the crate was removed.
+[ADR-129](129-akio-prefork-removed.md) (2026-11-25): the crate was removed.
 
 ## Context
 

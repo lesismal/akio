@@ -129,8 +129,8 @@ pub struct H3Config {
     /// Run each request's service (middleware and handler) on the engine's logical pool
     /// instead of the connection's I/O thread, so handlers may block and the requests of one
     /// connection are served at the same time. Requests whose body the service takes as a
-    /// stream, and extended CONNECTs, stay on the I/O thread. When the pool's queue is full
-    /// the request is answered `503`. Default `false`.
+    /// stream, and CONNECTs (extended or not), stay on the I/O thread. When the pool's queue
+    /// is full the request is answered `503`. Default `false`.
     pub run_on_pool: bool,
 }
 
@@ -783,7 +783,7 @@ impl<S: Service> ServerConn<S> {
 
     /// Reads a stream that arrived whole as one HEADERS frame and at most one DATA frame (the
     /// usual case) without a [`Req`] or a frame reader. `None` leaves it to [`read_req`]: other
-    /// frames, a section that is malformed, too large or blocked, an extended CONNECT, a body
+    /// frames, a section that is malformed, too large or blocked, a CONNECT, a body
     /// too large or for a service that streams it.
     #[inline(always)]
     fn read_whole(
@@ -804,7 +804,7 @@ impl<S: Service> ServerConn<S> {
         let ric =
             qpack::decode_section(section, max_field, &self.conn.dec, &mut self.fields).ok()?;
         let (request, head_only) = request_head(&self.fields, self.peer)?;
-        if request.protocol.is_some()
+        if request.method == Method::Connect
             || (!body.is_empty() && self.svc.body_mode(&request) == akio_http::BodyMode::Stream)
         {
             return None;
@@ -1056,9 +1056,9 @@ pub(crate) fn read_req(
                 if head.is_none() {
                     match request_head(fields, peer) {
                         Some((request, head_only)) => {
-                            if request.protocol.is_some() {
-                                // Extended CONNECT: dispatched now, the stream's bytes
-                                // follow to the sink.
+                            if request.method == Method::Connect {
+                                // A CONNECT (RFC 9114 §4.4, A134) or an extended CONNECT:
+                                // dispatched now, the stream's bytes follow to the sink.
                                 *content_length = sink_length(&request)?;
                                 *sink = Some(host.start(request, head_only));
                                 *head = Some(Err(()));
@@ -1895,6 +1895,13 @@ impl ConnSink for H3Out {
         let id = StreamId::new(akio_quic::Side::Client, Dir::Bi, tag >> 1);
         let _ = self.c.hold_reads(id, hold);
     }
+
+    /// Resets the request stream, its response given up before its head went (ADR-128).
+    fn reset(&self, tag: u64) {
+        let id = Sink::of(self, tag).id;
+        let _ = self.c.stop(id, code::INTERNAL_ERROR);
+        let _ = self.c.reset(id, code::INTERNAL_ERROR);
+    }
 }
 
 /// Answers one request stream.
@@ -2154,6 +2161,12 @@ impl BodySink for StreamBody {
         if now {
             run_drain(&self.o.drains, self.id);
         }
+    }
+
+    /// Resets the request stream, the body given up unfinished (ADR-128).
+    fn reset(self: Box<Self>) {
+        let _ = self.o.c.stop(self.id, code::INTERNAL_ERROR);
+        let _ = self.o.c.reset(self.id, code::INTERNAL_ERROR);
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {

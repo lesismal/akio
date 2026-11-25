@@ -111,7 +111,7 @@ Priority: P0 = required for 1.0; P1 = strongly recommended for 1.0; P2 = after 1
 | HTTP/3 + QUIC | ✓ (in-house) | P1 | M5 | sans-io core from quinn-proto or quiche |
 | KCP | ✓ | P1 | M5 | compatible with skywind3000/kcp, kcp-go (incl. FEC/crypt) |
 | Async clients (h1/h2/h3/ws) | ✓ | P1 | M4–M5 | callback and future result channels |
-| Prefork (multi-process SO_REUSEPORT) | ✓ | P2 | M6 | little gain without a GC; demoted to optional; built, then removed 2026-11-25 (ADR-121) |
+| Prefork (multi-process SO_REUSEPORT) | ✓ | P2 | M6 | little gain without a GC; demoted to optional; built, then removed 2026-11-25 (ADR-129) |
 | Streaming media (RTMP/RTSP/SRT/FLV/HLS/WHIP/WHEP) | ✓ | P2 | M7 | large; separate crates |
 | WebRTC (ICE/DTLS-SRTP/DataChannel/TURN) | ✓ | P2 | M7 | in-house sans-io stack (DEV-PLAN wave D) |
 | BitTorrent (incl. DHT/uTP/MSE) | ✓ | P2 | M7 | separate crate, last |
@@ -157,5 +157,5 @@ Priority: P0 = required for 1.0; P1 = strongly recommended for 1.0; P2 = after 1
 3. **Threading model**: agree to "a connection belongs to one I/O thread (thread-per-core)" and drop fib's "any worker per round" no-affinity model?
 4. **Platforms**: Linux first-class plus macOS (kqueue) as a development backend, no Windows. OK?
 5. Should the **async bridge** (`Future` adapter) wait until after 1.0?
-6. Are the **P2 heavy protocols** (media / WebRTC / BitTorrent) and Prefork acceptable after 1.0 as separate crates? (Prefork: removed 2026-11-25, ADR-121.)
+6. Are the **P2 heavy protocols** (media / WebRTC / BitTorrent) and Prefork acceptable after 1.0 as separate crates? (Prefork: removed 2026-11-25, ADR-129.)
 7. **License and MSRV**: keep fib's LICENSE? MSRV policy (suggested: edition 2024, follow stable-2).

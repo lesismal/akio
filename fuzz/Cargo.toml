@@ -69,6 +69,13 @@ akio-deflate = { path = "../crates/akio-deflate", features = ["fuzzing"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 akio-brotli = { path = "../crates/akio-brotli", features = ["fuzzing"] }
 akio-zstd = { path = "../crates/akio-zstd", features = ["fuzzing"] }
+akio-wasm = { path = "../crates/akio-wasm", features = ["fuzzing"] }
+# akio-wasm's execution targets (ADR-125, section 6): valid modules generated from the fuzzer's
+# bytes, and wasmi as the differential reference for `wasm_diff`.
+wasm-smith = "0.263"
+# The portable loop dispatch: the default tail-call dispatch recurses natively under ASan.
+# Deterministic: arithmetic NaN results canonical, as akio-wasm's, so float bits compare exactly.
+wasmi = { version = "2", features = ["portable-dispatch", "deterministic"] }
 # Differential oracles for the brotli and zstd targets only (Google's brotli in Rust, libzstd).
 brotli-decompressor = "5"
 zstd = { version = "0.13", default-features = false }
@@ -947,6 +954,27 @@ bench = false
 [[bin]]
 name = "sys_icmp_error"
 path = "fuzz_targets/sys_icmp_error.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm_decode"
+path = "fuzz_targets/wasm_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm_exec"
+path = "fuzz_targets/wasm_exec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm_diff"
+path = "fuzz_targets/wasm_diff.rs"
 test = false
 doc = false
 bench = false

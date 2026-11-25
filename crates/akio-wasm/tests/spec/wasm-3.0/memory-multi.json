@@ -1,0 +1,1 @@
+{"source_filename":"memory-multi.wast","commands":[{"type":"module","line":5,"filename":"memory-multi.0.wasm","module_type":"binary"},{"type":"module","line":26,"filename":"memory-multi.1.wasm","module_type":"binary"}]}

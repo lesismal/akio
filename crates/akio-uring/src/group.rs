@@ -104,6 +104,8 @@ fn ring_place(pins: &[Vec<usize>], i: usize, sqpoll: bool) -> RingPlace {
 /// A group of io_uring I/O threads serving one listener.
 pub struct UringGroup {
     addr: SocketAddr,
+    /// A Unix-domain listener (ADR-121): its connections have no addresses.
+    unix: bool,
     /// Listener fds in loop order when they form a `SO_REUSEPORT` group (Linux), as bound.
     fds: Vec<i32>,
     /// The active loops (dials, listener handover).
@@ -239,6 +241,44 @@ impl UringGroup {
         )
     }
 
+    /// Serves a listening Unix-domain stream socket (ADR-121, `akio_sys::listen_unix`) as
+    /// [`bind_listener`](Self::bind_listener) serves an inherited one: `threads` loops share it.
+    /// Its connections are accepted without reading an address; their `peer_addr` and
+    /// `local_addr`, and the group's, are [`akio_core::UNIX_ADDR`].
+    pub fn bind_unix_listener(
+        listener: TcpListener,
+        acceptor: Arc<dyn DynAcceptor>,
+        threads: usize,
+        cfg: Config,
+        pool: Arc<Pool>,
+        opts: UringOptions,
+    ) -> io::Result<UringGroup> {
+        listener.set_nonblocking(true)?;
+        let mut listeners = Vec::with_capacity(threads.max(1));
+        for _ in 1..threads.max(1) {
+            listeners.push(Some(listener.try_clone()?));
+        }
+        let base = listener.try_clone()?;
+        listeners.insert(0, Some(listener));
+        let mut g = Self::assemble(
+            listeners,
+            akio_core::UNIX_ADDR,
+            Vec::new(),
+            Some(acceptor),
+            Listening::Shared(Some(base)),
+            cfg,
+            pool,
+            opts,
+        )?;
+        g.unix = true;
+        for s in &mut lock(&g.state).slots {
+            if let Some(lp) = s.pending.as_mut() {
+                lp.set_unix();
+            }
+        }
+        Ok(g)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         listeners: Vec<Option<TcpListener>>,
@@ -281,6 +321,7 @@ impl UringGroup {
         roster.set(slots.iter().map(|s| s.shared.clone()).collect());
         Ok(UringGroup {
             addr,
+            unix: false,
             fds,
             roster,
             state: Mutex::new(State {
@@ -464,6 +505,9 @@ impl UringGroup {
                 )?;
                 if let Some(lp) = slot.pending.as_mut() {
                     lp.set_filter(&st.filter);
+                    if self.unix {
+                        lp.set_unix();
+                    }
                 }
                 Self::spawn(i, &mut slot, self.pin_of(i))?;
                 if existed {

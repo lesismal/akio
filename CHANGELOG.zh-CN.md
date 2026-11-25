@@ -30,7 +30,7 @@ API）提供一个强制这种交错的钩子，akio-h3 的 `off_handler` 测试
 
 ### 移除：akio-prefork（akio-prefork、akio、akio-sys）
 
-ADR-121。akio 和 akit 不使用 prefork；该 crate 自 cb49a04b 起暂停维护、不再测试。对这些项的外部
+ADR-129。akio 和 akit 不使用 prefork；该 crate 自 cb49a04b 起暂停维护、不再测试。对这些项的外部
 使用者是破坏性变更：
 
 - crate `akio-prefork`（`Prefork`、`BpfSteering`、`ListenMode`、`CpuPinning`、`Controller`、
@@ -43,6 +43,119 @@ ADR-121。akio 和 akit 不使用 prefork；该 crate 自 cb49a04b 起暂停维�
   `getppid`、`ESRCH`、`SIGQUIT`、`SIGUSR1`。
 - 保留：`Listener::tcp_from_std`（systemd socket 激活）、`akio_sys::process::{allowed_cpus,
   pin_current_thread, signal_pipe, kill, SIGHUP, SIGINT, SIGTERM, SIGUSR2}`。
+### 新增：由别处的工作扣住响应头、过滤响应 body（akio-http、akio-h3）
+
+ADR-128，ADR-125 的里程碑 W6（akit 的 A166 和 A167，用于 I72 的 Proxy-Wasm 响应回调），HTTP/1.1、HTTP/2 和
+HTTP/3 一致：
+
+- `Context::hold_response_head(timeout, f)`：普通响应过滤器运行之后，`f` 以 `HeldHead` 得到响应头并把它交出去
+  （例如交给插件的池）；从任意线程 `resume` 后响应继续（经过外层过滤器），也可以用 `respond(Response)` 替换，或经
+  `fail`、丢弃或截止时间切断（关闭 HTTP/1 连接，重置 HTTP/2 和 HTTP/3 的流，请求以 `End::Gone` 结束）。期间写入的
+  流式 body 被扣住（最多 4 MiB，计入 `BodyStream::queued_bytes`）。
+- `Context::add_body_filter(impl BodyFilter)`，以及 `BodyChunk` 和 `FilterDone`：body 经过在别处应答的调用，
+  一次一个，期间写入的内容被扣住并交给下一次调用；最后一次调用带 trailer，可修改或添加；输出由客户端限速，然后编码
+  （`compress`）并经过 tap。整体与文件 body 以流的形式经过它，不带 `Content-Length`。`BodyFilter::abort` 得知在最后
+  一次调用之前结束的响应。对 `HEAD`、`1xx`、`204`、`304`、`CONNECT` 和升级不调用。
+- 不公开的传输接口增加带默认实现的 `ConnSink::reset` 和 `BodySink::reset`，由 akio-h3 实现，使被切断的响应重置其
+  HTTP/3 流。
+
+### 新增：akio-wasm 的实例池，里程碑 W4（akio-wasm、akio）
+
+ADR-125 的第四个里程碑：WebAssembly 在拥有实例的线程上运行，绝不在 I/O 线程上运行。至此 akit 的 I71 需要的 API 已经完整；
+本 crate 仍属实验层，何时调整由维护者决定（docs/api-stability.zh-CN.md）。
+
+- `InstancePool<S>`，由 `InstancePool::builder(module, linker, |index| state)` 创建，配合 `PoolConfig`（实例数：CPU 数，至多 16；
+  `queue` 1024；`instance_queue` 1024；`wait_timeout` 1 s；`call_timeout` 100 ms；`init_timeout` 1 s；`start_attempts` 3；
+  `InstanceLimits`）与可选的 `on_start` 钩子（Proxy-Wasm 的 `proxy_on_vm_start`）；`build()` 等到每个实例都创建完成（包括 WASI
+  reactor 的 `_initialize`），否则以 `StartError` 失败。
+- `submit(job, done)` 经一个有界共享队列交给任一空闲实例，`submit_to(InstanceId, job, done)` 经该实例自己的有界队列交给指定实例，
+  优先处理；队列已满、池已关闭或失败、或者 id 取得之后实例已重建时，立即以 `Refused { reason: Refusal, job, done }` 拒绝，从不等待。
+  任务 `FnOnce(&mut Pooled<S>) -> R` 在开始后 `call_timeout` 的截止时间内运行（`Pooled::call`、`call_typed`、`typed_func`、
+  `budget`、`discard`）；`done` 在池的线程上得到 `Result<R, JobError>`，不阻塞地交回调用方的 I/O 线程（akio-http 的
+  `Suspended::resume`）。在 `wait_timeout` 内没有开始的任务，在等待到期时得到 `JobError::Expired`，即使所有实例都忙（由一个
+  reaper 线程看守队列）。
+- 被陷入结束的实例（包括超过截止时间的客户代码）、任务 panic 的实例或被 discard 的实例，在其线程处理下一个任务之前丢弃并重建；
+  排给它的任务得到 `JobError::Remade`。连续 `start_attempts` 次无法创建的实例使池失败：排队中与之后的任务得到 `JobError::Failed`。
+  `close()`（或丢弃池）以 `JobError::Closed` 交回排队的任务，并中断正在运行的任务。
+- `stats()`：`PoolStats`，含共享队列与每个实例队列的深度、运行中的任务、调用数、拒绝、过期、`TrapStats`（按种类的陷入）、panic、
+  重建、创建失败。
+- `Store::trap()`：结束 store 的那次陷入。
+- 测试（`tests/pool.rs`）：卡住的客户代码在截止时间停止并重建实例、队列满时拒绝、实例忙时等待过期、`submit_to` 先于共享队列、
+  发往已重建实例的任务、panic 的任务、无法实例化的模块与超过截止时间的初始化使构建失败、无法重建的实例使池失败、带排队任务与运行中
+  客户代码的关闭、在完成回调中丢弃最后一个句柄、四个线程同时提交。
+
+### 新增：akio-wasm 的宿主 API 与 WASI，里程碑 W3（akio-wasm、akio）
+
+ADR-125 的第三个里程碑：插件可以使用宿主函数与 WASI，fit 的客户模块能够运行。W4 之前属于实验层。
+
+- `Linker<S>`：按模块名与名字登记的宿主函数，可以是类型化的（`func_wrap(module, name, |caller, (a, b): (u32, i64)| -> Result<R, Trap>)`，
+  支持 `i32`、`u32`、`i64`、`u64`、`f32`、`f64`），也可以基于 `Value`（`func_new`）；`instantiate(&mut Store<S>, &Arc<Module>, &Budget)`
+  解析每个导入并检查类型；`trap_unresolved(true)` 让没有定义的函数导入在被调用时陷入，而不是拒绝模块。`Clone + Send + Sync`，
+  可在多个 store 与线程间共享。`LinkError`、`InstantiateError::UnknownImport`。
+- `Caller`：调用方实例内存的带边界检查视图（`read`、`read_mut`、`write`、`read_u32`、`read_u64`、`write_u32`、`write_u64`）、
+  它的导出、调用的截止时间与中断、`consume_fuel`，以及 `call`：在同一预算下回调进 guest，最多嵌套 64 层（Proxy-Wasm 宿主用
+  `proxy_on_memory_allocate` 正是这样做的）；其中的陷入会结束外层调用。
+- `Store::typed_func::<P, R>` 与 `TypedFunc`（只检查一次，可由宿主或宿主函数调用）、`WasmTy`、`WasmParams`、`WasmResults`；
+  `Store::initialize_reactor`（WASI reactor 的 `_initialize`）。
+- WASI preview 1，ADR-125 的子集（`Linker::wasi_preview1(WasiConfig)`，模块 `akio_wasm::wasi`）：参数、环境变量、实时与单调时钟、
+  随机字节（akio-crypto，本 crate 唯一的依赖）、标准输出与标准错误送往接收函数（`OutputStream`）、只等时钟的 `poll_oneoff`
+  睡眠不晚于调用的截止时间、`proc_exit` 即新的 `Trap::Exit(code)`；没有文件系统和套接字（`EBADF`、`ENOSYS`），越出内存的指针返回
+  `EFAULT`。全部 46 个函数都有定义。
+- 测试：链接器、内存视图、嵌套调用及其上限、类型化调用、每个 WASI 函数；fit 的客户模块（`tests/guests`，gzip 压缩，由
+  `tests/guests/build.sh` 重新构建）：Go 的 `headers` 插件（fit 的 ABI：修改字段、直接应答请求、`/loop` 在截止时间停止、
+  `/grow` 与 `/panic` 陷入、实例重建）、Proxy-Wasm Go SDK 的 `http_routing`（宿主函数在 guest 中分配内存），以及 fit 的 Rust
+  同步插件。`wasm_exec` 模糊测试目标的导入现在会回调进 guest。
+
+### 新增：akio-wasm 可以运行模块，里程碑 W2：翻译与解释器（akio-wasm、akio）
+
+ADR-125 的第二个里程碑：`akio-wasm` 现在能运行它加载的模块，仍是安全 Rust、无依赖，W4 之前属于实验层。
+
+- `Module::new` 在验证每个函数之后把它翻译一次，成为寄存器形式：操作数栈的每个位置是固定的槽，`local.get` 不复制，常量成为立即数，
+  比较与其分支合为一条指令；每字节代码至多四条 16 字节的指令，时间线性。解释器是带显式帧的 `match` 循环，从不使用原生递归。
+- `Store<S>`：实例（`instantiate(&Arc<Module>, &[Extern], &Budget)`，实例之间可以相互导入）、宿主函数
+  （`func_new(FuncType, Fn(&mut Caller<S>, &[Value], &mut [Value]))`）、宿主创建的全局变量、表和内存、导出、
+  `call(Func, &[Value], &mut [Value], &Budget)`。`Send`，不是 `Sync`。陷入会结束 store（之后的调用返回 `Trap::Ended`）。
+- `InstanceLimits`：内存（128 MiB；超过时 `memory.grow` 返回 `-1`）、表元素（10 M）、值栈（1 Mi 个槽）、调用深度（10 000）。
+- `Budget`：截止时间、燃料和 `InterruptHandle`，在进入基本块时大约每 10 000 条指令检查一次（批量内存和表指令按字节计费），
+  所以调用在截止时间后几十微秒内停止，无需看门狗线程；`Store::fuel_used`。
+- `Trap`（规范的陷入及其措辞、运行上限、`Deadline`、`OutOfFuel`、`Interrupted`、`Host`、`Ended`、`BadCall`）、`InstantiateError`、
+  `Value`、`ExternRef`，句柄 `Func`、`Table`、`Memory`、`Global`、`Instance`、`Extern`。
+- 浮点遵循规范，NaN 规范化：执行是确定的。
+- 测试：完整的 WebAssembly 2.0 规范测试集（21 453 个 `assert_return`、2 354 个 `assert_trap`、栈耗尽、链接、实例化）、翻译器的边界情形、
+  预算、每个运行上限的低于/等于/超过、宿主函数、线性时间的翻译。模糊测试目标 `wasm_exec`（`wasm-smith` 模块，小上限）和
+  `wasm_diff`（与 wasmi 对比），两者的依赖只在模糊测试中。
+
+### 新增：akio-wasm，插件用的 WebAssembly 运行时，里程碑 W1：解码器与验证器（akio-wasm、akio）
+
+ADR-125（已采纳），akit 为其 WASM 插件（I71）和 Proxy-Wasm（I72）提出（A165）。新 crate `akio-wasm`，
+安全 Rust（`#![forbid(unsafe_code)]`）、无依赖，在 API 完整（W4）之前属于实验层；门面 crate 在 `wasm` feature 下提供
+`akio::wasm`。这个里程碑只加载模块，运行模块是 W2。
+
+- `Module::new(&bytes, &ModuleLimits)` 一遍完成二进制模块的解码与验证，时间与模块大小成线性：WebAssembly 2.0 去掉 SIMD
+  （1.0 加可变全局变量、符号扩展、不陷入的浮点转整数、批量内存、多返回值、引用类型；一个 32 位内存），即 Go、TinyGo
+  和 Rust `wasm32-wasip1` 生成的内容。`Module` 列出导入、导出（`export(name)`）、类型、函数类型、表、内存、全局变量和 start 函数。
+- 其他特性在加载时以 `ErrorKind::Unsupported(Feature)` 拒绝并给出名字：SIMD（含 relaxed）、线程、异常处理、尾调用、
+  memory64、多内存、扩展常量、类型化函数引用、GC、custom page sizes、wide arithmetic、组件。其余拒绝为 `Malformed` 或
+  `Invalid`，带规范的措辞和字节偏移。
+- `ModuleLimits`，每个计数在为其分配任何东西之前检查：模块大小（64 MiB）、类型（100 000）及其元数（1 000）、
+  函数（100 000）、导入和导出（各 10 000）、表（100）及其初始大小（10 M）、全局变量（100 000）、每个函数的局部变量（50 000）、
+  块嵌套（1 000）、`br_table` 目标（100 000）、元素段和数据段（各 100 000）。超限时为 `ErrorKind::Limit(Limit)`。
+- 测试：WebAssembly 2.0 规范测试集的解码与验证命令（由 `tools/wasm-spec/convert.sh` 转换，提交在
+  `crates/akio-wasm/tests/spec`）、被拒绝特性的提案文件作为拒绝检查、每个上限的低于/等于/超过、默认上限处的模块在有界时间内加载。
+  模糊测试目标 `wasm_decode`（字典 `fuzz/dict/wasm.dict`）。
+
+### 新增：由中间件修改的请求，以及得知请求的结束（akio-http，ADR-126、ADR-127）
+
+- `Context::req_mut() -> Option<&mut Request>`（ADR-126）：中间件在处理器之前修改请求的字段、
+  目标、方法或消息体；`path()`、`header()`、其后的处理器、`Files` 和响应过滤器都看到修改。请求
+  被共享后（`detach`、WebSocket 升级）返回 `None`。路由参数仍读取它们匹配时的路径。`suspend`
+  现在把整个请求移入恢复后的上下文，后者可以修改它。
+- `Context::on_end(f) -> bool`、`Detached::on_end(f)` 和 `enum End { Sent, Gone }`
+  （ADR-127）：请求结束时 `f` 恰好运行一次：响应完整交给连接后为 `Sent`（流式响应在完成时，而非
+  响应头发出时），客户端先离开（分离等待或流式发送时都能得知）或响应被放弃（未完成就被丢弃的
+  `Detached` 或 `BodyStream`）时为 `Gone`。多个钩子按顺序运行；结束之后添加的立即运行。`on_gone`
+  保持原意，现在与它们并存（不再占用传输层唯一的对端离开槽位）。适用于 HTTP/1.1、HTTP/2 和
+  HTTP/3。两者都不注册的请求没有额外分配。
 
 ### 修复：HTTP/3 客户端恢复读取、取消或超时一个请求时不再死锁（akio-h3）
 
@@ -126,6 +239,62 @@ ADR-104 第三次修订，API 不变：
   之前只读取构建时的 `Config`。
 - 轮次模式的 listener 仍然拒绝 `set_listener_threads`。在 gpu51 上没有测到吞吐变化（rounds 的类 echo、skew
   和 churn 场景，loops 的 echo）。
+### 新增：HTTP/2 和 HTTP/3 流上的 CONNECT，以及关闭连接的发送方向（akio-http、akio-h3、akio-socks、akio-core）
+
+ADR-122，由 akit 提出（A134）：
+
+- akio-http：HTTP/2 流上只带 `:method` 和 `:authority` 的 `CONNECT`（RFC 9113 §8.5）立即分派，
+  目标是 authority，DATA 是流式请求体；流式的 `2xx` 使该流成为两半各自关闭的隧道。带 `:scheme`
+  或 `:path`、或缺少 `:authority` 的被重置（`PROTOCOL_ERROR`）；此前所有普通 CONNECT 都会被重置。
+  `H2Client` 也按这种形式发送 `CONNECT` 请求，其 `:authority` 取请求的 `Host` 字段。
+- akio-h3：`CONNECT`（RFC 9114 §4.4）在收到头部时分派，而不是等流结束。
+- akio-socks：`connect_proxy` 为 HTTP/2 或 HTTP/3 流上的 `CONNECT` 做中继（此前它不应答就返回），
+  检查、超时、失败状态码与 HTTP/1.1 隧道相同，双向背压；客户端的 END_STREAM 关闭上游的发送方向。
+- `Conn::shutdown_write_after_send` 与 `ConnInner::shutdown_write_after_send`：队列写完后发送 FIN，
+  继续读取（epoll、kqueue、io_uring）。
+
+### 新增：Unix 域流监听器，以及限定 TLS 1.2 的 TLS 服务端（akio、akio-epoll、akio-uring、akio-sys、akio-tls）
+
+ADR-121，由 akit 提出（A23、A9）：
+
+- `Listener::unix(path)`、`Listener::unix_from_std(UnixListener)` 与 `Listener::unix_mode(mode)`：
+  套接字文件上的流监听器，像 TCP 监听器一样提供服务，支持 epoll、kqueue 和 io_uring，可在构建时
+  加入或通过 `Engine::add_listener` 加入；权限在监听前设置，残留的套接字文件被替换，正在使用的
+  （或不是套接字的文件）返回 `AddrInUse`。其连接的地址为 `UNIX_ADDR`。
+- `EpollGroup::bind_unix_listener`、`UringGroup::bind_unix_listener`。
+- `akio_sys::listen_unix` 与 `akio_sys::accept_stream`。
+- `ServerConfigBuilder::tls12_only` 与 `ClientConfigBuilder::tls12_only`（公开；隐藏的
+  `__tls12_only` 调用它们）。与 `tls13_only` 同时设置时 `build` 失败。
+
+### 新增：`Files` 作为网关的静态文件处理器、内存有界；文件消息体编码（akio-http）
+
+ADR-124，由 akit 提出（A14、A15、A92）：
+
+- `Files::index_files`、`redirect_directories`、`mime_types`（`MimeTypes::builtin` 即 Go 的表，
+  `MimeTypes::system` 再按 Go 的方式读入系统的 `mime.types`）、`default_type`、`sniff`
+  （`files::sniff`，即 Go 的 `http.DetectContentType`）、`error_response` 与
+  `serve_prefixed`（目录列表与重定向写出完整路径）。
+- `Files::max_cache_bytes`（默认 64 MiB）：内存中保留的字节，包括孪生文件与压缩副本，按最近
+  最少使用淘汰；`Files::disk_timeout`：磁盘池未能及时回答的请求回 `503` 并带
+  `Retry-After: 1`。
+- 消息体为文件、且响应过滤器设置了流编码（`Response::set_stream_coding`）的响应以流式发送：
+  在磁盘池上以 64 KiB 分片读取、编码并写出，受连接的背压控制。
+
+### 变更：`Files`（akio-http）
+
+- 不可读的文件回 `403`；既不是普通文件也不是目录的（不再打开：FIFO 曾占住磁盘池线程）以及
+  带尾斜杠请求的文件回 `404`；带 `:` 的名字可以访问。
+- 默认最多在内存中保留 64 MiB 的文件（`max_cache_bytes`）。
+- 挂在路由下时，请求的尾斜杠有效（目录被列出而不是重定向），尽管路由的通配符会去掉它。
+
+### 新增：握手之外使用的根证书；仅用于握手的 ALPN 协议（akio-tls）
+
+ADR-123，由 akit 提出（A57、A58）：
+
+- `RootCerts::store()` 与 `From<RootCerts> for akio_x509::RootStore`：把根证书（包括系统的）
+  交给调用者自己的 `Verifier`。
+- `ServerConfigBuilder::handshake_only_alpn(protocols)`：协商到其中之一（`acme-tls/1`，
+  RFC 8737）的连接在握手完成后关闭，它发送的任何内容都不会到达应用。
 
 ### 新增：拨号 Unix 域套接字，以及在其上的 HTTP 客户端（akio、akio-http、akio-sys）
 

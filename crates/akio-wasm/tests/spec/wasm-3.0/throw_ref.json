@@ -1,0 +1,1 @@
+{"source_filename":"throw_ref.wast","commands":[{"type":"module","line":3,"filename":"throw_ref.0.wasm","module_type":"binary"},{"type":"assert_invalid","line":117,"filename":"throw_ref.1.wasm","module_type":"binary","text":"type mismatch"},{"type":"assert_invalid","line":118,"filename":"throw_ref.2.wasm","module_type":"binary","text":"type mismatch"}]}

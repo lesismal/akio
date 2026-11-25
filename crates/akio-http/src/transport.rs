@@ -48,6 +48,10 @@ pub trait ConnSink: Send + Sync + 'static {
     fn on_gone(&self, _tag: u64, f: Box<dyn FnOnce() + Send>) {
         drop(f);
     }
+    /// Gives up the response to the request tagged `tag`, before its head went: resets the
+    /// request's stream (a held head cut, ADR-128). The default does nothing: the stream stays
+    /// unanswered until its connection closes.
+    fn reset(&self, _tag: u64) {}
 }
 
 /// A connection's [`ConnSink`], shared by its requests: cloning it is one reference count
@@ -103,6 +107,9 @@ pub trait BodySink: Send + 'static {
     fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
         f();
     }
+    /// Gives the body up unfinished: resets the stream (a body filter's response cut,
+    /// ADR-128). The default drops the sink.
+    fn reset(self: Box<Self>) {}
 }
 
 /// A per-request [`ResponseSink`] served as a [`ConnSink`] (the deprecated path allocates for

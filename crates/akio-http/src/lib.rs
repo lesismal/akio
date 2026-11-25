@@ -52,6 +52,7 @@ pub mod files;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+mod gate;
 mod h2;
 pub mod h2client;
 #[doc(hidden)]
@@ -79,9 +80,10 @@ pub mod transport;
 pub use akio_ws as ws;
 pub use coding::Coding;
 pub use context::{
-    BodyEvent, BodyMode, BodyReads, BodyStream, Context, Detached, Middleware, Service, Streaming,
-    Suspended, WsOptions,
+    BodyEvent, BodyMode, BodyReads, BodyStream, Context, Detached, End, HeldHead, Middleware,
+    Service, Streaming, Suspended, WsOptions,
 };
+pub use gate::{BodyChunk, BodyFilter, FilterDone};
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version, parse_http_date};
 pub use pool::Executor;

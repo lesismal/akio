@@ -839,6 +839,9 @@ pub(crate) struct Loop {
     /// The listener's accept filter (ADR-099), run before a connection is opened (none in a
     /// client-only group).
     filter: Option<akio_core::FilterView>,
+    /// The listener is a Unix-domain socket (ADR-121): its connections get `UNIX_ADDR` for
+    /// both addresses.
+    unix: bool,
     /// The listener was removed (`Cmd::StopListening`, see the epoll backend); with
     /// `unlisted_drain`, connections the cancelled accept still delivers are shut down after
     /// their first data, as while draining.
@@ -1005,6 +1008,7 @@ impl Loop {
             retire_kill: None,
             accept_retry_at: None,
             filter: None,
+            unix: false,
             unlisted: false,
             unlisted_exit: false,
             unlisted_drain: false,
@@ -1395,9 +1399,15 @@ impl Loop {
         }
         // SAFETY: the kernel just handed us this fresh descriptor; nothing else owns it.
         let stream = unsafe { TcpStream::from_raw_fd(res) };
-        let Ok(peer) = stream.peer_addr() else {
-            return;
+        let peer = if self.unix {
+            akio_core::UNIX_ADDR
+        } else {
+            let Ok(peer) = stream.peer_addr() else {
+                return;
+            };
+            peer
         };
+        let unix_local = self.unix.then_some(akio_core::UNIX_ADDR);
         if !self.filter.as_mut().is_none_or(|f| f.allows(&peer)) {
             self.shared.stats.filtered.add_local(1);
             akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
@@ -1412,7 +1422,7 @@ impl Loop {
             let Some(acceptor) = self.drain_acceptor.clone() else {
                 return; // dropped: closes it
             };
-            if let Some(id) = self.open(stream, peer, acceptor, false, None) {
+            if let Some(id) = self.open(stream, peer, acceptor, false, unix_local) {
                 if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
                     lc.shutdown_after_data = true;
                 }
@@ -1425,8 +1435,9 @@ impl Loop {
             return;
         };
         // Accept-time balancing (ADR-105): a loop holding more than its share hands the
-        // connection over before reading from it.
-        if !self.retiring {
+        // connection over before reading from it. A Unix-domain connection (ADR-121) stays:
+        // `Adopt` opens with TCP addresses.
+        if !self.retiring && !self.unix {
             if let Some(to) = self.roster.handoff_target(&self.shared) {
                 to.post(Cmd::Adopt {
                     stream,
@@ -1436,7 +1447,7 @@ impl Loop {
                 return;
             }
         }
-        self.open(stream, peer, acceptor, false, None);
+        self.open(stream, peer, acceptor, false, unix_local);
     }
 
     /// A connection another loop accepted and handed here (ADR-105).
@@ -2231,6 +2242,11 @@ impl Loop {
     /// Gives a loop that has not started yet its group's accept filter.
     pub(crate) fn set_filter(&mut self, cell: &Arc<akio_core::FilterCell>) {
         self.filter = Some(akio_core::FilterView::new(cell.clone()));
+    }
+
+    /// Marks a loop that has not started yet as serving a Unix-domain listener (ADR-121).
+    pub(crate) fn set_unix(&mut self) {
+        self.unix = true;
     }
 
     /// The listener was removed (ADR-099): the multishot accepts are cancelled and the

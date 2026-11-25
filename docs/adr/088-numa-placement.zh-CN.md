@@ -2,7 +2,7 @@
 
 [English](088-numa-placement.md) | 简体中文
 
-状态：已采纳（2026-11-23）。背景中提到的 akio-prefork 已由 [ADR-121](121-akio-prefork-removed.zh-CN.md)
+状态：已采纳（2026-11-23）。背景中提到的 akio-prefork 已由 [ADR-129](129-akio-prefork-removed.zh-CN.md)
 （2026-11-25）删除。
 
 ## 背景

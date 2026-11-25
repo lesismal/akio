@@ -72,7 +72,38 @@ impl RawHandler for Mute {
 type Seen = Arc<Mutex<mpsc::Sender<String>>>;
 
 fn app(seen: Seen) -> Router {
+    let seen2 = seen.clone();
     Router::new()
+        .fallback(Streaming(move |ctx: &mut Context| {
+            // A CONNECT (RFC 9113 §8.5, A134): its target is the authority; answered with a
+            // streamed `200` whose first bytes name it, then the stream's bytes echoed back.
+            if *ctx.method() != akio_http::Method::Connect {
+                return ctx.text(404, "no route");
+            }
+            let target = ctx.req().target.clone();
+            let _ = seen2.lock().unwrap().send(format!("connect {target}"));
+            let out = Arc::new(Mutex::new(ctx.stream_response(200, Headers::new())));
+            if let Some(s) = out.lock().unwrap().as_ref() {
+                let _ = s.write(format!("to {target};").as_bytes());
+            }
+            let seen = seen2.clone();
+            ctx.on_body(move |_ctx, ev: BodyEvent<'_>| {
+                let mut out = out.lock().unwrap();
+                match ev {
+                    BodyEvent::Chunk(b) => {
+                        if let Some(s) = out.as_ref() {
+                            let _ = s.write(b);
+                        }
+                    }
+                    BodyEvent::End(_) => {
+                        if let Some(s) = out.take() {
+                            s.finish();
+                        }
+                        let _ = seen.lock().unwrap().send("end".into());
+                    }
+                }
+            });
+        }))
         .get("/up", |ctx: &mut Context| {
             let asked = ctx.header("upgrade") == Some("echo")
                 && ctx
@@ -352,6 +383,7 @@ const ACK: u8 = 0x1;
 const END_HEADERS: u8 = 0x4;
 const NO_ERROR: u32 = 0;
 const CANCEL: u32 = 8;
+const PROTOCOL_ERROR: u32 = 1;
 
 struct Frame {
     ty: u8,
@@ -555,5 +587,52 @@ fn h2_a_streamed_2xx_to_an_extended_connect_is_a_tunnel() {
         p.ended(9);
     }
     assert_eq!(p.rst(9), NO_ERROR);
+    stop(&srv.e);
+}
+
+/// A CONNECT on an HTTP/2 stream (RFC 9113 §8.5, A134): `:method` and `:authority` alone, the
+/// target the authority; dispatched at once (before any DATA), its streamed `200` a tunnel
+/// whose halves close separately. One with `:scheme` or `:path`, or without `:authority`, is
+/// malformed.
+#[test]
+fn h2_a_connect_is_dispatched_at_once_and_a_streamed_2xx_is_a_tunnel() {
+    let srv = start();
+    let mut p = Peer::open(&srv.e);
+    p.headers(
+        1,
+        &[(":method", "CONNECT"), (":authority", "example.com:443")],
+        false,
+    );
+    assert_eq!(seen(&srv), "connect example.com:443");
+    assert_eq!(p.status(1), "200");
+    assert!(!p.data(1, b"to example.com:443;"));
+    p.send(DATA, 0, 1, b"ping");
+    assert!(!p.data(1, b"ping"));
+    p.send(DATA, END_STREAM, 1, &[]);
+    assert_eq!(seen(&srv), "end");
+    p.ended(1);
+
+    for (sid, bad) in [
+        (
+            3,
+            &[
+                (":method", "CONNECT"),
+                (":scheme", "https"),
+                (":authority", "example.com:443"),
+            ][..],
+        ),
+        (
+            5,
+            &[
+                (":method", "CONNECT"),
+                (":path", "/"),
+                (":authority", "example.com:443"),
+            ][..],
+        ),
+        (7, &[(":method", "CONNECT")][..]),
+    ] {
+        p.headers(sid, bad, false);
+        assert_eq!(p.rst(sid), PROTOCOL_ERROR, "stream {sid}");
+    }
     stop(&srv.e);
 }

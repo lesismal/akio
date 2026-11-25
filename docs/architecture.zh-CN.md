@@ -26,6 +26,7 @@ flowchart BT
     zstd["akio-zstd<br/>Zstandard"]
     logc["akio-log<br/>日志门面"]
     regexc["akio-regex<br/>线性时间正则"]
+    wasm["akio-wasm（实验性）<br/>插件用 WebAssembly"]
     pool["akio-pool<br/>逻辑线程池"]
     core["akio-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
     epoll["akio-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
@@ -70,6 +71,7 @@ flowchart BT
     core --> tun
     sys --> tun
     tun -.->|feature tun| facade
+    wasm -.->|feature wasm| facade
     tls --> facade
     facade --> ws
     deflate --> ws

@@ -120,4 +120,12 @@
 - [ADR-118：请求的对端是受信任 PROXY 头所指的客户端](118-http-peer-from-proxy-header.zh-CN.md)（2026-11-24 采纳）
 - [ADR-119：代理隧道在连接建立后检查，以及它的连接超时](119-socks-connected-check-and-connect-timeout.zh-CN.md)（2026-11-24 采纳）
 - [ADR-120：拨号 Unix 域套接字，以及在其上的 HTTP 客户端](120-unix-socket-dial.zh-CN.md)（2026-11-24 采纳）
-- [ADR-121：删除 akio-prefork](121-akio-prefork-removed.zh-CN.md)（2026-11-25 采纳）
+- [ADR-121：Unix 域流监听器，以及限定 TLS 1.2 的 TLS 服务端](121-unix-listeners-tls12-cap.zh-CN.md)（2026-11-25 采纳）
+- [ADR-122：HTTP/2 和 HTTP/3 流上的 CONNECT，以及关闭连接的发送方向](122-connect-on-h2-h3-streams-half-close.zh-CN.md)（2026-11-25 采纳）
+- [ADR-123：握手之外使用的根证书，以及仅用于握手的 ALPN 协议](123-root-store-and-handshake-only-alpn.zh-CN.md)（2026-11-25 采纳）
+- [ADR-124：`Files` 作为网关的静态文件处理器、内存有界，以及文件消息体编码](124-files-as-a-gateway-static-handler.zh-CN.md)（2026-11-25 采纳）
+- [ADR-125：插件用的 WebAssembly 运行时：独立 crate 中的安全解释器](125-wasm-runtime-for-plugins.zh-CN.md)（2026-11-25 采纳；akit A165，用于 I71 和 I72；W1 至 W4 与 W6 已实现）
+- [ADR-126：由中间件修改的请求](126-request-changed-by-a-middleware.zh-CN.md)（2026-11-25 采纳）
+- [ADR-127：得知请求的结束：响应完整发出，或客户端离开](127-request-end-hooks.zh-CN.md)（2026-11-25 采纳）
+- [ADR-128：由别处的工作扣住响应头、过滤响应 body](128-held-response-heads-and-body-filters.zh-CN.md)（2026-11-25 采纳；akit A166、A167；ADR-125 的 W6）
+- [ADR-129：删除 akio-prefork](129-akio-prefork-removed.zh-CN.md)（2026-11-25 采纳）

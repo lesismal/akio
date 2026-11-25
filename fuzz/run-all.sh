@@ -35,6 +35,7 @@ run() {
         http1_*) dict=(-dict=dict/http.dict) ;;
         protobuf_text) dict=(-dict=dict/protobuf_text.dict) ;;
         regex_*) dict=(-dict=dict/regex.dict) ;;
+        wasm_*) dict=(-dict=dict/wasm.dict) ;;
     esac
     cargo $TOOLCHAIN fuzz run "$t" "corpus-new/$t" "corpus/$t" -- \
         -max_total_time="$SECS" -rss_limit_mb=2048 -timeout=10 -max_len=8192 \

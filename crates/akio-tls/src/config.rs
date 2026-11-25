@@ -241,6 +241,13 @@ impl fmt::Debug for RootCerts {
     }
 }
 
+impl From<RootCerts> for akio_x509::RootStore {
+    /// The roots as a store of their own (ADR-123); see [`RootCerts::store`].
+    fn from(r: RootCerts) -> akio_x509::RootStore {
+        r.0
+    }
+}
+
 impl RootCerts {
     /// No roots.
     pub fn empty() -> RootCerts {
@@ -316,6 +323,14 @@ impl RootCerts {
     /// Whether there are no roots.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The roots as an [`akio_x509::RootStore`] (ADR-123), to verify a chain against outside a
+    /// handshake with an [`akio_x509::Verifier`]: a certificate from files checked against the
+    /// system's roots ([`RootCerts::system`]) before its OCSP responder is asked, say. Verifying
+    /// does no I/O, but a chain is long work for an I/O thread; do it on a pool.
+    pub fn store(&self) -> &akio_x509::RootStore {
+        &self.0
     }
 
     fn ders(&self) -> Vec<Vec<u8>> {
@@ -567,6 +582,8 @@ pub struct ServerConfig {
     pub(crate) inner: Arc<ServerSettings>,
     pub(crate) handshake_timeout: Option<Duration>,
     pub(crate) ktls: KtlsConfig,
+    /// [`ServerConfigBuilder::handshake_only_alpn`]'s protocols; `None` for none.
+    pub(crate) handshake_only: Option<Arc<[Vec<u8>]>>,
     parts: Arc<ServerParts>,
     _reserved: NotUnwindSafe,
 }
@@ -638,6 +655,7 @@ impl ServerConfigBuilder {
             sni_ocsp: Vec::new(),
             handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
             ktls: KtlsConfig::default(),
+            handshake_only: Vec::new(),
         }
     }
 }
@@ -677,6 +695,7 @@ pub struct ServerConfigBuilder {
     sni_ocsp: Vec<(String, Vec<u8>)>,
     handshake_timeout: Option<Duration>,
     ktls: KtlsConfig,
+    handshake_only: Vec<Vec<u8>>,
 }
 
 /// The 0-RTT freshness window (RFC 8446 section 8.3): a ClientHello with early data must
@@ -738,6 +757,7 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("ocsp_response", &self.ocsp.is_some())
             .field("handshake_timeout", &self.handshake_timeout)
             .field("ktls", &self.ktls.mode)
+            .field("handshake_only_alpn", &self.handshake_only)
             .finish_non_exhaustive()
     }
 }
@@ -889,6 +909,24 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// ALPN protocols that are for the handshake alone (ADR-123): a connection that negotiates
+    /// one of them is closed once its handshake is done, after a `close_notify`, and nothing it
+    /// sends reaches the application (TLS 1.3 early data included). For TLS-ALPN-01 (RFC 8737):
+    /// a CA checking a challenge offers `acme-tls/1` alone, gets the challenge's certificate in
+    /// the handshake and needs nothing after it, so a server that offers `acme-tls/1` (last, in
+    /// [`alpn`](Self::alpn)) lists it here and serves no HTTP to whoever negotiates it. The
+    /// connection's `on_close` sees an `ErrorKind::ConnectionAborted` error; the handshake
+    /// counts as completed. Protocols not in [`alpn`](Self::alpn) are never negotiated, so
+    /// listing them does nothing. Default: none. Applies to [`Tls::server`](crate::Tls::server).
+    pub fn handshake_only_alpn<I, P>(mut self, protocols: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
+    {
+        self.handshake_only = protocols.into_iter().map(|p| p.as_ref().to_vec()).collect();
+        self
+    }
+
     /// Kernel TLS for the connections of [`Tls::server`](crate::Tls::server) (default
     /// [`Ktls::Off`]; see [`Ktls`]). Applies on the epoll and io_uring backends (io_uring: the
     /// send direction only); QUIC, DTLS and the DPDK backend are unaffected.
@@ -1036,11 +1074,22 @@ impl ServerConfigBuilder {
         self
     }
 
-    /// Tests and interop tools: TLS 1.2 only.
-    #[doc(hidden)]
-    pub fn __tls12_only(mut self, yes: bool) -> Self {
+    /// Accepts TLS 1.2 only (default: TLS 1.2 and 1.3; ADR-121), as Go's
+    /// `tls.Config.MaxVersion = tls.VersionTLS12`: for network cards that offload TLS 1.2
+    /// alone, or peers that must not negotiate 1.3. The TLS 1.3 suites are left out, so a
+    /// client offering 1.3 negotiates 1.2 (without the downgrade sentinel of RFC 8446 section
+    /// 4.1.3, as 1.2 is the most this server speaks) and one offering only 1.3 fails. Exclusive with
+    /// [`tls13_only`](Self::tls13_only) (`build` fails when both are set). QUIC needs TLS 1.3:
+    /// such a config serves TCP only.
+    pub fn tls12_only(mut self, yes: bool) -> Self {
         self.tls12_only = yes;
         self
+    }
+
+    /// The former name of [`tls12_only`](Self::tls12_only), kept for tests and interop tools.
+    #[doc(hidden)]
+    pub fn __tls12_only(self, yes: bool) -> Self {
+        self.tls12_only(yes)
     }
 
     /// Tests and interop tools: the cipher suites, by IANA code, in preference order.
@@ -1118,6 +1167,9 @@ impl ServerConfigBuilder {
             Some(ids) => suites_from_ids(ids)?,
             None => suites::ALL.to_vec(),
         };
+        if self.tls13_only && self.tls12_only {
+            return Err(Error::new("tls12_only and tls13_only together"));
+        }
         if self.tls13_only {
             suites.retain(|s| s.is_tls13());
         }
@@ -1205,6 +1257,7 @@ impl ServerConfigBuilder {
             inner: Arc::new(settings),
             handshake_timeout: self.handshake_timeout,
             ktls: self.ktls,
+            handshake_only: (!self.handshake_only.is_empty()).then(|| self.handshake_only.into()),
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })
@@ -1510,11 +1563,21 @@ impl ClientConfigBuilder {
         self
     }
 
-    /// Tests and interop tools: TLS 1.2 only.
-    #[doc(hidden)]
-    pub fn __tls12_only(mut self, yes: bool) -> Self {
+    /// Accepts TLS 1.2 only (default: TLS 1.2 and 1.3; ADR-121), as Go's
+    /// `tls.Config.MaxVersion = tls.VersionTLS12`: for network cards that offload TLS 1.2
+    /// alone, or peers that must not negotiate 1.3. The TLS 1.3 suites are left out, and the
+    /// client offers 1.2 alone; a server that only speaks 1.3 fails the handshake. Exclusive with
+    /// [`tls13_only`](Self::tls13_only) (`build` fails when both are set). QUIC needs TLS 1.3:
+    /// such a config serves TCP only.
+    pub fn tls12_only(mut self, yes: bool) -> Self {
         self.tls12_only = yes;
         self
+    }
+
+    /// The former name of [`tls12_only`](Self::tls12_only), kept for tests and interop tools.
+    #[doc(hidden)]
+    pub fn __tls12_only(self, yes: bool) -> Self {
+        self.tls12_only(yes)
     }
 
     /// Tests and interop tools: the cipher suites, by IANA code, in preference order.
@@ -1559,6 +1622,9 @@ impl ClientConfigBuilder {
             Some(ids) => suites_from_ids(ids)?,
             None => suites::ALL.to_vec(),
         };
+        if self.tls13_only && self.tls12_only {
+            return Err(Error::new("tls12_only and tls13_only together"));
+        }
         if self.tls13_only {
             suites.retain(|s| s.is_tls13());
         }

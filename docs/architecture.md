@@ -27,6 +27,7 @@ flowchart BT
     zstd["akio-zstd<br/>Zstandard"]
     logc["akio-log<br/>logging facade"]
     regexc["akio-regex<br/>linear-time regex"]
+    wasm["akio-wasm (experimental)<br/>WebAssembly for plugins"]
     pool["akio-pool<br/>logical pool"]
     core["akio-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
     epoll["akio-epoll<br/>epoll / kqueue groups, UDP groups"]
@@ -71,6 +72,7 @@ flowchart BT
     core --> tun
     sys --> tun
     tun -.->|feature tun| facade
+    wasm -.->|feature wasm| facade
     tls --> facade
     facade --> ws
     deflate --> ws

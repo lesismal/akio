@@ -18,9 +18,12 @@ use akio_core::{Pool, PoolConfig};
 use akio_sys::{FsEvent, FsWatcher, WatchId};
 
 use crate::{
-    context::{Context, Service},
+    context::{Context, Detached, Service},
     message::{FileBody, Headers, Method, Request, Response, format_http_date, percent_decode},
 };
+
+mod mime;
+pub use mime::{MimeTypes, SNIFF_LEN, sniff};
 
 /// Serves files below a root directory. Mount it on a wildcard route
 /// (`router.get("/static/*path", Files::new("public"))`, parameter name `path`) or use it as the
@@ -33,7 +36,14 @@ use crate::{
 ///   in request order. Overlapping ranges and ranges less than 80 bytes apart are coalesced
 ///   (RFC 9110 section 14.2); a header with more than 32 ranges, or whose parts would exceed
 ///   1 MiB, is ignored and the whole file is sent. A multipart body is built in memory.
-/// * `index.html` for directories; `..` and other escapes are refused. Symlinks are followed.
+/// * `index.html` for directories (or the [`index_files`](Files::index_files) given, tried in
+///   order); `..` and other escapes are refused. Symlinks are followed. Only regular files are
+///   opened: anything else, and a file asked for with a trailing slash, is `404`; a file that
+///   may not be read is `403`. With [`redirect_directories`](Files::redirect_directories), a
+///   directory asked for without its slash is redirected to it.
+/// * The `Content-Type` by extension ([`mime_types`](Files::mime_types)), else
+///   [`default_type`](Files::default_type), else [sniffed](Files::sniff) or
+///   `application/octet-stream`.
 /// * `file.ext.br` / `file.ext.zst` / `file.ext.gz` next to `file.ext` are served to clients
 ///   that accept them: the one the client's `Accept-Encoding` ranks highest by its q values
 ///   (`*` standing for codings it does not name, `q=0` refusing one), among equals the first of
@@ -55,8 +65,10 @@ use crate::{
 /// * Only a cache hit inside its trust window is answered on the I/O thread. Everything that
 ///   touches the disk (`stat`, `open`, reading a file into the cache, the parts of a
 ///   multi-range response from a large file) runs on a small pool of its own (up to 16 threads,
-///   4096 queued requests; past that the answer is `503` with `Retry-After: 1`), and the
-///   response is sent from there.
+///   4096 queued requests; past that the answer is `503` with `Retry-After: 1`, and so it is
+///   past [`disk_timeout`](Files::disk_timeout)), and the response is sent from there.
+/// * At most [`max_cache_bytes`](Files::max_cache_bytes) (64 MiB) of files are kept in memory,
+///   the entries used least recently evicted first.
 /// * With [`watch`](Files::watch) on, the cache follows the disk through change notifications
 ///   (inotify on Linux, kqueue on macOS) instead of re-checking: an entry is dropped as soon as
 ///   its file, a compressed twin, or a directory on its path changes, and until then it is
@@ -69,16 +81,32 @@ pub struct Files {
 
 struct Inner {
     root: PathBuf,
-    index: String,
+    /// [`Files::index_files`]: the files that stand for a directory, tried in order.
+    index: Vec<String>,
+    /// [`Files::redirect_directories`].
+    redirect_dirs: bool,
+    /// [`Files::mime_types`]; `None`: [`Files`]' own short table.
+    mime_types: Option<Arc<MimeTypes>>,
+    /// [`Files::default_type`].
+    default_type: Option<Arc<str>>,
+    /// [`Files::sniff`].
+    sniff: bool,
+    /// [`Files::error_response`].
+    errors: Option<Errors>,
+    /// [`Files::max_cache_bytes`].
+    max_cache_bytes: u64,
+    /// [`Files::disk_timeout`] and the requests it bounds.
+    disk_timeout: Option<Duration>,
+    waiting: Arc<Waiting>,
     max_cached: u64,
     check_interval: Duration,
     cache_control: Option<String>,
     max_open: usize,
     /// The cache, sharded by path: a hit takes one shard's read lock.
     shards: Box<[RwLock<HashMap<PathBuf, Entry>>]>,
-    /// The entries holding an open file, in CLOCK order. Only cache fills and evictions (on
-    /// the disk pool) take it, always before a shard lock.
-    ring: Mutex<Ring>,
+    /// The entries holding an open file, and those holding bytes in memory, in CLOCK order.
+    /// Only cache fills and evictions (on the disk pool) take it, always before a shard lock.
+    ring: Mutex<Rings>,
     /// Whether [`Files::watch`] asked for change notifications, and how many watches at most.
     watch_on: bool,
     max_watches: usize,
@@ -103,6 +131,12 @@ struct Inner {
 
 /// [`Files::hide`]'s test.
 type Hide = Arc<dyn Fn(&str) -> bool + Send + Sync + std::panic::RefUnwindSafe>;
+
+/// [`Files::error_response`]'s answers.
+type Errors = Arc<dyn Fn(u16) -> Response + Send + Sync + std::panic::RefUnwindSafe>;
+
+/// The default of [`Files::max_cache_bytes`]: 64 MiB.
+const DEFAULT_MAX_CACHE_BYTES: u64 = 64 << 20;
 
 /// The file [`Files::try_paths`]' candidates resolved a request path to, and when (in
 /// [`clock_ms`] milliseconds): trusted for [`check_interval`](Files::check_interval) while the
@@ -146,17 +180,53 @@ struct DirEntry {
     watched: AtomicBool,
 }
 
-/// The open-file entries (at most `max_open`) and the CLOCK hand: the next slot considered
-/// for eviction.
+/// Entries of one kind and the CLOCK hand: the next slot considered for eviction. Each slot
+/// has the bytes it is charged.
 #[derive(Default)]
 struct Ring {
-    slots: Vec<(PathBuf, Arc<Cached>)>,
+    slots: Vec<(PathBuf, Arc<Cached>, u64)>,
     hand: usize,
+}
+
+/// The cache's two bounds: the entries holding an open file (at most `max_open`), and those
+/// holding bytes in memory (at most `max_cache_bytes` of them, `bytes` in all).
+#[derive(Default)]
+struct Rings {
+    open: Ring,
+    mem: Ring,
+    bytes: u64,
+}
+
+impl Rings {
+    /// Drops `path` from both rings (not from the cache's map).
+    fn remove(&mut self, path: &Path) {
+        if let Some(i) = self.open.position(path) {
+            self.open.slots.swap_remove(i);
+        }
+        if let Some(i) = self.mem.position(path) {
+            let (_, _, n) = self.mem.slots.swap_remove(i);
+            self.bytes = self.bytes.saturating_sub(n);
+        }
+    }
+
+    /// Drops every slot whose path satisfies `pred` from both rings.
+    fn retain(&mut self, pred: impl Fn(&Path) -> bool) {
+        self.open.slots.retain(|(p, ..)| !pred(p));
+        let mut freed = 0;
+        self.mem.slots.retain(|(p, _, n)| {
+            let keep = !pred(p);
+            if !keep {
+                freed += *n;
+            }
+            keep
+        });
+        self.bytes = self.bytes.saturating_sub(freed);
+    }
 }
 
 impl Ring {
     fn position(&self, path: &Path) -> Option<usize> {
-        self.slots.iter().position(|(p, _)| p == path)
+        self.slots.iter().position(|(p, ..)| p == path)
     }
 
     /// The slot of the entry to evict: the first one from the hand that was not used since the
@@ -216,7 +286,7 @@ struct Cached {
     guard: Option<Arc<FileWatch>>,
     etag: Box<str>,
     /// The content type (of the original file, for a compressed twin).
-    mime: &'static str,
+    mime: Arc<str>,
     /// The fields every answer about this file carries: `ETag`, `Last-Modified`,
     /// `Accept-Ranges`, `Cache-Control`, `Content-Encoding`, `Vary`; formatted once.
     meta: Headers,
@@ -250,7 +320,7 @@ impl Cached {
         len: u64,
         mtime: SystemTime,
         id: (u64, u64),
-        mime: &'static str,
+        mime: Arc<str>,
         encoding: Option<&str>,
         cache_control: Option<&str>,
         vary: bool,
@@ -277,7 +347,7 @@ impl Cached {
             meta.append("Vary", "Accept-Encoding");
         }
         let mut full = Headers::with_capacity(7, 192);
-        full.append("Content-Type", mime);
+        full.append("Content-Type", &*mime);
         for (n, v) in meta.iter() {
             full.append(n, v);
         }
@@ -307,6 +377,22 @@ impl Cached {
         }
     }
 
+    /// The bytes this entry (with its compressed twins and copies) holds in memory.
+    fn mem_bytes(&self) -> u64 {
+        let own = |c: &Cached| match c.body {
+            Body::Mem(_) => c.len,
+            Body::File(_) => 0,
+        };
+        let twins: u64 = self.twins.iter().flatten().map(|t| own(t)).sum();
+        let packs: u64 = self
+            .packs
+            .iter()
+            .filter_map(|p| p.made.get().cloned().flatten())
+            .map(|c| c.len)
+            .sum();
+        own(self) + twins + packs
+    }
+
     /// Whether `md` still describes the file this entry was read from.
     fn matches(&self, md: &fs::Metadata) -> bool {
         self.len == md.len()
@@ -321,8 +407,8 @@ fn clock_ms() -> u64 {
     u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The pool every [`Files`] does its disk work on.
-fn disk_pool() -> &'static Arc<Pool> {
+/// The pool every [`Files`] does its disk work on (and file bodies are encoded on, ADR-124).
+pub(crate) fn disk_pool() -> &'static Arc<Pool> {
     static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
     POOL.get_or_init(|| {
         let mut cfg = PoolConfig::default();
@@ -350,7 +436,15 @@ impl Files {
         Files {
             inner: Arc::new(Inner {
                 root: root.into(),
-                index: "index.html".into(),
+                index: vec!["index.html".into()],
+                redirect_dirs: false,
+                mime_types: None,
+                default_type: None,
+                sniff: false,
+                errors: None,
+                max_cache_bytes: DEFAULT_MAX_CACHE_BYTES,
+                disk_timeout: None,
+                waiting: Arc::default(),
                 max_cached: 256 << 10,
                 check_interval: Duration::from_secs(5),
                 cache_control: None,
@@ -375,10 +469,95 @@ impl Files {
         Arc::get_mut(&mut self.inner).expect("Files is configured before it serves")
     }
 
-    /// The file served for a directory (default `index.html`).
+    /// The file served for a directory (default `index.html`); see
+    /// [`index_files`](Files::index_files) for several.
     #[must_use]
     pub fn index(mut self, name: &str) -> Files {
-        self.cfg().index = name.to_owned();
+        self.cfg().index = vec![name.to_owned()];
+        self
+    }
+
+    /// The files that stand for a directory, tried in order: the first that is a regular file
+    /// is served (ADR-124). None (`&[]`): a directory has no index file, and is listed (see
+    /// [`list_directories`](Files::list_directories)) or answered `404`. Default
+    /// `["index.html"]`.
+    #[must_use]
+    pub fn index_files(mut self, names: &[&str]) -> Files {
+        self.cfg().index = names.iter().map(|n| (*n).to_owned()).collect();
+        self
+    }
+
+    /// Redirects a directory asked for without its trailing slash (ADR-124): `301` with
+    /// `Location` the request's path with the slash added (the prefix
+    /// [`serve_prefixed`](Files::serve_prefixed) was given included) and its query kept, so
+    /// that the index file's relative links resolve against the directory. Default off: the
+    /// index file is served at either path. Not with [`try_paths`](Files::try_paths), whose
+    /// candidates say whether they name a directory.
+    #[must_use]
+    pub fn redirect_directories(mut self, on: bool) -> Files {
+        self.cfg().redirect_dirs = on;
+        self
+    }
+
+    /// The content types by file extension (ADR-124), in place of [`Files`]' own short table
+    /// (22 extensions): [`MimeTypes::builtin`], [`MimeTypes::system`] (with the system's
+    /// `mime.types`), or a table of the caller's own.
+    #[must_use]
+    pub fn mime_types(mut self, table: Arc<MimeTypes>) -> Files {
+        self.cfg().mime_types = Some(table);
+        self
+    }
+
+    /// The `Content-Type` of a file whose extension gives none, as nginx's `default_type`
+    /// (ADR-124); a compressed twin of such a file gets it too. `None` (the default): the type
+    /// is [sniffed](Files::sniff) when that is on, else `application/octet-stream`.
+    #[must_use]
+    pub fn default_type(mut self, content_type: Option<&str>) -> Files {
+        self.cfg().default_type = content_type.map(Arc::from);
+        self
+    }
+
+    /// Without a [`default_type`](Files::default_type), works out the type of a file whose
+    /// extension gives none from its first 512 bytes ([`sniff`]), as Go's
+    /// `http.DetectContentType` does (ADR-124): read with the file, on the disk pool, and kept
+    /// with its entry. A compressed twin of such a file is `application/octet-stream`. Default
+    /// off: `application/octet-stream`.
+    #[must_use]
+    pub fn sniff(mut self, on: bool) -> Files {
+        self.cfg().sniff = on;
+        self
+    }
+
+    /// The answers `Files` makes itself (ADR-124), by status: `301` (a directory redirected,
+    /// `Location` added to it), `403` (a file that may not be read), `404`, `405` (`Allow`
+    /// added), `500` and `503` (`Retry-After` added). Default: `text/plain` with the reason
+    /// phrase (`Not Found`). It runs on the I/O thread and on the disk pool; it must not block.
+    #[must_use]
+    pub fn error_response(
+        mut self,
+        f: impl Fn(u16) -> Response + Send + Sync + std::panic::RefUnwindSafe + 'static,
+    ) -> Files {
+        self.cfg().errors = Some(Arc::new(f));
+        self
+    }
+
+    /// The most bytes of files kept in memory, compressed twins and copies
+    /// ([`compress`](Files::compress)) included (ADR-124; default 64 MiB). Past it, the
+    /// entries used least recently (CLOCK) are evicted; a file larger than the bound alone is
+    /// read for its request and not kept. 0 keeps nothing in memory.
+    #[must_use]
+    pub fn max_cache_bytes(mut self, n: u64) -> Files {
+        self.cfg().max_cache_bytes = n;
+        self
+    }
+
+    /// How long a request waits on the disk pool (ADR-124): one not answered from it within
+    /// `d`, queued behind others or held by a disk that hangs, is answered `503` with
+    /// `Retry-After: 1`, and the pool's work, when it runs or ends later, answers nothing. The
+    /// answer comes within an eighth of `d` after it. `None` (the default): no limit.
+    #[must_use]
+    pub fn disk_timeout(mut self, d: Option<Duration>) -> Files {
+        self.cfg().disk_timeout = d.filter(|d| !d.is_zero());
         self
     }
 
@@ -542,7 +721,7 @@ impl Files {
     fn relative(decoded: &str) -> Option<PathBuf> {
         let mut rel = PathBuf::new();
         for seg in decoded.split('/').filter(|s| !s.is_empty() && *s != ".") {
-            if seg == ".." || seg.contains(['\\', '\0', ':']) {
+            if seg == ".." || seg.contains(['\\', '\0']) {
                 return None;
             }
             rel.push(seg);
@@ -550,34 +729,42 @@ impl Files {
         Some(rel)
     }
 
+    #[cfg(test)]
     fn mime(path: &Path) -> &'static str {
-        match path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
-            Some("html" | "htm") => "text/html; charset=utf-8",
-            Some("css") => "text/css; charset=utf-8",
-            Some("js" | "mjs") => "text/javascript; charset=utf-8",
-            Some("json") => "application/json",
-            Some("txt") => "text/plain; charset=utf-8",
-            Some("xml") => "application/xml",
-            Some("svg") => "image/svg+xml",
-            Some("png") => "image/png",
-            Some("jpg" | "jpeg") => "image/jpeg",
-            Some("gif") => "image/gif",
-            Some("webp") => "image/webp",
-            Some("ico") => "image/x-icon",
-            Some("woff") => "font/woff",
-            Some("woff2") => "font/woff2",
-            Some("wasm") => "application/wasm",
-            Some("pdf") => "application/pdf",
-            Some("mp4") => "video/mp4",
-            Some("webm") => "video/webm",
-            Some("mp3") => "audio/mpeg",
-            _ => "application/octet-stream",
-        }
+        Files::short_mime(path).unwrap_or("application/octet-stream")
+    }
+
+    /// [`Files`]' own table.
+    fn short_mime(path: &Path) -> Option<&'static str> {
+        Some(
+            match path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("html" | "htm") => "text/html; charset=utf-8",
+                Some("css") => "text/css; charset=utf-8",
+                Some("js" | "mjs") => "text/javascript; charset=utf-8",
+                Some("json") => "application/json",
+                Some("txt") => "text/plain; charset=utf-8",
+                Some("xml") => "application/xml",
+                Some("svg") => "image/svg+xml",
+                Some("png") => "image/png",
+                Some("jpg" | "jpeg") => "image/jpeg",
+                Some("gif") => "image/gif",
+                Some("webp") => "image/webp",
+                Some("ico") => "image/x-icon",
+                Some("woff") => "font/woff",
+                Some("woff2") => "font/woff2",
+                Some("wasm") => "application/wasm",
+                Some("pdf") => "application/pdf",
+                Some("mp4") => "video/mp4",
+                Some("webm") => "video/webm",
+                Some("mp3") => "audio/mpeg",
+                _ => return None,
+            },
+        )
     }
 }
 
@@ -601,18 +788,21 @@ impl Inner {
 
     /// A cached entry still inside its trust window, without touching the disk (a directory
     /// is followed to its index file).
-    fn fresh(&self, path: &Path) -> Option<Arc<Cached>> {
+    /// `dir`: the path was asked for as a directory (with its trailing slash), so a file is not
+    /// served for it; and, with [`Files::redirect_directories`], a directory asked for without
+    /// it goes to the disk pool, which redirects it.
+    fn fresh(&self, path: &Path, dir: bool) -> Option<Arc<Cached>> {
         let index = {
             let g = read_lock(self.shard(path));
             match g.get(path)? {
                 Entry::File(c) => {
-                    return self.is_fresh(&c.checked, &c.watched).then(|| {
+                    return (!dir && self.is_fresh(&c.checked, &c.watched)).then(|| {
                         c.used.store(true, Ordering::Relaxed);
                         c.clone()
                     });
                 }
                 Entry::Dir(d) => {
-                    if !self.is_fresh(&d.checked, &d.watched) {
+                    if !self.is_fresh(&d.checked, &d.watched) || (!dir && self.redirect_dirs) {
                         return None;
                     }
                     d.index.clone()
@@ -632,16 +822,14 @@ impl Inner {
     /// Drops the entry of a path that is gone, freeing its open-file slot.
     fn forget(&self, path: &Path) {
         let mut ring = lock(&self.ring);
-        if let Some(i) = ring.position(path) {
-            ring.slots.swap_remove(i);
-        }
+        ring.remove(path);
         write_lock(self.shard(path)).remove(path);
     }
 
     /// Drops every entry whose path satisfies `pred`.
     fn forget_where(&self, pred: impl Fn(&Path) -> bool) {
         let mut ring = lock(&self.ring);
-        ring.slots.retain(|(p, _)| !pred(p));
+        ring.retain(&pred);
         for s in &self.shards {
             write_lock(s).retain(|p, _| !pred(p));
         }
@@ -650,29 +838,38 @@ impl Inner {
     /// Answers a request from the disk (on the disk pool): `stat`, directory index, (re)loading
     /// the cache entry and its compressed twins. `list_as` is the path a directory without an
     /// index file is listed as, when it may be (see [`Files::list_directories`]).
-    fn serve_disk(
-        self: &Arc<Self>,
-        req: &Request,
-        mut path: PathBuf,
-        list_as: Option<&str>,
-    ) -> Response {
+    fn serve_disk(self: &Arc<Self>, req: &Request, mut path: PathBuf, at: &At) -> Response {
         // Watches go up before the disk is consulted, so a change after it is reported.
         let ticket = self.watch_begin(&path);
-        let Ok(mut md) = fs::metadata(&path) else {
-            self.forget(&path);
-            return Response::text(404, "Not Found");
+        let mut md = match fs::metadata(&path) {
+            Ok(md) => md,
+            Err(e) => {
+                self.forget(&path);
+                return self.error(status_of(&e));
+            }
         };
         let mut dirs_ok = ticket.as_ref().is_some_and(|t| t.dirs);
         if md.is_dir() {
+            if !at.dir && self.redirect_dirs {
+                return self.redirect(req, at);
+            }
             let dir = path.clone();
             dirs_ok = dirs_ok && ticket.as_ref().is_some_and(|t| t.w.ensure_dir(&dir));
-            path.push(&self.index);
-            match fs::metadata(&path) {
-                Ok(m) if m.is_file() => md = m,
-                _ => {
-                    return match list_as {
-                        Some(title) if self.list_max > 0 => list_dir(&dir, title, self.list_max),
-                        _ => Response::text(404, "Not Found"),
+            let found = self.index.iter().find_map(|name| {
+                let p = dir.join(name);
+                fs::metadata(&p)
+                    .ok()
+                    .filter(fs::Metadata::is_file)
+                    .map(|m| (p, m))
+            });
+            match found {
+                Some((p, m)) => (path, md) = (p, m),
+                None => {
+                    return match &at.title {
+                        Some(title) if self.list_max > 0 => {
+                            list_dir(&dir, title, self.list_max, |s| self.error(s))
+                        }
+                        _ => self.error(404),
                     };
                 }
             }
@@ -685,14 +882,62 @@ impl Inner {
             if let Some(t) = &ticket {
                 t.finish(&entry.watched, dirs_ok);
             }
+        } else if at.dir || !md.is_file() {
+            // A file asked for as a directory, or a device, a pipe or a socket: never opened.
+            return self.error(404);
         }
         let track = ticket.as_ref().filter(|_| dirs_ok);
-        let Some(c) = self.load_tracked(&path, &md, track) else {
-            return Response::text(404, "Not Found");
+        let c = match self.load_tracked(&path, &md, track) {
+            Ok(c) => c,
+            Err(status) => return self.error(status),
         };
         let served = self.variant(req, &c);
         self.build(req, served, true)
-            .unwrap_or_else(|| Response::text(500, "Internal Server Error"))
+            .unwrap_or_else(|| self.error(500))
+    }
+
+    /// The `301` to the directory `at` names, with its slash (see
+    /// [`Files::redirect_directories`]).
+    fn redirect(&self, req: &Request, at: &At) -> Response {
+        let mut target = String::with_capacity(at.location.len() + 2);
+        target.push_str(&at.location);
+        target.push('/');
+        if let Some(q) = req.query() {
+            target.push('?');
+            target.push_str(q);
+        }
+        if target.starts_with("//") {
+            // A path that would read as a host.
+            target = format!("/{}", target.trim_start_matches('/'));
+        }
+        let mut r = self.error(301);
+        r.headers.set("Location", &target);
+        r
+    }
+
+    /// [`Files::error_response`]'s answer for `status`, or the reason phrase.
+    fn error(&self, status: u16) -> Response {
+        let mut r = match &self.errors {
+            Some(f) => f(status),
+            None => Response::text(
+                status,
+                match status {
+                    301 => "Moved Permanently",
+                    403 => "Forbidden",
+                    404 => "Not Found",
+                    405 => "Method Not Allowed",
+                    503 => "Service Unavailable",
+                    _ => "Internal Server Error",
+                },
+            ),
+        };
+        r.status = status;
+        match status {
+            405 => r.headers.set("Allow", "GET, HEAD"),
+            503 => r.headers.set("Retry-After", "1"),
+            _ => {}
+        }
+        r
     }
 
     /// What [`Files::try_paths`]' candidates resolved `asked` to lately, when that file's entry
@@ -707,7 +952,7 @@ impl Inner {
             }
             t.file.clone()
         };
-        self.fresh(&file)
+        self.fresh(&file, false)
     }
 
     /// Answers a request with [`Files::try_paths`]' candidates, from the disk (on the disk
@@ -731,26 +976,32 @@ impl Inner {
                 if !dir {
                     continue;
                 }
-                let index = full.join(&self.index);
-                match fs::metadata(&index) {
-                    Ok(m) if m.is_file() => (index, m),
-                    _ if self.list_max > 0 => {
+                let found = self.index.iter().find_map(|name| {
+                    let p = full.join(name);
+                    fs::metadata(&p)
+                        .ok()
+                        .filter(fs::Metadata::is_file)
+                        .map(|m| (p, m))
+                });
+                match found {
+                    Some(f) => f,
+                    None if self.list_max > 0 => {
                         // The listing's links are relative to the candidate, cleaned.
                         let mut title = String::from("/");
                         for seg in &rel {
                             title.push_str(&seg.to_string_lossy());
                             title.push('/');
                         }
-                        return list_dir(&full, &title, self.list_max);
+                        return list_dir(&full, &title, self.list_max, |s| self.error(s));
                     }
-                    _ => continue,
+                    None => continue,
                 }
             } else if dir || !md.is_file() {
                 continue;
             } else {
                 (full, md)
             };
-            let Some(c) = self.load_tracked(&file, &md, None) else {
+            let Ok(c) = self.load_tracked(&file, &md, None) else {
                 continue;
             };
             {
@@ -769,9 +1020,9 @@ impl Inner {
             let served = self.variant(req, &c);
             return self
                 .build(req, served, true)
-                .unwrap_or_else(|| Response::text(500, "Internal Server Error"));
+                .unwrap_or_else(|| self.error(500));
         }
-        Response::text(404, "Not Found")
+        self.error(404)
     }
 
     /// Whether answers about a file say `Vary: Accept-Encoding`: when twins or copies may
@@ -788,6 +1039,28 @@ impl Inner {
             && matches!(body, Body::Mem(_))
             && len >= PACK_MIN_BYTES
             && crate::middleware::compressible(mime)
+    }
+
+    /// The type of a file by its extension: from [`Files::mime_types`]'s table, or [`Files`]'
+    /// own.
+    fn ext_type(&self, path: &Path) -> Option<Arc<str>> {
+        match &self.mime_types {
+            Some(t) => t.for_path(path),
+            None => Files::short_mime(path).map(Arc::from),
+        }
+    }
+
+    /// The type of the file at `path` when its extension gives none: the
+    /// [`default_type`](Files::default_type), else what [`sniff`] makes of `head` (its first
+    /// bytes, when sniffing is on and they are at hand), else `application/octet-stream`.
+    fn fallback_type(&self, head: Option<&[u8]>) -> Arc<str> {
+        if let Some(t) = &self.default_type {
+            return t.clone();
+        }
+        match head.filter(|_| self.sniff) {
+            Some(h) => Arc::from(sniff(h)),
+            None => Arc::from("application/octet-stream"),
+        }
     }
 
     /// The variant of `c` to send `req`: a compressed twin on disk ([`pick`]), else the
@@ -833,8 +1106,11 @@ impl Inner {
         let (inner, file) = (self.clone(), c.clone());
         let job = Box::new(move || {
             let copy = inner.pack(&file, i);
+            let bytes = copy.as_ref().map_or(0, |c| c.len);
             if let Some(p) = file.packs.get(i) {
-                let _ = p.made.set(copy);
+                if p.made.set(copy).is_ok() && bytes > 0 {
+                    inner.charge(&file, bytes);
+                }
             }
         });
         if disk_pool().try_execute(job).is_err() {
@@ -875,7 +1151,7 @@ impl Inner {
             len,
             c.mtime,
             c.id,
-            c.mime,
+            c.mime.clone(),
             Some(enc),
             self.cache_control.as_deref(),
             true,
@@ -894,10 +1170,39 @@ impl Inner {
         Some(Arc::new(copy))
     }
 
+    /// A copy of `c`'s (made after `c` was cached) adds `bytes` to what `c` is charged, and
+    /// evicts entries used least recently while the cache holds more than its bound.
+    fn charge(&self, c: &Arc<Cached>, bytes: u64) {
+        let mut ring = lock(&self.ring);
+        let Some(i) = ring
+            .mem
+            .slots
+            .iter()
+            .position(|(_, e, _)| Arc::ptr_eq(e, c))
+        else {
+            return; // not cached (any more): the copy goes with the entry
+        };
+        ring.mem.slots[i].2 += bytes;
+        ring.bytes += bytes;
+        self.evict_mem(&mut ring, 0);
+    }
+
+    /// Evicts the in-memory entries used least recently until the cache holds no more than its
+    /// bound with `room` bytes more.
+    fn evict_mem(&self, ring: &mut Rings, room: u64) {
+        while ring.bytes.saturating_add(room) > self.max_cache_bytes && !ring.mem.slots.is_empty() {
+            let v = ring.mem.victim();
+            let gone = ring.mem.slots[v].0.clone();
+            ring.mem.hand = v + 1;
+            ring.remove(&gone);
+            write_lock(self.shard(&gone)).remove(&gone);
+        }
+    }
+
     /// [`load_tracked`](Inner::load_tracked) without change notifications.
     #[cfg(test)]
     fn load(&self, path: &Path, md: &fs::Metadata) -> Option<Arc<Cached>> {
-        self.load_tracked(path, md, None)
+        self.load_tracked(path, md, None).ok()
     }
 
     /// The entry of `path` (whose metadata is `md`), reusing what is cached when the file did
@@ -909,13 +1214,18 @@ impl Inner {
         path: &Path,
         md: &fs::Metadata,
         track: Option<&Ticket>,
-    ) -> Option<Arc<Cached>> {
+    ) -> Result<Arc<Cached>, u16> {
         let old = match read_lock(self.shard(path)).get(path) {
             Some(Entry::File(c)) => Some(c.clone()),
             _ => None,
         };
         let watch = track.map(|t| &t.w);
-        let mime = Files::mime(path);
+        let ext_type = self.ext_type(path);
+        // A twin has its original's type, by name; without one, the default or none sniffed.
+        let twin_type = ext_type
+            .clone()
+            .or_else(|| self.default_type.clone())
+            .unwrap_or_else(|| Arc::from("application/octet-stream"));
         let twins: [Option<Arc<Cached>>; 3] = std::array::from_fn(|i| {
             if !self.twins.contains(&i) {
                 return None;
@@ -928,7 +1238,16 @@ impl Inner {
             let m = fs::metadata(&p).ok().filter(fs::Metadata::is_file)?;
             match old.as_ref().and_then(|o| o.twins[i].clone()) {
                 Some(t) if t.matches(&m) => Some(t),
-                _ => self.read(&p, &m, mime, Some(enc), [None, None, None], watch),
+                _ => self
+                    .read(
+                        &p,
+                        &m,
+                        Some(twin_type.clone()),
+                        Some(enc),
+                        [None, None, None],
+                        watch,
+                    )
+                    .ok(),
             }
         });
         let c = match old {
@@ -946,86 +1265,108 @@ impl Inner {
                     if let Some(t) = track {
                         t.finish(&o.watched, o.vouched());
                     }
-                    return Some(o);
+                    return Ok(o);
                 }
                 // Same file, other twins: keep its content.
+                let packs = self.packable(&o.body, o.len, &o.mime, None);
                 Arc::new(Cached::new(
                     o.body.clone(),
                     o.len,
                     o.mtime,
                     o.id,
-                    mime,
+                    o.mime.clone(),
                     None,
                     self.cache_control.as_deref(),
                     self.vary(),
                     twins,
                     (o.trackable, o.guard.clone()),
-                    self.packable(&o.body, o.len, mime, None),
+                    packs,
                 ))
             }
-            _ => self.read(path, md, mime, None, twins, watch)?,
+            _ => self.read(path, md, ext_type, None, twins, watch)?,
         };
-        let big = c.len > self.max_cached;
-        if big && self.max_open == 0 {
-            return Some(c); // not cached: opened for this request only
+        let open = matches!(c.body, Body::File(_));
+        let bytes = c.mem_bytes();
+        if (open && self.max_open == 0) || bytes > self.max_cache_bytes {
+            // Not cached: opened, or read, for this request only.
+            self.forget(path);
+            return Ok(c);
         }
         let mut ring = lock(&self.ring);
-        match (big, ring.position(path)) {
-            (true, Some(i)) => ring.slots[i].1 = c.clone(),
-            (true, None) if ring.slots.len() >= self.max_open => {
+        ring.remove(path);
+        if open {
+            if ring.open.slots.len() >= self.max_open {
                 // Every slot is taken: the new file replaces the CLOCK victim.
-                let v = ring.victim();
-                let (gone, _) = std::mem::replace(&mut ring.slots[v], (path.to_owned(), c.clone()));
+                let v = ring.open.victim();
+                let gone = ring.open.slots[v].0.clone();
+                ring.open.hand = v + 1;
+                ring.remove(&gone);
                 write_lock(self.shard(&gone)).remove(&gone);
-                ring.hand = v + 1;
             }
-            (true, None) => ring.slots.push((path.to_owned(), c.clone())),
-            (false, Some(i)) => {
-                ring.slots.swap_remove(i);
-            }
-            (false, None) => {}
+            ring.open.slots.push((path.to_owned(), c.clone(), 0));
+        }
+        if bytes > 0 {
+            self.evict_mem(&mut ring, bytes);
+            ring.bytes += bytes;
+            ring.mem.slots.push((path.to_owned(), c.clone(), bytes));
         }
         write_lock(self.shard(path)).insert(path.to_owned(), Entry::File(c.clone()));
         drop(ring);
         if let Some(t) = track {
             t.finish(&c.watched, c.vouched());
         }
-        Some(c)
+        Ok(c)
     }
 
     /// Reads (small) or opens (large) the file at `path`, described by `md`. With `watch`,
     /// works out whether notifications can follow the file (taking its own watch first, on
     /// macOS).
+    /// `mime` is the type the file's name gives (its original's, for a twin); without one the
+    /// type is worked out here ([`fallback_type`](Inner::fallback_type)). Errors are the status
+    /// to answer: 403 for a file that may not be read, else 404.
     fn read(
         &self,
         path: &Path,
         md: &fs::Metadata,
-        mime: &'static str,
+        mime: Option<Arc<str>>,
         encoding: Option<&str>,
         twins: [Option<Arc<Cached>>; 3],
         watch: Option<&Arc<Watch>>,
-    ) -> Option<Arc<Cached>> {
+    ) -> Result<Arc<Cached>, u16> {
         let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let id = (md.dev(), md.ino());
         let track = watch.map_or((false, None), |w| Watch::track(w, path, md));
         let (body, len) = if md.len() > self.max_cached {
-            let f = fs::File::open(path).ok()?;
+            let f = fs::File::open(path).map_err(|e| status_of(&e))?;
             // The metadata of the handle itself: the path may have been replaced since `md`.
-            let fmd = f.metadata().ok()?;
+            let fmd = f.metadata().map_err(|e| status_of(&e))?;
             if fmd.len() != md.len()
                 || fmd.modified().ok() != Some(mtime)
                 || (fmd.dev(), fmd.ino()) != id
+                || !fmd.is_file()
             {
-                return None;
+                return Err(404);
             }
             (Body::File(Arc::new(f)), md.len())
         } else {
-            let data = fs::read(path).ok()?;
+            let data = fs::read(path).map_err(|e| status_of(&e))?;
             let n = data.len() as u64;
             (Body::Mem(data.into()), n)
         };
-        let packs = self.packable(&body, len, mime, encoding);
-        Some(Arc::new(Cached::new(
+        let mime = match mime {
+            Some(m) => m,
+            None if self.default_type.is_none() && self.sniff => match &body {
+                Body::Mem(b) => self.fallback_type(Some(b)),
+                Body::File(f) => {
+                    let mut head = [0u8; SNIFF_LEN];
+                    let n = read_head(f, &mut head);
+                    self.fallback_type(head.get(..n))
+                }
+            },
+            None => self.fallback_type(None),
+        };
+        let packs = self.packable(&body, len, &mime, encoding);
+        Ok(Arc::new(Cached::new(
             body,
             len,
             mtime,
@@ -1397,9 +1738,10 @@ fn accept_q(headers: &Headers, coding: &str) -> f64 {
 /// A listing of the directory `dir`, asked for as `title` (a decoded request path ending in
 /// `/`): at most `max` entries read, names starting with a dot left out, directories first,
 /// each group by name. Runs on the disk pool.
-fn list_dir(dir: &Path, title: &str, max: usize) -> Response {
-    let Ok(rd) = fs::read_dir(dir) else {
-        return Response::text(404, "Not Found");
+fn list_dir(dir: &Path, title: &str, max: usize, error: impl Fn(u16) -> Response) -> Response {
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => return error(status_of(&e)),
     };
     // One more than shown tells whether there are more; a huge directory costs no more.
     let mut entries: Vec<(String, bool, Option<fs::Metadata>)> = Vec::new();
@@ -1461,6 +1803,41 @@ fn list_dir(dir: &Path, title: &str, max: usize) -> Response {
     let mut r = Response::with_body(200, "text/html; charset=utf-8", b.into_bytes());
     r.headers.append("Cache-Control", "no-cache");
     r
+}
+
+/// The status a failed look at a file answers: 403 for one that may not be read, else 404.
+fn status_of(e: &std::io::Error) -> u16 {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        403
+    } else {
+        404
+    }
+}
+
+/// Reads up to `buf.len()` bytes from the start of `f`; how many it read.
+fn read_head(f: &fs::File, buf: &mut [u8]) -> usize {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read_at(&mut buf[n..], n as u64) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    n
+}
+
+/// Where a request is in the tree, for the answers that name it.
+struct At {
+    /// Asked for as a directory: with its trailing slash, or the root.
+    dir: bool,
+    /// What a listing is titled (the decoded path, prefix included, ending in `/`), when the
+    /// directory may be listed: asked for with its slash.
+    title: Option<String>,
+    /// The request's path as sent (prefix included), without a trailing slash: where
+    /// [`Files::redirect_directories`] sends the client, with the slash.
+    location: String,
 }
 
 /// `&`, `<`, `>`, `"` and `'` as HTML character references.
@@ -1700,10 +2077,28 @@ fn multipart(
 
 impl Service for Files {
     fn call(&self, ctx: &mut Context) {
-        let raw = ctx
-            .param_raw("path")
-            .map_or_else(|| ctx.path().to_owned(), str::to_owned);
-        self.serve(ctx, &raw);
+        // Mounted under a route, the path below it: redirects and listings name the request's
+        // whole path.
+        match ctx.param_raw("path") {
+            Some(rel) => {
+                let mut rel = rel.to_owned();
+                let full = ctx.path();
+                // The route's wildcard leaves out a trailing slash, which says "a directory".
+                if full.ends_with('/') && !rel.ends_with('/') {
+                    rel.push('/');
+                }
+                let prefix = full
+                    .strip_suffix(rel.as_str())
+                    .unwrap_or("")
+                    .trim_end_matches('/')
+                    .to_owned();
+                self.serve_prefixed(ctx, &prefix, &rel);
+            }
+            None => {
+                let raw = ctx.path().to_owned();
+                self.serve(ctx, &raw);
+            }
+        }
     }
 
     fn streams_bodies(&self) -> bool {
@@ -1717,18 +2112,26 @@ impl Files {
     /// that routes by a path of its own (a prefix stripped, dot segments removed). It is
     /// percent-decoded and checked as theirs are.
     pub fn serve(&self, ctx: &mut Context, path: &str) {
+        self.serve_prefixed(ctx, "", path);
+    }
+
+    /// [`serve`](Files::serve) for a caller that took `prefix` off the request's path, and
+    /// serves `path`, what is left (ADR-124): the root stands for `prefix`, so a directory's
+    /// listing is titled by the whole path (`Index of /assets/sub/`, with a `../` link) and
+    /// [`redirect_directories`](Files::redirect_directories) sends the client to the whole
+    /// path with its slash. Both are as sent (percent-encoded); only `path` is looked up.
+    pub fn serve_prefixed(&self, ctx: &mut Context, prefix: &str, path: &str) {
+        let inner = &self.inner;
         let head = *ctx.method() == Method::Head;
         if *ctx.method() != Method::Get && !head {
-            return ctx
-                .respond(Response::text(405, "Method Not Allowed").header("Allow", "GET, HEAD"));
+            return ctx.respond(inner.error(405));
         }
         let Some(decoded) = percent_decode(path) else {
-            return ctx.text(404, "Not Found");
+            return ctx.respond(inner.error(404));
         };
         let Some(rel) = Files::relative(&decoded) else {
-            return ctx.text(404, "Not Found");
+            return ctx.respond(inner.error(404));
         };
-        let inner = &self.inner;
         // The path asked for, with a leading slash: what `hide` and `{path}` see.
         let asked = if decoded.starts_with('/') {
             decoded
@@ -1736,11 +2139,14 @@ impl Files {
             format!("/{decoded}")
         };
         if inner.hide.as_ref().is_some_and(|h| h(&asked)) {
-            return ctx.text(404, "Not Found");
+            return ctx.respond(inner.error(404));
         }
+        // A directory is listed only when asked for with its slash, so that its relative links
+        // resolve; a file asked for with one is not there.
+        let dir = asked.ends_with('/') || rel.as_os_str().is_empty();
         // Fast path: an entry still inside its trust window needs no syscall at all.
         let known = if inner.tries.is_empty() {
-            inner.fresh(&inner.root.join(&rel))
+            inner.fresh(&inner.root.join(&rel), dir)
         } else {
             inner.tried_fresh(&asked)
         };
@@ -1751,31 +2157,122 @@ impl Files {
             }
         }
         // Anything else touches the disk: on the disk pool, never on the I/O thread.
+        let at = At {
+            dir,
+            title: (dir && inner.list_max > 0).then(|| {
+                let p = percent_decode(prefix).unwrap_or_default();
+                format!("{}{asked}", p.trim_end_matches('/'))
+            }),
+            location: if !dir && inner.redirect_dirs {
+                let p = prefix.trim_end_matches('/');
+                if path.starts_with('/') {
+                    format!("{p}{path}")
+                } else {
+                    format!("{p}/{path}")
+                }
+            } else {
+                String::new()
+            },
+        };
         let Some(d) = ctx.detach() else { return };
-        let inner = inner.clone();
-        let cell = Arc::new(Mutex::new(Some(d)));
+        let job_inner = inner.clone();
+        let cell: Cell = Arc::new(Mutex::new(Some(d)));
         let job_cell = cell.clone();
         let job = Box::new(move || {
-            let d = lock(&job_cell).take();
-            let Some(d) = d else { return };
-            let r = if inner.tries.is_empty() {
-                // A directory is listed only when asked for with its slash, so that its
-                // relative links resolve.
-                let dir = asked.ends_with('/') || rel.as_os_str().is_empty();
-                inner.serve_disk(
-                    d.req(),
-                    inner.root.join(&rel),
-                    dir.then_some(asked.as_str()),
-                )
-            } else {
-                inner.serve_tries(d.req(), &asked)
+            // The request's work, unless the timeout answered it while it waited.
+            let Some(req) = lock(&job_cell).as_ref().map(|d| d.req_arc()) else {
+                return;
             };
-            d.respond(r);
+            let inner = job_inner;
+            let r = if inner.tries.is_empty() {
+                inner.serve_disk(&req, inner.root.join(&rel), &at)
+            } else {
+                inner.serve_tries(&req, &asked)
+            };
+            let d = lock(&job_cell).take();
+            if let Some(d) = d {
+                d.respond(r);
+            }
         });
         if disk_pool().try_execute(job).is_err() {
             let d = lock(&cell).take();
             if let Some(d) = d {
-                d.respond(Response::text(503, "Service Unavailable").header("Retry-After", "1"));
+                d.respond(inner.error(503));
+            }
+        } else if let Some(t) = inner.disk_timeout {
+            Waiting::join(&inner.waiting, cell, t, inner.clone());
+        }
+    }
+}
+
+/// A request on its way through the disk pool: its pool work and [`Files::disk_timeout`] each
+/// take it to answer, whichever comes first.
+type Cell = Arc<Mutex<Option<Detached>>>;
+
+/// The requests [`Files::disk_timeout`] bounds, in the order they were queued (their deadlines'
+/// order too: the timeout is the same for all). A sweep every eighth of the timeout, scheduled
+/// only while requests wait, answers those past it 503 and drops those answered.
+#[derive(Default)]
+struct Waiting {
+    state: Mutex<WaitState>,
+}
+
+#[derive(Default)]
+struct WaitState {
+    queue: std::collections::VecDeque<(Instant, Cell)>,
+    /// A sweep is scheduled.
+    sweeping: bool,
+}
+
+/// When the waiting list holds this many, it drops the requests already answered: those still
+/// waiting are at most the pool's queue and threads, fewer than this.
+const MAX_WAITING: usize = 8192;
+
+impl Waiting {
+    fn join(w: &Arc<Waiting>, cell: Cell, timeout: Duration, inner: Arc<Inner>) {
+        let mut st = lock(&w.state);
+        if st.queue.len() >= MAX_WAITING {
+            st.queue.retain(|(_, c)| lock(c).is_some());
+        }
+        st.queue.push_back((Instant::now() + timeout, cell));
+        if !st.sweeping {
+            st.sweeping = true;
+            Waiting::schedule(w.clone(), timeout, inner);
+        }
+    }
+
+    fn schedule(w: Arc<Waiting>, timeout: Duration, inner: Arc<Inner>) {
+        let every = (timeout / 8).max(Duration::from_millis(1));
+        crate::timer::after(every, move || w.sweep(timeout, inner));
+    }
+
+    /// Answers the requests past their deadline 503, drops the answered ones at the front, and
+    /// schedules the next sweep while any wait. Runs on the timer thread: quick.
+    fn sweep(self: Arc<Self>, timeout: Duration, inner: Arc<Inner>) {
+        let now = Instant::now();
+        let mut late = Vec::new();
+        {
+            let mut st = lock(&self.state);
+            while let Some((deadline, cell)) = st.queue.front() {
+                let answered = lock(cell).is_none();
+                if !answered && *deadline > now {
+                    break;
+                }
+                if !answered {
+                    late.push(cell.clone());
+                }
+                st.queue.pop_front();
+            }
+            if st.queue.is_empty() {
+                st.sweeping = false;
+            } else {
+                Waiting::schedule(self.clone(), timeout, inner.clone());
+            }
+        }
+        for cell in late {
+            let d = lock(&cell).take();
+            if let Some(d) = d {
+                d.respond(inner.error(503));
             }
         }
     }
@@ -1863,7 +2360,7 @@ impl Inner {
                     Body::File(f) => f.read_exact_at(buf, off),
                 }
             };
-            let Ok((bnd, body)) = multipart(&ranges, len, c.mime, read) else {
+            let Ok((bnd, body)) = multipart(&ranges, len, &c.mime, read) else {
                 // The file shrank under us: the client retries.
                 return Some(Response::text(500, "Internal Server Error"));
             };
@@ -2117,31 +2614,48 @@ mod tests {
         d
     }
 
-    /// The cache invariants: the ring lists exactly the open-file entries, at most `max`.
+    /// The cache invariants: the open ring lists exactly the open-file entries, at most `max`;
+    /// the memory ring lists exactly the entries holding bytes, charged what they hold, within
+    /// the bound.
     fn check_ring(f: &Files, max: usize) {
         let ring = lock(&f.inner.ring);
         assert!(
-            ring.slots.len() <= max,
+            ring.open.slots.len() <= max,
             "{} open files > {max}",
-            ring.slots.len()
+            ring.open.slots.len()
         );
-        let mut files = 0;
+        let (mut files, mut mems, mut bytes) = (0, 0, 0);
         for s in &f.inner.shards {
             for (p, e) in read_lock(s).iter() {
                 if let Entry::File(c) = e {
                     if matches!(c.body, Body::File(_)) {
                         files += 1;
-                        let i = ring.position(p).expect("an open file outside the ring");
-                        assert!(Arc::ptr_eq(&ring.slots[i].1, c), "a stale ring entry");
+                        let i = ring
+                            .open
+                            .position(p)
+                            .expect("an open file outside the ring");
+                        assert!(Arc::ptr_eq(&ring.open.slots[i].1, c), "a stale ring entry");
+                    }
+                    if c.mem_bytes() > 0 {
+                        mems += 1;
+                        let i = ring.mem.position(p).expect("bytes outside the ring");
+                        assert!(Arc::ptr_eq(&ring.mem.slots[i].1, c), "a stale ring entry");
+                        assert_eq!(ring.mem.slots[i].2, c.mem_bytes(), "charged otherwise");
+                        bytes += c.mem_bytes();
                     }
                 }
             }
         }
-        assert_eq!(files, ring.slots.len());
-        let mut sorted: Vec<&PathBuf> = ring.slots.iter().map(|(p, _)| p).collect();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), ring.slots.len(), "a path twice in the ring");
+        assert_eq!(files, ring.open.slots.len());
+        assert_eq!(mems, ring.mem.slots.len());
+        assert_eq!(bytes, ring.bytes);
+        assert!(ring.bytes <= f.inner.max_cache_bytes);
+        for r in [&ring.open, &ring.mem] {
+            let mut sorted: Vec<&PathBuf> = r.slots.iter().map(|(p, ..)| p).collect();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), r.slots.len(), "a path twice in the ring");
+        }
     }
 
     fn open_cached(f: &Files, p: &Path) -> Arc<Cached> {
@@ -2176,7 +2690,10 @@ mod tests {
             let c = open_cached(&f, p);
             assert_eq!(c.len, fs::metadata(p).unwrap().len());
             check_ring(&f, 4);
-            let c = f.inner.fresh(hot).unwrap_or_else(|| open_cached(&f, hot));
+            let c = f
+                .inner
+                .fresh(hot, false)
+                .unwrap_or_else(|| open_cached(&f, hot));
             assert_eq!(c.len, 100);
         }
         assert!(cached_entry(&f, hot).is_some(), "the hot file was evicted");
@@ -2185,12 +2702,90 @@ mod tests {
         open_cached(&f, hot);
         check_ring(&f, 4);
         assert!(matches!(cached_entry(&f, hot).unwrap().body, Body::Mem(_)));
-        assert_eq!(lock(&f.inner.ring).slots.len(), 3);
-        let victim = lock(&f.inner.ring).slots[0].0.clone();
+        assert_eq!(lock(&f.inner.ring).open.slots.len(), 3);
+        let victim = lock(&f.inner.ring).open.slots[0].0.clone();
         f.inner.forget(&victim);
         check_ring(&f, 4);
-        assert_eq!(lock(&f.inner.ring).slots.len(), 2);
+        assert_eq!(lock(&f.inner.ring).open.slots.len(), 2);
         assert!(cached_entry(&f, &victim).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memory_cache_is_bounded_and_keeps_hot_files() {
+        let dir = scratch("membound");
+        let paths: Vec<PathBuf> = (0..40)
+            .map(|i| {
+                let p = dir.join(format!("f{i}.txt"));
+                fs::write(&p, vec![b'a' + (i % 26) as u8; 1000 + i]).unwrap();
+                p
+            })
+            .collect();
+        // Room for about five files.
+        let f = Files::new(&dir).max_cache_bytes(5_200);
+        let hot = &paths[0];
+        open_cached(&f, hot);
+        let mut x = 11u64;
+        for _ in 0..500 {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let p = &paths[1 + (x >> 33) as usize % (paths.len() - 1)];
+            let c = open_cached(&f, p);
+            assert_eq!(c.len, fs::metadata(p).unwrap().len());
+            check_ring(&f, 64);
+            let c = f
+                .inner
+                .fresh(hot, false)
+                .unwrap_or_else(|| open_cached(&f, hot));
+            assert_eq!(c.len, 1000);
+        }
+        assert!(cached_entry(&f, hot).is_some(), "the hot file was evicted");
+        let ring = lock(&f.inner.ring);
+        assert!(ring.mem.slots.len() >= 4, "{}", ring.mem.slots.len());
+        drop(ring);
+        // A file larger than the bound alone is served, never kept.
+        let huge = dir.join("huge.txt");
+        fs::write(&huge, vec![b'x'; 6_000]).unwrap();
+        assert_eq!(open_cached(&f, &huge).len, 6_000);
+        assert!(cached_entry(&f, &huge).is_none());
+        check_ring(&f, 64);
+        // 0 keeps nothing.
+        let none = Files::new(&dir).max_cache_bytes(0);
+        open_cached(&none, hot);
+        assert!(cached_entry(&none, hot).is_none());
+        check_ring(&none, 64);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compressed_copies_count_in_the_memory_bound() {
+        let dir = scratch("packbound");
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, "hello compressible world ".repeat(400)).unwrap();
+        fs::write(&b, "another compressible text ".repeat(400)).unwrap();
+        // How large a's copy is.
+        let probe = Files::new(&dir).compress(&["gzip"]);
+        let pa = open_cached(&probe, &a);
+        probe.inner.make_pack(&pa, 2);
+        wait_until("the probe's copy", || pa.packs[2].made.get().is_some());
+        let copy = pa.mem_bytes() - pa.len;
+        assert!(copy > 0);
+        // Room for a and b, not for a's copy too.
+        let bound = 10_000 + 10_400 + copy - 1;
+        let f = Files::new(&dir).compress(&["gzip"]).max_cache_bytes(bound);
+        let ca = open_cached(&f, &a);
+        let cb = open_cached(&f, &b);
+        check_ring(&f, 64);
+        assert!(cached_entry(&f, &a).is_some() && cached_entry(&f, &b).is_some());
+        f.inner.make_pack(&ca, 2);
+        wait_until("a's copy", || ca.packs[2].made.get().is_some());
+        // Charged once the copy is made: something goes.
+        wait_until("an eviction", || {
+            cached_entry(&f, &a).is_none() || cached_entry(&f, &b).is_none()
+        });
+        check_ring(&f, 64);
+        assert!(lock(&f.inner.ring).bytes <= bound);
+        drop((ca, cb));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2221,7 +2816,7 @@ mod tests {
         h.read_exact_at(&mut b, 0).unwrap();
         assert_eq!(b[0], 2, "served from the old inode");
         check_ring(&f, 64);
-        assert_eq!(lock(&f.inner.ring).slots.len(), 1, "replaced in place");
+        assert_eq!(lock(&f.inner.ring).open.slots.len(), 1, "replaced in place");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2236,7 +2831,7 @@ mod tests {
         assert!(c.twins[0].is_none(), "no .br");
         assert!(c.twins[1].is_none(), "no .zst");
         let gz = c.twins[2].as_ref().expect("the .gz twin");
-        assert_eq!(gz.mime, "text/javascript; charset=utf-8");
+        assert_eq!(&*gz.mime, "text/javascript; charset=utf-8");
         assert_eq!(gz.meta.get("content-encoding"), Some("gzip"));
         assert!(gz.etag.ends_with("-gzip\""));
         let enc = |c: &Arc<Cached>, accept: &str| {
@@ -2266,8 +2861,15 @@ mod tests {
     }
 
     fn get(f: &Files, p: &Path) -> Response {
-        f.inner
-            .serve_disk(&Request::new(Method::Get, "/"), p.to_owned(), None)
+        f.inner.serve_disk(
+            &Request::new(Method::Get, "/"),
+            p.to_owned(),
+            &At {
+                dir: false,
+                title: None,
+                location: String::new(),
+            },
+        )
     }
 
     /// Waits up to 5 s for `cond`.
@@ -2285,7 +2887,7 @@ mod tests {
         let end = Instant::now() + Duration::from_secs(5);
         loop {
             get(f, p);
-            if let Some(c) = f.inner.fresh(p) {
+            if let Some(c) = f.inner.fresh(p, false) {
                 return c;
             }
             assert!(Instant::now() < end, "{} never became watched", p.display());
@@ -2301,7 +2903,7 @@ mod tests {
         fs::write(&p, "one").unwrap();
         let f = Files::new(&dir).check_interval(Duration::ZERO);
         assert_eq!(get(&f, &p).body, b"one");
-        assert!(f.inner.fresh(&p).is_none());
+        assert!(f.inner.fresh(&p, false).is_none());
         assert!(
             f.inner.watch.get().is_none(),
             "no watcher without watch(true)"
@@ -2319,20 +2921,22 @@ mod tests {
         // A zero interval: only a watched entry is ever fresh.
         let f = Files::new(&dir).watch(true).check_interval(Duration::ZERO);
         assert_eq!(get(&f, &p).body, b"one");
-        let c = f.inner.fresh(&p).expect("a watched entry is fresh");
+        let c = f.inner.fresh(&p, false).expect("a watched entry is fresh");
         assert!(c.watched.load(Ordering::Relaxed));
         drop(c);
 
         // A write drops it; the next request reads the new content and watches again.
         fs::write(&p, "two").unwrap();
-        wait_until("a write to drop the entry", || f.inner.fresh(&p).is_none());
+        wait_until("a write to drop the entry", || {
+            f.inner.fresh(&p, false).is_none()
+        });
         assert_eq!(get(&f, &p).body, b"two");
         watched_soon(&f, &p);
 
         // A new compressed twin drops the original.
         fs::write(sub.join("x.txt.gz"), b"\x1f\x8b").unwrap();
         wait_until("a new twin to drop the entry", || {
-            f.inner.fresh(&p).is_none()
+            f.inner.fresh(&p, false).is_none()
         });
         let c = watched_soon(&f, &p);
         assert!(c.twins[2].is_some());
@@ -2340,14 +2944,14 @@ mod tests {
         // A change to the twin drops the original too.
         fs::write(sub.join("x.txt.gz"), b"\x1f\x8b\x08").unwrap();
         wait_until("a twin write to drop the entry", || {
-            f.inner.fresh(&p).is_none()
+            f.inner.fresh(&p, false).is_none()
         });
         watched_soon(&f, &p);
 
         // Renaming a directory on the path drops everything below it and its watches.
         fs::rename(dir.join("a"), dir.join("a2")).unwrap();
         wait_until("a renamed directory to drop the entry", || {
-            f.inner.fresh(&p).is_none()
+            f.inner.fresh(&p, false).is_none()
         });
         assert_eq!(get(&f, &p).status, 404);
         fs::create_dir_all(&sub).unwrap();
@@ -2357,7 +2961,7 @@ mod tests {
         watched_soon(&f, &p);
         fs::write(&p, "four").unwrap();
         wait_until("a write in the new directory", || {
-            f.inner.fresh(&p).is_none()
+            f.inner.fresh(&p, false).is_none()
         });
 
         // A directory served as its index file.
@@ -2367,7 +2971,7 @@ mod tests {
         watched_soon(&f, &a);
         fs::remove_file(a.join("index.html")).unwrap();
         wait_until("a removed index to drop the directory", || {
-            f.inner.fresh(&a).is_none()
+            f.inner.fresh(&a, false).is_none()
         });
         assert_eq!(get(&f, &a).status, 404);
         let _ = fs::remove_dir_all(&dir);
@@ -2390,10 +2994,10 @@ mod tests {
         get(&f, &top);
         get(&f, &deep);
         if FsWatcher::DIR_EVENTS_NAME_ENTRIES {
-            assert!(f.inner.fresh(&top).is_some());
+            assert!(f.inner.fresh(&top, false).is_some());
         }
         assert!(
-            f.inner.fresh(&deep).is_none(),
+            f.inner.fresh(&deep, false).is_none(),
             "past max_watches: the interval rule"
         );
 
@@ -2401,10 +3005,10 @@ mod tests {
         let f = Files::new(&dir).watch(true).check_interval(Duration::ZERO);
         get(&f, &top);
         get(&f, &deep);
-        assert!(f.inner.fresh(&top).is_some() && f.inner.fresh(&deep).is_some());
+        assert!(f.inner.fresh(&top, false).is_some() && f.inner.fresh(&deep, false).is_some());
         let w = f.inner.watcher().unwrap();
         f.inner.apply(&w, &[FsEvent::Overflow]);
-        assert!(f.inner.fresh(&top).is_none() && f.inner.fresh(&deep).is_none());
+        assert!(f.inner.fresh(&top, false).is_none() && f.inner.fresh(&deep, false).is_none());
 
         // A notification applied while a request read the disk: not marked watched.
         let t = f.inner.watch_begin(&top).unwrap();
@@ -2415,7 +3019,7 @@ mod tests {
         drop((c, t));
         // The next request vouches for it again.
         get(&f, &top);
-        assert!(f.inner.fresh(&top).is_some());
+        assert!(f.inner.fresh(&top, false).is_some());
 
         // Dropping the Files ends the thread and every watch.
         drop(f);
@@ -2436,8 +3040,8 @@ mod tests {
         let f = Files::new(&dir).watch(true).check_interval(Duration::ZERO);
         get(&f, &p);
         get(&f, &dir.join("z.txt"));
-        assert!(f.inner.fresh(&p).is_none());
-        assert!(f.inner.fresh(&dir.join("z.txt")).is_none());
+        assert!(f.inner.fresh(&p, false).is_none());
+        assert!(f.inner.fresh(&dir.join("z.txt"), false).is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 

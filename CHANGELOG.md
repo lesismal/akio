@@ -35,7 +35,7 @@ interleaving; akio-h3's `off_handler` tests use it.
 
 ### Removed: akio-prefork (akio-prefork, akio, akio-sys)
 
-ADR-121. akio and akit do not use prefork; the crate had been on hold and untested since
+ADR-129. akio and akit do not use prefork; the crate had been on hold and untested since
 cb49a04b. Breaking for any outside user of these items:
 
 - The crate `akio-prefork` (`Prefork`, `BpfSteering`, `ListenMode`, `CpuPinning`, `Controller`,
@@ -48,6 +48,165 @@ cb49a04b. Breaking for any outside user of these items:
   `getppid`, `ESRCH`, `SIGQUIT`, `SIGUSR1`.
 - Kept: `Listener::tcp_from_std` (systemd socket activation), `akio_sys::process::{allowed_cpus,
   pin_current_thread, signal_pipe, kill, SIGHUP, SIGINT, SIGTERM, SIGUSR2}`.
+### Added: response heads held, and response bodies filtered, by work done elsewhere (akio-http, akio-h3)
+
+ADR-128, ADR-125's milestone W6 (akit's A166 and A167, for I72's Proxy-Wasm response callbacks),
+over HTTP/1.1, HTTP/2 and HTTP/3 alike:
+
+- `Context::hold_response_head(timeout, f)`: `f` gets the response's head in a `HeldHead` once
+  the ordinary response filters ran, and hands it on (to a plugin's pool, say); the response goes
+  on when it is `resume`d from any thread (through the outer filters), or is replaced by
+  `respond(Response)`, or cut by `fail`, a drop or the deadline (HTTP/1 connection closed, HTTP/2
+  and HTTP/3 stream reset, the request ended `End::Gone`). A streamed body written meanwhile is
+  held (up to 4 MiB, in `BodyStream::queued_bytes`).
+- `Context::add_body_filter(impl BodyFilter)`, with `BodyChunk` and `FilterDone`: the body goes
+  through calls answered elsewhere, one at a time, what is written meanwhile held and given to the
+  next call; the last call carries the trailers, which it may change or add; the output is paced
+  by the client and then coded (`compress`) and tapped. Whole and file bodies go through as
+  streams, without `Content-Length`. `BodyFilter::abort` hears a response that ended before its
+  last call. Not called for `HEAD`, `1xx`, `204`, `304`, `CONNECT` or upgrades.
+- The doc-hidden transport seam gains `ConnSink::reset` and `BodySink::reset` (defaulted), which
+  akio-h3 implements, so a cut response resets its HTTP/3 stream.
+
+### Added: akio-wasm's instance pool, milestone W4 (akio-wasm, akio)
+
+ADR-125, fourth milestone: WebAssembly runs on threads that own instances, never on the I/O
+threads. With it the API that akit's I71 needs is complete; the crate stays in the experimental
+tier until the maintainer moves it (docs/api-stability.md).
+
+- `InstancePool<S>`, made by `InstancePool::builder(module, linker, |index| state)` with
+  `PoolConfig` (instances: the CPUs, at most 16; `queue` 1024; `instance_queue` 1024;
+  `wait_timeout` 1 s; `call_timeout` 100 ms; `init_timeout` 1 s; `start_attempts` 3; the
+  `InstanceLimits`) and an optional `on_start` hook (Proxy-Wasm's `proxy_on_vm_start`);
+  `build()` waits until every instance is made (a WASI reactor's `_initialize` included) or
+  fails with a `StartError`.
+- `submit(job, done)` to any free instance through one bounded queue, `submit_to(InstanceId, job,
+  done)` to a given one through its own bounded queue, served first; a full queue, a closed or
+  failed pool, or an instance remade since its id was taken refuses the job at once with
+  `Refused { reason: Refusal, job, done }`, nothing waits. The job, `FnOnce(&mut Pooled<S>) ->
+  R`, runs under a deadline `call_timeout` from its start (`Pooled::call`, `call_typed`,
+  `typed_func`, `budget`, `discard`); `done` gets `Result<R, JobError>` on the pool's thread, to
+  hand back to the caller's I/O thread without blocking (akio-http's `Suspended::resume`). A job
+  not started within `wait_timeout` gets `JobError::Expired` when the wait passes, even while every
+  instance is busy (a reaper thread watches the queues).
+- An instance a trap ended (a guest past its deadline included), whose job panicked, or that was
+  discarded is dropped and made again before its thread's next job; jobs queued for it get
+  `JobError::Remade`. An instance that fails to be made `start_attempts` times in a row fails the
+  pool: queued and later jobs get `JobError::Failed`. `close()` (or dropping the pool) hands queued
+  jobs back as `JobError::Closed` and interrupts the running ones.
+- `stats()`: `PoolStats` with the shared and per-instance queue depths, running jobs, calls,
+  refusals, expiries, `TrapStats` (traps by kind), panics, remakes, failed makings.
+- `Store::trap()`: the trap that ended a store.
+- Tests (`tests/pool.rs`): a hung guest stopped at its deadline and its instance remade, a full
+  queue refused, a wait expiring while the instance is busy, `submit_to` ahead of the shared
+  queue, jobs for a remade instance, a panicking job, a module that cannot be instantiated and an
+  initialization past its deadline failing the build, a pool failed by an instance that will not
+  be remade, closing with jobs queued and a guest running, the last handle dropped in a
+  completion, four submitting threads.
+
+### Added: akio-wasm's host API and WASI, milestone W3 (akio-wasm, akio)
+
+ADR-125, third milestone: plugins get the host's functions and WASI, and fit's guests run.
+Experimental until W4.
+
+- `Linker<S>`: host functions by module and name, typed (`func_wrap(module, name, |caller,
+  (a, b): (u32, i64)| -> Result<R, Trap>)`, over `i32`, `u32`, `i64`, `u64`, `f32`, `f64`) or over
+  `Value`s (`func_new`); `instantiate(&mut Store<S>, &Arc<Module>, &Budget)` resolves each import
+  and checks its type; `trap_unresolved(true)` makes function imports nothing defines trap when
+  called instead of refusing the module. `Clone + Send + Sync`, shared across stores and threads.
+  `LinkError`, `InstantiateError::UnknownImport`.
+- `Caller`: bounds-checked views of the calling instance's memory (`read`, `read_mut`, `write`,
+  `read_u32`, `read_u64`, `write_u32`, `write_u64`), its exports, the call's deadline and
+  interrupt, `consume_fuel`, and `call`, back into the guest under the same budget, nested at
+  most 64 deep (what Proxy-Wasm's hosts do with `proxy_on_memory_allocate`); a trap in it ends
+  the outer call.
+- `Store::typed_func::<P, R>` and `TypedFunc` (checked once, called from the host or a host
+  function), `WasmTy`, `WasmParams`, `WasmResults`; `Store::initialize_reactor` (a WASI
+  reactor's `_initialize`).
+- WASI preview 1, the subset of ADR-125 (`Linker::wasi_preview1(WasiConfig)`, module
+  `akio_wasm::wasi`): arguments, environment, realtime and monotonic clocks, random bytes
+  (akio-crypto, the crate's one dependency), standard output and error to a sink
+  (`OutputStream`), `poll_oneoff` on clocks sleeping no later than the call's deadline,
+  `proc_exit` as the new `Trap::Exit(code)`; no file system and no sockets (`EBADF`, `ENOSYS`),
+  `EFAULT` for a pointer outside the memory. All 46 functions are defined.
+- Tests: the linker, the views, nested calls and their bounds, typed calls, each WASI function;
+  fit's guests (`tests/guests`, gzipped, rebuilt by `tests/guests/build.sh`): the Go `headers`
+  plugin (fit's ABI: fields edited, a request answered, `/loop` stopped at its deadline, `/grow`
+  and `/panic` trapping, the instance made again), the Proxy-Wasm Go SDK's `http_routing` (memory
+  allocated in the guest from host functions), and fit's Rust sync plugin. The `wasm_exec` fuzz
+  target's imports now call back into the guest.
+
+### Added: akio-wasm runs modules, milestone W2: translation and interpreter (akio-wasm, akio)
+
+ADR-125, second milestone: `akio-wasm` now runs what it loads, still in safe Rust without
+dependencies, experimental until W4.
+
+- `Module::new` translates each function, once, after validating it, to a register form: every
+  operand-stack position is a fixed slot, `local.get` copies nothing, constants are immediates, a
+  comparison and its branch are one instruction; at most four 16-byte instructions per byte of
+  code, in linear time. The interpreter is a `match` loop with explicit frames, never native
+  recursion.
+- `Store<S>`: instances (`instantiate(&Arc<Module>, &[Extern], &Budget)`, which may import from
+  each other), host functions (`func_new(FuncType, Fn(&mut Caller<S>, &[Value], &mut [Value]))`),
+  globals, tables and memories made by the host, exports, `call(Func, &[Value], &mut [Value],
+  &Budget)`. `Send`, not `Sync`. A trap ends the store (later calls return `Trap::Ended`).
+- `InstanceLimits`: memory (128 MiB; `memory.grow` past it returns `-1`), table elements (10 M),
+  value stack (1 Mi slots), call depth (10 000).
+- `Budget`: a deadline, fuel and an `InterruptHandle`, checked as basic blocks are entered, about
+  every 10 000 instructions (bulk memory and table instructions pay by the byte), so a call stops
+  within tens of microseconds of its deadline, with no watchdog thread; `Store::fuel_used`.
+- `Trap` (the specification's traps with its wording, the run limits, `Deadline`, `OutOfFuel`,
+  `Interrupted`, `Host`, `Ended`, `BadCall`), `InstantiateError`, `Value`, `ExternRef`, handles
+  `Func`, `Table`, `Memory`, `Global`, `Instance`, `Extern`.
+- Floats as the specification has them, with canonical NaNs: execution is deterministic.
+- Tests: the whole WebAssembly 2.0 specification suite (21 453 `assert_return`, 2 354
+  `assert_trap`, exhaustion, linking, instantiation), the translator's corner cases, budgets,
+  every run limit under, at and over, host functions, translation in linear time. Fuzz targets
+  `wasm_exec` (`wasm-smith` modules under small limits) and `wasm_diff` (against wasmi), fuzz-only
+  dependencies.
+
+### Added: akio-wasm, a WebAssembly runtime for plugins, milestone W1: decoder and validator (akio-wasm, akio)
+
+ADR-125 (accepted), requested by akit (A165) for its WASM plugins (I71) and Proxy-Wasm (I72).
+New crate `akio-wasm`, in safe Rust (`#![forbid(unsafe_code)]`) without dependencies, experimental
+until its API is complete (W4); `akio::wasm` behind the facade feature `wasm`. This first milestone
+loads modules; running them is W2.
+
+- `Module::new(&bytes, &ModuleLimits)` decodes and validates a binary module in one pass, linear in
+  its size: WebAssembly 2.0 without SIMD (1.0 with mutable globals, sign extension, non-trapping
+  float-to-int, bulk memory, multi-value, reference types; one 32-bit memory), what Go, TinyGo and
+  Rust's `wasm32-wasip1` emit. `Module` lists the imports, exports (`export(name)`), types,
+  function types, tables, memory, globals and start function.
+- Anything else is refused at load with `ErrorKind::Unsupported(Feature)` naming it: SIMD
+  (relaxed included), threads, exception handling, tail calls, memory64, several memories,
+  extended constants, typed function references, GC, custom page sizes, wide arithmetic,
+  components. Other refusals are `Malformed` or `Invalid` with the specification's wording and
+  the byte offset.
+- `ModuleLimits`, each checked before anything is allocated for what it counts: module size
+  (64 MiB), types (100 000) and their arity (1 000), functions (100 000), imports and exports
+  (10 000 each), tables (100) and their initial size (10 M), globals (100 000), locals per function
+  (50 000), block nesting (1 000), `br_table` targets (100 000), element and data segments
+  (100 000 each). Refusals are `ErrorKind::Limit(Limit)`.
+- Tests: the decoding and validation commands of the WebAssembly 2.0 specification suite
+  (converted by `tools/wasm-spec/convert.sh`, committed under `crates/akio-wasm/tests/spec`), the
+  refused features' proposal files as refusal checks, every limit under, at and over, modules at
+  the default limits in bounded time. Fuzz target `wasm_decode` (dictionary `fuzz/dict/wasm.dict`).
+
+### Added: a request changed by a middleware, and a request's end heard (akio-http, ADR-126, ADR-127)
+
+- `Context::req_mut() -> Option<&mut Request>` (ADR-126): a middleware changes the request's
+  fields, target, method or body before the handler; `path()`, `header()`, the handlers after it,
+  `Files` and the response filters see the change. `None` once the request is shared (`detach`, a
+  WebSocket upgrade). Route parameters keep reading the path they were matched in. `suspend` now
+  moves the request whole into the resumed context, which can change it.
+- `Context::on_end(f) -> bool`, `Detached::on_end(f)` and `enum End { Sent, Gone }` (ADR-127): `f`
+  runs exactly once when the request is done with: `Sent` once its response was handed to the
+  connection in full (a streamed one's once finished, not at its head), `Gone` when its client
+  went first (heard while it waits detached or streams) or its response was given up (a
+  `Detached` or `BodyStream` dropped unfinished). Several hooks run in order; one added after the
+  end runs at once. `on_gone` keeps its meaning and now lives beside them (it no longer takes the
+  transport's one peer-gone slot). On HTTP/1.1, HTTP/2 and HTTP/3. A request that registers
+  neither allocates nothing more.
 
 ### Fixed: the HTTP/3 client no longer deadlocks resuming, cancelling or timing out a request (akio-h3)
 
@@ -148,6 +307,70 @@ ADR-104, third revision; no API change:
   rounds connections (ADR-108); it was read only from the build-time `Config`.
 - `set_listener_threads` is still refused for rounds listeners. No throughput change measured on
   gpu51 (rounds echo-like, skew and churn cases, loops echo).
+### Added: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down (akio-http, akio-h3, akio-socks, akio-core)
+
+ADR-122, requested by akit (A134):
+
+- akio-http: a `CONNECT` on an HTTP/2 stream with `:method` and `:authority` alone (RFC 9113
+  §8.5) is dispatched at once, its target the authority, its DATA the streamed request body; a
+  streamed `2xx` makes the stream a tunnel whose halves close separately. One with `:scheme` or
+  `:path`, or without `:authority`, is reset (`PROTOCOL_ERROR`); before, every plain CONNECT was.
+  `H2Client` sends a `CONNECT` request that way, its `:authority` the request's `Host` field.
+- akio-h3: a `CONNECT` (RFC 9114 §4.4) is dispatched at its head rather than when its stream
+  ends.
+- akio-socks: `connect_proxy` relays a `CONNECT` on an HTTP/2 or HTTP/3 stream (it returned
+  without answering before), with the HTTP/1.1 tunnel's checks, timeouts and failure statuses
+  and backpressure both ways; the client's END_STREAM shuts the upstream's send direction down.
+- `Conn::shutdown_write_after_send` and `ConnInner::shutdown_write_after_send`: a FIN once the
+  queue is written, reads going on (epoll, kqueue, io_uring).
+
+### Added: Unix-domain stream listeners, and a TLS server capped at TLS 1.2 (akio, akio-epoll, akio-uring, akio-sys, akio-tls)
+
+ADR-121, requested by akit (A23, A9):
+
+- `Listener::unix(path)`, `Listener::unix_from_std(UnixListener)` and `Listener::unix_mode(mode)`:
+  a stream listener on a socket file served like a TCP one, on epoll, kqueue and io_uring, at
+  build time or through `Engine::add_listener`; the mode set before it listens, a stale socket
+  file replaced, one in use (or a file that is not a socket) `AddrInUse`. Its connections'
+  addresses are `UNIX_ADDR`.
+- `EpollGroup::bind_unix_listener`, `UringGroup::bind_unix_listener`.
+- `akio_sys::listen_unix` and `akio_sys::accept_stream`.
+- `ServerConfigBuilder::tls12_only` and `ClientConfigBuilder::tls12_only` (public; the hidden
+  `__tls12_only` calls them). Set with `tls13_only`, `build` fails.
+
+### Added: `Files` as a gateway's static handler, bounded in memory; file bodies encoded (akio-http)
+
+ADR-124, requested by akit (A14, A15, A92):
+
+- `Files::index_files`, `redirect_directories`, `mime_types` (`MimeTypes::builtin`, Go's table,
+  and `MimeTypes::system`, with the system's `mime.types` as Go reads them), `default_type`,
+  `sniff` (`files::sniff`, Go's `http.DetectContentType`), `error_response` and
+  `serve_prefixed` (listings and redirects name the whole path).
+- `Files::max_cache_bytes` (default 64 MiB): the bytes kept in memory, twins and compressed
+  copies included, evicted least recently used first; `Files::disk_timeout`: a request the disk
+  pool has not answered in time gets `503` with `Retry-After: 1`.
+- A response whose body is a file and which a response filter gave a stream coding
+  (`Response::set_stream_coding`) is sent streamed: read, encoded and written in 64 KiB pieces on
+  the disk pool, under the connection's backpressure.
+
+### Changed: `Files` (akio-http)
+
+- `403` for a file that may not be read; `404` for what is neither a regular file nor a
+  directory (it is no longer opened: a FIFO held a disk pool thread) and for a file asked for
+  with a trailing slash; a name with `:` is served.
+- At most 64 MiB of files are kept in memory by default (`max_cache_bytes`).
+- Under a route, a request's trailing slash counts (a directory listed, not redirected), though
+  the route's wildcard drops it.
+
+### Added: root certificates outside a handshake; ALPN protocols for the handshake only (akio-tls)
+
+ADR-123, requested by akit (A57, A58):
+
+- `RootCerts::store()` and `From<RootCerts> for akio_x509::RootStore`: the roots (the system's
+  included) for a `Verifier` of the caller's own.
+- `ServerConfigBuilder::handshake_only_alpn(protocols)`: a connection negotiating one of them
+  (`acme-tls/1`, RFC 8737) is closed once its handshake completes, and nothing it sends reaches
+  the application.
 
 ### Added: dialing a Unix-domain socket, and the HTTP client over one (akio, akio-http, akio-sys)
 

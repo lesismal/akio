@@ -7,7 +7,7 @@ uninitialised spare capacity) added 2026-11-16; `akio-buf`'s `slab` module (UDP 
 ADR-024) added 2026-11-17; `akio-sys`'s `iface` module (interface list, per-interface send, ADR-078
 update 3) added 2026-11-23, with the `getifaddrs` reading of `ktls` moved into it; `akio-sys`'s
 `icmp_mac` module (macOS ICMP socket) and TTL / DF control messages and options (ADR-091 update)
-added 2026-11-23; `akio-sys`'s `tun` module (TUN devices and their interface settings, ADR-096) added 2026-11-23; `akio-sys`'s non-blocking Unix-domain connect (ADR-120) added 2026-11-24. Re-run the inventory and update this page
+added 2026-11-23; `akio-sys`'s `tun` module (TUN devices and their interface settings, ADR-096) added 2026-11-23; `akio-sys`'s non-blocking Unix-domain connect (ADR-120) added 2026-11-24; `akio-sys`'s Unix-domain listen and address-less accept (ADR-121) added 2026-11-25. Re-run the inventory and update this page
 whenever `unsafe` is added, removed or its invariant changes.
 
 `akio` is a network library: a memory-safety bug in it is a remote-code-execution bug in its
@@ -152,25 +152,26 @@ contain no `unsafe`.
 
 | Crate | blocks | `unsafe fn` | `unsafe impl` | tests/examples/benches |
 |---|---:|---:|---:|---:|
-| `akio` | 0 | 0 | 0 | 13 |
+| `akio` | 0 | 0 | 0 | 14 |
 | akio-brotli | 0 | 0 | 0 | 16 |
 | akio-buf | 7 | 0 | 2 | 0 |
+| akio-core | 0 | 0 | 0 | 1 |
 | akio-crypto | 153 | 73 | 0 | 0 |
 | akio-dpdk | 32 | 0 | 1 | 1 |
 | akio-ebpf | 50 | 4 | 3 | 2 |
 | akio-http | 0 | 0 | 0 | 8 |
-| akio-sys | 163 | 5 | 3 | 0 |
+| akio-sys | 169 | 5 | 3 | 0 |
 | akio-uring | 43 | 5 | 2 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **453** | **87** | **11** | **40** |
+| **total** | **459** | **87** | **11** | **42** |
 
 By purpose:
 
 | Where | Count | Purpose | Main invariants |
 |---|---:|---|---|
 | `akio-sys/src/ffi/` | 5 + 8 in the layout tests, `unsafe fn errno_location`, `cmsg_firsthdr`, `cmsg_nxthdr` | the own OS bindings: `extern "C"` declarations of the C library (Linux) / libSystem (macOS), constants, `#[repr(C)]` structs, the `CMSG_*` helpers, `cpu_set_t`, errno | see "The own syscall layer" below |
-| `akio-sys/src/net.rs` | 28 | `socket`/`bind`/`listen`/`connect` (also a connect from a bound, shared port for TCP simultaneous open, ADR-044, and a Unix-domain connect, ADR-120), `setsockopt`, `sendfile`, `SocketAddr` <-> `sockaddr_storage`, `listen` again on a live socket (backlog reload), `TCP_INFO` read of a listener's backlog (tests), the "don't fragment" setting read back (`getsockopt`) | sockaddr length matches family; fd owned before any fallible step |
+| `akio-sys/src/net.rs` | 34 | `socket`/`bind`/`listen`/`connect` (also a connect from a bound, shared port for TCP simultaneous open, ADR-044, a Unix-domain connect, ADR-120, and a Unix-domain listen and an `accept4`/`accept` that reads no address, ADR-121), `setsockopt`, `sendfile`, `SocketAddr` <-> `sockaddr_storage`, `listen` again on a live socket (backlog reload), `TCP_INFO` read of a listener's backlog (tests), the "don't fragment" setting read back (`getsockopt`) | sockaddr length matches family; fd owned before any fallible step |
 | `akio-sys/src/iface.rs` | 11 + `unsafe fn read_addr`, `copy` | the interface list (`getifaddrs` / `if_nametoindex` / `freeifaddrs`; also behind akio-tls's NIC offload check) and one datagram out of a given interface (`sendmsg` with an `IP_PKTINFO` / `IPV6_PKTINFO` control message), Linux and macOS | the list is walked only between `getifaddrs` and `freeifaddrs` (freed once), names are copied out before the free; socket addresses are copied byte-wise into a zeroed `sockaddr_in` / `sockaddr_in6` by their family (read at `sin_family`'s offset, a byte on macOS), never referenced in place, and on macOS at most `sa_len` bytes (netmasks are cut short); the control message is a `#[repr(C)]` `cmsghdr` + `in_pktinfo` / `in6_pktinfo` whose `CMSG_LEN` / `CMSG_SPACE` are checked against `libc` in a test, built without `unsafe`, and the `msghdr` points only at live locals |
 | `akio-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
 | `akio-sys/src/process.rs` | 7 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the handler only calls `write` (async-signal-safe) and saves and restores `errno` |

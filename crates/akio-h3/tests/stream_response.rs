@@ -395,6 +395,37 @@ fn resuming_delivers_on_the_calling_thread() {
     s.e.shutdown();
 }
 
+/// Cancelling mid-body resets the stream, which drives the connection on the cancelling
+/// thread; a body piece pending for the stream is handled there, and the handler, finding the
+/// request cancelled, ends it. The request's own lock is not held meanwhile (it was, and the
+/// thread waited on itself for good). The window is narrow (the piece must be queued for the
+/// handler, not yet delivered by the I/O thread), so the case runs many times.
+#[test]
+fn cancelling_mid_body_does_not_wait_on_itself() {
+    let s = server(H3Config::default());
+    let c = client(&s, 64 << 10, H3ClientOptions::default());
+    for round in 0..60 {
+        let (seen, rx, up) = get(&c, &format!("/big/{}", 2 << 20));
+        let start = Instant::now();
+        while seen.lock().unwrap().body.is_empty() {
+            assert!(start.elapsed() < T, "round {round}: no body");
+            std::thread::yield_now();
+        }
+        let up = bounded(&format!("round {round}: cancel"), move || {
+            up.cancel();
+            up
+        });
+        assert!(!up.write(b"x"));
+        // Nothing more is reported after the cancel, the end and errors included.
+        assert!(rx.recv_timeout(Duration::from_millis(20)).is_err());
+        let seen = seen.lock().unwrap();
+        assert!(!seen.end && seen.error.is_none(), "round {round}");
+    }
+    // The connection goes on.
+    assert_eq!(c.get("/small", T).unwrap().status, 200);
+    s.e.shutdown();
+}
+
 /// A body streamed up while the response streams down, on one request, with the QPACK
 /// encoders on (`enc`) or off.
 fn duplex(enc: usize) {
