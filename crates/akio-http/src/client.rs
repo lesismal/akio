@@ -1761,25 +1761,17 @@ impl Client {
         }
         match idle {
             Some(conn) if conn.is_open() => {
-                let slot = Arc::new(Mutex::new(Some(p)));
-                let s2 = slot.clone();
-                let me = self.clone();
-                let ok = conn.spawn_blocking(
-                    || (),
-                    move |h: &mut ClientConn, c, ()| {
-                        let taken = s2.lock().unwrap_or_else(|e| e.into_inner()).take();
-                        if let Some(p) = taken {
-                            h.begin(c, p, me, true);
-                        }
-                    },
-                );
-                if ok.is_err() {
-                    // The pool refused (or the connection just closed): start over on a new one.
-                    let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    if let Some(p) = taken {
-                        self.dial(p);
+                // Straight to the connection's loop, not through the logical pool: a pooled
+                // handler waiting on this request must not need a pool thread for it to start
+                // (rules §1). If the connection closes before the request starts there, start
+                // over on a new one.
+                let (me, again) = (self.clone(), self.clone());
+                let mut p = OrElse::new(p, move |p| again.dial(p));
+                let _ = conn.run_on_loop(move |h: &mut ClientConn, c| {
+                    if let Some(p) = p.take() {
+                        h.begin(c, p, me, true);
                     }
-                }
+                });
             }
             Some(_) => self.dispatch(p), // closed meanwhile: try the next idle one
             None => self.dial(p),
@@ -2753,6 +2745,37 @@ impl OnDeadline for ClientConn {
                 self.fail(c, ClientError::IdleTimeout);
             }
             _ => {}
+        }
+    }
+}
+
+/// Work handed to a connection's loop ([`Conn::run_on_loop`]) with what to do if it never
+/// runs: the loop drops a completion whose connection closed first, and then `fallback` gets
+/// the item back (on whichever thread drops it), so whoever waits on it is answered instead of
+/// waiting for good.
+pub(crate) struct OrElse<T, F: FnOnce(T)> {
+    item: Option<T>,
+    fallback: Option<F>,
+}
+
+impl<T, F: FnOnce(T)> OrElse<T, F> {
+    pub(crate) fn new(item: T, fallback: F) -> Self {
+        OrElse {
+            item: Some(item),
+            fallback: Some(fallback),
+        }
+    }
+
+    /// The item, for the work that runs; the fallback is then not called.
+    pub(crate) fn take(&mut self) -> Option<T> {
+        self.item.take()
+    }
+}
+
+impl<T, F: FnOnce(T)> Drop for OrElse<T, F> {
+    fn drop(&mut self) {
+        if let (Some(item), Some(f)) = (self.item.take(), self.fallback.take()) {
+            f(item);
         }
     }
 }

@@ -2,7 +2,8 @@
 
 [English](094-handlers-on-the-logical-pool.md) | 简体中文
 
-状态：已采纳（2026-11-23）
+状态：已采纳（2026-11-23；2026-11-25 更新：`H2Config::run_on_pool` 默认开启，见
+[更新](#更新2026-11-25http2-默认在线程池上执行)）
 
 ## 背景
 
@@ -64,3 +65,19 @@ HTTP/1.1 的响应顺序已经由有序响应位置（`Conn::reserve_response`�
 
 - 流式请求体的线程池分发：请求体的 sink 需要跨线程喂数据。
 - `Router` 上按路由的开关。单个路由用 `detach_to_pool` 即可。
+
+## 更新（2026-11-25）：HTTP/2 默认在线程池上执行
+
+`H2Config::run_on_pool` 的默认值改为 `true`；其他开关（`HttpConfig::run_on_pool`、
+`H3Config::run_on_pool`、`GrpcServer::run_on_pool`、`Routes::run_on_pool`）仍默认关闭。
+
+- inline 时，一个 HTTP/2 连接的各个 stream 在它的 I/O 线程上按请求完成的顺序逐个处理：慢 handler
+  会拖住同一连接的其他 stream 以及该线程上的所有其他连接；而连接从不迁移（ADR-001），一个繁忙的
+  多路复用客户端只会压在一个线程上。多路复用正是使用 HTTP/2 的理由，所以默认改为让同一连接的各个
+  stream 同时处理。
+- 留在 I/O 线程上的部分不变：流式请求体和 CONNECT（包括扩展 CONNECT，即 HTTP/2 上的 WebSocket）。
+- 现在默认就要承担的代价：每个完整请求一次线程池交接；同一连接的响应可能以任意顺序完成（HTTP/2
+  允许）；线程池满时回 `503` 并带 `Retry-After: 1`；请求 span 在线程池线程上进入；线程池上的请求
+  不回收线程局部的备用缓冲区；在线程池 handler 中调用 `Context::after` 时，回调在本 crate 共享的
+  定时器线程上执行，而不是 I/O 线程。
+- handler 从不阻塞的服务可以设置 `run_on_pool: false` 恢复 inline 路径。

@@ -2,7 +2,8 @@
 
 English | [简体中文](094-handlers-on-the-logical-pool.zh-CN.md)
 
-Status: accepted (2026-11-23)
+Status: accepted (2026-11-23; updated 2026-11-25: `H2Config::run_on_pool` is on by default, see
+[Update](#update-2026-11-25-http2-on-the-pool-by-default))
 
 ## Context
 
@@ -73,3 +74,22 @@ ordered.
 
 - Pool dispatch for streamed request bodies: the body sink would have to be fed across threads.
 - A per-route switch on `Router`. `detach_to_pool` covers a single route.
+
+## Update 2026-11-25: HTTP/2 on the pool by default
+
+`H2Config::run_on_pool` now defaults to `true`; the other switches (`HttpConfig::run_on_pool`,
+`H3Config::run_on_pool`, `GrpcServer::run_on_pool`, `Routes::run_on_pool`) stay off.
+
+- Inline, the streams of one HTTP/2 connection are served one at a time on its I/O thread, in the
+  order their requests complete: a slow handler holds up the other streams of its connection and
+  every other connection of that thread, and since connections never move (ADR-001), one busy
+  multiplexed client loads a single thread. Multiplexing is the reason to use HTTP/2, so the
+  default now serves the streams of a connection at the same time.
+- What stays inline is unchanged: streamed request bodies and CONNECTs (extended or not, so
+  WebSocket over HTTP/2) run on the I/O thread.
+- Costs that now apply by default: one pool hand-off per complete request; responses of one
+  connection may finish in any order (allowed by HTTP/2); a full pool answers `503` with
+  `Retry-After: 1`; request spans are entered on the pool thread; thread-local spare buffers are
+  not recycled for pooled requests; `Context::after` called from a pooled handler runs on the
+  crate's shared timer thread instead of the I/O thread.
+- Services whose handlers never block can set `run_on_pool: false` to get the inline path back.

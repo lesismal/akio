@@ -190,7 +190,9 @@ flowchart LR
   maximum and retire when idle) and bounded (a full queue rejects with `Overloaded`).
   `Conn::spawn_blocking` runs work there and posts the completion back to the owning loop as a
   type-erased task (`LoopLink::post_task`); the loop runs it with `&mut` access to the handler,
-  or drops it if the connection is gone.
+  or drops it if the connection is gone. `Conn::run_on_loop` posts such a task directly, with
+  no pool job: the way for other threads (the HTTP clients, deadline sweepers) to reach a
+  handler, which works however full the pool is.
 - **Cross-thread commands** reach a loop through its command queue (a `Mutex<Vec<Cmd>>`) plus a
   waker (eventfd on Linux, a pipe on macOS): `Wake(id)` (flush a queue), `Close(id)`,
   `Task(id, completion)`, `Dial`, `DialUdp`, `Shutdown`, and telemetry requests (connection

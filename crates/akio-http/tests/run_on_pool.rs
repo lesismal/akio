@@ -315,3 +315,89 @@ fn h2_run_on_pool_serves_one_connections_blocking_streams_at_once() {
         stop(&e);
     }
 }
+
+/// A handler on a full pool (here its only thread) that calls a client and waits: the client
+/// reaches its connection's loop directly, so it never needs a pool thread of its own (rules
+/// §1; it used to queue a no-op job on the pool and wait for it, which deadlocked).
+#[test]
+fn clients_called_from_a_full_pool_do_not_wait_for_it() {
+    use akio_http::client::Client;
+    use std::sync::OnceLock;
+
+    // The leaf answers inline on both versions, so it needs no pool thread either.
+    let leaf = Router::new().get("/leaf", |ctx: &mut Context| ctx.text(200, "leaf"));
+    let mut inline = HttpConfig::default();
+    inline.h2.as_mut().unwrap().run_on_pool = false;
+    type Clients = (H2Client, Client, SocketAddr);
+    let clients: Arc<OnceLock<Clients>> = Arc::new(OnceLock::new());
+    let cl = clients.clone();
+    // HTTP/2 streams run on the pool by default.
+    let proxy = Router::new().get("/proxy", move |ctx: &mut Context| {
+        let (h2, h1, leaf) = cl.get().unwrap();
+        let url = format!("http://{leaf}/leaf");
+        let mut got = Vec::new();
+        for r in [
+            h2.send(ClientRequest::get(&url)),
+            h1.send(ClientRequest::get(&url)),
+        ] {
+            got.push(match r.wait_timeout(Duration::from_secs(3)) {
+                Some(Ok(r)) => r.status.to_string(),
+                Some(Err(e)) => format!("{e}"),
+                None => "stuck".to_owned(),
+            });
+        }
+        ctx.text(200, got.join("/"));
+    });
+    let e = Arc::new(
+        Engine::builder()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(500);
+                v
+            })
+            .pool({
+                let mut v = PoolConfig::default();
+                v.max_threads = 1;
+                v
+            })
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .backend(backend())
+                    .threads(1)
+                    .serve(serve_with(inline, leaf)),
+            )
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .backend(backend())
+                    .threads(1)
+                    .serve(serve_with(HttpConfig::default(), proxy)),
+            )
+            .client_threads(1)
+            .build()
+            .unwrap(),
+    );
+    e.start().unwrap();
+    let (leaf_addr, proxy_addr) = (e.local_addrs()[0], e.local_addrs()[1]);
+    let h2 = H2Client::dial_blocking(&e, leaf_addr, None, H2Options::default()).unwrap();
+    let h1 = Client::new(e.clone());
+    // Leave a keep-alive connection idle, so the handler's HTTP/1.1 request reuses it (the
+    // path that hands the request to that connection's loop).
+    let warm = h1
+        .send(ClientRequest::get(&format!("http://{leaf_addr}/leaf")))
+        .wait()
+        .unwrap();
+    assert_eq!(warm.status, 200);
+    thread::sleep(Duration::from_millis(50));
+    assert!(clients.set((h2, h1, leaf_addr)).is_ok());
+
+    let front = H2Client::dial_blocking(&e, proxy_addr, None, H2Options::default()).unwrap();
+    let t = Instant::now();
+    let r = front
+        .send(ClientRequest::get(&format!("http://{proxy_addr}/proxy")))
+        .wait_timeout(Duration::from_secs(10))
+        .expect("the proxy answered")
+        .unwrap();
+    assert_eq!(String::from_utf8(r.body).unwrap(), "200/200");
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    stop(&e);
+}

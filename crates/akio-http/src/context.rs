@@ -1337,11 +1337,7 @@ impl Context {
     ///     ctx.after(Duration::from_millis(10), |d| d.respond(Response::text(200, "late")));
     /// }
     /// ```
-    pub fn after(
-        &mut self,
-        delay: Duration,
-        f: impl FnOnce(Detached) + Send + 'static,
-    ) -> bool {
+    pub fn after(&mut self, delay: Duration, f: impl FnOnce(Detached) + Send + 'static) -> bool {
         let Some(d) = self.detach() else {
             return false;
         };

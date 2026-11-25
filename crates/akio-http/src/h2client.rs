@@ -56,7 +56,7 @@ use akio::{
 
 use crate::{
     client::{
-        ClientError, ClientRequest, ClientResponse, FutureShared, Outcome, ResponseFuture,
+        ClientError, ClientRequest, ClientResponse, FutureShared, OrElse, Outcome, ResponseFuture,
         parse_url,
     },
     h2::{DEFAULT_FRAME, DEFAULT_WINDOW, MAX_WINDOW, PREFACE, err, flag, frame, ty},
@@ -266,7 +266,7 @@ impl ClientLink {
     fn kick(&self) -> akio::Result<()> {
         let (sid, sh) = (self.sid, self.sh.clone());
         self.conn
-            .spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.ws_pump(c, sid, &sh))
+            .run_on_loop(move |h: &mut H2Conn, c| h.ws_pump(c, sid, &sh))
     }
 
     fn end(&self, end: LinkEnd) {
@@ -544,7 +544,7 @@ impl H2Upload {
         let up = self.up.clone();
         let ok = self
             .conn
-            .spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.pump(c, &up))
+            .run_on_loop(move |h: &mut H2Conn, c| h.pump(c, &up))
             .is_ok();
         if !ok {
             self.up.lock().scheduled = false;
@@ -677,7 +677,7 @@ impl H2Stream {
             let ctl = self.ctl.clone();
             let _ = self
                 .conn
-                .spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.stop(c, &ctl));
+                .run_on_loop(move |h: &mut H2Conn, c| h.stop(c, &ctl));
         }
     }
 
@@ -694,7 +694,7 @@ impl H2Stream {
             let ctl = self.ctl.clone();
             let _ = self
                 .conn
-                .spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.release(c, &ctl));
+                .run_on_loop(move |h: &mut H2Conn, c| h.release(c, &ctl));
         }
     }
 
@@ -760,7 +760,7 @@ fn arm(conn: Conn<H2Conn>, ctl: &Arc<StreamCtl>, phase: u8, d: Duration) {
                 return arm(conn, &ctl, phase, wait);
             }
         }
-        let _ = conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.expire(c, &ctl, phase));
+        let _ = conn.run_on_loop(move |h: &mut H2Conn, c| h.expire(c, &ctl, phase));
     });
 }
 
@@ -951,8 +951,7 @@ impl H2Client {
                 let cb = o2.lock().unwrap_or_else(|p| p.into_inner()).take();
                 let Some(cb) = cb else { return };
                 if ctl2.give_up(STOP_TIMEOUT) {
-                    let _ =
-                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.stop(c, &ctl2));
+                    let _ = conn.run_on_loop(move |h: &mut H2Conn, c| h.stop(c, &ctl2));
                 }
                 cb(Err(ClientError::Timeout));
             });
@@ -963,23 +962,16 @@ impl H2Client {
                 }
             });
         }
-        let slot = Arc::new(Mutex::new(Some((req, done))));
-        let s2 = slot.clone();
-        let queued = self.conn.spawn_blocking(
-            || (),
-            move |h: &mut H2Conn, c, ()| {
-                let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
-                if let Some((req, cb)) = taken {
-                    h.start_full(c, req, Some(cb), None, ctl);
-                }
-            },
-        );
-        if queued.is_err() {
-            let taken = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
-            if let Some((_, cb)) = taken {
-                cb(Err(ClientError::Closed));
+        // Straight to the connection's loop, not through the logical pool (rules §1); if the
+        // connection closes before the request starts there, it fails `Closed`.
+        let mut start = OrElse::new((req, done), |(_, cb): (ClientRequest, Callback)| {
+            cb(Err(ClientError::Closed));
+        });
+        let _ = self.conn.run_on_loop(move |h: &mut H2Conn, c| {
+            if let Some((req, cb)) = start.take() {
+                h.start_full(c, req, Some(cb), None, ctl);
             }
-        }
+        });
     }
 
     /// Starts a request whose body is written afterwards through the returned [`H2Upload`] and
@@ -1017,30 +1009,26 @@ impl H2Client {
             crate::timer::after(d, move || {
                 let Some(ctl) = ctl.upgrade() else { return };
                 if ctl.give_up(STOP_TIMEOUT) {
-                    let _ =
-                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.stop(c, &ctl));
+                    let _ = conn.run_on_loop(move |h: &mut H2Conn, c| h.stop(c, &ctl));
                 }
             });
         }
-        let slot = Arc::new(Mutex::new(Some((req, Box::new(on_event) as EventCb))));
-        let (s2, up2) = (slot.clone(), up.clone());
-        let queued = self.conn.spawn_blocking(
-            || (),
-            move |h: &mut H2Conn, c, ()| {
-                let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
-                if let Some((req, ev)) = taken {
-                    let ctl = up2.ctl.clone();
-                    h.start_full(c, req, None, Some((up2, ev)), ctl);
-                }
+        // As in `request`: to the loop directly, and `Closed` if it never starts there.
+        let up_fail = up.clone();
+        let mut start = OrElse::new(
+            (req, Box::new(on_event) as EventCb),
+            move |(_, mut ev): (ClientRequest, EventCb)| {
+                up_fail.close();
+                ev(H2Event::Error(ClientError::Closed));
             },
         );
-        if queued.is_err() {
-            let taken = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
-            if let Some((_, mut ev)) = taken {
-                up.close();
-                ev(H2Event::Error(ClientError::Closed));
+        let up2 = up.clone();
+        let _ = self.conn.run_on_loop(move |h: &mut H2Conn, c| {
+            if let Some((req, ev)) = start.take() {
+                let ctl = up2.ctl.clone();
+                h.start_full(c, req, None, Some((up2, ev)), ctl);
             }
-        }
+        });
         H2Upload {
             conn: self.conn.clone(),
             up,
@@ -1115,8 +1103,7 @@ impl H2Client {
                 let Some(cb) = once.take() else { return };
                 let id = sid.load(Ordering::Acquire);
                 if id != 0 {
-                    let _ =
-                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.cancel(c, id));
+                    let _ = conn.run_on_loop(move |h: &mut H2Conn, c| h.cancel(c, id));
                 }
                 cb(Err(ClientError::Timeout));
             });
@@ -1133,23 +1120,13 @@ impl H2Client {
             done: once,
             sid,
         });
-        let slot = Arc::new(Mutex::new(Some(open)));
-        let s2 = slot.clone();
-        let queued = self.conn.spawn_blocking(
-            || (),
-            move |h: &mut H2Conn, c, ()| {
-                let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
-                if let Some(w) = taken {
-                    h.ws_start(c, w);
-                }
-            },
-        );
-        if queued.is_err() {
-            let taken = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
-            if let Some(w) = taken {
-                w.done.fail(ClientError::Closed);
+        // As in `request`: to the loop directly, and `Closed` if it never starts there.
+        let mut start = OrElse::new(open, |w: Box<WsOpen>| w.done.fail(ClientError::Closed));
+        let _ = self.conn.run_on_loop(move |h: &mut H2Conn, c| {
+            if let Some(w) = start.take() {
+                h.ws_start(c, w);
             }
-        }
+        });
     }
 
     /// [`websocket`](Self::websocket), waiting for the outcome (at most
@@ -1196,18 +1173,15 @@ impl H2Client {
     /// Closes the connection after sending GOAWAY.
     pub fn close(&self) {
         self.shared.goaway.store(true, Ordering::Release);
-        let _ = self.conn.spawn_blocking(
-            || (),
-            |h: &mut H2Conn, c, ()| {
-                let mut out = Vec::new();
-                let mut p = 0u32.to_be_bytes().to_vec();
-                p.extend_from_slice(&err::NO_ERROR.to_be_bytes());
-                frame(&mut out, ty::GOAWAY, 0, 0, &p);
-                let _ = c.send_owned(out);
-                h.fail_all(ClientError::Closed);
-                c.close_after_send();
-            },
-        );
+        let _ = self.conn.run_on_loop(|h: &mut H2Conn, c| {
+            let mut out = Vec::new();
+            let mut p = 0u32.to_be_bytes().to_vec();
+            p.extend_from_slice(&err::NO_ERROR.to_be_bytes());
+            frame(&mut out, ty::GOAWAY, 0, 0, &p);
+            let _ = c.send_owned(out);
+            h.fail_all(ClientError::Closed);
+            c.close_after_send();
+        });
     }
 }
 

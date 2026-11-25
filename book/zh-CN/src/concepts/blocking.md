@@ -24,6 +24,18 @@ where
   `PoolStats::panicked`）。
 - 线程池队列已满时返回 `Error::Overloaded`，连接（或线程池）已关闭时返回 `Error::Closed`。
 
+## `run_on_loop`
+
+```rust,ignore
+pub fn run_on_loop(&self, f: impl FnOnce(&mut H, &Conn<H>) + Send + 'static) -> Result<()>
+```
+
+只有 `done` 这一半：`f` 直接投递到所属事件循环，在所属 I/O 线程上执行并获得 handler 的 `&mut`
+访问权，不经过任何线程池线程。用它从其他线程（线程池任务、定时器、你自己的线程）访问 handler。
+不要为此投递一个空的 `spawn_blocking`：线程池已满，或者它的线程都在等待这个连接时，那个任务永远
+不会执行。如果连接在 `f` 执行前关闭，`f` 会被直接丢弃而不执行，因此它持有的守卫可以通知等待者；
+连接已经关闭时返回 `Error::Closed`。
+
 ## 有序响应槽位
 
 线程池任务可能以任意顺序完成。对于回复必须按请求顺序发出的协议（HTTP/1.1 流水线、按行协议、
@@ -86,7 +98,9 @@ panic 和被拒绝的任务数。
 ## 让所有 handler 在线程池上执行
 
 HTTP、gRPC 和 arpc 服务端也可以把**每个**请求的 handler 都放到线程池上执行：handler 可以阻塞，
-同一连接上的多个请求同时处理，而不是一个接一个。默认关闭，按协议分别设置：
+同一连接上的多个请求同时处理，而不是一个接一个。按协议分别设置，只有 HTTP/2 默认开启，否则它的各个
+stream 会在所属连接的 I/O 线程上逐个处理（handler 从不阻塞时可设置 `h2.run_on_pool = false`
+保持 inline）：
 
 ```rust,ignore
 let mut http = HttpConfig::default();

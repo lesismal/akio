@@ -116,7 +116,10 @@ pub struct H2Config {
     /// of the connection's I/O thread, so handlers may block and the streams of one connection
     /// are served at the same time. Requests whose body the service takes as a stream, and
     /// CONNECTs (extended or not), stay on the I/O thread. When the pool's queue is full the stream is
-    /// answered `503`. Default `false`.
+    /// answered `503`. Default `true`: one multiplexed connection is otherwise served one stream
+    /// at a time on its I/O thread, so a slow stream holds up its siblings and the thread's
+    /// other connections. Turn it off for handlers that never block, where inline is faster
+    /// (no hand-off per request).
     pub run_on_pool: bool,
 }
 
@@ -135,7 +138,7 @@ impl Default for H2Config {
             reset_window: Duration::from_secs(30),
             stats: None,
             enable_connect_protocol: true,
-            run_on_pool: false,
+            run_on_pool: true,
         }
     }
 }

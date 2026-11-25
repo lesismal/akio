@@ -600,6 +600,7 @@ pub struct akio_core::Conn<H>
 impl<H: akio_core::Handler> akio_core::Conn<H>
 pub fn akio_core::Conn<H>::execute(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::reserve_response(&self) -> akio_core::Result<akio_core::ResponseSlot>
+pub fn akio_core::Conn<H>::run_on_loop(&self, impl core::ops::function::FnOnce(&mut H, &akio_core::Conn<H>) + core::marker::Send + 'static) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::spawn_blocking<R, W, D>(&self, W, D) -> akio_core::Result<()> where R: core::marker::Send + 'static, W: core::ops::function::FnOnce() -> R + core::marker::Send + 'static, D: core::ops::function::FnOnce(&mut H, &akio_core::Conn<H>, R) + core::marker::Send + 'static
 impl<H> akio_core::Conn<H>
 pub fn akio_core::Conn<H>::attachment<T: core::any::Any>(&self) -> core::option::Option<&T>

@@ -10,6 +10,38 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: HTTP clients called from the logical pool no longer deadlock it (akio-core, akio-http, akio-ws)
+
+The HTTP/1.1 client (reusing a keep-alive connection) and the HTTP/2 client (every request,
+streamed request, WebSocket, cancel, timeout and `close`) reached their connection's loop by
+queuing an empty job on the logical pool and letting its completion run there. A pooled handler
+that sent a request and waited for it (`send(..).wait()`) therefore needed a second pool thread
+for the request to even start: with every pool thread waiting so, none ever started, and with no
+request timeout (the default) they waited for good. The server's head, idle and body deadlines
+and the graceful `on_shutdown` of HTTP server and WebSocket client connections went the same
+way, so a jammed pool also stopped them.
+
+- New `Conn::run_on_loop(f)` (akio-core): runs `f` on the owning I/O thread with `&mut` access
+  to the handler, posted straight to the loop, with no pool job. All of the above use it now.
+- A request handed to a connection that closes before its loop starts it is no longer lost (its
+  completion was dropped silently, so `wait()` never returned): the HTTP/2 client fails it with
+  `ClientError::Closed`, the HTTP/1.1 client dials a new connection for it.
+- docs/rules.md rule 2: a pool task never waits for another task of the same pool, blocking
+  calls from pool tasks carry a timeout, and reaching a loop uses `run_on_loop`.
+
+### Changed: HTTP/2 streams run on the logical pool by default (akio-http)
+
+`H2Config::run_on_pool` now defaults to `true` (ADR-094, update of 2026-11-25). The streams of
+one HTTP/2 connection used to be served one at a time on its I/O thread, so a slow handler held
+up its connection's other streams and every other connection of that thread; now each complete
+request's middleware and handler run on the engine's logical pool, and the streams of a
+connection are served at the same time. Streamed request bodies and CONNECTs (WebSocket over
+HTTP/2 included) still run on the I/O thread. What changes for a service on the default:
+responses of one connection may finish in any order, a full pool answers `503` with
+`Retry-After: 1`, and `Context::after` from a handler runs its callback on the shared timer
+thread. Set `run_on_pool: false` to keep the inline path for handlers that never block. HTTP/1.1,
+HTTP/3, gRPC and arpc keep their switches off.
+
 ### Fixed: HTTP/3 QPACK encoding and WebSocket sends from an application thread no longer deadlock (akio-h3, akio-quic)
 
 The same kind of deadlock as the client's request lock: a call on a QUIC connection from outside

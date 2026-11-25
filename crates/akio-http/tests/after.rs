@@ -16,10 +16,10 @@ use std::{
 
 use akio::{Backend, Config, Engine, Listener, UringConfig};
 use akio_http::{
-    Context, Response, Router,
+    Context, HttpConfig, Response, Router,
     client::ClientRequest,
     h2client::{H2Client, H2Options},
-    serve,
+    serve_with,
 };
 
 fn backend() -> Backend {
@@ -40,6 +40,10 @@ struct Counts {
 }
 
 fn start() -> (Engine, Arc<Counts>) {
+    start_with(HttpConfig::default())
+}
+
+fn start_with(http: HttpConfig) -> (Engine, Arc<Counts>) {
     let n = Arc::new(Counts {
         same: AtomicUsize::new(0),
         other: AtomicUsize::new(0),
@@ -78,7 +82,7 @@ fn start() -> (Engine, Arc<Counts>) {
             Listener::tcp("127.0.0.1:0".parse().unwrap())
                 .backend(backend())
                 .threads(2)
-                .serve(serve(router)),
+                .serve(serve_with(http, router)),
         )
         .build()
         .unwrap();
@@ -194,18 +198,29 @@ fn client_gone_before_the_answer() {
 
 #[test]
 fn h2c_streams_are_answered_later_too() {
-    let (e, n) = start();
-    let addr = e.local_addrs()[0];
-    let c = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
-    let t0 = Instant::now();
-    let r = c
-        .send(ClientRequest::get(&format!("http://{addr}/delay/30")))
-        .wait()
-        .unwrap();
-    assert_eq!(r.status, 200);
-    assert_eq!(r.body, b"30");
-    assert!(t0.elapsed() >= Duration::from_millis(30));
-    assert_eq!(n.same.load(Ordering::Relaxed), 1);
-    e.shutdown();
-    e.wait();
+    // Inline streams get a loop timer, as HTTP/1.1 does; pooled ones (HTTP/2's default) are off
+    // the I/O thread when they call `after`, so theirs runs on the crate's timer thread.
+    for run_on_pool in [false, true] {
+        let mut http = HttpConfig::default();
+        http.h2.as_mut().unwrap().run_on_pool = run_on_pool;
+        let (e, n) = start_with(http);
+        let addr = e.local_addrs()[0];
+        let c = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
+        let t0 = Instant::now();
+        let r = c
+            .send(ClientRequest::get(&format!("http://{addr}/delay/30")))
+            .wait()
+            .unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body, b"30");
+        assert!(t0.elapsed() >= Duration::from_millis(30));
+        let (same, other) = (
+            n.same.load(Ordering::Relaxed),
+            n.other.load(Ordering::Relaxed),
+        );
+        let want = if run_on_pool { (0, 1) } else { (1, 0) };
+        assert_eq!((same, other), want, "run_on_pool={run_on_pool}");
+        e.shutdown();
+        e.wait();
+    }
 }

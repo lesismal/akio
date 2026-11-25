@@ -22,7 +22,15 @@ for a proxy built on an event-loop library.
    `run_on_pool` switch, ADR-094), and comes back to the loop as a completion. The
    pool is bounded (`Overloaded` when full); a feature that queues work there handles that error.
    Waits between pools and loops go one way only: a pool task never waits for a loop, so they
-   cannot deadlock each other.
+   cannot deadlock each other. Nor does a pool task wait for another task of the same pool
+   (queue a sub-task, then block on its channel or join): once every thread holds such a waiter,
+   the sub-tasks sit in the queue with no thread to run them, and those requests hang for good
+   while new ones are refused. A pool task may block, so it does the sub-work inline; a later
+   stage starts from the completion on the loop; fan-out with a join uses a pool of its own.
+   Blocking calls a pool task makes on other services (an HTTP or gRPC client) carry a timeout,
+   since each one holds a pool thread while it waits. Code that only needs to reach a
+   connection's loop (to start a client request, fire a deadline) uses `Conn::run_on_loop`,
+   never an empty `spawn_blocking`, so it needs no pool thread.
 3. **Library code that must call a blocking API** (a tracker announce resolving a host name, a
    file served on a cache miss) does it on the pool or on a dedicated thread of its own, never
    on the loop that happened to trigger it. Only an in-memory fast path stays on the loop.

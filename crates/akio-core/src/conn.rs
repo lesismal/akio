@@ -3267,6 +3267,24 @@ impl<H: Handler> Conn<H> {
             .map_err(|_| Error::Overloaded)
     }
 
+    /// Runs `f` **on this connection's owning I/O thread** with exclusive access to the handler,
+    /// as a [`spawn_blocking`](Self::spawn_blocking) completion runs, but without going through
+    /// the logical pool: the way for another thread to reach the handler. It never waits for a
+    /// pool thread, so it works when the pool is full or every pool thread is blocked (a pool
+    /// job waiting on this connection, rules §1). Called on the owning thread itself, `f` runs
+    /// after the current batch of events, not inline. [`Error::Closed`] when the connection is
+    /// already closed; if it closes before `f` runs, `f` is dropped unrun. Either way `f` is
+    /// dropped, so a guard it owns can answer whoever waits on it.
+    pub fn run_on_loop(&self, f: impl FnOnce(&mut H, &Conn<H>) + Send + 'static) -> Result<()> {
+        if !self.inner.is_open() {
+            return Err(Error::Closed);
+        }
+        let f: Completion<H> = Box::new(f);
+        let task: Task = Box::new(f);
+        self.inner.link.post_task(self.inner.id, task);
+        Ok(())
+    }
+
     /// Reserves the next response position on this connection. Responses are written in
     /// reservation order no matter in which order the slots are filled, which keeps pipelined
     /// protocols correct when requests finish out of order on the pool. Reserve on the I/O

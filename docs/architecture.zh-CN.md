@@ -184,7 +184,8 @@ flowchart LR
 - **逻辑线程池**（`akio-pool`）全 engine 共享、自适应（按需启动线程直到上限，空闲后退出）且
   有界（队列满时以 `Overloaded` 拒绝）。`Conn::spawn_blocking` 在其中执行任务，再把完成回调
   作为类型擦除的任务投递回所属事件循环（`LoopLink::post_task`）；事件循环以对 handler 的 `&mut`
-  访问执行它，连接已不存在时则丢弃它。
+  访问执行它，连接已不存在时则丢弃它。`Conn::run_on_loop` 不经过线程池任务、直接投递这样的任务：
+  其他线程（HTTP 客户端、超时巡检线程）访问 handler 走这条路径，无论线程池多满都能生效。
 - **跨线程命令** 通过事件循环的命令队列（一个 `Mutex<Vec<Cmd>>`）加一个唤醒器（Linux 上为
   eventfd，macOS 上为 pipe）送达：`Wake(id)`（刷出队列）、`Close(id)`、`Task(id, completion)`、
   `Dial`、`DialUdp`、`Shutdown`，以及遥测请求（连接表快照、实时设置热更新）。一个"唤醒待处理"

@@ -26,6 +26,19 @@ where
 - It fails with `Error::Overloaded` when the pool queue is full and `Error::Closed` when the
   connection (or the pool) is closed.
 
+## `run_on_loop`
+
+```rust,ignore
+pub fn run_on_loop(&self, f: impl FnOnce(&mut H, &Conn<H>) + Send + 'static) -> Result<()>
+```
+
+The `done` half alone: `f` runs on the owning I/O thread with `&mut` access to the handler,
+posted straight to the loop, with no pool thread involved. Use it to reach the handler from
+another thread (a pool job, a timer, your own thread). Never use an empty `spawn_blocking`
+for this: when the pool is full, or its threads all wait on this very connection, that job
+never runs. If the connection closes before `f` runs, `f` is dropped unrun, so a guard it owns
+can answer whoever waits on it; on an already closed connection it fails with `Error::Closed`.
+
 ## Ordered response slots
 
 Pool jobs finish in any order. For protocols where replies must follow request order (HTTP/1.1
@@ -91,7 +104,9 @@ bridge). For raw `Handler`s, `Conn::spawn_blocking` uses the engine's pool.
 
 The HTTP, gRPC and arpc servers can also run **every** request's handler on the pool, so
 handlers may block and the requests of one connection are served at the same time instead of
-one after another. It is off by default, set per protocol:
+one after another. It is set per protocol, and on by default only for HTTP/2, whose streams
+would otherwise be served one at a time on their connection's I/O thread (set
+`h2.run_on_pool = false` to keep non-blocking handlers inline):
 
 ```rust,ignore
 let mut http = HttpConfig::default();

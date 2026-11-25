@@ -331,3 +331,133 @@ fn slow_callbacks_are_reported_and_fast_ones_are_not() {
     assert!(got[0].1 >= Duration::from_millis(100));
     stop(&e);
 }
+
+/// `Conn::run_on_loop` reaches the handler without a pool thread: a pool job holding the only
+/// pool thread hands work to the loop and waits for it.
+#[test]
+fn run_on_loop_needs_no_pool_thread() {
+    struct H;
+    impl Handler for H {
+        fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
+            let c2 = c.clone();
+            c.execute(move || {
+                let (tx, rx) = std::sync::mpsc::channel();
+                c2.run_on_loop(move |_h: &mut H, c| {
+                    let _ = c.send(b"L");
+                    let _ = tx.send(());
+                })
+                .unwrap();
+                let ok = rx.recv_timeout(Duration::from_secs(5)).is_ok();
+                let _ = c2.send(if ok { b"Y" } else { b"N" });
+            })
+            .unwrap();
+        }
+    }
+    let e = Engine::builder()
+        .config(quick())
+        .pool({
+            let mut v = PoolConfig::default();
+            v.max_threads = 1;
+            v
+        })
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<H>| H)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(b"x").unwrap();
+    assert_eq!(read_n(&mut s, 2), b"LY");
+    stop(&e);
+}
+
+/// Work handed to `run_on_loop` that never runs is dropped, so a guard it owns can answer its
+/// waiter: refused at once on a closed connection, and dropped unrun when the connection
+/// closes after it was queued but before the loop got to it (here the handler panics right
+/// after posting, which closes the connection within the same batch).
+#[test]
+fn run_on_loop_work_that_cannot_run_is_dropped() {
+    /// Counts whether the work it rides in ran or was dropped unrun.
+    struct Guard {
+        ran: bool,
+        counts: Arc<(AtomicUsize, AtomicUsize)>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let c = if self.ran {
+                &self.counts.0
+            } else {
+                &self.counts.1
+            };
+            c.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct H(Arc<(AtomicUsize, AtomicUsize)>, Arc<AtomicUsize>);
+    impl Handler for H {
+        fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
+            let g = Guard {
+                ran: false,
+                counts: self.0.clone(),
+            };
+            // Posted from the loop's own thread, so it would run after this batch.
+            c.run_on_loop(move |_h: &mut H, _c| {
+                let mut g = g; // the whole guard rides in the work, not just its field
+                g.ran = true;
+            })
+            .unwrap();
+            self.1.fetch_add(1, Ordering::SeqCst);
+            panic!("closes the connection before the posted work runs");
+        }
+        fn on_close(&mut self, c: &Conn<Self>, _e: Option<Error>) {
+            let g = Guard {
+                ran: false,
+                counts: self.0.clone(),
+            };
+            let r = c.run_on_loop(move |_h: &mut H, _c| drop(g));
+            assert!(matches!(r, Err(Error::Closed)), "{r:?}");
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let counts = Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
+    let posted = Arc::new(AtomicUsize::new(0));
+    let (c2, p2) = (counts.clone(), posted.clone());
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<H>| H(c2.clone(), p2.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    for _ in 0..50 {
+        let mut s = connect(addr);
+        s.write_all(b"x").unwrap();
+        drop(s);
+    }
+    // 50 posts in `on_data`, dropped when the panic closed the connection, and 50 refused
+    // posts in `on_close`.
+    let t = Instant::now();
+    while counts.0.load(Ordering::SeqCst) + counts.1.load(Ordering::SeqCst) < 100 {
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "work neither ran nor was dropped"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(posted.load(Ordering::SeqCst), 100);
+    assert_eq!(
+        counts.0.load(Ordering::SeqCst),
+        0,
+        "no work ran on a closed connection"
+    );
+    assert_eq!(counts.1.load(Ordering::SeqCst), 100);
+    stop(&e);
+}

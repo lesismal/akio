@@ -682,13 +682,10 @@ impl Acceptor for ClientAcceptor {
     // A graceful engine shutdown closes open WebSocket connections with 1001 (going away) and
     // the close handshake; a connection still handshaking is dropped.
     fn on_shutdown(&self, c: &Conn<ClientConn>) {
-        let queued = c.spawn_blocking(
-            || (),
-            |h: &mut ClientConn, c, ()| match &h.ws {
-                Some(ws) => ws.going_away(),
-                None => c.close(),
-            },
-        );
+        let queued = c.run_on_loop(|h: &mut ClientConn, c| match &h.ws {
+            Some(ws) => ws.going_away(),
+            None => c.close(),
+        });
         if queued.is_err() {
             c.close();
         }

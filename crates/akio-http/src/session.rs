@@ -51,8 +51,8 @@ pub struct HttpConfig {
     /// requests whose body the service takes as a stream stay on the I/O thread; a pooled
     /// handler's `upgrade_websocket` / `upgrade_raw` return `false`. When the pool's queue is
     /// full the request is answered `503`. HTTP/2 has its own switch,
-    /// [`H2Config::run_on_pool`]. Default `false`: handlers run inline and must not block
-    /// (a single request can still go to the pool with [`Context::detach_to_pool`]).
+    /// [`H2Config::run_on_pool`], on by default. Default `false`: handlers run inline and must
+    /// not block (a single request can still go to the pool with [`Context::detach_to_pool`]).
     ///
     /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
     pub run_on_pool: bool,
@@ -145,7 +145,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
 
     fn on_shutdown(&self, c: &Conn<Session<S>>) {
         // Run on the handler (it knows whether this is HTTP/1 or HTTP/2).
-        let ok = c.spawn_blocking(|| (), |h: &mut Session<S>, c, ()| h.shutdown(c));
+        let ok = c.run_on_loop(|h: &mut Session<S>, c| h.shutdown(c));
         if ok.is_err() {
             h1_shutdown(c);
         }
