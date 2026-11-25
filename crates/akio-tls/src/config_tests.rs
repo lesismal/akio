@@ -304,6 +304,10 @@ fn a_server_capped_at_tls12() {
             .tls12_only(true)
             .tls13_only(true)
             .build()
+            .is_err()
+    );
+}
+
 #[test]
 fn roots_verify_a_chain_outside_a_handshake() {
     // ADR-123: the store a handshake would use, for a `Verifier` of the caller's own.
