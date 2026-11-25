@@ -619,12 +619,17 @@ impl H2Upload {
         if self.up.lock().take_back(seq).is_none() {
             return Ok(());
         }
-        let _ = self
-            .up
-            .queued
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |q| {
-                Some(q.saturating_sub(n))
-            });
+        // A compare-exchange loop rather than `fetch_update`, which newer compilers deprecate
+        // (its replacement is newer than the MSRV).
+        let mut q = self.up.queued.load(Ordering::Acquire);
+        while let Err(cur) = self.up.queued.compare_exchange_weak(
+            q,
+            q.saturating_sub(n),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            q = cur;
+        }
         Err(akio::Error::Closed)
     }
 
