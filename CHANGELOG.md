@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: pinning I/O threads to CPUs, and a shared-group benchmark (akio, tools/bench)
+
+`EngineBuilder::pin_io_threads(bool)` (or `AKIO_PIN_IO_THREADS=1`), off by default, pins each I/O
+thread to one CPU of those the process may use, in turn over the groups (shared and dedicated
+listeners, client threads; threads added by `set_threads` and groups added at run time continue
+the round). Groups pinned by NUMA placement or BPF steering are left alone; rounds workers are
+not pinned. Linux only.
+
+Why (docs/BENCHMARKS.md, "Shared I/O groups and I/O thread pinning"): with as many busy I/O
+threads as CPUs, as in a shared group sized to the CPUs, the scheduler sometimes stacks two of
+them on one CPU; unpinned, HTTP/1.1 over 3 listeners sharing 4 threads swung between 612k and
+752k requests/s, pinned it held 754k (±1%), at or above 12 dedicated threads. But h2c, whose
+handlers run on the logical pool on the same CPUs, fell by up to half pinned, so it stays off by
+default. `tools/bench/shared.sh` measures shared against dedicated groups, pinned or not
+(`http-bench` gains `AKIO_BENCH_LISTENERS` and `AKIO_BENCH_SHARED`).
+
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 
 A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain

@@ -668,6 +668,62 @@ medians 0.998 for both); this row moves by about 1% between runs of the same bui
 host. The echo rows move both ways inside their round-to-round noise (the closed-loop echo
 client is the bottleneck, see "TCP, UDP and TLS echo").
 
+### Shared I/O groups and I/O thread pinning (ADR-130, same-run A/B, `tools/bench/shared.sh`)
+
+Measured 2026-11-26 on gpu51 under `quiet.sh` (10 s runs, 5 rounds, medians, a fresh server per
+run; server on CPUs 0–3 with 4 I/O threads per group, `h2load` on CPUs 4–7 and 12–15). One
+`http-bench` with 3 HTTP listeners: `dedicated` gives each listener 4 I/O threads of its own (12,
+every listener before ADR-130), `shared` gives the 3 of them one group of 4; `-pinned` adds
+`AKIO_PIN_IO_THREADS=1` (`EngineBuilder::pin_io_threads`). The load over 3 listeners is one
+`h2load` per listener at once, summed; "1 of 3" loads the first listener only. `±` is half the
+min–max spread of the rounds.
+
+| Load | backend | dedicated | shared | dedicated pinned | shared pinned |
+|---|---|---:|---:|---:|---:|
+| server threads | | 14 | 6 | 14 | 6 |
+| HTTP/1.1 plaintext, 256 conns over 3 listeners | epoll | 698,197 (±1%) | 706,187 (±6%) | 698,811 (±1%) | 720,701 (±3%) |
+| HTTP/1.1 plaintext, 256 conns over 3 listeners | io_uring | 747,208 (±0%) | 648,189 (±11%) | 746,592 (±0%) | 754,270 (±1%) |
+| HTTP/1.1 pipelined ×16, 256 conns over 3 | epoll | 4,446,505 | 4,503,939 | 4,450,225 | 4,497,299 |
+| HTTP/1.1 pipelined ×16, 256 conns over 3 | io_uring | 4,979,515 | 5,015,334 | 4,982,537 | 5,046,587 |
+| h2c 64 conns × 16 streams over 3 | epoll | 495,052 | 486,501 | 402,422 (±26%) | 314,248 (±9%) |
+| h2c 64 conns × 16 streams over 3 | io_uring | 496,240 | 497,437 | 247,305 (±44%) | 315,127 (±20%) |
+| HTTP/1.1 plaintext, 256 conns on 1 of 3 | epoll | 735,151 | 733,090 (±7%) | 736,027 | 735,270 |
+| HTTP/1.1 plaintext, 256 conns on 1 of 3 | io_uring | 872,458 | 872,341 | 875,414 | 875,080 |
+
+Server CPU per million requests (HTTP/1.1 over 3 listeners) is 5–6 s in every column.
+
+**Why unpinned shared HTTP/1.1 swings.** Its rounds are bimodal (io_uring: 750k, 612k, 644k,
+648k, 752k; an earlier run: 664k, 594k, 757k, 669k, 731k), while dedicated stays within 1%. A
+diagnostic run (8 rounds each) sampled where the 4 I/O threads ran every 0.5 s: unpinned, two of
+them sat on one CPU in 9 to 19 of 20 samples, the threads' CPU use ranged 50–99%, and requests/s
+fell to 558k–641k; with the 4 threads pinned one per CPU, 0 of 20, 95–99% each, 682k–719k. With
+as many busy I/O threads as CPUs the scheduler sometimes stacks two of them; 12 dedicated
+threads on 4 CPUs keep every CPU busy anyway, at a third of a CPU each.
+
+**Why pinned HTTP/2 falls.** HTTP/2 handlers run on the logical pool by default
+(`H2Config::run_on_pool`), whose threads share CPUs 0–3 here; a pinned I/O thread can no longer
+move off a CPU a pool thread keeps busy. (Not measured separately: h2c with `run_on_pool` off.)
+
+**Answer.** Sharing costs nothing measurable once the I/O threads stay on their own CPUs: shared
+and pinned matches or beats 12 dedicated threads with 4. Pinning is not the default: it helps
+HTTP/1.1 and pipelined loads served inline, and hurts loads whose handlers run on the logical
+pool (or next to other busy processes) on the same CPUs.
+
+Single listener, before against after ADR-130 (`tools/bench/http.sh` with `BASE_DIR`, same
+setup, `base` = `7d03a0f4`; the listener has 4 threads of its own, unpinned):
+
+| Load | backend | base | new | new / base |
+|---|---|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 conns (±6%) | epoll | 684,328 | 733,401 | 1.07 |
+| HTTP/1.1 plaintext, 256 conns (±4–6%) | io_uring | 835,107 | 874,342 | 1.05 |
+| HTTP/1.1 pipelined ×16, 256 conns | epoll | 4,561,560 | 4,499,332 | 0.99 |
+| HTTP/1.1 pipelined ×16, 256 conns | io_uring | 5,120,609 | 5,014,336 | 0.98 |
+| h2c 64 conns × 16 streams | epoll | 485,114 | 486,138 | 1.00 |
+| h2c 64 conns × 16 streams | io_uring | 496,445 | 497,068 | 1.00 |
+
+**Answer: unchanged** within the noise of this host (the plaintext rows swing ±6% between rounds
+for the reason above: 4 unpinned threads on 4 CPUs).
+
 ### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

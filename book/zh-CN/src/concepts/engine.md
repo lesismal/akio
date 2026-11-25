@@ -42,6 +42,14 @@ UDP、数据报、DPDK 和 BPF 引流的 listener 也独占线程组；io_uring 
 影响组内所有 listener。handler 类型、后端和线程数各不相同的多个 listener 可以放在同一个 engine
 里。
 
+`EngineBuilder::pin_io_threads(true)`（或 `AKIO_PIN_IO_THREADS=1`）把每个 I/O 线程绑到进程可用
+CPU 中的一个，在各线程组之间轮流分配（Linux）。忙碌的 I/O 线程数与 CPU 数相同时（按 CPU 数确定
+大小的共享组常常如此），调度器有时会让其中两个在同一个 CPU 上待一段时间，而另一个 CPU 空闲；绑核
+之后，3 个 listener 共享 4 个线程跑在 4 个 CPU 上的 HTTP/1.1 吞吐与 12 个独占线程相当
+（docs/BENCHMARKS.zh-CN.md）。但绑核的线程无法避开同一 CPU 上其他繁忙的线程：handler 默认在逻辑
+线程池上执行的 h2c，在相同 CPU 上绑核后吞吐最多下降一半。只在 handler inline 执行、且这些 CPU 由
+I/O 线程独用时开启。NUMA 放置和 BPF 引流会自行绑定各自的线程组。
+
 ## 后端
 
 | 后端 | 平台 | 说明 |

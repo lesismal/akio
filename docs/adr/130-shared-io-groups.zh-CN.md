@@ -73,6 +73,18 @@ accept，其 `user_data` 标明 listener 和 socket。移除一个 listener 会�
 （`UringConfig::entries`、`sqpoll`）共享一组，大小由 `EngineBuilder::io_threads` 决定；io_uring
 不可用时，它们与独占线程组时一样退回 epoll 的共享组（或在 `strict` 时报错）。
 
+## 后续：I/O 线程绑核（2026-11-26）
+
+按 CPU 数确定大小的共享组，忙碌 I/O 线程数正好等于 CPU 数；不绑核时，调度器有时会在一次运行的
+大部分时间里让其中两个线程待在同一个 CPU 上，而另一个 CPU 空闲（在 gpu51 上测得：4 个线程中有两个
+在同一 CPU 上的采样最多达 20 次中的 19 次，这些运行中 3 个 listener 的 HTTP/1.1 慢 10% 到 20%）。
+独占线程组因为 CPU 超额分配（4 个 CPU 上 12 个线程）而掩盖了这一点。`EngineBuilder::pin_io_threads`
+（或 `AKIO_PIN_IO_THREADS=1`）默认关闭，开启后把每个 I/O 线程在各线程组之间轮流绑到一个允许的
+CPU 上；NUMA 放置或 BPF 引流已绑定的线程组保持不变。不默认开启的原因：绑核的线程无法避开同一 CPU
+上其他繁忙的线程。实测（docs/BENCHMARKS.zh-CN.md）：绑核后，3 个 listener 共享 4 个线程的
+HTTP/1.1 与 12 个独占线程相当，波动在 1% 以内；handler 在同一组 CPU 的逻辑线程池上执行的 h2c 最多
+下降一半。
+
 ## 未做
 
 - UDP 和数据报 listener：它们的事件循环是另一种类型。

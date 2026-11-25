@@ -10,6 +10,20 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：I/O 线程绑核，以及共享线程组基准（akio、tools/bench）
+
+`EngineBuilder::pin_io_threads(bool)`（或 `AKIO_PIN_IO_THREADS=1`），默认关闭，把每个 I/O 线程
+绑到进程可用 CPU 中的一个，在各线程组之间轮流分配（共享和独占的 listener、客户端线程；`set_threads`
+新增的线程和运行时新增的线程组接着轮转）。NUMA 放置或 BPF 引流已绑定的线程组保持不变；轮次调度的
+worker 不绑核。仅 Linux。
+
+原因（docs/BENCHMARKS.zh-CN.md，“共享 I/O 线程组与 I/O 线程绑核”）：忙碌 I/O 线程数与 CPU 数相同
+时（按 CPU 数确定大小的共享组就是如此），调度器有时会把其中两个叠在同一个 CPU 上；不绑核时，3 个
+listener 共享 4 个线程的 HTTP/1.1 在每秒 612k 到 752k 请求之间波动，绑核后稳定在 754k（±1%），
+达到或超过 12 个独占线程。但 handler 在同一组 CPU 的逻辑线程池上执行的 h2c 绑核后最多下降一半，
+所以默认关闭。`tools/bench/shared.sh` 测量共享与独占线程组，各自绑核与不绑核（`http-bench` 新增
+`AKIO_BENCH_LISTENERS` 和 `AKIO_BENCH_SHARED`）。
+
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
 使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在
