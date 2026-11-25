@@ -155,6 +155,9 @@ pub(crate) struct Params {
     ranges: Ranges,
     /// Percent-decoded values, only for the parameters that contain an escape.
     decoded: Vec<(usize, String)>,
+    /// The path the parameters were matched in, copied once the request's target may change
+    /// ([`Context::req_mut`](crate::Context::req_mut), ADR-126): the ranges keep reading it.
+    matched: Option<Box<str>>,
 }
 
 impl Params {
@@ -172,6 +175,15 @@ impl Params {
             names,
             ranges,
             decoded,
+            matched: None,
+        }
+    }
+
+    /// Keeps a copy of `path`, the one the parameters were matched in, for when the request's
+    /// target changes; once, and only for a route with parameters.
+    pub(crate) fn pin(&mut self, path: &str) {
+        if !self.names.is_empty() && self.matched.is_none() {
+            self.matched = Some(path.into());
         }
     }
 
@@ -185,9 +197,12 @@ impl Params {
     }
 
     /// The value of `name` as sent, from the request path `path`.
-    pub(crate) fn raw<'a>(&self, name: &str, path: &'a str) -> Option<&'a str> {
+    pub(crate) fn raw<'a>(&'a self, name: &str, path: &'a str) -> Option<&'a str> {
         let i = self.index(name)?;
-        path.get(self.ranges.get(i))
+        self.matched
+            .as_deref()
+            .unwrap_or(path)
+            .get(self.ranges.get(i))
     }
 
     /// The percent-decoded value of `name` (the raw one when it has no valid escapes).
@@ -195,7 +210,11 @@ impl Params {
         let i = self.index(name)?;
         match self.decoded.iter().find(|(j, _)| *j == i) {
             Some((_, d)) => Some(d),
-            None => path.get(self.ranges.get(i)),
+            None => self
+                .matched
+                .as_deref()
+                .unwrap_or(path)
+                .get(self.ranges.get(i)),
         }
     }
 }
