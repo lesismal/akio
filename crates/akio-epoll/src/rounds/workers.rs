@@ -9,7 +9,9 @@
 //!   is a *driver* behind a lock; a worker with nothing to run takes a free driver and waits in
 //!   its `epoll_wait`, and the connections it finds go to its own queue (the others steal). A
 //!   busy worker polls the drivers without blocking every [`POLL_INTERVAL`] rounds, so under
-//!   load events are picked up without any thread waking another.
+//!   load events are picked up without any thread waking another. Workers take the drivers in
+//!   turn; with fewer idle workers than drivers, a worker blocked in one wakes every 10 ms to
+//!   poll the next, so that no driver is left unpolled.
 //!
 //! A worker that runs dry steals half of another's queue, spins a little, and parks. A poster
 //! wakes a parked worker when the queue it pushed to belongs to one, or when no worker is
@@ -157,6 +159,8 @@ pub(crate) struct Driver {
     pub(crate) shared: Arc<PollerShared>,
     /// Its loop finished (shut down and drained): nobody polls it any more.
     pub(crate) done: AtomicBool,
+    /// A worker is blocked in its `epoll_wait` (the one to interrupt for queued work).
+    pub(crate) blocked: AtomicBool,
 }
 
 /// The pool. Built by the group, started with [`Workers::start`].
@@ -356,8 +360,13 @@ impl Workers {
             return true;
         }
         if !own && self.in_poll.load(Ordering::SeqCst) > 0 {
-            // Driver mode with every idle worker in `epoll_wait`: interrupt one.
-            if let Some(d) = self.drivers().first() {
+            // Driver mode with every idle worker in `epoll_wait`: interrupt one, in the driver
+            // it is blocked in (waking another would wake nobody).
+            if let Some(d) = self
+                .drivers()
+                .iter()
+                .find(|d| d.blocked.load(Ordering::SeqCst))
+            {
                 d.shared.wake();
             }
         }
@@ -406,10 +415,18 @@ impl Workers {
             .any(|s| s.len.load(Ordering::SeqCst) != 0)
     }
 
-    /// Driver mode: polls a free driver. `block`: wait for events (an idle worker), else just
-    /// collect what is ready. True if a driver was polled.
-    fn poll_drivers(&self, me: usize, block: bool) -> bool {
-        for d in self.drivers() {
+    /// Driver mode: polls a free driver, trying them in turn from `*next` (which then points
+    /// past the one polled, so that every driver gets its turn). `block`: wait for events (an
+    /// idle worker), else just collect what is ready. True if a driver was polled.
+    ///
+    /// A blocking wait is cut to [`WATCH`] while another live driver has no worker blocked in
+    /// it (fewer idle workers than drivers): its events would otherwise wait for this one's.
+    fn poll_drivers(&self, me: usize, block: bool, next: &mut usize) -> bool {
+        let drivers = self.drivers();
+        let n = drivers.len();
+        for k in 0..n {
+            let i = (*next + k) % n;
+            let d = &drivers[i];
             if d.done.load(Ordering::Acquire) {
                 continue;
             }
@@ -423,15 +440,30 @@ impl Workers {
             let Some(lp) = g.as_mut() else {
                 continue;
             };
+            *next = i + 1;
             // The loop adds its own deadlines in `poll_once`; this bounds the wait by the
             // worker's loop timers (ADR-103).
-            let timeout = if block {
+            let mut timeout = if block {
                 akio_core::timer::poll_timeout(None)
             } else {
                 Some(Duration::ZERO)
             };
             if block {
-                self.in_poll.fetch_add(1, Ordering::SeqCst);
+                d.blocked.store(true, Ordering::SeqCst);
+                let blocked = self.in_poll.fetch_add(1, Ordering::SeqCst) + 1;
+                if self.any_queued() {
+                    // Queued after this worker last looked, by a poster that saw nobody in
+                    // `epoll_wait` (so woke nobody): run it instead of waiting.
+                    timeout = Some(Duration::ZERO);
+                } else if blocked < n
+                    && drivers
+                        .iter()
+                        .filter(|d| !d.done.load(Ordering::Acquire))
+                        .count()
+                        > blocked
+                {
+                    timeout = Some(timeout.map_or(WATCH, |t| t.min(WATCH)));
+                }
             }
             POLLING.with(|p| p.set(true));
             let r =
@@ -439,6 +471,7 @@ impl Workers {
             POLLING.with(|p| p.set(false));
             if block {
                 self.in_poll.fetch_sub(1, Ordering::SeqCst);
+                d.blocked.store(false, Ordering::SeqCst);
             }
             drop(g);
             self.after_poll(me);
@@ -492,6 +525,8 @@ impl Workers {
         };
         let driving = !self.drivers().is_empty();
         let mut since_poll = 0u32;
+        // The driver this worker tries first next time (workers start spread over them).
+        let mut next_driver = me;
         loop {
             akio_core::timer::fire();
             if let Some((job, stolen)) = self.find(me) {
@@ -504,7 +539,7 @@ impl Workers {
                     since_poll += 1;
                     if since_poll >= self.interval {
                         since_poll = 0;
-                        self.poll_drivers(me, false);
+                        self.poll_drivers(me, false, &mut next_driver);
                     }
                 }
                 continue;
@@ -515,7 +550,7 @@ impl Workers {
             // per request at 10k requests/s but cost 7% on echo with 64 connections (ADR-104).
             since_poll = 0;
             if driving
-                && self.poll_drivers(me, false)
+                && self.poll_drivers(me, false, &mut next_driver)
                 && self.shards[me].len.load(Ordering::SeqCst) != 0
             {
                 continue;
@@ -545,7 +580,7 @@ impl Workers {
                 continue;
             }
             // Nothing to run: wait for events in a free driver, if there is one.
-            if driving && !self.drivers_done() && self.poll_drivers(me, true) {
+            if driving && !self.drivers_done() && self.poll_drivers(me, true, &mut next_driver) {
                 continue;
             }
             if self.stop.load(Ordering::SeqCst) {

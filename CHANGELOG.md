@@ -42,6 +42,34 @@ responses of one connection may finish in any order, a full pool answers `503` w
 thread. Set `run_on_pool: false` to keep the inline path for handlers that never block. HTTP/1.1,
 HTTP/3, gRPC and arpc keep their switches off.
 
+### Fixed: four engine hangs (akio-epoll, akio-uring, akio-http, akio-ws, akio-h3, akio-quic, akio-webrtc, akio-turn, akio-kcp)
+
+- **A panic on a shared timer thread no longer stops every later timer of the process.** The
+  timer threads of akio-http, akio-ws, akio-h3 (client request deadlines), akio-quic,
+  akio-webrtc, akio-turn and akio-kcp ran their jobs without catching panics, and they reach
+  user callbacks (a handler's `on_close`, a request's callback). One panic killed the thread;
+  from then on the `after` functions dropped their jobs silently, so request, handshake and
+  close timeouts stopped working. A panicking job is now caught, as akio-media's timer already
+  did.
+- **A command a loop posts to itself after its drain is no longer left waiting.** A post from a
+  loop's own thread skips the wakeup, since the loop drains its queue after every batch; but
+  callbacks run after that drain (an `on_close` from the idle, write or handshake timers, from
+  retiring or draining) could post commands for other connections of the same loop, which then
+  waited until something else woke the loop: on an idle loop with no timer left, never. The
+  loop now drains again before it blocks when it posted to itself (epoll/kqueue TCP and UDP
+  loops, and io_uring).
+- **An accept filter may stop its own listener with rounds scheduling.** The filter ran under
+  the listening socket's lock, which `stop_listening` takes to close the socket: a filter that
+  removed its own listener deadlocked the worker. It now runs without that lock; a connection
+  whose check was running when the listener closed is dropped.
+- **Rounds scheduling in driver mode polls every poller.** Workers always tried the first driver
+  first, and work queued from other threads woke the first driver whether or not a worker waited
+  in it, so with fewer idle workers than pollers (`RoundsConfig::new(2, 1)`, say) a second
+  poller's listeners, dials and connections could go unpolled for good. Workers now take the
+  drivers in turn, a blocked worker wakes every 10 ms to poll the next while another driver has
+  nobody waiting in it, a poster interrupts the driver a worker is actually blocked in, and a
+  worker about to block runs work queued since it last looked.
+
 ### Fixed: HTTP/3 QPACK encoding and WebSocket sends from an application thread no longer deadlock (akio-h3, akio-quic)
 
 The same kind of deadlock as the client's request lock: a call on a QUIC connection from outside
