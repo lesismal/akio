@@ -16,7 +16,11 @@
 //! the handshake (the SOCKS success reply, a PROXY header for the upstream, a ClientHello read
 //! to pick the upstream) is passed as `first` to [`Relay::splice_conns_with`] (or
 //! [`Relay::tunnel`]): it is written to the second socket once both sockets are in the map but
-//! before anything is relayed, so it goes out ahead of the first relayed byte. After
+//! before anything is relayed, so it goes out ahead of the first relayed byte. Nor may
+//! userspace have read part of a received segment: the kernel relays the rest of a partly read
+//! segment from the segment's start (seen on Linux 7.0), so splice after reading everything
+//! that had arrived or nothing of it (what `akio` reads before `hold_reads` takes effect is
+//! everything the socket had, unless a read filled its buffer). After
 //! splicing, userspace must not read payload from the sockets (`akio`'s loop sees no more data
 //! on them, only EOF and errors) and should only watch for close: closing either socket removes
 //! it from the map.
@@ -342,10 +346,15 @@ fn not_tcp() -> io::Error {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ByteCounts {
-    /// Payload bytes received in order (`tcpi_bytes_received`).
+    /// Payload bytes received in order (`tcpi_bytes_received`, less the peer's FIN while the
+    /// socket's state says it was received; once the socket is fully closed a received FIN may
+    /// count as one byte).
     pub received: u64,
-    /// Payload bytes written to the socket: acknowledged by the peer (`tcpi_bytes_acked`) plus
-    /// still in its send queue (`SIOCOUTQ`).
+    /// Bytes written to the socket: acknowledged by the peer (`tcpi_bytes_acked`, less this
+    /// side's FIN while the state says it was acknowledged) plus still in its send queue
+    /// (`SIOCOUTQ`). The kernel counts the SYN of a connection this side opened (a dialed one)
+    /// as one acknowledged byte: compare `written` counts of one socket with each other (as
+    /// [`Splice::base`] and [`Tunnel`](crate::Tunnel) do), not with a payload length.
     pub written: u64,
     /// Bytes received but not read from the socket yet: its receive queue (`SIOCINQ`, the same
     /// as `FIONREAD`). On a socket not spliced, `received - unread` ([`consumed`]
@@ -459,19 +468,31 @@ mod imp {
 
     /// The counters of `fd`, read again while `TCP_INFO` moves under the two `ioctl`s.
     pub(super) fn counts(fd: i32) -> io::Result<ByteCounts> {
+        // TCP states (include/net/tcp_states.h) where the peer's FIN was received, or ours
+        // acknowledged: the kernel counts each FIN as a byte.
+        const FIN_WAIT2: u8 = 5;
+        const TIME_WAIT: u8 = 6;
+        const CLOSE_WAIT: u8 = 8;
+        const LAST_ACK: u8 = 9;
+        const CLOSING: u8 = 11;
         let mut tries = 0;
         loop {
-            let (received, acked) = sys::tcp_bytes(fd)?;
+            let first = sys::tcp_bytes(fd)?;
+            let (received, acked, state) = first;
             let unread = sys::unread_bytes(fd)? as u64;
             let unsent = sys::unsent_bytes(fd)? as u64;
             tries += 1;
             // Stable: one moment. Else, after a few tries, these: `unread` read after
             // `received` (what was read is under-counted) and `unsent` after `acked` (what was
             // written is under-counted), never over.
-            if tries >= 8 || sys::tcp_bytes(fd)? == (received, acked) {
+            if tries >= 8 || sys::tcp_bytes(fd)? == first {
+                let fin_in = matches!(state, CLOSE_WAIT | LAST_ACK | CLOSING | TIME_WAIT);
+                let fin_out = matches!(state, FIN_WAIT2 | TIME_WAIT);
                 return Ok(ByteCounts {
-                    received,
-                    written: acked.saturating_add(unsent),
+                    received: received.saturating_sub(u64::from(fin_in)),
+                    written: acked
+                        .saturating_sub(u64::from(fin_out))
+                        .saturating_add(unsent),
                     unread,
                 });
             }

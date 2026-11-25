@@ -563,8 +563,8 @@ pub(crate) fn unread_bytes(fd: RawFd) -> io::Result<usize> {
     ioctl_int(fd, SIOCINQ)
 }
 
-/// `(tcpi_bytes_received, tcpi_bytes_acked)` of `TCP_INFO` (Linux 4.1+).
-pub(crate) fn tcp_bytes(fd: RawFd) -> io::Result<(u64, u64)> {
+/// `(tcpi_bytes_received, tcpi_bytes_acked, tcpi_state)` of `TCP_INFO` (Linux 4.1+).
+pub(crate) fn tcp_bytes(fd: RawFd) -> io::Result<(u64, u64, u8)> {
     let mut info = [0u64; 32];
     let mut len = size_of_val(&info) as ffi::socklen_t;
     // SAFETY: `info` and `len` are valid for writes and `len` holds the size of `info`; the
@@ -585,7 +585,8 @@ pub(crate) fn tcp_bytes(fd: RawFd) -> io::Result<(u64, u64)> {
             "TCP_INFO without tcpi_bytes_received",
         ));
     }
-    Ok((info[16], info[15]))
+    // tcpi_state is the struct's first byte.
+    Ok((info[16], info[15], info[0].to_ne_bytes()[0]))
 }
 
 fn setsockopt<T>(fd: RawFd, name: ffi::c_int, v: &T) -> io::Result<()> {

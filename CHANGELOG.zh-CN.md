@@ -17,7 +17,8 @@ ADR-156。用 sockmap 中继拼接两个 `akio` 连接的代理不再需要伸�
 - `akio::ebpf::conn_byte_counts(&Conn<H>)`（以及 `inner_byte_counts(&ConnInner)`）读取连接的 TCP
   计数器。`ByteCounts` 新增 `unread`（`SIOCINQ`，接收队列）和 `consumed()`（`received - unread`：
   用户态读走的字节，包括 PROXY 头或 ClientHello）。其背后的三次调用会重读，直到 `TCP_INFO` 在前后
-  一致。
+  一致。收到的 FIN 不再在 `received` 中计为一个字节，本端已被确认的 FIN 也不再计入 `written`
+  （拨出的 socket 的 `written` 仍像内核那样计入其 SYN）。
 - `Relay::splice_conns_with(&Conn<A>, &Conn<B>, first: &[u8]) -> Result<Splice, SpliceError>`
   （以及面向 `ConnInner` 的 `splice_inner_first`）在两个 socket 都进入 map 之后、中继任何字节之前，
   把 `first` 写入 `b` 的 socket。`SpliceError` 带有错误以及 `first` 已写出的字节数。

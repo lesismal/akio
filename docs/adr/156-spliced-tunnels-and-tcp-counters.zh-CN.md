@@ -21,7 +21,12 @@ PROXY 头被消费却不报告长度，因此 akit 让这类连接留在用户�
    （计数器是 Linux 套接字选项，akio-ebpf 本来就在读取）。`ByteCounts`（`#[non_exhaustive]`）新增
    `unread`（`SIOCINQ`）与 `consumed()`（`received - unread`）：用户态读走的字节，不论哪一层读的，
    因此代理无需自己计数。`TCP_INFO`、`SIOCINQ`、`SIOCOUTQ` 是三次调用；会重读（最多八次），直到两次
-   `ioctl` 前后的 `TCP_INFO` 一致。
+   `ioctl` 前后的 `TCP_INFO` 一致。内核把 FIN 计为一个字节：当 `tcpi_state` 表明已收到对端 FIN
+   （`CLOSE_WAIT`、`LAST_ACK`、`CLOSING`、`TIME_WAIT`）时 `received` 不计它，当本端 FIN 已被确认
+   （`FIN_WAIT2`、`TIME_WAIT`）时 `written` 不计它，因此 drain 不会等待一个永远不会到来的字节。
+   拨出的 socket 的 SYN 仍计入 `written`（无法区分拨出与接受的 socket）：`written` 只与同一 socket
+   的 `written` 比较，基准运算正是如此。在 7.0 上观察到并写入了顺序约定：内核会从段首开始中继一个
+   被部分读取的段的剩余部分，因此拼接必须在用户态读完已到达的全部数据或一点都未读时进行。
 2. **连接间的每次拼接都带基准计数器。** `RelayInner::splice` 在闸门（`SO_RCVLOWAT`）拦住 verdict 时
    读取：每个 socket 的 `consumed` 在进入 map 之前读取（socket 有了 psock 之后，`tcp_bpf_ioctl` 可能
    用 psock 的队列回答 `SIOCINQ`），`received` / `written` 在 `before_relaying` 写出之后读取。基准中

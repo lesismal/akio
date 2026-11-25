@@ -304,6 +304,9 @@ fn byte_counts_report_unread_and_consumed_bytes() {
     for s in [&c, &a] {
         s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     }
+    let c0 = byte_counts(&c).unwrap().written; // the SYN of the side that connected
+    assert!(c0 <= 1, "{c0}");
+    assert_eq!(byte_counts(&a).unwrap().written, 0);
     c.write_all(&[7u8; 3000]).unwrap();
     let end = Instant::now() + Duration::from_secs(10);
     let mut n = byte_counts(&a).unwrap();
@@ -323,7 +326,13 @@ fn byte_counts_report_unread_and_consumed_bytes() {
     assert_eq!(byte_counts(&a).unwrap().written, 500);
     assert_eq!(read_exact_loop(&mut c, 500), vec![9u8; 500]);
     let n = byte_counts(&c).unwrap();
-    assert_eq!((n.received, n.unread, n.written), (500, 0, 3000));
+    assert_eq!((n.received, n.unread, n.written), (500, 0, c0 + 3000));
+    // A received FIN is not payload.
+    drop(a);
+    let mut one = [0u8; 1];
+    assert_eq!(c.read(&mut one).unwrap(), 0);
+    let n = byte_counts(&c).unwrap();
+    assert_eq!((n.received, n.unread), (500, 0), "{n:?}");
 }
 
 /// A raw splice reads both sockets' base counters as the relay begins.
@@ -341,9 +350,11 @@ fn raw_splice_reports_base_counters() {
     for s in [&c1, &c2, &a, &b] {
         s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     }
-    // `a` read 2 of the 5 bytes it received; 3 wait in its queue and are relayed.
-    c1.write_all(b"hello").unwrap();
+    // `a` read the 2 bytes of a first segment; 3 more wait in its queue and are relayed. (Not
+    // part of one segment: the kernel would relay a partly read segment from its start.)
+    c1.write_all(b"he").unwrap();
     assert_eq!(read_exact_loop(&mut a, 2), b"he");
+    c1.write_all(b"llo").unwrap();
     let end = Instant::now() + Duration::from_secs(10);
     while byte_counts(&a).unwrap().received < 5 {
         assert!(Instant::now() < end);

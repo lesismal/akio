@@ -25,7 +25,15 @@ userspace.
    `ByteCounts` (`#[non_exhaustive]`) gains `unread` (`SIOCINQ`) and `consumed()`
    (`received - unread`): what userspace read, whatever layer read it, so a proxy needs no count
    of its own. `TCP_INFO`, `SIOCINQ` and `SIOCOUTQ` are three calls; they are read again (up to
-   eight times) until `TCP_INFO` is the same before and after the two `ioctl`s.
+   eight times) until `TCP_INFO` is the same before and after the two `ioctl`s. The kernel counts
+   a FIN as a byte: `received` leaves the peer's out while `tcpi_state` says it arrived
+   (`CLOSE_WAIT`, `LAST_ACK`, `CLOSING`, `TIME_WAIT`), and `written` this side's while it is
+   acknowledged (`FIN_WAIT2`, `TIME_WAIT`), so a drain does not wait for a byte that never
+   comes. The SYN of a dialed socket stays in `written` (nothing tells a dialed socket from an
+   accepted one): `written` counts are compared with each other, as the base arithmetic does.
+   Observed on 7.0, and written into the ordering contract: the kernel relays the rest of a
+   partly read segment from the segment's start, so a splice comes after userspace read all of
+   what had arrived or none of it.
 2. **Base counters in every splice of connections.** `RelayInner::splice` reads them while the
    gate (`SO_RCVLOWAT`) holds the verdict back: each socket's `consumed` before the sockets enter
    the map (once a socket has a psock, `tcp_bpf_ioctl` may answer `SIOCINQ` with the psock's

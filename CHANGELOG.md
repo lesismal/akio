@@ -19,6 +19,8 @@ into `Conn::inner`:
   connection's TCP counters. `ByteCounts` gains `unread` (`SIOCINQ`, the receive queue) and
   `consumed()` (`received - unread`: what userspace read, a PROXY header or ClientHello
   included). The three calls behind it are read again until `TCP_INFO` is stable around them.
+  A received FIN no longer counts as a byte in `received`, nor an acknowledged FIN of this side
+  in `written` (a dialed socket's `written` still counts its SYN, as the kernel does).
 - `Relay::splice_conns_with(&Conn<A>, &Conn<B>, first: &[u8]) -> Result<Splice, SpliceError>`
   (and `splice_inner_first` for `ConnInner`s) writes `first` to `b`'s socket once both are in
   the map and before any byte is relayed. `SpliceError` carries the error and how much of

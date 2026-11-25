@@ -667,10 +667,10 @@ fn tunnel_writes_first_then_relays_and_drains_on_close() {
         .expect("spliced");
     assert_eq!(read_n(&mut s, 8), b"UP-HELLO");
     // Base: the client's 6 greeting bytes were read by userspace, the upstream was written the
-    // 12 bytes of `first`; nothing else.
+    // 12 bytes of `first` (plus its SYN, which the kernel counts on a dialed socket).
     let [a, b] = t.base();
     assert_eq!((a.consumed(), a.written), (6, 0), "{a:?}");
-    assert_eq!((b.consumed(), b.written), (0, 12), "{b:?}");
+    assert_eq!((b.consumed(), b.written), (0, 13), "{b:?}");
     assert_eq!(t.splice().base(), Some([a, b]));
     // The upstream's greeting is relayed to the client by the kernel.
     assert_eq!(t.relayed_from(ebpf::TunnelSide::B), Some(8));
@@ -686,7 +686,14 @@ fn tunnel_writes_first_then_relays_and_drains_on_close() {
     let bulk: Vec<u8> = (0..BULK).map(|i| (i % 251) as u8).collect();
     s.write_all(&bulk).unwrap();
     drop(s);
+    let closing = Instant::now();
     let (first, total, ok) = urx.recv_timeout(Duration::from_secs(30)).unwrap();
+    // Closed once everything was forwarded, not after the 5 s stall.
+    assert!(
+        closing.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        closing.elapsed()
+    );
     assert_eq!(first, b"FIRST:GREET\n");
     assert_eq!(total, BULK);
     assert!(ok, "the relayed bytes differ");
