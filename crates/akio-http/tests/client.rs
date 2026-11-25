@@ -358,3 +358,80 @@ fn engine_shutdown_does_not_wait_for_idle_keep_alive_connections() {
     assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
     stop(&server);
 }
+
+/// A server of plain sockets: each connection answers `ok` to every request, `delay` after it
+/// arrives; each connection's end is sent on the channel.
+fn counting_server(delay: Duration) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for c in l.incoming() {
+            let Ok(c) = c else { return };
+            let tx = tx.clone();
+            thread::spawn(move || {
+                let mut w = c.try_clone().unwrap();
+                let mut r = BufReader::new(c);
+                'conn: loop {
+                    loop {
+                        let mut line = String::new();
+                        match r.read_line(&mut line) {
+                            Ok(0) | Err(_) => break 'conn,
+                            Ok(_) if line == "\r\n" => break,
+                            Ok(_) => {}
+                        }
+                    }
+                    thread::sleep(delay);
+                    if w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                let _ = tx.send(());
+            });
+        }
+    });
+    (addr, rx)
+}
+
+/// akit's A10: `close_idle` closes the idle connections now, and the one in flight once its
+/// response is in, rather than after `idle_timeout`.
+#[test]
+fn close_idle_closes_idle_connections_now() {
+    let e = client_engine();
+    let (addr, closed) = counting_server(Duration::ZERO);
+    let c = Client::new(e.clone());
+    let url = format!("http://{addr}/");
+    for _ in 0..2 {
+        assert_eq!(c.send(ClientRequest::get(&url)).wait().unwrap().body, b"ok");
+    }
+    // One connection, kept idle.
+    assert!(closed.recv_timeout(Duration::from_millis(300)).is_err());
+    let other = c.clone();
+    // Through a clone: clones share the client.
+    other.close_idle();
+    closed
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the idle connection was not closed");
+    // From then on a connection closes once its response is in.
+    assert_eq!(c.send(ClientRequest::get(&url)).wait().unwrap().body, b"ok");
+    closed
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a connection went back idle after close_idle");
+    stop(&e);
+
+    // A request in flight when it is called gets its response; its connection then closes.
+    let e = client_engine();
+    let (addr, closed) = counting_server(Duration::from_millis(300));
+    let c = Client::new(e.clone());
+    let late = c.send(ClientRequest::get(&format!("http://{addr}/")));
+    thread::sleep(Duration::from_millis(100));
+    c.close_idle();
+    assert_eq!(late.wait().unwrap().body, b"ok");
+    closed
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the connection in flight went back idle");
+    stop(&e);
+}

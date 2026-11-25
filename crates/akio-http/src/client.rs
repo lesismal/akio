@@ -1724,6 +1724,27 @@ impl Client {
         ResponseFuture { shared }
     }
 
+    /// Closes every idle keep-alive connection now, and from then on closes each connection
+    /// once its response is in instead of keeping it idle, as the engine's graceful shutdown
+    /// does: for a client that is done (Go's `Transport.CloseIdleConnections` on a transport
+    /// let go of). Requests sent afterwards are still served, each on a connection of its own.
+    /// Clones share the client, and so this. Never blocks.
+    pub fn close_idle(&self) {
+        self.inner.shutting_down.store(true, Ordering::Relaxed);
+        let idle: Vec<Conn<ClientConn>> = {
+            let mut pool = self.pool();
+            pool.total = 0;
+            pool.hosts
+                .drain()
+                .flat_map(|(_, v)| v)
+                .map(|(c, _)| c)
+                .collect()
+        };
+        for c in idle {
+            c.close();
+        }
+    }
+
     fn pool(&self) -> std::sync::MutexGuard<'_, Pool> {
         self.inner.idle.lock().unwrap_or_else(|e| e.into_inner())
     }

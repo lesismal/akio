@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: `Client::close_idle` (akio-http, akit's A10)
+
+`akio_http::client::Client::close_idle` closes every idle keep-alive connection of a client now,
+and from then on closes each connection once its response is in instead of keeping it idle, as the
+engine's graceful shutdown already did; requests sent afterwards are still served, each on a
+connection of its own. Until now a client's idle connections closed only after
+`ClientOptions::idle_timeout` (90 s by default), when the server closed them, or when the engine
+shut down: dropping the `Client` did not close them, since each idle connection holds a clone. An
+application that lets a client go (akit's upstream pool replaced by a reload) calls it so that the
+connections go too. Test: `client`'s `close_idle_closes_idle_connections_now`.
+
 ### Fixed: HTTP/3 QPACK encoding and WebSocket sends from an application thread no longer deadlock (akio-h3, akio-quic)
 
 The same kind of deadlock as the client's request lock: a call on a QUIC connection from outside

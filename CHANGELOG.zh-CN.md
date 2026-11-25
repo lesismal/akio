@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：`Client::close_idle`（akio-http，akit 的 A10）
+
+`akio_http::client::Client::close_idle` 立即关闭客户端所有空闲的 keep-alive 连接，并且此后每个连接在收到响应后
+关闭而不再放回空闲池，与引擎的优雅关闭已有的做法相同；之后发出的请求仍会被处理，各用一个新连接。此前客户端的空闲连接
+只在 `ClientOptions::idle_timeout`（默认 90 秒）之后、服务器关闭它们时或引擎关闭时才关闭：丢弃 `Client` 不会关闭它们，
+因为每个空闲连接都持有一个克隆。放弃一个客户端的应用（akit 中被重载替换的上游池）调用它，让连接随之关闭。测试：
+`client` 的 `close_idle_closes_idle_connections_now`。
+
 ### 修复：在应用线程上进行 HTTP/3 QPACK 编码和 WebSocket 发送不再死锁（akio-h3、akio-quic）
 
 与客户端请求锁同类的死锁：在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，
