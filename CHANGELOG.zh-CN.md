@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：`Client::close_idle`（akio-http，akit 的 A10）
+
+`akio_http::client::Client::close_idle` 立即关闭客户端所有空闲的 keep-alive 连接，并且此后每个连接在收到响应后
+关闭而不再放回空闲池，与引擎的优雅关闭已有的做法相同；之后发出的请求仍会被处理，各用一个新连接。此前客户端的空闲连接
+只在 `ClientOptions::idle_timeout`（默认 90 秒）之后、服务器关闭它们时或引擎关闭时才关闭：丢弃 `Client` 不会关闭它们，
+因为每个空闲连接都持有一个克隆。放弃一个客户端的应用（akit 中被重载替换的上游池）调用它，让连接随之关闭。测试：
+`client` 的 `close_idle_closes_idle_connections_now`。
+
 ### 修复：TLS 服务端接受 server name 为 IP 地址的 ClientHello（akio-tls）
 
 akit 的 A172，由 akit I25 的基准测试发现：wrk 对 `https://127.0.0.1/` 的 HTTPS 请求全部失败。wrk（OpenSSL）即使在主机是 IP 地址时也把 URL 的主机作为 SNI 发送（RFC 6066 不允许），akio-tls 的服务端随即以 `decode_error` 应答。现在这样的名字被视为没有名字，与 Go、OpenSSL 和 nginx 的服务端一致；主机名末尾的点被去掉，而不再使握手失败。空名字或非 ASCII 名字仍会使握手失败。
