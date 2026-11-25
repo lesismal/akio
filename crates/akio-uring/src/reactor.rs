@@ -12,8 +12,8 @@ use std::{
 };
 
 use akio_core::{
-    Config, ConnInfo, ConnInner, DatagramPort, DynAcceptor, DynHandler, Error, LoopLink, LoopMeta,
-    LoopStats, Pool, RING_IOV, RingSend, RingSent, Task,
+    Config, ConnInfo, ConnInner, DatagramPort, DynAcceptor, DynHandler, Error, IdleCheck, IdleRule,
+    LoopLink, LoopMeta, LoopStats, Pool, RING_IOV, RingSend, RingSent, Task,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use akio_sys::EventFd;
@@ -443,6 +443,8 @@ impl BufGroup {
 
 pub(crate) enum Cmd {
     Wake(u64),
+    /// The connection's own idle timeout changed (`LoopLink::retime_conn`, ADR-155).
+    Retime(u64),
     Close(u64, Option<io::Error>),
     Task(u64, Task),
     Shutdown,
@@ -800,6 +802,10 @@ impl LoopLink for LoopShared {
     fn stats(&self) -> Option<Arc<LoopStats>> {
         Some(self.stats.clone())
     }
+    fn retime_conn(&self, id: u64) -> bool {
+        self.post(Cmd::Retime(id));
+        true
+    }
 }
 
 struct LoopConn {
@@ -828,6 +834,8 @@ struct LoopConn {
     held_eof: bool,
     last_active: u64,
     idle_timer: Option<TimerId>,
+    /// Its own idle timeout, if it set one (ADR-155); else the engine's.
+    idle: IdleRule,
     /// Pending write-timeout check (`Config::write_timeout`), and the bytes written when it
     /// was armed.
     write_timer: Option<TimerId>,
@@ -1838,6 +1846,7 @@ impl Loop {
                 held_eof: false,
                 last_active: now,
                 idle_timer,
+                idle: IdleRule::ENGINE,
                 write_timer: None,
                 write_mark: 0,
                 hs_timer: None,
@@ -2186,6 +2195,7 @@ impl Loop {
             for cmd in batch.drain(..) {
                 match cmd {
                     Cmd::Wake(id) => self.on_wake(id),
+                    Cmd::Retime(id) => self.retime(id),
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
@@ -2296,16 +2306,17 @@ impl Loop {
         }
         let idle = self.cfg.telemetry.live().idle_ms();
         let ids: Vec<u64> = self.slots.keys().copied().collect();
-        if self.wheel.is_empty() && idle != 0 {
-            self.wheel.advance(self.tick(), drop);
+        let now = self.tick();
+        if self.wheel.is_empty() {
+            self.wheel.advance(now, drop);
         }
         for &id in &ids {
             if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
                 if let Some(t) = lc.idle_timer.take() {
                     self.wheel.cancel(t);
                 }
-                if idle != 0 {
-                    lc.idle_timer = Some(self.wheel.schedule(lc.last_active + idle, id));
+                if let Some(at) = lc.idle.first_check(idle, lc.last_active, now) {
+                    lc.idle_timer = Some(self.wheel.schedule(at, id));
                 }
             }
         }
@@ -2841,17 +2852,36 @@ impl Loop {
                 continue;
             };
             lc.idle_timer = None;
-            if idle == 0 {
-                continue; // disabled at runtime: the timer is just dropped
+            match lc.idle.check(idle, &mut lc.last_active, now, &lc.inner) {
+                // Disabled at runtime (or for this connection): the timer is just dropped.
+                IdleCheck::Off => {}
+                IdleCheck::Expired => {
+                    self.shared.stats.idle_timeouts.add_local(1);
+                    let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
+                    self.finalize(id, Some(Error::Io(e)));
+                }
+                IdleCheck::At(at) => lc.idle_timer = Some(self.wheel.schedule(at, id)),
             }
-            let expires = lc.last_active + idle;
-            if expires <= now {
-                self.shared.stats.idle_timeouts.add_local(1);
-                let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
-                self.finalize(id, Some(Error::Io(e)));
-            } else {
-                lc.idle_timer = Some(self.wheel.schedule(expires, id));
+        }
+    }
+
+    /// Connection `id` set an idle timeout of its own (ADR-155): re-arms its timer from its
+    /// last activity.
+    fn retime(&mut self, id: u64) {
+        let engine = self.cfg.telemetry.live().idle_ms();
+        let now = self.tick();
+        let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+            return;
+        };
+        lc.idle = IdleRule::of(&lc.inner);
+        if let Some(t) = lc.idle_timer.take() {
+            self.wheel.cancel(t);
+        }
+        if let Some(at) = lc.idle.first_check(engine, lc.last_active, now) {
+            if self.wheel.is_empty() {
+                self.wheel.advance(now, drop);
             }
+            lc.idle_timer = Some(self.wheel.schedule(at, id));
         }
     }
 }

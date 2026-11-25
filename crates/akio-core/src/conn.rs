@@ -11,7 +11,8 @@ use akio_buf::SharedBuf;
 
 use crate::{
     Config, Error, Handler, LoopStats, Pool, Result,
-    sync::{AtomicBool, AtomicU8, AtomicU32, Mutex, MutexGuard, Ordering},
+    idle::{IDLE_ENGINE, IDLE_MAX},
+    sync::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Mutex, MutexGuard, Ordering},
 };
 
 const OPEN: u8 = 0;
@@ -55,6 +56,14 @@ pub trait LoopLink: Send + Sync {
     /// Counters of the owning I/O thread, if the backend keeps them.
     fn stats(&self) -> Option<Arc<LoopStats>> {
         None
+    }
+    /// The connection's own idle timeout changed ([`Conn::set_idle_timeout`],
+    /// [`Conn::set_idle_counts_writes`]): the loop re-reads it
+    /// ([`IdleRule::of`](crate::IdleRule::of)) and re-arms connection `id`'s idle timer, from
+    /// its last activity. `false` (the default) when the backend keeps the engine's idle
+    /// timeout for every connection.
+    fn retime_conn(&self, _id: u64) -> bool {
+        false
     }
 }
 
@@ -930,6 +939,12 @@ pub struct ConnInner {
     /// The backend allows the read direction to move into the kernel (no read can be in
     /// flight between its reads; see [`set_rx_offload_ok`](Self::set_rx_offload_ok)).
     rx_offload_ok: AtomicBool,
+    /// The connection's own idle timeout ([`Conn::set_idle_timeout`], akit A78): `IDLE_ENGINE`
+    /// (the engine's), 0 (none) or milliseconds. Read by the loop only when told to
+    /// ([`LoopLink::retime_conn`]), so it costs the I/O path nothing.
+    idle_ms: AtomicU64,
+    /// Outbound data counts as activity for the idle timeout ([`Conn::set_idle_counts_writes`]).
+    idle_writes: AtomicBool,
     write: Mutex<WriteState>,
     /// A drain waiter whose condition was met while the write lock was held; run right after.
     drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -970,6 +985,8 @@ impl ConnInner {
             rx_interface: AtomicU32::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
+            idle_ms: AtomicU64::new(IDLE_ENGINE),
+            idle_writes: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 stats: link.stats(),
                 ..WriteState::default()
@@ -1010,6 +1027,8 @@ impl ConnInner {
             rx_interface: AtomicU32::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
+            idle_ms: AtomicU64::new(IDLE_ENGINE),
+            idle_writes: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram: true,
                 stats: link.stats(),
@@ -1055,6 +1074,8 @@ impl ConnInner {
             rx_interface: AtomicU32::new(0),
             offload: AtomicU8::new(OFFLOAD_NONE),
             rx_offload_ok: AtomicBool::new(false),
+            idle_ms: AtomicU64::new(IDLE_ENGINE),
+            idle_writes: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram,
                 stats: link.stats(),
@@ -1237,6 +1258,52 @@ impl ConnInner {
         if self.relayed.swap(relayed, Ordering::AcqRel) != relayed {
             self.link.wake_conn(self.id);
         }
+    }
+
+    /// [`Conn::set_idle_timeout`].
+    pub fn set_idle_timeout(&self, timeout: Option<std::time::Duration>) -> Result<()> {
+        let ms = timeout.map_or(0, |d| {
+            u64::try_from(d.as_millis())
+                .unwrap_or(IDLE_MAX)
+                .clamp(1, IDLE_MAX)
+        });
+        self.idle_ms.store(ms, Ordering::Release);
+        self.retime()
+    }
+
+    /// [`Conn::set_idle_counts_writes`].
+    pub fn set_idle_counts_writes(&self, on: bool) -> Result<()> {
+        self.idle_writes.store(on, Ordering::Release);
+        self.retime()
+    }
+
+    /// Asks the loop to apply the connection's idle setting.
+    fn retime(&self) -> Result<()> {
+        if !self.is_open() {
+            return Err(Error::Closed);
+        }
+        if self.link.retime_conn(self.id) {
+            Ok(())
+        } else {
+            Err(Error::Io(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this backend has no idle timeout per connection",
+            )))
+        }
+    }
+
+    /// Loop side: the idle setting (`IDLE_ENGINE`, 0 or milliseconds) and whether writes
+    /// count.
+    pub(crate) fn idle_setting(&self) -> (u64, bool) {
+        (
+            self.idle_ms.load(Ordering::Acquire),
+            self.idle_writes.load(Ordering::Acquire),
+        )
+    }
+
+    /// Bytes written to the socket so far (all of a connection's writes, from any thread).
+    pub fn bytes_sent(&self) -> u64 {
+        self.lock().sent
     }
 
     /// Loop side, UDP: the ECN codepoint of the datagram about to be delivered (no DSCP).
@@ -3203,6 +3270,35 @@ impl<H> Conn<H> {
     /// still applies. Mark both ends of a relay. Takes effect at once.
     pub fn set_relayed(&self, relayed: bool) {
         self.inner.set_relayed(relayed);
+    }
+
+    /// Gives this connection an idle timeout of its own, in place of the engine's
+    /// (`Config::idle_timeout` for TCP, `Config::udp_idle_timeout` for a UDP peer, accepted or
+    /// dialed): `Some(d)` closes it once nothing arrived for `d` (at least a millisecond),
+    /// `None` keeps it open however long it is idle. The close happens on its I/O thread, as
+    /// the engine's idle close does: `on_close` gets an `ErrorKind::TimedOut` "idle timeout".
+    /// Callable from any thread, at any time (in `on_open` too); the timeout counts from the
+    /// connection's last activity, so a shorter one may close it at the loop's next turn.
+    /// Only inbound data counts as activity, unless
+    /// [`set_idle_counts_writes`](Self::set_idle_counts_writes).
+    ///
+    /// Served by the epoll/kqueue and io_uring loops, rounds scheduling and the UDP loops (the
+    /// peers of UDP listeners and of [`UdpBinding`](crate::UdpBinding)s, and `dial_udp`'s
+    /// connections); elsewhere (DPDK, TUN) it fails with `ErrorKind::Unsupported` and the
+    /// engine's timeout applies. `Err(Closed)` once the connection is closed.
+    pub fn set_idle_timeout(&self, timeout: Option<std::time::Duration>) -> Result<()> {
+        self.inner.set_idle_timeout(timeout)
+    }
+
+    /// Counts data this connection sends as activity for its idle timeout (its own, or the
+    /// engine's), as well as data it receives (`false`, the default: received data only). For
+    /// one side of a relay, which is idle only when neither side sends: a download through a
+    /// relay keeps its client connection busy with writes alone. Writes are sampled about
+    /// every eighth of the timeout, so a connection that only sends is closed between one and
+    /// one and an eighth timeouts after its last write. Same backends and errors as
+    /// [`set_idle_timeout`](Self::set_idle_timeout).
+    pub fn set_idle_counts_writes(&self, on: bool) -> Result<()> {
+        self.inner.set_idle_counts_writes(on)
     }
 
     /// Calls `f` once everything queued on this connection has been written (right away if

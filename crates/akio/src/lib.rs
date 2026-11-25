@@ -555,7 +555,7 @@ pub struct ListenerInfo {
     pub threads: usize,
     /// What [`Accel`] it got.
     pub accel: AccelStatus,
-    /// A UDP or datagram listener (which cannot be removed or filtered at run time).
+    /// A UDP or datagram listener (no accept filter; a datagram listener cannot be removed).
     pub udp: bool,
 }
 
@@ -1706,26 +1706,29 @@ impl Engine {
         Ok(())
     }
 
-    /// Adds a TCP listener to the engine, running or not (ADR-099): it is bound as
+    /// Adds a TCP or per-peer UDP ([`Listener::udp`], ADR-155) listener to the engine, running
+    /// or not (ADR-099): it is bound as
     /// [`EngineBuilder::build`] binds the builder's listeners, with its own backend, thread
     /// count (one `SO_REUSEPORT` socket per thread on Linux), [`Accel`], inherited socket
     /// ([`Listener::tcp_from_std`]) and [`filter`](Listener::filter), the engine's [`Config`]
     /// (with the live settings in force), pool and telemetry, and NUMA placement when the
     /// engine places its threads. Its I/O threads start at once when the engine has started,
     /// else with [`start`](Self::start). Returns its id; [`listeners`](Self::listeners) reports
-    /// its address (port 0 resolved).
+    /// its address (port 0 resolved). A UDP listener gets I/O threads of its own, as at build
+    /// time; it does not take [`dial_udp`](Self::dial_udp) or [`bind_udp`](Self::bind_udp),
+    /// which keep the groups the builder gave them.
     ///
-    /// Errors: bind errors as from `build`; `InvalidInput` for a UDP or datagram listener
-    /// ([`bind_udp`](Self::bind_udp) binds UDP at run time) or one without `serve`;
+    /// Errors: bind errors as from `build`; `InvalidInput` for a datagram listener
+    /// ([`Listener::serve_datagrams`]) or one without `serve`;
     /// `Unsupported` for the DPDK backend; `QuotaExceeded` at
     /// [`EngineBuilder::max_listeners`]; `NotConnected` after [`shutdown`](Self::shutdown).
     /// Do not call it from an I/O thread's callback (it binds sockets and may start threads).
     pub fn add_listener(&self, listener: Listener) -> io::Result<ListenerId> {
         self.reap();
-        if listener.udp {
+        if listener.datagrams.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "add_listener takes TCP listeners (bind_udp binds UDP sockets at run time)",
+                "add_listener takes TCP and per-peer UDP listeners, not datagram listeners",
             ));
         }
         #[cfg(feature = "dpdk")]
@@ -1818,8 +1821,19 @@ impl Engine {
     /// [`local_addrs`](Self::local_addrs) (its index is stable), with no thread in
     /// [`threads`](Self::threads) once they exit.
     ///
-    /// Errors: `NotFound` for an unknown or removed id; `Unsupported` for UDP, datagram and
-    /// DPDK listeners.
+    /// A per-peer UDP listener ([`Listener::udp`], ADR-155) has no listening socket apart from
+    /// the one its peers' datagrams arrive on: from the return on, datagrams from new addresses
+    /// are dropped (no connection is opened for them) while its peers keep exchanging
+    /// datagrams, and each I/O thread's socket closes once its last peer is gone (closed by the
+    /// application, its idle timeout or a drain). Until then, on Linux, that socket keeps its
+    /// share of the port's `SO_REUSEPORT` group: a new listener on the same address does not get
+    /// the new peers the kernel hashes to it, which go unanswered. Prefer
+    /// [`shutdown_listener`](Self::shutdown_listener) with a short drain for UDP. The threads
+    /// of a builder listener that also serve [`dial_udp`](Self::dial_udp) and
+    /// [`bind_udp`](Self::bind_udp) stay up for them.
+    ///
+    /// Errors: `NotFound` for an unknown or removed id; `Unsupported` for datagram listeners
+    /// ([`Listener::serve_datagrams`]) and DPDK listeners.
     pub fn remove_listener(&self, id: ListenerId) -> io::Result<()> {
         self.unlisten(id, None)
     }
@@ -1829,7 +1843,9 @@ impl Engine {
     /// HTTP server answers with `Connection: close` or GOAWAY), and those still open after
     /// `drain` are closed (`on_close` runs). `Duration::ZERO` closes them at the threads' next
     /// loop iteration. A builder listener whose threads also serve `dial` drains the dialed
-    /// connections too. Errors as for `remove_listener`.
+    /// connections too. A UDP listener drains its peers only (not `dial_udp`'s connections nor
+    /// `bind_udp`'s sockets, which [`UdpBinding::shutdown`] drains), and its sockets close at
+    /// `drain` at the latest. Errors as for `remove_listener`.
     pub fn shutdown_listener(&self, id: ListenerId, drain: Duration) -> io::Result<()> {
         self.unlisten(id, Some(drain))
     }
@@ -1843,11 +1859,12 @@ impl Engine {
             .position(|e| e.id == id)
             .ok_or_else(|| not_found(id))?;
         let e = &st.entries[pos];
-        if e.kind != Kind::Tcp {
-            return Err(unsupported("removing a UDP, datagram or DPDK listener"));
-        }
-        // The threads of the group `dial` uses stay for dials.
-        let dials_here = e.index.is_some() && e.index == self.tcp_dial;
+        // The threads of the group `dial` (`dial_udp` and `bind_udp`) uses stay for them.
+        let dials_here = match e.kind {
+            Kind::Tcp => e.index.is_some() && e.index == self.tcp_dial,
+            Kind::Udp => e.index.is_some() && e.index == self.udp_client,
+            _ => return Err(unsupported("removing a datagram or DPDK listener")),
+        };
         e.group.stop_listening(drain, !dials_here)?;
         let e = st.entries.remove(pos);
         akio_log::info!(target: "akio", listener = id.0, local:% = e.group.local_addr(), drain:? = drain; "listener removed");

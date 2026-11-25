@@ -20,7 +20,8 @@ use std::{
 };
 
 use akio_core::{
-    Config, ConnInfo, DynAcceptor, FilterCell, FilterView, IdMap, LoopStats, Pool,
+    Config, ConnInfo, DynAcceptor, FilterCell, FilterView, IdMap, IdleCheck, IdleRule, LoopStats,
+    Pool,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use akio_sys::{Event, Poller, Registry, Waker};
@@ -74,6 +75,8 @@ pub(crate) enum RCmd {
 
 struct Timers {
     idle: Option<TimerId>,
+    /// The connection's own idle timeout, if it set one (ADR-155); else the engine's.
+    rule: IdleRule,
     write: Option<TimerId>,
     write_mark: u64,
     hs: Option<TimerId>,
@@ -292,6 +295,7 @@ impl PollerShared {
                     c.clone(),
                     Timers {
                         idle: idle_timer,
+                        rule: IdleRule::ENGINE,
                         write: None,
                         write_mark: 0,
                         hs: None,
@@ -464,20 +468,26 @@ impl PollerShared {
                         continue;
                     };
                     tm.idle = None;
-                    if idle == 0 {
-                        continue;
-                    }
-                    let expires = c.last_active.load(Ordering::Relaxed) + idle;
-                    if expires <= now {
-                        self.stats.idle_timeouts.add(1);
-                        c.close_with(Some(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "idle timeout",
-                        )));
-                    } else {
-                        let t = g.wheel.schedule(expires, id);
-                        if let Some((_, tm)) = g.conns.get_mut(&id) {
-                            tm.idle = Some(t);
+                    let mut last = c.last_active.load(Ordering::Relaxed);
+                    let before = last;
+                    match tm.rule.check(idle, &mut last, now, &c.inner) {
+                        IdleCheck::Off => {}
+                        IdleCheck::Expired => {
+                            self.stats.idle_timeouts.add(1);
+                            c.close_with(Some(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "idle timeout",
+                            )));
+                        }
+                        IdleCheck::At(at) => {
+                            if last != before {
+                                // Data sent counts (ADR-155); a read meanwhile may be newer.
+                                c.last_active.fetch_max(last, Ordering::Relaxed);
+                            }
+                            let t = g.wheel.schedule(at, id);
+                            if let Some((_, tm)) = g.conns.get_mut(&id) {
+                                tm.idle = Some(t);
+                            }
                         }
                     }
                 }
@@ -523,6 +533,31 @@ impl PollerShared {
         )));
     }
 
+    /// Connection `id` set an idle timeout of its own (ADR-155): re-arms its timer from its
+    /// last activity. From any thread (the shard's lock is not held by user code).
+    pub(crate) fn retime(&self, id: u64) {
+        let engine = self.cfg.telemetry.live().idle_ms();
+        let now = self.tick();
+        let shard = self.table.shard(id);
+        let mut g = lock(&shard.inner);
+        let TableInner { conns, wheel } = &mut *g;
+        let Some((c, tm)) = conns.get_mut(&id) else {
+            return;
+        };
+        tm.rule = IdleRule::of(&c.inner);
+        if let Some(t) = tm.idle.take() {
+            wheel.cancel(t);
+        }
+        let last = c.last_active.load(Ordering::Relaxed);
+        if let Some(at) = tm.rule.first_check(engine, last, now) {
+            if wheel.is_empty() {
+                wheel.advance(now, drop);
+            }
+            tm.idle = Some(wheel.schedule(at, id));
+        }
+        self.timers_changed(shard, &g);
+    }
+
     /// Re-applies the live idle timeout to every connection (a reload).
     fn reload_idle(&self, idle: u64) {
         let now = self.tick();
@@ -533,12 +568,12 @@ impl PollerShared {
                 if let Some(t) = tm.idle.take() {
                     g.wheel.cancel(t);
                 }
-                if idle != 0 {
+                let last = c.last_active.load(Ordering::Relaxed);
+                if let Some(at) = tm.rule.first_check(idle, last, now) {
                     if g.wheel.is_empty() {
                         g.wheel.advance(now, drop);
                     }
-                    let last = c.last_active.load(Ordering::Relaxed);
-                    tm.idle = Some(g.wheel.schedule(last + idle, *id));
+                    tm.idle = Some(g.wheel.schedule(at, *id));
                 }
                 // Backpressure is re-evaluated by the connection's next round.
                 c.notify(WAKE);

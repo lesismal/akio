@@ -29,6 +29,7 @@ mod group;
 mod handler;
 #[doc(hidden)]
 pub mod hash;
+mod idle;
 pub mod metrics;
 mod sync;
 pub mod telemetry;
@@ -67,6 +68,8 @@ pub use group::{IcmpError, IcmpHandler, UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]
 pub use handler::{DynAcceptor, DynHandler};
+#[doc(hidden)]
+pub use idle::{IdleCheck, IdleRule};
 #[doc(hidden)]
 pub use telemetry::LoopStats;
 pub use telemetry::{

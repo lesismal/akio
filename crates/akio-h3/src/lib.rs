@@ -41,6 +41,12 @@
 //! `Context::on_body` as it arrives, as on HTTP/2; [`H3Client::upload`] sends one piece by
 //! piece.
 //!
+//! Draining: when the UDP socket a connection's client talks to goes away with a drain (its
+//! listener removed with `akio::Engine::shutdown_listener`, its bound socket drained with
+//! `UdpBinding::shutdown`, or engine shutdown), the server sends `GOAWAY` naming the first
+//! request it will not process (RFC 9114 section 5.2), answers the requests it already has and
+//! refuses later ones with `H3_REQUEST_REJECTED`, so clients retry them on a new connection.
+//!
 //! Not implemented: server push.
 //!
 //! Guide: [QUIC and HTTP/3](https://lesismal.github.io/akio/en/protocols/quic-h3.html)
@@ -210,6 +216,8 @@ fn serve_inner<S: Service>(
             out,
             span: akio_http::trace::connection_span(c.remote_addr(), "3"),
             certs: PeerCerts::new(),
+            next_req: 0,
+            goaway: None,
         }
     })
 }
@@ -403,6 +411,8 @@ impl EncShared {
 /// decoder's table, our encoder once the peer allows one).
 pub(crate) struct Peer {
     pub(crate) ctrl: Option<StreamId>,
+    /// Our own control stream.
+    pub(crate) own_ctrl: Option<StreamId>,
     pub(crate) settings: Option<Settings>,
     /// SETTINGS arrived during the last call.
     pub(crate) new_settings: bool,
@@ -424,6 +434,7 @@ impl Peer {
     pub(crate) fn new(cfg: &H3Config) -> Peer {
         Peer {
             ctrl: None,
+            own_ctrl: None,
             settings: None,
             new_settings: false,
             encoder_seen: false,
@@ -443,6 +454,7 @@ impl Peer {
     pub(crate) fn open(&mut self, c: &Connection, preamble: Vec<u8>) {
         if let Some(id) = c.open_uni() {
             let _ = c.send(id, preamble);
+            self.own_ctrl = Some(id);
         }
         if self.dec.max_capacity() > 0 {
             if let Some(id) = c.open_uni() {
@@ -679,6 +691,10 @@ struct ServerConn<S> {
     span: akio::log::span::Span,
     /// The client's verified certificate chain, once the handshake is done.
     certs: PeerCerts,
+    /// The first request stream not seen yet (as a stream id: the last one seen plus 4).
+    next_req: u64,
+    /// Since `GOAWAY` (ADR-155): request streams from this id on are refused.
+    goaway: Option<u64>,
 }
 
 /// A connection's verified client certificate chain (`Request::peer_certificates`), asked of
@@ -1347,6 +1363,16 @@ impl<S: Service> QuicHandler for ServerConn<S> {
             }
             return;
         }
+        let n = sid(id);
+        if n >= self.next_req {
+            if self.goaway.is_some_and(|g| n >= g) {
+                // A request after our GOAWAY: not processed, the client may retry it elsewhere.
+                let _ = c.stop(id, code::REQUEST_REJECTED);
+                let _ = c.reset(id, code::REQUEST_REJECTED);
+                return;
+            }
+            self.next_req = n + 4;
+        }
         match self.on_req(c, id, &data, fin) {
             // The usual case: nothing left to clean up.
             Ok(()) if !fin || self.reqs.is_empty() => {}
@@ -1374,6 +1400,23 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     fn on_stream_writable(&mut self, c: &Connection, id: StreamId) {
         pump(c, &self.out.outs, id);
         run_drain(&self.out.drains, id);
+    }
+
+    fn on_shutdown(&mut self, c: &Connection) {
+        // RFC 9114 section 5.2: the first request stream we will not process.
+        let first = self.next_req;
+        self.goaway = Some(first);
+        if let Some(ctrl) = self.conn.own_ctrl {
+            let mut id = Vec::with_capacity(8);
+            frame::put_varint(&mut id, first);
+            let mut f = Vec::with_capacity(10);
+            frame::put_frame(&mut f, frame::GOAWAY, &id);
+            let _ = c.send(ctrl, f);
+        }
+        if first == 0 {
+            // Not a request yet: nothing to finish.
+            c.close(code::NO_ERROR, b"");
+        }
     }
 
     fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {

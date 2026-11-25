@@ -126,6 +126,13 @@ impl LoopLink for Link {
     fn stats(&self) -> Option<Arc<LoopStats>> {
         Some(self.stats.clone())
     }
+    fn retime_conn(&self, id: u64) -> bool {
+        // The timers are in the poller's table, behind its shard locks: re-armed from here.
+        if let Some(c) = self.conn.upgrade() {
+            c.home.retime(id);
+        }
+        true
+    }
 }
 
 fn panic_error() -> Error {
