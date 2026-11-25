@@ -546,6 +546,8 @@ fn expect_continue_and_protocol_errors() {
     for (raw, status) in [
         ("GARBAGE\r\n\r\n", 400),
         ("GET / HTTP/1.1\r\n\r\n", 400), // no Host
+        ("GET / HTTP/1.1\r\nHost: x\r\nHost: y\r\n\r\n", 400), // two (A169)
+        ("GET / HTTP/1.0\r\nHost: x\r\nhost: x\r\n\r\n", 400),
         (
             "GET / HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
             400,

@@ -657,6 +657,39 @@ fn malformed_requests_are_reset() {
             (":path", "/"),
             ("content-length", "abc"),
         ],
+        // RFC 9113 §8.2.1: names with a byte no token holds, values with NUL, CR or LF
+        // (A169), pseudo-header fields' too.
+        vec![
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":path", "/"),
+            ("x a", "1"),
+        ],
+        vec![
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":path", "/"),
+            ("x\u{e9}", "1"),
+        ],
+        vec![
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":path", "/"),
+            ("x-a", "a\0b"),
+        ],
+        vec![
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":path", "/"),
+            ("x-a", "a\rb"),
+        ],
+        vec![
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":path", "/"),
+            ("x-a", "a\nb"),
+        ],
+        vec![(":method", "GET"), (":scheme", "http"), (":path", "/a\nb")],
     ];
     let mut sid = 1;
     for h in &bad {
@@ -739,6 +772,13 @@ fn data_frames_padding_closed_streams_and_trailers() {
     let (status, _, body, trailers) = p.response(13);
     assert_eq!((status, body.len()), (200, 4000));
     assert!(trailers.iter().any(|(n, v)| n == "x-done" && v == "yes"));
+    // Trailers with a value holding a CR, or a name with a space, too (A169).
+    for (sid, field) in [(15, ("x-trailer", "a\rb")), (17, ("x trailer", "t"))] {
+        p.request(sid, "POST", "/echo", false);
+        let tr = p.block(&[field]);
+        p.send(HEADERS, END_HEADERS | END_STREAM, sid, &tr);
+        assert_eq!(p.rst(sid), PROTOCOL, "{field:?}");
+    }
 
     // DATA on stream 0 or an idle stream is a connection error.
     p.send(DATA, 0, 0, b"x");
