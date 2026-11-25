@@ -10,6 +10,26 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：每个连接自己的空闲超时（akio-core、akio-epoll、akio-uring；akit A78）
+
+ADR-155。`Conn::set_idle_timeout(Option<Duration>)` 让一个 TCP 连接或 UDP 对端（接受的或拨出的）用
+自己的空闲超时代替引擎的（`Config::idle_timeout`、`Config::udp_idle_timeout`）：`None` 表示无论空闲
+多久都保持打开。可在任何线程调用；连接在自己的 I/O 线程上以 `ErrorKind::TimedOut` "idle timeout" 关闭，
+与引擎的空闲关闭相同。`Conn::set_idle_counts_writes(bool)` 把发出的数据也算作活动（每隔超时的八分之一
+检查一次），供两边都不发送才算空闲的转发使用。支持 epoll/kqueue 事件循环、轮次调度、io_uring 和 UDP
+事件循环；DPDK 与 TUN 返回 `Unsupported`。不设置的连接行为与以前完全相同：事件循环只在设置改变时才读取
+它（`LoopLink::retime_conn`）。
+
+### 新增：在运行时添加、移除并排空 UDP listener（akio、akio-epoll、akio-core、akio-quic、akio-h3；akit A22）
+
+ADR-155。`Engine::add_listener` 接受按对端区分的 UDP listener（使用独立线程），`Engine::remove_listener`
+/ `shutdown_listener(id, drain)` 可以移除它们：来自新地址的数据报被丢弃，而 listener 已有的对端继续得到
+服务；有排空时每个对端收到 `on_shutdown`，到截止时间仍在的被关闭；listener 在所有线程上都没有对端后
+关闭 socket，线程随之退出，除非它们还服务 `dial_udp` / `bind_udp`。`UdpBinding::shutdown(drain)` 以
+同样方式排空运行时绑定的 socket。QUIC 服务端的连接会得知此事（`QuicHandler::on_shutdown`），akio-h3
+发送 `GOAWAY`，回答进行中的请求，并以 `H3_REQUEST_REJECTED` 拒绝之后的请求（引擎关闭现在也会发送
+`GOAWAY`）。数据报 listener 与 DPDK 仍为 `Unsupported`。
+
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
 使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在

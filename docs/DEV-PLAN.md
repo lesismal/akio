@@ -424,6 +424,7 @@ benchmark task updates the row when it has measured or optimized. Status as of 2
 | TURN relay | akio-turn (ADR-083, ADR-091) | yes (`turn-relay-bench`) | yes (sharded allocations, 3.7x; `028d61d2`) | No comparison against coturn's throughput. |
 | Media server (RTMP, RTSP, HLS, hub) | akio-media | partial (`bench_segmenting`, ingest A/B per ADR) | partial (`perf(media)` 2026-11-21/22) | No comparison against a reference server (SRS, mediamtx). |
 | BitTorrent | akio-bittorrent | partial (`bt-bench` A/B: 2,180 MiB/s loopback) | partial (SHA-1 piece hashing) | No comparison against another client. |
+| Idle timeout per connection; UDP listener removal; HTTP/3 GOAWAY | akio-core, akio-epoll, akio-uring, akio-quic, akio-h3 (ADR-155, akit A78, A22) | no | no | Same-run A/B against main, alternating rounds: HTTP/1.1 keep-alive and pipelined plaintext, TCP echo with `Config::idle_timeout` set (epoll, io_uring, rounds), 64 B per-peer UDP echo, and HTTP/3 requests (the request-stream id check, the QUIC deliver loop's shutdown flag). Reads are unchanged; the loop records are 16 bytes larger per connection (memory per connection). |
 
 Open todos (rows not `yes` / `yes`), roughly by weight: KCP and protobuf (nothing measured); the
 crypto primitives behind RustCrypto (AES-CTR, SHA-512, base64, MD5, PBKDF2, HMAC-SHA1, which feed

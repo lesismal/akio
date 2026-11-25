@@ -10,6 +10,30 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: an idle timeout per connection (akio-core, akio-epoll, akio-uring; akit A78)
+
+ADR-155. `Conn::set_idle_timeout(Option<Duration>)` gives one TCP connection or UDP peer
+(accepted or dialed) an idle timeout in place of the engine's (`Config::idle_timeout`,
+`Config::udp_idle_timeout`): `None` keeps it open however long it is idle. Callable from any
+thread; the connection is closed on its I/O thread with `ErrorKind::TimedOut` "idle timeout",
+as the engine's idle close does. `Conn::set_idle_counts_writes(bool)` counts data sent as
+activity too (checked every eighth of the timeout), for a relay that is idle only when neither
+side sends. epoll/kqueue loops, rounds scheduling, io_uring and the UDP loop; DPDK and TUN answer
+`Unsupported`. Connections that set none run exactly as before: the loops read the setting only
+when it changes (`LoopLink::retime_conn`).
+
+### Added: UDP listeners added, removed and drained at run time (akio, akio-epoll, akio-core, akio-quic, akio-h3; akit A22)
+
+ADR-155. `Engine::add_listener` takes per-peer UDP listeners (threads of their own), and
+`Engine::remove_listener` / `shutdown_listener(id, drain)` remove them: datagrams from new
+addresses are dropped while the listener's peers keep being served; with a drain each peer gets
+`on_shutdown` and those left at the deadline are closed; the sockets close once the listener has
+no peer left on any thread, and its threads exit unless they serve `dial_udp` / `bind_udp`.
+`UdpBinding::shutdown(drain)` drains a socket bound at run time the same way. A QUIC server's
+connections hear of it (`QuicHandler::on_shutdown`), and akio-h3 sends `GOAWAY`, answers the
+requests in flight and refuses later ones with `H3_REQUEST_REJECTED` (engine shutdown now sends
+`GOAWAY` too). Datagram listeners and DPDK remain `Unsupported`.
+
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 
 A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain
