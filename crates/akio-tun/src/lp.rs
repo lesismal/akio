@@ -477,6 +477,6 @@ impl QueueLoop {
             self.timed_end("on_close", t0);
         }
         self.shared.stats.closed.add_local(1);
-        self.cfg.telemetry.conn_closed();
+        self.cfg.telemetry.conn_closed(false);
     }
 }

@@ -19,7 +19,7 @@ use std::{
 
 use akio_core::{ConnInner, DynAcceptor, DynHandler, Error, LoopLink, LoopStats, Pool, Task};
 
-use super::poller::PollerShared;
+use super::poller::{NO_LISTENER, PollerShared};
 use super::workers::{Job, WorkerCtx, Workers};
 
 /// `on_open` has not run yet (set once, when the connection is created).
@@ -562,7 +562,7 @@ impl RConn {
         st.acceptor = None;
         self.tasks.lock().unwrap_or_else(|p| p.into_inner()).clear();
         self.home.stats.closed.add(1);
-        self.home.cfg.telemetry.conn_closed();
+        self.home.cfg.telemetry.conn_closed(self.lid != NO_LISTENER);
         // Out of the table, with its timers: no message to the poller. The socket closes with
         // the last reference (the round's own, at the latest).
         self.home.remove(self.id);

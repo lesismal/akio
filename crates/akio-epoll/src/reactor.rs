@@ -1400,12 +1400,12 @@ impl Loop {
         inner.set_rx_offload_ok(true);
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             inner.mark_closed();
-            tel.conn_closed();
+            tel.conn_closed(!dialed);
             return;
         };
         if self.poller.add(fd, id, true, false).is_err() {
             inner.mark_closed();
-            tel.conn_closed();
+            tel.conn_closed(!dialed);
             return;
         }
         let st = &self.shared.stats;
@@ -1712,6 +1712,6 @@ impl Loop {
         let _ = catch_unwind(AssertUnwindSafe(|| lc.handler.on_close(err)));
         self.check_slow("on_close", id, t0);
         self.shared.stats.closed.add_local(1);
-        self.cfg.telemetry.conn_closed();
+        self.cfg.telemetry.conn_closed(lc.lid != NO_LISTENER);
     }
 }

@@ -86,6 +86,8 @@ struct LConn {
     bytes_in: u64,
     /// TCP: the peer sent FIN; the connection ends once its output has drained.
     peer_eof: bool,
+    /// An accepted TCP connection (`Telemetry::open_accepted`, akit A30).
+    accepted: bool,
 }
 
 struct PendingDial {
@@ -492,7 +494,8 @@ impl Loop {
         let cfg = rt.spec.cfg.clone();
         let link = rt.link.clone();
         let udp = matches!(kind, Kind::Udp { .. });
-        if !cfg.telemetry.conn_opened(!udp && !dialed) {
+        let accepted = !udp && !dialed;
+        if !cfg.telemetry.conn_opened(accepted) {
             link.stats.rejected.add_local(1);
             return None;
         }
@@ -500,7 +503,7 @@ impl Loop {
         let inner = ConnInner::new_virtual(id, udp, local, peer, link.clone(), cfg.clone());
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             inner.mark_closed();
-            cfg.telemetry.conn_closed();
+            cfg.telemetry.conn_closed(accepted);
             return None;
         };
         if dialed {
@@ -537,6 +540,7 @@ impl Loop {
                 last_active: now,
                 bytes_in: 0,
                 peer_eof: false,
+                accepted,
             },
         );
         // `on_open` may already have sent something or closed the connection.
@@ -884,7 +888,7 @@ impl Loop {
         let _ = catch_unwind(AssertUnwindSafe(|| c.handler.on_close(err)));
         c.cfg.telemetry.callback_done(&c.stats, "on_close", id, t0);
         c.stats.closed.add_local(1);
-        c.cfg.telemetry.conn_closed();
+        c.cfg.telemetry.conn_closed(c.accepted);
     }
 
     // ---- timers ---------------------------------------------------------------------------

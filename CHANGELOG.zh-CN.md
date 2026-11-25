@@ -10,6 +10,21 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：供应用自身阻塞任务使用的 `akio::Pool`（akio、akio-core；akit A117）
+
+`akio` 门面在 `PoolConfig`、`PoolStats` 之外再导出 `Pool`、`Rejected` 和 `Job`：应用可以在引擎的
+逻辑线程池之外建一个自己的有界线程池（`Pool::new(PoolConfig)`），用于不能拖住其他任何事情的阻塞
+任务（例如缓存的磁盘层），并用 `Pool::try_execute` 提交任务；它从不阻塞，队列已满或线程池已关闭时
+把任务作为 `Rejected` 交还。`akio_core::Pool` 不再是 `#[doc(hidden)]`。
+
+### 新增：`Telemetry::open_accepted`（akio-core、各后端；akit A30）
+
+`Telemetry::open_accepted()`（以及 `Metrics::open_accepted`、`Metrics::to_json` 中的
+`"open_accepted"`）统计当前打开的、由各 TCP listener accept 的连接，不含 `open_connections` 同样
+计入的拨出连接、接管的流（adopt）、UDP 对端和 TUN 设备：网关在同一个引擎上拨上游时，这正是它要报告
+的客户端连接数。每个后端（epoll/kqueue 事件循环、轮次调度、io_uring、DPDK）在关闭时说明连接的种类
+（面向后端的 `Telemetry::conn_closed` 接收它）；一次 accept 仍然只做一次原子更新。
+
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
 使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在

@@ -477,3 +477,82 @@ fn reused_config_gets_a_fresh_hub() {
     stop(&e1);
     stop(&e2);
 }
+
+/// `Telemetry::open_accepted` (akit A30): the accepted TCP connections open, apart from the
+/// dialed ones and UDP peers that `open_connections` also counts; both drop as they close.
+#[test]
+fn open_accepted_counts_accepted_tcp_connections_only() {
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .listen(
+            Listener::udp(localhost())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let (tcp, udp) = (e.local_addrs()[0], e.local_addrs()[1]);
+    let tel = e.telemetry().clone();
+    let counts = || (tel.open_accepted(), tel.open_connections());
+
+    // One accepted connection.
+    let mut client = connect(tcp);
+    client.write_all(b"x").unwrap();
+    assert_eq!(read_n(&mut client, 1), b"x");
+    assert!(wait_until(Duration::from_secs(5), || counts() == (1, 1)));
+
+    // One dialed connection, to a listener outside the engine.
+    let outside = std::net::TcpListener::bind(localhost()).unwrap();
+    e.dial(
+        outside.local_addr().unwrap(),
+        fn_acceptor(|_c: &Conn<Echo>| Echo),
+        |err| panic!("dial failed: {err}"),
+    );
+    outside.set_nonblocking(false).unwrap();
+    let (mut far, _) = outside.accept().unwrap();
+    far.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    far.write_all(b"y").unwrap();
+    assert_eq!(read_n(&mut far, 1), b"y");
+    assert!(
+        wait_until(Duration::from_secs(5), || counts() == (1, 2)),
+        "{:?}",
+        counts()
+    );
+
+    // A UDP peer counts in `open_connections` only.
+    let s = UdpSocket::bind(localhost()).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.send_to(b"z", udp).unwrap();
+    let mut buf = [0u8; 8];
+    assert_eq!(s.recv_from(&mut buf).unwrap().0, 1);
+    assert!(
+        wait_until(Duration::from_secs(5), || counts() == (1, 3)),
+        "{:?}",
+        counts()
+    );
+    let m = e.metrics();
+    assert_eq!((m.open_accepted, m.open_connections), (1, 3));
+    assert!(m.to_json().contains("\"open_accepted\":1"));
+
+    // Closing the accepted connection drops both; the dialed one, `open_connections` only.
+    drop(client);
+    assert!(
+        wait_until(Duration::from_secs(5), || counts() == (0, 2)),
+        "{:?}",
+        counts()
+    );
+    drop(far);
+    assert!(
+        wait_until(Duration::from_secs(5), || counts() == (0, 1)),
+        "{:?}",
+        counts()
+    );
+    stop(&e);
+}

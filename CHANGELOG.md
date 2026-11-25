@@ -10,6 +10,25 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: `akio::Pool` for an application's own blocking work (akio, akio-core; akit A117)
+
+The `akio` facade re-exports `Pool`, `Rejected` and `Job` beside `PoolConfig` and `PoolStats`:
+an application builds a bounded pool of its own (`Pool::new(PoolConfig)`), apart from the
+engine's logical pool, for blocking work that must hold up nothing else (a cache's disk tier,
+say), and submits jobs with `Pool::try_execute`, which never blocks and gives the job back as
+`Rejected` when the queue is full or the pool is shut down. `akio_core::Pool` is no longer
+`#[doc(hidden)]`.
+
+### Added: `Telemetry::open_accepted` (akio-core, backends; akit A30)
+
+`Telemetry::open_accepted()` (and `Metrics::open_accepted`, `"open_accepted"` in
+`Metrics::to_json`) counts the accepted TCP connections open now, on every TCP listener,
+without the dialed connections, adopted streams, UDP peers and TUN devices that
+`open_connections` also counts: what a gateway reports as its client connections when it dials
+its upstreams on the same engine. Every backend (epoll/kqueue loops, rounds, io_uring, DPDK)
+tells the kind on close (the backend-facing `Telemetry::conn_closed` takes it); an accept still
+costs one atomic update.
+
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 
 A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain

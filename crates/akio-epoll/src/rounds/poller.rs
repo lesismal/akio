@@ -303,7 +303,7 @@ impl PollerShared {
         if self.registry.add_edge(fd, id).is_err() {
             self.remove(id);
             c.inner.mark_closed();
-            tel.conn_closed();
+            tel.conn_closed(!dialed);
             return;
         }
         if dialed {

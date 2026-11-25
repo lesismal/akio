@@ -57,7 +57,7 @@ pub use akio_log as log;
 pub use akio_dpdk as dpdk;
 
 use akio_core::{
-    AcceptFilter, DatagramsFactory, Group, ListenSocket, Pool, datagrams_factory,
+    AcceptFilter, DatagramsFactory, Group, ListenSocket, datagrams_factory,
     telemetry::log_or_stderr,
 };
 /// TUN devices (cargo feature `tun`, Linux and macOS): layer-3 virtual interfaces served on I/O
@@ -78,6 +78,42 @@ pub use akio_core::{
     ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
     UNIX_ADDR, UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
 };
+/// A bounded thread pool for an application's own blocking work (akit A117): the same pool as
+/// the engine's logical pool (`Conn::spawn_blocking`, [`EngineBuilder::pool`]), built apart
+/// from it so that blocking work of one kind (a disk tier, say) holds up neither the handlers on
+/// the logical pool nor anything else.
+///
+/// [`Pool::new`] takes a [`PoolConfig`] (start from `PoolConfig::default()` and set its fields:
+/// `max_threads`, `queue_capacity`, `min_threads`, `keep_alive`) and returns an `Arc<Pool>`.
+/// [`Pool::try_execute`] queues a [`Job`] and never blocks: past `queue_capacity` queued jobs, or
+/// after [`Pool::shutdown`], it gives the job back as [`Rejected`], which the caller handles
+/// (answers "busy", runs a fallback), never unwraps. A job that panics is caught and counted
+/// ([`PoolStats::panicked`]); the thread goes on. Threads start on demand up to `max_threads`
+/// and those above `min_threads` exit after `keep_alive` idle; [`Pool::shutdown`] then
+/// [`Pool::join`] stop them for good. A job comes back to a connection's I/O thread with
+/// `Conn::run_on_loop`; it never waits for an I/O thread (rules 1-2 in `docs/rules.md`).
+///
+/// ```
+/// use std::sync::mpsc;
+/// use std::time::Duration;
+///
+/// let mut cfg = akio::PoolConfig::default();
+/// cfg.max_threads = 4;
+/// cfg.queue_capacity = 1024;
+/// let pool = akio::Pool::new(cfg);
+/// let (tx, rx) = mpsc::channel();
+/// let job: akio::Job = Box::new(move || {
+///     // Blocking work goes here (a file read, say).
+///     let _ = tx.send(2 + 2);
+/// });
+/// if let Err(akio::Rejected(job)) = pool.try_execute(job) {
+///     drop(job); // full or shut down: answer "busy" instead
+/// }
+/// assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(4));
+/// pool.shutdown();
+/// pool.join();
+/// ```
+pub use akio_core::{Job, Pool, Rejected};
 #[doc(hidden)]
 pub use akio_core::{DynAcceptor, DynHandler};
 pub use numa::{NumaConfig, NumaPlacement, NumaReport, NumaStatus, ThreadPlacement};

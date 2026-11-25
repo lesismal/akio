@@ -4,7 +4,9 @@
 //! * [`Handler`] and [`Acceptor`] are what applications implement.
 //! * [`Conn`] is the cloneable, thread-safe connection handle.
 //! * [`Config`] holds the tunables.
-//! * `Group`, `ConnInner`, `LoopLink`, `LoopStats`, `Pool`, `DynAcceptor`, `DynHandler`:
+//! * [`Pool`]: a bounded pool of threads for blocking work, the engine's logical pool and one an
+//!   application may build for its own (re-exported as `akio::Pool`).
+//! * `Group`, `ConnInner`, `LoopLink`, `LoopStats`, `DynAcceptor`, `DynHandler`:
 //!   backend-facing plumbing, `#[doc(hidden)]` and outside the semver promise
 //!   (docs/api-stability.md); backends such as `akio-epoll` implement them and the `akio`
 //!   crate composes them into an `Engine`.
@@ -40,10 +42,8 @@ pub const UNIX_ADDR: std::net::SocketAddr = std::net::SocketAddr::V4(std::net::S
 
 pub use akio_buf::SharedBuf;
 #[doc(hidden)]
-pub use akio_pool::Pool;
-#[doc(hidden)]
 pub use akio_pool::ThreadHook;
-pub use akio_pool::{Job, PoolConfig, PoolStats};
+pub use akio_pool::{Job, Pool, PoolConfig, PoolStats, Rejected};
 pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
