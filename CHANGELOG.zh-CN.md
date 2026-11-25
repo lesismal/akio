@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：拒绝 RFC 9112、RFC 9113 和 RFC 9114 规定为畸形的请求（akio-http、akio-h3）
+
+akit 的 A169，由 akit I25 的一致性测试套件发现：akio 的服务端曾把这些请求交给应用，akio 上的代理再把它们转发给上游：
+
+- HTTP/1：带多个 `Host` 字段的请求按 RFC 9112 §3.2 的要求以 400 应答并关闭连接（此前会接受，中间设备可能按其中任意一个路由）。
+- HTTP/2：请求或 trailer 字段的名字含 0x00-0x20、0x41-0x5A 或 0x7F-0xFF 范围内的字节，或值（伪首部字段的值也算）含 NUL、CR 或 LF 时，以 `PROTOCOL_ERROR` 重置该流（RFC 9113 §8.2.1）。此前只拒绝大写名字；值里的 NUL 会到达应用，HTTP/1.1 客户端随后把它写给上游。
+- HTTP/3：同上，按 RFC 9114 §4.2 的要求。
+
 ### 新增：由别处的工作扣住响应头、过滤响应 body（akio-http、akio-h3）
 
 ADR-128，ADR-125 的里程碑 W6（akit 的 A166 和 A167，用于 I72 的 Proxy-Wasm 响应回调），HTTP/1.1、HTTP/2 和
