@@ -128,7 +128,8 @@ SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认�
   并以 `TooLarge` 使请求失败。流式请求（`open`）的 body 随到随交，不限制大小。
 - 双向流式：`open(req, on_event)` 返回用于写请求 body 的 `H2Upload`（`write`、`finish`），并在
   响应到达时报告 `H2Event::Head`、`Data`、`Trailers`、`End` 或 `Error`。akio-grpc 的客户端
-  就建立在它之上。
+  就建立在它之上。失败的 `try_write` 不会收下任何字节（超过 `max_queued_bytes` 时为 `Overloaded`，
+  stream 结束后为 `Closed`）：再写一次，这些字节只发出一次。
 - 同一连接上的 WebSocket（RFC 8441）：`websocket(url, &H2WsOptions, handler, done)` 或
   `websocket_blocking`；见 [HTTP/2 上的 WebSocket](websocket.md#http2-上的-websocket)。
 - `is_open()`、`close()`。

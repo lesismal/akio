@@ -1765,24 +1765,77 @@ fn run(c: &Connection, outs: &Arc<Outs>, id: StreamId) {
                     }
                 }
                 // Off the I/O thread; the read's completion goes on pumping from the pool.
-                let (c2, outs2, f2) = (c.clone(), outs.clone(), file.clone());
-                let job = move || {
-                    let r = read_chunk(&f2, off, n);
-                    if read_done(&c2, &outs2, id, r) {
-                        run(&c2, &outs2, id);
-                    }
-                };
-                if c.spawn_blocking(job).is_ok() {
-                    return;
-                }
-                // The pool is full or gone: read here (one piece; the stream stays bounded).
-                if !read_done(c, outs, id, read_chunk(&file, off, n)) {
-                    return;
-                }
+                return read_on_pool(
+                    FileRead {
+                        c: c.clone(),
+                        outs: outs.clone(),
+                        id,
+                        file,
+                        off,
+                        n,
+                    },
+                    0,
+                );
             }
         }
     }
 }
+
+/// How long the pump waits before asking a full pool again for a file read, and how many
+/// times: past that (a second of a pool that stays full), the stream is reset. As
+/// `akio-http`'s file pump does.
+const READ_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
+const READ_RETRIES: u32 = 200;
+
+/// A piece of a file to read for a stream whose pump is parked on it (its `busy` held).
+struct FileRead {
+    c: Connection,
+    outs: Arc<Outs>,
+    id: StreamId,
+    file: Arc<std::fs::File>,
+    off: u64,
+    n: usize,
+}
+
+/// Reads the piece on the logical pool, then goes on pumping from there. A full pool is asked
+/// again a little later from the HTTP layer's timer thread: the read never happens on the
+/// thread that found the pool full, which may be the connection's I/O thread (rule 1).
+fn read_on_pool(r: FileRead, refused: u32) {
+    let c = r.c.clone();
+    let cell = Arc::new(Mutex::new(Some(r)));
+    let job_cell = cell.clone();
+    let queued = c.spawn_blocking(move || {
+        let r = lock(&job_cell).take();
+        if let Some(r) = r {
+            let got = read_chunk(&r.file, r.off, r.n);
+            if read_done(&r.c, &r.outs, r.id, got) {
+                run(&r.c, &r.outs, r.id);
+            }
+        }
+    });
+    let Err(e) = queued else { return };
+    let Some(r) = lock(&cell).take() else { return };
+    match e {
+        akio_quic::Error::Overloaded if refused < READ_RETRIES => {
+            #[cfg(test)]
+            READS_REFUSED.fetch_add(1, Ordering::Relaxed);
+            akio_http::transport::after(READ_RETRY, move || read_on_pool(r, refused + 1));
+        }
+        _ => {
+            // The connection is gone, or the pool stayed full: the response cannot go on.
+            lock(&r.outs).remove(&r.id);
+            let _ = r.c.reset(r.id, code::INTERNAL_ERROR);
+        }
+    }
+}
+
+/// File reads the pool refused, asked again later (tests).
+#[cfg(test)]
+static READS_REFUSED: AtomicUsize = AtomicUsize::new(0);
+
+/// File bytes read off the logical pool (tests): there should be none.
+#[cfg(test)]
+static FILE_READ_OFF_POOL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// File bytes read for responses (tests).
 #[cfg(test)]
@@ -1793,7 +1846,12 @@ fn read_chunk(file: &std::fs::File, off: u64, n: usize) -> std::io::Result<Vec<u
     let mut buf = vec![0u8; n];
     let got = file.read_at(&mut buf, off)?;
     #[cfg(test)]
-    FILE_READ.fetch_add(got as u64, Ordering::Relaxed);
+    {
+        FILE_READ.fetch_add(got as u64, Ordering::Relaxed);
+        if std::thread::current().name() != Some("akio-pool") {
+            FILE_READ_OFF_POOL.fetch_add(got as u64, Ordering::Relaxed);
+        }
+    }
     if got == 0 {
         return Err(std::io::ErrorKind::UnexpectedEof.into());
     }
@@ -2221,11 +2279,16 @@ mod tests {
         }
     }
 
+    /// The tests that count file reads (the counters are global).
+    static FILE_TESTS: Mutex<()> = Mutex::new(());
+
     /// A file body is read as the client takes it: a client that goes away midway leaves at
     /// most the stream's send buffer and a piece or two read ahead of what it acknowledged.
     #[test]
     fn file_reads_follow_the_peer() {
         use std::sync::atomic::AtomicU64;
+        let _one = lock(&FILE_TESTS);
+        let read_before = FILE_READ.load(Ordering::Relaxed);
         const LEN: u64 = 64 << 20;
         let path = std::env::temp_dir().join(format!("akio-h3-file-{}", std::process::id()));
         std::fs::File::create(&path).unwrap().set_len(LEN).unwrap();
@@ -2269,10 +2332,91 @@ mod tests {
         e.wait();
         let received = got.load(Ordering::Relaxed);
         std::thread::sleep(std::time::Duration::from_millis(500));
-        let read = FILE_READ.load(Ordering::Relaxed);
+        let read = FILE_READ.load(Ordering::Relaxed) - read_before;
         let bound = received + (1 << 20) + 2 * FILE_CHUNK as u64 + (64 << 10);
         assert!(read <= bound, "read {read}, client got {received}");
         assert!(read < LEN);
+        s.shutdown();
+    }
+
+    /// A file read the pool refuses is asked again a little later, never done on the thread
+    /// that found the pool full (the connection's I/O thread): the response goes on once the
+    /// pool has room.
+    #[test]
+    fn file_reads_wait_for_a_full_pool() {
+        use std::sync::atomic::AtomicU64;
+        use std::time::{Duration, Instant};
+        const LEN: u64 = 1 << 20;
+        let _one = lock(&FILE_TESTS);
+        let path = std::env::temp_dir().join(format!("akio-h3-full-pool-{}", std::process::id()));
+        std::fs::File::create(&path).unwrap().set_len(LEN).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+        let released = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let (r2, s2) = (released.clone(), started);
+        let app = akio_http::Router::new().get("/f", move |ctx: &mut akio_http::Context| {
+            // The pool's one thread, then its one queue slot, wait for the test.
+            let ex = ctx.executor().expect("executor");
+            for _ in 0..2 {
+                let (r, s) = (r2.clone(), s2.clone());
+                ex.execute(move || {
+                    s.store(true, Ordering::Release);
+                    let end = Instant::now() + Duration::from_secs(10);
+                    while !r.load(Ordering::Acquire) && Instant::now() < end {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                })
+                .expect("queued");
+                let end = Instant::now() + Duration::from_secs(5);
+                while !s2.load(Ordering::Acquire) && Instant::now() < end {
+                    std::thread::yield_now();
+                }
+            }
+            let fb = akio_http::message::FileBody::new(file.clone(), 0, LEN);
+            ctx.respond(Response::from_file(200, "application/octet-stream", fb));
+        });
+        let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+        let cert = akio::tls::Certificate::from_der(ck.0.as_der().to_vec());
+        let key = akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
+        let quic = server_config(vec![cert], key).unwrap();
+        let mut pool = akio::PoolConfig::default();
+        pool.max_threads = 1;
+        pool.queue_capacity = 1;
+        let s = akio::Engine::builder()
+            .pool(pool)
+            .listen(akio::Listener::udp("127.0.0.1:0".parse().unwrap()).serve(serve(quic, app)))
+            .build()
+            .unwrap();
+        s.start().unwrap();
+        let addr = s.local_addrs()[0];
+        let e = akio::Engine::builder()
+            .udp_client_threads(1)
+            .build()
+            .unwrap();
+        e.start().unwrap();
+        let got = Arc::new(AtomicU64::new(0));
+        let refused = READS_REFUSED.load(Ordering::Relaxed);
+        let cc = akio_quic::client_config_insecure(&[b"h3"]).unwrap();
+        let _c = akio_quic::dial(&e, addr, "localhost", cc, Fetch { got: got.clone() }).unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        while READS_REFUSED.load(Ordering::Relaxed) < refused + 3 {
+            assert!(Instant::now() < end, "no refused read");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(FILE_READ_OFF_POOL.load(Ordering::Relaxed), 0);
+        assert!(
+            got.load(Ordering::Relaxed) < LEN,
+            "the body waits for the pool"
+        );
+        released.store(true, Ordering::Release);
+        while got.load(Ordering::Relaxed) < LEN {
+            assert!(Instant::now() < end, "body not received");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(FILE_READ_OFF_POOL.load(Ordering::Relaxed), 0);
+        e.shutdown();
+        e.wait();
         s.shutdown();
     }
 

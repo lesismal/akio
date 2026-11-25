@@ -49,7 +49,12 @@ Serving it: `akio_http::serve(grpc)` on its own, or as the `fallback` (or a rout
   call it on an I/O thread).
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` for streaming calls, also blocking.
 - `bidi(path, opts, on_message, on_done) -> ClientSink` is the non-blocking general form:
-  `ClientSink::send`, `close_send`.
+  `ClientSink::send`, `close_send`. `on_message` runs on the connection's I/O thread, and so does
+  `on_done` when the response ends the call (status, reset, the connection lost); neither may
+  block. `on_done` at the deadline, or when the connection went before the request reached it,
+  runs on the client's callbacks thread (`akio-grpc-callbacks`, one per process), never on the
+  thread that fires deadlines: a blocking `unary` there does not stall other calls' deadlines,
+  but delays the other calls' `on_done` at their deadlines.
 - `CallOptions`: `timeout` (sent as `grpc-timeout`, and enforced by the client as well: the call
   ends with `DEADLINE_EXCEEDED` when it passes, whatever the server does), `metadata`. Without
   one, `unary` and `collect` use the client's `default_timeout(Option<Duration>)` (30 s), since

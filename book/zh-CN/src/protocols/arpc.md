@@ -48,7 +48,7 @@ handler 在 I/O 线程上执行，不能阻塞。
 | 方法 | 含义 |
 |---|---|
 | `call(method, payload, timeout) -> CallFuture` | `wait()`（或 `.await`）得到 `Result<Vec<u8>, CallError>`；`timeout: None` 使用路由的 `call_timeout`（30 秒） |
-| `call_async(method, payload, timeout, done)` | 回调形式 |
+| `call_async(method, payload, timeout, done)` | 回调形式：收到应答或连接断开时 `done` 在连接的 I/O 线程上运行（不能阻塞），调用未发送时立即运行，`Timeout` 时在回调线程（`akio-arpc-callbacks`，每个进程一个）上运行，绝不在触发截止时间的线程上，因此在那里阻塞地 `call(..).wait()` 是安全的 |
 | `call_with`、`call_async_with`、`notify_with` | 同上，附带给 coder 的 `Values` |
 | `notify(method, payload) -> bool` | 单向消息 |
 | `new_stream(method, on_event) -> Stream` | `send`、`close_send`、`id`、`method`、`peer` |

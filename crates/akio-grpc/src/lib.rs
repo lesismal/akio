@@ -997,18 +997,52 @@ struct ClientCall {
     done: Mutex<Option<DoneFn>>,
     over: AtomicBool,
     deadline: OnceLock<Timer>,
+    /// `done` is the crate's own, which only signals a waiter ([`GrpcClient::collect`]): it
+    /// may run on the deadline thread. A caller's `done` may block, so it never does.
+    inline: bool,
 }
 
 impl ClientCall {
+    /// Ends the call where this runs (the connection's I/O thread, for its events).
     fn end(&self, status: Status, trailers: Headers) {
-        let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(d) = done {
-            self.over.store(true, Ordering::Release);
-            if let Some(t) = self.deadline.get() {
-                t.cancel();
-            }
+        if let Some(d) = self.take() {
             d(status, trailers);
         }
+    }
+
+    /// Ends the call from the deadline thread, or from wherever the response's callback was
+    /// dropped: a caller's `done` goes to the callbacks thread ([`deadline::hand_off`]).
+    fn end_elsewhere(&self, status: Status) {
+        if let Some(d) = self.take() {
+            if self.inline {
+                d(status, Headers::new());
+            } else {
+                deadline::hand_off(move || d(status, Headers::new()));
+            }
+        }
+    }
+
+    fn take(&self) -> Option<DoneFn> {
+        let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take()?;
+        self.over.store(true, Ordering::Release);
+        if let Some(t) = self.deadline.get() {
+            t.cancel();
+        }
+        Some(done)
+    }
+}
+
+/// Held by the response's callback: if the HTTP/2 client drops the callback without having
+/// ended it (the connection went before the request reached it), the call still ends, with
+/// `UNAVAILABLE`, rather than leave a waiter with no deadline waiting for ever.
+struct EndOnDrop(Arc<ClientCall>);
+
+impl Drop for EndOnDrop {
+    fn drop(&mut self) {
+        self.0.end_elsewhere(Status::new(
+            Code::Unavailable,
+            "connection closed before the call ended",
+        ));
     }
 }
 
@@ -1086,12 +1120,33 @@ impl GrpcClient {
     /// The general form: `on_message` receives response messages, `done` the final status and
     /// trailers; the returned sink sends requests. With [`CallOptions::timeout`] set, `done`
     /// gets `DEADLINE_EXCEEDED` when it passes, and later messages are dropped.
+    ///
+    /// `on_message` runs on the connection's I/O thread, and so does `done` when the response
+    /// ends it (status, trailers, a reset, the connection's loss); both must not block. `done`
+    /// at the deadline, or when the connection went before the request reached it, runs on
+    /// the client's callbacks thread instead (`akio-grpc-callbacks`, shared by every client in
+    /// the process, never on the thread that fires deadlines), where a blocking call such as
+    /// [`unary`](Self::unary) does not stall other calls' deadlines, but does delay the other
+    /// calls' `done` at their deadlines.
     pub fn bidi(
         &self,
         path: &str,
         opts: CallOptions,
-        mut on_message: impl FnMut(Vec<u8>) + Send + 'static,
+        on_message: impl FnMut(Vec<u8>) + Send + 'static,
         done: impl FnOnce(Status, Headers) + Send + 'static,
+    ) -> ClientSink {
+        self.start(path, opts, on_message, Box::new(done), false)
+    }
+
+    /// [`bidi`](Self::bidi); `inline`: `done` is the crate's own and only signals a waiter,
+    /// so it may run on the deadline thread.
+    fn start(
+        &self,
+        path: &str,
+        opts: CallOptions,
+        mut on_message: impl FnMut(Vec<u8>) + Send + 'static,
+        done: DoneFn,
+        inline: bool,
     ) -> ClientSink {
         let mut req = ClientRequest::post(&format!("{}{path}", self.base), Vec::new());
         req.headers.set("content-type", "application/grpc");
@@ -1107,21 +1162,20 @@ impl GrpcClient {
             req.headers.append(k.as_str(), v.as_str());
         }
         let call = Arc::new(ClientCall {
-            done: Mutex::new(Some(Box::new(done))),
+            done: Mutex::new(Some(done)),
             over: AtomicBool::new(false),
             deadline: OnceLock::new(),
+            inline,
         });
         if let Some(at) = opts.timeout.and_then(|t| Instant::now().checked_add(t)) {
             let weak = Arc::downgrade(&call);
             let _ = call.deadline.set(Timer::at(at, move || {
                 if let Some(c) = weak.upgrade() {
-                    c.end(
-                        Status::new(Code::DeadlineExceeded, "deadline exceeded"),
-                        Headers::new(),
-                    );
+                    c.end_elsewhere(Status::new(Code::DeadlineExceeded, "deadline exceeded"));
                 }
             }));
         }
+        let guard = EndOnDrop(call);
         let mut deframer: Option<Deframer> = None;
         let max = self.max_message;
         let mut status: Option<Status> = None;
@@ -1146,7 +1200,7 @@ impl GrpcClient {
                 deframer = Some(Deframer::new(max, gz));
             }
             H2Event::Data(b) => {
-                if call.over.load(Ordering::Acquire) || status.is_some() {
+                if guard.0.over.load(Ordering::Acquire) || status.is_some() {
                     return;
                 }
                 if let Some(d) = deframer.as_mut() {
@@ -1162,13 +1216,13 @@ impl GrpcClient {
                 }
                 trailers = t.clone();
             }
-            H2Event::End => call.end(
+            H2Event::End => guard.0.end(
                 status
                     .take()
                     .unwrap_or_else(|| Status::new(Code::Internal, "no grpc-status")),
                 std::mem::take(&mut trailers),
             ),
-            H2Event::Error(e) => call.end(
+            H2Event::Error(e) => guard.0.end(
                 Status::new(Code::Unavailable, e.to_string()),
                 Headers::new(),
             ),
@@ -1218,7 +1272,7 @@ impl GrpcClient {
         let fin: Arc<Fin> = Arc::new((Mutex::new(None), Condvar::new()));
         let (o2, f2, f3) = (out.clone(), fin.clone(), fin.clone());
         let max = self.max_collect;
-        let sink = self.bidi(
+        let sink = self.start(
             path,
             opts,
             move |m| {
@@ -1240,7 +1294,8 @@ impl GrpcClient {
                 }
                 g.0.push(m);
             },
-            move |s, _| finish(&f3, s),
+            Box::new(move |s, _| finish(&f3, s)),
+            true,
         );
         for r in &requests {
             sink.send(r);
@@ -1394,6 +1449,142 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
         e.shutdown();
         e.wait();
+    }
+
+    /// A streaming call's `done` at its deadline runs off the deadline thread, so it may make a
+    /// blocking call whose own deadline still fires (before, it ran on the deadline thread,
+    /// and the inner call waited for a deadline only that thread could fire: every gRPC
+    /// deadline in the process stalled).
+    #[test]
+    fn done_at_deadline_may_make_a_blocking_call() {
+        struct Silent(Mutex<Vec<akio_http::Detached>>);
+        impl Service for Silent {
+            fn call(&self, ctx: &mut Context) {
+                if let Some(d) = ctx.detach() {
+                    self.0.lock().expect("lock").push(d);
+                }
+            }
+        }
+        let (e, c) = setup(Silent(Mutex::new(Vec::new())));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let c2 = c.clone();
+        let _sink = c.bidi(
+            "/t.S/X",
+            opts(Some(Duration::from_millis(30))),
+            |_| {},
+            move |st, _| {
+                let on_deadline_thread = deadline::on_deadline_thread();
+                let inner = c2.unary("/t.S/X", b"", opts(Some(Duration::from_millis(30))));
+                let _ = tx.send((st.code, on_deadline_thread, inner.map_err(|s| s.code)));
+            },
+        );
+        let (code, on_deadline_thread, inner) =
+            rx.recv_timeout(Duration::from_secs(10)).expect("done ran");
+        assert_eq!(code, Code::DeadlineExceeded);
+        assert!(!on_deadline_thread);
+        assert_eq!(inner, Err(Code::DeadlineExceeded));
+        e.shutdown();
+        e.wait();
+    }
+
+    /// The connection goes between `collect` handing its request to the HTTP/2 client and the
+    /// request reaching the connection's I/O thread (the hop through the logical pool is
+    /// skipped): with no deadline, `collect` still returns, `UNAVAILABLE`, rather than wait for
+    /// ever.
+    #[test]
+    fn collect_without_deadline_ends_when_the_connection_goes_before_the_hop() {
+        use std::{io::Write, net::TcpStream, sync::mpsc};
+
+        // The server.
+        let (es, c0) = setup(GrpcServer::new().unary("/t.S/Echo", |_md, req, sink| {
+            sink.send(&req);
+            sink.finish(Status::ok());
+        }));
+        let addr = es.local_addrs()[0];
+        // The client's engine: one pool thread, which a plain HTTP request holds.
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let blocker = Mutex::new(Some((started_tx, release_rx)));
+        let block = move |ctx: &mut Context| {
+            let Some((started_tx, release_rx)) = blocker.lock().expect("lock").take() else {
+                return ctx.text(200, "");
+            };
+            ctx.detach_to_pool(move |d| {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                d.respond(Response::text(200, ""));
+            });
+        };
+        let ec = Arc::new(
+            Engine::builder()
+                .config({
+                    let mut v = Config::default();
+                    v.shutdown_timeout = Duration::from_millis(300);
+                    v
+                })
+                .pool({
+                    let mut p = akio::PoolConfig::default();
+                    p.min_threads = 1;
+                    p.max_threads = 1;
+                    p
+                })
+                .listen(
+                    Listener::tcp("127.0.0.1:0".parse().expect("addr"))
+                        .threads(1)
+                        .serve(akio_http::serve(block)),
+                )
+                .client_threads(1)
+                .build()
+                .expect("engine"),
+        );
+        ec.start().expect("start");
+        let h2 = H2Client::dial_blocking(&ec, addr, None, H2Options::default()).expect("dial");
+        let c = GrpcClient::new(h2.clone(), &format!("http://{addr}")).default_timeout(None);
+        assert_eq!(
+            c.unary("/t.S/Echo", b"x", CallOptions::default())
+                .expect("ok"),
+            b"x"
+        );
+        // Hold the client's only pool thread.
+        let mut s = TcpStream::connect(ec.local_addrs()[0]).expect("connect");
+        s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .expect("write");
+        started
+            .recv_timeout(Duration::from_secs(5))
+            .expect("pool held");
+        // The call's hop waits in the pool's queue.
+        let queued_before = ec.pool_stats().queued;
+        let (tx, rx) = mpsc::channel();
+        let call = thread::spawn(move || {
+            let _ = tx.send(c.collect("/t.S/Echo", vec![b"y".to_vec()], CallOptions::default()));
+        });
+        // (Where the client reaches its loop without the pool, nothing is queued: the call is
+        // sent, and ends with the connection instead.)
+        let t = Instant::now();
+        while ec.pool_stats().queued == queued_before && t.elapsed() < Duration::from_secs(1) {
+            thread::sleep(Duration::from_millis(2));
+        }
+        // The connection goes (the server stops), then the pool runs the hop, too late.
+        es.shutdown();
+        es.wait();
+        while h2.is_open() {
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "connection still open"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        drop(c0);
+        let _ = release.send(());
+        let (msgs, st) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("collect returned");
+        assert!(msgs.is_empty());
+        assert_eq!(st.code, Code::Unavailable);
+        call.join().expect("join");
+        drop(s);
+        ec.shutdown();
+        ec.wait();
     }
 
     /// `client_stream` requests and `collect` responses are gathered up to their limits.

@@ -49,7 +49,7 @@ and then **keeps reconnecting** every second until `Peer::close()`.
 | Method | Meaning |
 |---|---|
 | `call(method, payload, timeout) -> CallFuture` | `wait()` (or `.await`) for `Result<Vec<u8>, CallError>`; `timeout: None` uses the routes' `call_timeout` (30 s) |
-| `call_async(method, payload, timeout, done)` | callback form |
+| `call_async(method, payload, timeout, done)` | callback form: `done` runs on the connection's I/O thread for an answer or the connection's loss (it must not block), at once when the call is not sent, and for `Timeout` on the callbacks thread (`akio-arpc-callbacks`, one per process), never on the thread that fires deadlines, so a blocking `call(..).wait()` there is safe |
 | `call_with`, `call_async_with`, `notify_with` | the same with `Values` for the coders |
 | `notify(method, payload) -> bool` | one-way message |
 | `new_stream(method, on_event) -> Stream` | `send`, `close_send`, `id`, `method`, `peer` |

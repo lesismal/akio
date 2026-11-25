@@ -47,7 +47,11 @@ server-streaming 方法就是这样做的）。
   调用）。
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` 用于流式调用，同样是阻塞的。
 - `bidi(path, opts, on_message, on_done) -> ClientSink` 是非阻塞的通用形式：
-  `ClientSink::send`、`close_send`。
+  `ClientSink::send`、`close_send`。`on_message` 在连接的 I/O 线程上运行；响应结束调用时（状态、
+  重置、连接断开）`on_done` 也在那里运行；两者都不能阻塞。截止时间到期时，或请求到达连接前连接
+  已断开时，`on_done` 在客户端的回调线程（`akio-grpc-callbacks`，每个进程一个）上运行，绝不在触发
+  截止时间的线程上：在那里调用阻塞的 `unary` 不会卡住其他调用的截止时间，但会推迟其他调用到期时的
+  `on_done`。
 - `CallOptions`：`timeout`（作为 `grpc-timeout` 发送，客户端也会执行：到期时无论服务端如何，
   调用都以 `DEADLINE_EXCEEDED` 结束）、`metadata`。未设置时，`unary` 和 `collect` 使用客户端的
   `default_timeout(Option<Duration>)`（30 秒），因为它们会阻塞线程；`bidi` 调用没有截止时间。

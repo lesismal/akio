@@ -70,6 +70,27 @@ HTTP/3, gRPC and arpc keep their switches off.
   nobody waiting in it, a poster interrupts the driver a worker is actually blocked in, and a
   worker about to block runs work queued since it last looked.
 
+### Fixed: client deadlines, connection losses and full pools no longer hang or duplicate (akio-grpc, akio-arpc, akio-h3, akio-http)
+
+- **A call's `done` no longer runs on the deadline thread** (akio-grpc, akio-arpc). One thread
+  per crate fires every client deadline, and it ran the caller's callback of a call that timed
+  out: a gRPC `bidi` call's `done`, an arpc `call_async`'s `done`. A blocking call made there
+  (`unary`, `collect`, `call(..).wait()`) waited for a deadline only that thread could fire, and
+  every deadline in the process stalled for good. Those callbacks now run on a callbacks thread
+  (`akio-grpc-callbacks`, `akio-arpc-callbacks`); the crates' own waiters are still signalled on
+  the deadline thread. The API docs and the book say where `done` runs.
+- **gRPC `collect` and `unary` with `default_timeout(None)` no longer wait for ever** when the
+  HTTP/2 connection goes between the call being started and the request reaching the
+  connection's I/O thread (the hop through the logical pool is skipped then, and the request
+  dropped with no event). The call now ends with `UNAVAILABLE`.
+- **HTTP/3 file responses no longer read the file on the I/O thread** when the logical pool
+  refuses the read (akio-h3). The read is asked again every 5 ms from the HTTP layer's timer
+  thread, as HTTP/1.1 and HTTP/2's file pump does; after a second of a pool that stays full the
+  stream is reset.
+- **`H2Upload::try_write` no longer sends bytes twice** (akio-http). When the logical pool
+  refused the hop to the connection's I/O thread it returned `Err(Closed)` but left the bytes
+  queued, and a caller that wrote them again sent them twice. They are now taken back.
+
 ### Fixed: HTTP/3 QPACK encoding and WebSocket sends from an application thread no longer deadlock (akio-h3, akio-quic)
 
 The same kind of deadlock as the client's request lock: a call on a QUIC connection from outside

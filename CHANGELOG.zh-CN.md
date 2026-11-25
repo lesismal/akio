@@ -58,6 +58,22 @@ HTTP/1.1 客户端（复用 keep-alive 连接时）和 HTTP/2 客户端（每个
   轮流使用各个 driver；只要另有 driver 无人等待，阻塞中的 worker 每 10 ms 醒来轮询下一个；投递者会
   打断确实有 worker 阻塞其中的 driver；即将阻塞的 worker 会先运行它上次查看之后排入的工作。
 
+### 修复：客户端的截止时间、连接断开和池满不再导致挂起或重复发送（akio-grpc、akio-arpc、akio-h3、akio-http）
+
+- **调用的 `done` 不再在截止时间线程上运行**（akio-grpc、akio-arpc）。每个 crate 用一个线程触发
+  所有客户端截止时间，它会运行超时调用的调用方回调：gRPC `bidi` 调用的 `done`、arpc
+  `call_async` 的 `done`。在那里发起的阻塞调用（`unary`、`collect`、`call(..).wait()`）会等待
+  一个只有该线程才能触发的截止时间，进程内所有截止时间从此停摆。这些回调现在在回调线程
+  （`akio-grpc-callbacks`、`akio-arpc-callbacks`）上运行；crate 自己的等待者仍在截止时间线程上
+  被唤醒。API 文档和手册说明了 `done` 在哪里运行。
+- **`default_timeout(None)` 的 gRPC `collect` 和 `unary` 不再永远等待**：若 HTTP/2 连接在调用
+  开始后、请求到达连接的 I/O 线程前断开（此时经逻辑池的那一跳被跳过，请求被丢弃而没有任何事件），
+  调用现在以 `UNAVAILABLE` 结束。
+- **逻辑池拒绝读文件时，HTTP/3 文件响应不再在 I/O 线程上读文件**（akio-h3）。读取改为每 5 ms
+  从 HTTP 层的定时器线程重新提交，与 HTTP/1.1 和 HTTP/2 的文件泵相同；池持续满一秒后重置该 stream。
+- **`H2Upload::try_write` 不再重复发送字节**（akio-http）。逻辑池拒绝去往连接 I/O 线程的那一跳时，
+  它返回 `Err(Closed)` 却把字节留在队列中，调用方再写一次就会发出两遍。现在字节会被收回。
+
 ### 修复：在应用线程上进行 HTTP/3 QPACK 编码和 WebSocket 发送不再死锁（akio-h3、akio-quic）
 
 与客户端请求锁同类的死锁：在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，
