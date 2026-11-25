@@ -1,7 +1,7 @@
 //! Requests suspended and resumed (`Context::suspend`, `Context::suspend_to_pool`, ADR-109): the
 //! request goes on where it stopped, from the pool or any thread, with what the context held;
 //! a request suspended again; HTTP/1.1 answers stay in request order; an unresumed or unanswered request gets 500; a full
-//! pool 503; a streamed body cannot be suspended.
+//! pool 503; a streamed body suspended with its reads held (ADR-159; more in `suspend_stream`).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -285,16 +285,23 @@ fn http1_a_full_pool_answers_503() {
     stop(&e);
 }
 
-/// A service that takes bodies as they arrive, and tries to suspend.
+/// A service that takes bodies as they arrive, and suspends them (ADR-159): resumed inline,
+/// or dropped unresumed.
 struct Streams;
 
 impl Service for Streams {
     fn call(&self, ctx: &mut Context) {
-        let suspended = ctx.suspend().is_some();
-        ctx.on_body(move |ctx, ev| {
-            if matches!(ev, akio_http::BodyEvent::End(_)) {
-                ctx.text(200, format!("suspended={suspended}"));
-            }
+        let drop_it = ctx.req().path() == "/drop";
+        let s = ctx.suspend().expect("a streamed body suspends");
+        if drop_it {
+            return drop(s);
+        }
+        s.resume(|ctx| {
+            ctx.on_body(move |ctx, ev| {
+                if let akio_http::BodyEvent::End(_) = ev {
+                    ctx.text(200, "resumed");
+                }
+            });
         });
     }
 
@@ -308,12 +315,20 @@ impl Service for Streams {
 }
 
 #[test]
-fn a_streamed_body_cannot_be_suspended() {
+fn a_streamed_body_is_suspended_with_its_reads_held() {
     let e = start(Streams, HttpConfig::default(), None);
     let mut s = connect(e.local_addrs()[0]);
-    s.write_all(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc")
-        .unwrap();
-    assert_eq!(read_resp(&mut s).2, "suspended=false");
+    s.write_all(
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc\
+          POST /drop HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc\
+          POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc",
+    )
+    .unwrap();
+    assert_eq!(read_resp(&mut s).2, "resumed");
+    // Dropped unresumed: 500, and its body read past.
+    let r = read_resp(&mut s);
+    assert_eq!(r.0, 500, "{r:?}");
+    assert_eq!(read_resp(&mut s).2, "resumed");
     stop(&e);
 }
 

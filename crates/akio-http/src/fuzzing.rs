@@ -296,6 +296,7 @@ fn session_config() -> HttpConfig {
         keep_alive_timeout: None,
         body_timeout: None,
         run_on_pool: false,
+        idle_drain_grace: std::time::Duration::ZERO,
     }
 }
 

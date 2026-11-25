@@ -60,10 +60,10 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-use akio_http::Service;
 use akio_http::message::{Headers, Method, Request, Response, Version};
 use akio_http::transport::{BodySink, ConnSink, SharedSink, Started};
 use akio_http::ws::{WsLink, WsSession};
+use akio_http::{ResponseObserver, Service};
 use akio_quic::Bytes;
 use akio_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
 
@@ -166,6 +166,27 @@ pub fn serve_with<S: Service>(
     cfg: H3Config,
     service: S,
 ) -> QuicServer {
+    serve_inner(quic, cfg, service, None)
+}
+
+/// [`serve_with`], with a response observer told of each response whose request asks for it
+/// (`akio_http::Context::set_observed`), as `akio_http::HttpAcceptor::observer` sets one for
+/// HTTP/1.1 and HTTP/2 (ADR-158, akit A29).
+pub fn serve_with_observer<S: Service>(
+    quic: akio_quic::ServerConfig,
+    cfg: H3Config,
+    service: S,
+    observer: Arc<dyn ResponseObserver>,
+) -> QuicServer {
+    serve_inner(quic, cfg, service, Some(observer))
+}
+
+fn serve_inner<S: Service>(
+    quic: akio_quic::ServerConfig,
+    cfg: H3Config,
+    service: S,
+    observer: Option<Arc<dyn ResponseObserver>>,
+) -> QuicServer {
     let svc = Arc::new(service);
     let cfg = Arc::new(cfg);
     QuicServer::new(quic, move |c: &Connection| {
@@ -175,6 +196,7 @@ pub fn serve_with<S: Service>(
             drains: Arc::default(),
             gones: Arc::default(),
             enc: None,
+            observer: observer.as_ref().map(akio_http::transport::conn_observer),
         };
         ServerConn {
             svc: svc.clone(),
@@ -1908,6 +1930,8 @@ struct H3Out {
     gones: Arc<Gones>,
     /// The connection's QPACK encoder, when it has a dynamic table.
     enc: Option<Arc<EncShared>>,
+    /// The connection's handle on the listener's response observer (ADR-158).
+    observer: Option<Arc<dyn ResponseObserver>>,
 }
 
 /// A request's [`ConnSink`] tag: its stream's index (request streams are client-initiated
@@ -1952,6 +1976,10 @@ impl ConnSink for H3Out {
     fn hold_reads(&self, tag: u64, hold: bool) {
         let id = StreamId::new(akio_quic::Side::Client, Dir::Bi, tag >> 1);
         let _ = self.c.hold_reads(id, hold);
+    }
+
+    fn observer(&self) -> Option<&Arc<dyn ResponseObserver>> {
+        self.observer.as_ref()
     }
 
     /// Resets the request stream, its response given up before its head went (ADR-128).

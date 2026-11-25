@@ -50,6 +50,41 @@ without the dialed connections, adopted streams, UDP peers and TUN devices that
 its upstreams on the same engine. Every backend (epoll/kqueue loops, rounds, io_uring, DPDK)
 tells the kind on close (the backend-facing `Telemetry::conn_closed` takes it); an accept still
 costs one atomic update.
+### Added: idle HTTP/1 connections drained after a grace (akio-http; akit A54)
+
+`HttpConfig::idle_drain_grace` (250 ms by default): when a listener is drained
+(`Engine::shutdown_listener`, `Engine::shutdown`), an idle HTTP/1 keep-alive connection is no
+longer closed at once, racing a request its client may have sent already. It stays open up to the
+grace; a request that arrives in it, or was in the receive buffer, is answered with
+`Connection: close` and the connection closed after its response; a request partly received, or
+whose body is arriving, is busy and answered so too; with none, the connection closes at the end
+of the grace. The drain's deadline caps the grace. `Duration::ZERO` keeps the old behaviour. A
+connection that turns HTTP/2 in the grace is sent `GOAWAY` at once.
+
+### Added: a listener's response observer, without an allocation per request (akio-http, akio-h3; akit A29)
+
+ADR-158. `ResponseObserver::on_response(&self, resp, req, words: [u64; 2], started: Instant)`,
+set once with `HttpAcceptor::observer` (HTTP/1.1 and HTTP/2) or `akio_h3::serve_with_observer`
+(HTTP/3); a request opts in with `Context::set_observed(words) -> bool`, which stores the two
+words and the time inline. The observer runs once per observed request when its response goes,
+on the thread that sends it, after the filters, whether the response is sent inline, detached,
+after a suspension, through a held head or streamed (at its head); a response never sent is not
+observed. Each connection clones its own handle on the observer, so a request bumps no count
+other threads share; an observed HTTP/1.1 request allocates nothing (a test counts). New
+`transport::ConnSink::observer` and `transport::conn_observer` for transports on the seam. The
+HTTP/2 session is boxed inside the HTTP/1 session (one allocation per HTTP/2 connection), which
+keeps an idle HTTP/1 connection within its size budget.
+
+### Added: a request whose body streams can be suspended (akio-http, akio-h3; akit A75)
+
+ADR-159. `Context::suspend` no longer returns `None` for a request whose body streams
+(`BodyMode::Stream`): the body's reads are held from the suspension (HTTP/1.1 stops reading the
+connection, HTTP/2 stops giving the window back, HTTP/3 holds the stream), what was read already
+(one read's worth, or a stream window) is kept, and once `Suspended::resume`'s closure returns
+the resumed context's `on_body` sink gets the whole body in order and the reads go on. A handler
+that holds the reads (`body_reads`) in the closure keeps them held; a client that goes meanwhile
+runs `on_gone`; a request dropped unresumed is answered `500` and its body read past. HTTP/1.1,
+HTTP/2 and HTTP/3.
 
 ### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
 

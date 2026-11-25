@@ -52,6 +52,22 @@ pub trait ConnSink: Send + Sync + 'static {
     /// request's stream (a held head cut, ADR-128). The default does nothing: the stream stays
     /// unanswered until its connection closes.
     fn reset(&self, _tag: u64) {}
+    /// The connection's handle on its listener's response observer (ADR-158), which the
+    /// requests answered through this sink hand their observed responses to
+    /// ([`Context::set_observed`](crate::Context::set_observed)). Make it once per connection
+    /// with [`conn_observer`]. The default has none.
+    fn observer(&self) -> Option<&Arc<dyn crate::ResponseObserver>> {
+        None
+    }
+}
+
+/// A connection's own handle on a listener's response `observer`, for
+/// [`ConnSink::observer`]: requests clone it, a count that only the connection's requests
+/// touch (ADR-158). One allocation; make it once per connection.
+pub fn conn_observer(
+    observer: &Arc<dyn crate::ResponseObserver>,
+) -> Arc<dyn crate::ResponseObserver> {
+    crate::observer::per_conn(observer)
 }
 
 /// A connection's [`ConnSink`], shared by its requests: cloning it is one reference count

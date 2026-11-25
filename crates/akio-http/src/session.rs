@@ -13,6 +13,7 @@ use crate::{
 use crate::{
     context::{BodyEvent, BodyMode, Context, Service},
     message::{Headers, Request, Response, Version},
+    observer::ResponseObserver,
     parse::{ChunkDecoder, ChunkError, Head, ParseError, parse_head},
 };
 
@@ -56,6 +57,18 @@ pub struct HttpConfig {
     ///
     /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
     pub run_on_pool: bool,
+    /// How long an idle HTTP/1 keep-alive connection stays open once its listener is drained
+    /// (`Engine::shutdown_listener`, `Engine::shutdown`), for a request its client may have
+    /// sent already. HTTP/1 cannot tell an idle client its connection is going (HTTP/2 has
+    /// `GOAWAY`), so closing it at once races a request on the wire. Within the grace a request
+    /// that arrives (or was already in the receive buffer) is answered with `Connection: close`
+    /// and the connection closed after its response; a request partly received is busy and is
+    /// answered so too; with none, the connection is closed at the end of the grace (after any
+    /// response still being prepared). The drain's own deadline (`shutdown_listener`'s `drain`,
+    /// `Config::shutdown_timeout`) caps it: what is open then is closed. A request in progress
+    /// when the drain starts is answered with `Connection: close` too. Default 250 ms;
+    /// `Duration::ZERO` closes an idle connection at once, as before (akit A54).
+    pub idle_drain_grace: Duration,
 }
 
 impl Default for HttpConfig {
@@ -68,6 +81,7 @@ impl Default for HttpConfig {
             keep_alive_timeout: Some(Duration::from_secs(75)),
             body_timeout: Some(Duration::from_secs(60)),
             run_on_pool: false,
+            idle_drain_grace: Duration::from_millis(250),
         }
     }
 }
@@ -96,6 +110,7 @@ pub fn serve_with<S: Service>(cfg: HttpConfig, service: S) -> HttpAcceptor<S> {
     HttpAcceptor {
         service: Arc::new(service),
         cfg: Arc::new(cfg),
+        observer: None,
     }
 }
 
@@ -103,6 +118,18 @@ pub fn serve_with<S: Service>(cfg: HttpConfig, service: S) -> HttpAcceptor<S> {
 pub struct HttpAcceptor<S> {
     service: Arc<S>,
     cfg: Arc<HttpConfig>,
+    observer: Option<Arc<dyn ResponseObserver>>,
+}
+
+impl<S> HttpAcceptor<S> {
+    /// Sets the listener's response observer (ADR-158, akit A29): told of the response of each
+    /// request that asks for it with [`Context::set_observed`](crate::Context::set_observed),
+    /// over HTTP/1.1 and HTTP/2, on the thread that sends it. See [`ResponseObserver`].
+    #[must_use]
+    pub fn observer(mut self, observer: Arc<dyn ResponseObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
 }
 
 impl<S> std::fmt::Debug for HttpAcceptor<S> {
@@ -140,6 +167,8 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             span: crate::trace::connection_span(akio_mux::proxy::client_addr(c), "1.1"),
             peer_chain: None,
             peer_known: false,
+            draining: false,
+            observer: self.observer.as_ref().map(crate::observer::per_conn),
         }
     }
 
@@ -211,7 +240,7 @@ pub struct Session<S> {
     /// Set once a request handed the connection over as raw bytes.
     raw: Option<(crate::raw::RawConn, Box<dyn crate::raw::RawHandler>)>,
     /// Set once the connection speaks HTTP/2.
-    h2: Option<H2Session<S>>,
+    h2: Option<Box<H2Session<S>>>,
     /// Some bytes have been seen (the HTTP/2 preface is only looked for at the very start).
     started: bool,
     /// Progress on the head being received (so a head arriving in pieces is scanned once).
@@ -229,6 +258,11 @@ pub struct Session<S> {
     peer_chain: Option<Arc<[Vec<u8>]>>,
     /// Whether `peer_chain` is known: the handshake is done.
     peer_known: bool,
+    /// The listener is being drained ([`HttpConfig::idle_drain_grace`]): every request read
+    /// from now on is answered with `Connection: close`.
+    draining: bool,
+    /// The connection's handle on the listener's response observer (ADR-158), if it has one.
+    observer: Option<Arc<dyn ResponseObserver>>,
 }
 
 /// A connection's verified client certificate chain ([`Request::peer_certificates`]), asked of
@@ -445,7 +479,7 @@ impl<S: Service> Session<S> {
                     if seen.len() >= PREFACE.len() {
                         self.started = true;
                         self.span.record("network.protocol.version", "2");
-                        self.h2 = Some(H2Session::new(
+                        self.h2 = Some(Box::new(H2Session::new(
                             c.inner().clone(),
                             cfg,
                             self.service.clone(),
@@ -453,7 +487,9 @@ impl<S: Service> Session<S> {
                             &seen,
                             None,
                             self.early_len > 0,
-                        ));
+                            self.observer.clone(),
+                        )));
+                        self.h2_drain();
                     } else {
                         self.buf = seen; // wait for the rest of the preface
                     }
@@ -513,10 +549,62 @@ impl<S: Service> Session<S> {
         self.consumed + (pos as u64) < self.early_len
     }
 
-    fn shutdown(&self, c: &Conn<Self>) {
-        match &self.h2 {
-            Some(h2) => h2.shutdown(),
-            None => h1_shutdown(c),
+    fn shutdown(&mut self, c: &Conn<Self>) {
+        if let Some(h2) = &self.h2 {
+            return h2.shutdown();
+        }
+        let grace = self.cfg.idle_drain_grace;
+        if grace.is_zero() || self.ws.is_some() || self.raw.is_some() {
+            return h1_shutdown(c);
+        }
+        if std::mem::replace(&mut self.draining, true) {
+            return;
+        }
+        match &mut self.state {
+            // No more requests are read: close after the responses still being prepared.
+            State::Closed => h1_shutdown(c),
+            // Idle: a request may be on its way; wait for it up to the grace (akit A54).
+            State::Head if self.buf.is_empty() => {
+                let conn = c.clone();
+                crate::timer::after(grace, move || {
+                    let _ = conn.run_on_loop(|h: &mut Session<S>, c| h.drain_grace_over(c));
+                });
+            }
+            // A head partly received: busy, answered with `Connection: close` once it is in.
+            State::Head => {}
+            // A body arriving: its request is answered with `Connection: close`.
+            State::Body { keep_alive, .. } => *keep_alive = false,
+            // The service runs already and its response has its slot: answered with
+            // `Connection: close` while it was not sent yet, and the connection closes after it.
+            State::Stream {
+                ctx, keep_alive, ..
+            } => {
+                *keep_alive = false;
+                ctx.set_close();
+                h1_shutdown(c);
+            }
+        }
+    }
+
+    /// A connection that turned HTTP/2 while drained is sent `GOAWAY` at once.
+    fn h2_drain(&self) {
+        if let (true, Some(h2)) = (self.draining, &self.h2) {
+            h2.shutdown();
+        }
+    }
+
+    /// The grace of a drained idle connection ended: closed now (after any response still
+    /// being prepared) unless a request began meanwhile, which closes it after its response.
+    fn drain_grace_over(&mut self, c: &Conn<Self>) {
+        if self.h2.is_some() {
+            return; // became HTTP/2 meanwhile, and was sent GOAWAY then
+        }
+        if self.ws.is_some() || self.raw.is_some() {
+            return h1_shutdown(c);
+        }
+        if matches!(self.state, State::Head) && self.buf.is_empty() {
+            self.state = State::Closed;
+            h1_shutdown(c);
         }
     }
 
@@ -720,11 +808,12 @@ impl<S: Service> Session<S> {
         if head.version == Version::Http11 && !host {
             return self.fail(c, 400);
         }
-        let keep_alive = match head.version {
-            Version::Http11 => !close,
-            Version::Http10 => keep,
-            Version::Http2 | Version::Http3 => true,
-        };
+        let keep_alive = !self.draining
+            && match head.version {
+                Version::Http11 => !close,
+                Version::Http10 => keep,
+                Version::Http2 | Version::Http3 => true,
+            };
         let mut declared = 0usize;
         let kind = match (te, cl.is_none() && !cl_bad) {
             (Some(_), false) => return self.fail(c, 400), // request smuggling vector
@@ -785,6 +874,7 @@ impl<S: Service> Session<S> {
         // The peer-gone key below, apart from the responses' numbers (`Context::on_gone`'s).
         let key = slot.seq() | 1 << 63;
         let mut ctx = Box::new(Context::new(req, slot, keep_alive));
+        ctx.set_observer(self.observer.as_ref());
         ctx.set_streamed();
         let g = crate::trace::begin(&mut ctx);
         self.service.call(&mut ctx);
@@ -823,7 +913,7 @@ impl<S: Service> Session<S> {
                 );
                 let cfg = self.cfg.h2.clone().unwrap_or_default();
                 self.span.record("network.protocol.version", "2");
-                self.h2 = Some(H2Session::new(
+                self.h2 = Some(Box::new(H2Session::new(
                     c.inner().clone(),
                     cfg,
                     self.service.clone(),
@@ -831,7 +921,9 @@ impl<S: Service> Session<S> {
                     &[],
                     Some((req, settings)),
                     self.early_len > 0,
-                ));
+                    self.observer.clone(),
+                )));
+                self.h2_drain();
                 return;
             }
         }
@@ -841,6 +933,7 @@ impl<S: Service> Session<S> {
             return;
         };
         let mut ctx = Context::new(req, slot, keep_alive);
+        ctx.set_observer(self.observer.as_ref());
         if pooled {
             // Its response keeps its place through the slot; reading goes on meanwhile.
             let exec = crate::pool::Executor::conn(c.inner().clone());

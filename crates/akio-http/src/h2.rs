@@ -2222,11 +2222,14 @@ pub(crate) struct H2Session<S> {
     pool: Option<crate::pool::Executor>,
     /// The deadline phase after the last read (computed under the lock it takes anyway).
     phase: std::cell::Cell<Phase>,
+    /// The connection's handle on the listener's response observer (ADR-158).
+    observer: Option<Arc<dyn crate::ResponseObserver>>,
 }
 
 impl<S: Service> H2Session<S> {
     /// Starts HTTP/2 on `conn`. `initial` are bytes already read (the start of the preface);
     /// `upgrade` is the HTTP/1 request of an `h2c` upgrade with the peer's `HTTP2-Settings`.
+    #[allow(clippy::too_many_arguments)] // one call site, the HTTP/1 session's
     pub(crate) fn new(
         conn: Arc<ConnInner>,
         cfg: H2Config,
@@ -2235,6 +2238,7 @@ impl<S: Service> H2Session<S> {
         initial: &[u8],
         upgrade: Option<(Request, Vec<u8>)>,
         early: bool,
+        observer: Option<Arc<dyn crate::ResponseObserver>>,
     ) -> H2Session<S> {
         let tls = conn.has_transport();
         let pool = cfg
@@ -2242,6 +2246,7 @@ impl<S: Service> H2Session<S> {
             .then(|| crate::pool::Executor::conn(conn.clone()));
         let svc_mode = service.clone();
         let svc_push = service.clone();
+        let obs_push = observer.clone();
         let local = Settings {
             max_concurrent: cfg.max_concurrent_streams,
             initial_window: i64::from(cfg.initial_window),
@@ -2282,6 +2287,7 @@ impl<S: Service> H2Session<S> {
                 early,
                 push_hook: Some(Arc::new(move |req: Request, resp: H2Responder| {
                     let mut ctx = Context::new_h2(req, resp);
+                    ctx.set_observer(obs_push.as_ref());
                     let g = crate::trace::begin(&mut ctx);
                     svc_push.call(&mut ctx);
                     drop(g);
@@ -2314,6 +2320,7 @@ impl<S: Service> H2Session<S> {
             service,
             pool,
             phase: std::cell::Cell::new(Phase::Head),
+            observer,
         };
         let mut first = Vec::new();
         {
@@ -2449,6 +2456,7 @@ impl<S: Service> H2Session<S> {
         match a {
             Action::Dispatch(req, resp) => {
                 let mut ctx = Context::new_h2(req, resp);
+                ctx.set_observer(self.observer.as_ref());
                 if let Some(exec) = &self.pool {
                     return crate::pool::call_on_pool(self.service.clone(), ctx, exec);
                 }
@@ -2460,6 +2468,7 @@ impl<S: Service> H2Session<S> {
             }
             Action::Start(sid, mut ctx) => {
                 ctx.set_streamed();
+                ctx.set_observer(self.observer.as_ref());
                 let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
                 drop(g);

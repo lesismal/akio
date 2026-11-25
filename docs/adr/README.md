@@ -131,3 +131,5 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-129: akio-prefork removed](129-akio-prefork-removed.md) (accepted 2026-11-25)
 - [ADR-130: Listeners of one backend share an I/O thread group](130-shared-io-groups.md) (accepted 2026-11-25; phases 1 to 3: epoll/kqueue loops, rounds, io_uring)
 - [ADR-154: A connect timeout per dial, and timers off the I/O threads](154-dial-options-and-send-timers.md) (accepted 2026-11-26; akit A12, A79, A45)
+- [ADR-158: A listener's response observer, without an allocation per request](158-response-observer.md) (accepted 2026-11-26; akit A29)
+- [ADR-159: A request whose body streams, suspended with its reads held](159-suspended-streamed-bodies.md) (accepted 2026-11-26; akit A75)
