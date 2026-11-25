@@ -75,7 +75,7 @@ handler, write) runs on whichever worker is idle.
    - **The worker pool** is not `akio-pool` (one mutex-guarded queue, sized for blocking work):
      each worker has its own queue, an idle worker steals half of another's queue, spins 64
      times and parks; a poster wakes a parked worker only when none is spinning (and, when every
-     idle worker is in `epoll_wait`, interrupts one through the driver's eventfd). Rounds started from a worker (a send from another connection's handler
+     idle worker is in `epoll_wait`, interrupts one through the eventfd of the driver it is blocked in). Rounds started from a worker (a send from another connection's handler
      that needs a flush) go to that worker's own queue. When every other worker is parked, a
      poll wakes no one for the first job it queued, which its worker runs next, and one parked
      worker per job after that (Tokio's rule): at light load a poll finds one connection and its
@@ -84,7 +84,9 @@ handler, write) runs on whichever worker is idle.
      driver whose last poller went into a long round; the others sleep until woken (or their
      loop timer is due). A watch woken for work hands the watch on by waking another parked
      worker, and a worker that stops spinning runs what was queued meanwhile (a poster does not
-     wake anyone while a worker spins) before it blocks in a driver.
+     wake anyone while a worker spins) before it blocks in a driver. Workers take the drivers in
+     turn, and while another driver has nobody blocked in it (fewer idle workers than drivers),
+     a blocking wait lasts at most 10 ms, so that every driver is polled.
    - Blocking work still belongs on the logical pool (`spawn_blocking`, `run_on_pool`): a
      blocked worker delays the connections queued behind it, though the others steal them.
 3. **What is the same**: `Conn` and `ConnInner` (already thread-safe, ADR-002), the cork and

@@ -37,6 +37,13 @@ pub(crate) struct Timer {
 }
 
 impl Timer {
+    fn new() -> Timer {
+        Timer {
+            heap: Mutex::new(BinaryHeap::new()),
+            cv: Condvar::new(),
+        }
+    }
+
     pub(crate) fn schedule(&self, at: Instant, target: Weak<dyn Due>) {
         let mut h = self.heap.lock().unwrap_or_else(|e| e.into_inner());
         let earliest = h.peek().is_none_or(|d| at < d.at);
@@ -65,7 +72,11 @@ impl Timer {
                     let d = h.pop().expect("peeked");
                     drop(h);
                     if let Some(t) = d.target.upgrade() {
-                        t.fire(d.at);
+                        // A panic in what `fire` reaches (a user callback) must not take the
+                        // thread down: every later deadline of the process would never fire.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            t.fire(d.at);
+                        }));
                     }
                     h = self.heap.lock().unwrap_or_else(|e| e.into_inner());
                 }
@@ -77,14 +88,49 @@ impl Timer {
 pub(crate) fn timer() -> &'static Timer {
     static T: OnceLock<&'static Timer> = OnceLock::new();
     T.get_or_init(|| {
-        let t: &'static Timer = Box::leak(Box::new(Timer {
-            heap: Mutex::new(BinaryHeap::new()),
-            cv: Condvar::new(),
-        }));
+        let t: &'static Timer = Box::leak(Box::new(Timer::new()));
         std::thread::Builder::new()
             .name("akio-quic-timer".into())
             .spawn(move || t.run())
             .expect("spawn the QUIC timer thread");
         t
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    struct Boom;
+    impl Due for Boom {
+        fn fire(&self, _at: Instant) {
+            panic!("a deadline's target panics");
+        }
+    }
+
+    struct Ping(mpsc::Sender<()>);
+    impl Due for Ping {
+        fn fire(&self, _at: Instant) {
+            let _ = self.0.send(());
+        }
+    }
+
+    /// A target that panics does not stop the thread: later deadlines still fire.
+    #[test]
+    fn a_panicking_target_does_not_stop_the_timer() {
+        let t: &'static Timer = Box::leak(Box::new(Timer::new()));
+        std::thread::spawn(move || t.run());
+        let boom: Arc<dyn Due> = Arc::new(Boom);
+        t.schedule(Instant::now(), Arc::downgrade(&boom));
+        let (tx, rx) = mpsc::channel();
+        let ping: Arc<dyn Due> = Arc::new(Ping(tx));
+        t.schedule(
+            Instant::now() + Duration::from_millis(20),
+            Arc::downgrade(&ping),
+        );
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a deadline after a panicking one fires");
+    }
 }

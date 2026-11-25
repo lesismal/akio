@@ -542,6 +542,10 @@ impl PollerShared {
 /// time accepts from it, opens what it accepted, and registers it with the poller.
 pub(crate) struct ListenJob {
     listener: Mutex<Accepting>,
+    /// The listener's accept filter (ADR-099). Outside `listener`: the filter is user code, and
+    /// one that removes its own listener closes this job, which locks `listener`. Only the
+    /// accept job (one at a time) locks it.
+    filter: Mutex<FilterView>,
     fd: RawFd,
     token: u64,
     acceptor: Arc<dyn DynAcceptor>,
@@ -556,8 +560,6 @@ pub(crate) struct ListenJob {
 struct Accepting {
     /// `None` once the listener was removed or the poller shut down (the socket is closed).
     listener: Option<TcpListener>,
-    /// The listener's accept filter (ADR-099).
-    filter: FilterView,
 }
 
 impl ListenJob {
@@ -573,55 +575,67 @@ impl ListenJob {
     /// goes to the back of the queue).
     pub(crate) fn run(self: Arc<Self>, ctx: &WorkerCtx) {
         self.pending.store(false, Ordering::SeqCst);
-        let mut again = false;
+        let mut again;
         {
             let mut g = lock(&self.listener);
-            let Accepting { listener, filter } = &mut *g;
-            if let Some(l) = listener.as_ref() {
-                again = true;
-                for _ in 0..MAX_ACCEPT_PER_JOB {
-                    match l.accept() {
-                        Ok((stream, peer)) => {
-                            if !filter.allows(&peer) {
-                                self.home.stats.filtered.add(1);
-                                akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
-                                continue; // dropping the stream closes it
-                            }
-                            self.home.open(
-                                stream,
-                                peer,
-                                self.acceptor.clone(),
-                                false,
-                                None,
-                                &ctx.workers,
-                            );
+            again = g.listener.is_some();
+            for _ in 0..MAX_ACCEPT_PER_JOB {
+                let Some(l) = g.listener.as_ref() else {
+                    again = false; // closed while the filter ran
+                    break;
+                };
+                match l.accept() {
+                    Ok((stream, peer)) => {
+                        // The filter runs without the socket's lock: it is user code, and may
+                        // remove this very listener (`close` takes the lock).
+                        drop(g);
+                        let allowed = lock(&self.filter).allows(&peer);
+                        g = lock(&self.listener);
+                        if !allowed {
+                            self.home.stats.filtered.add(1);
+                            akio_log::debug!(target: "akio", peer:% = peer; "connection refused by the accept filter");
+                            continue; // dropping the stream closes it
                         }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        if g.listener.is_none() {
+                            // Closed meanwhile: the connection is dropped like one that
+                            // arrived after the close.
                             again = false;
                             break;
                         }
-                        // One connection failed before it was accepted: not the listener's fault.
-                        Err(e)
-                            if matches!(
-                                e.kind(),
-                                io::ErrorKind::Interrupted
-                                    | io::ErrorKind::ConnectionAborted
-                                    | io::ErrorKind::ConnectionReset
-                            ) => {}
-                        Err(e) => {
-                            again = false;
-                            self.home.stats.accept_errors.add(1);
-                            log_or_stderr(
-                                akio_log::Level::Warn,
-                                format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
-                            );
-                            self.home.registry.delete(self.fd);
-                            let until = self.home.tick() + ACCEPT_BACKOFF.as_millis() as u64;
-                            self.paused_until.store(until.max(1), Ordering::SeqCst);
-                            // The poller re-arms it; let it compute its wait with this.
-                            self.home.wake();
-                            break;
-                        }
+                        self.home.open(
+                            stream,
+                            peer,
+                            self.acceptor.clone(),
+                            false,
+                            None,
+                            &ctx.workers,
+                        );
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        again = false;
+                        break;
+                    }
+                    // One connection failed before it was accepted: not the listener's fault.
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::Interrupted
+                                | io::ErrorKind::ConnectionAborted
+                                | io::ErrorKind::ConnectionReset
+                        ) => {}
+                    Err(e) => {
+                        again = false;
+                        self.home.stats.accept_errors.add(1);
+                        log_or_stderr(
+                            akio_log::Level::Warn,
+                            format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
+                        );
+                        self.home.registry.delete(self.fd);
+                        let until = self.home.tick() + ACCEPT_BACKOFF.as_millis() as u64;
+                        self.paused_until.store(until.max(1), Ordering::SeqCst);
+                        // The poller re-arms it; let it compute its wait with this.
+                        self.home.wake();
+                        break;
                     }
                 }
             }
@@ -635,8 +649,9 @@ impl ListenJob {
     }
 
     /// Closes the socket (shutdown, or the listener removed). Waits for an accept job in
-    /// progress, so every connection it accepted is in the table afterwards; an accept job that
-    /// runs later finds no socket. Idempotent.
+    /// progress, so every connection it accepted is in the table afterwards (one whose filter
+    /// check was running is dropped instead); an accept job that runs later finds no socket.
+    /// Idempotent.
     pub(crate) fn close(&self) {
         let mut g = lock(&self.listener);
         // No pause to resume: the poller's wait must not count on it any more.
@@ -698,10 +713,8 @@ impl RLoop {
                 let fd = l.as_raw_fd();
                 shared.registry.add_edge(fd, token)?;
                 jobs.push(Arc::new(ListenJob {
-                    listener: Mutex::new(Accepting {
-                        listener: Some(l),
-                        filter: FilterView::new(filter.clone()),
-                    }),
+                    filter: Mutex::new(FilterView::new(filter.clone())),
+                    listener: Mutex::new(Accepting { listener: Some(l) }),
                     fd,
                     token,
                     acceptor: acceptor.clone(),
@@ -1307,5 +1320,112 @@ pub(crate) mod tests {
         OPEN_DELAY_MS.store(0, Ordering::SeqCst);
         g.join();
         assert_eq!(counts.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// An accept filter that removes its own listener: the filter runs without the listening
+    /// socket's lock, which `stop_listening` takes to close the socket (it used to deadlock).
+    #[test]
+    fn a_filter_may_stop_its_own_listener() {
+        let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        let counts = Arc::new(Counts::default());
+        let g = Arc::new(group(&counts));
+        let me: Arc<std::sync::OnceLock<std::sync::Weak<RoundsGroup>>> = Arc::default();
+        let _ = me.set(Arc::downgrade(&g));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let st = stopped.clone();
+        g.set_filter(Some(Arc::new(move |_peer: &std::net::SocketAddr| {
+            if let Some(g) = me.get().and_then(std::sync::Weak::upgrade) {
+                g.stop_listening(None, false).expect("stop_listening");
+                st.fetch_add(1, Ordering::SeqCst);
+            }
+            true
+        })))
+        .expect("set_filter");
+        let _c = TcpStream::connect(g.local_addr()).expect("connect");
+        let t0 = Instant::now();
+        while stopped.load(Ordering::SeqCst) == 0 {
+            if t0.elapsed() > Duration::from_secs(5) {
+                // The worker is stuck: leave the group alone rather than wait for it.
+                std::mem::forget(g);
+                panic!("a filter stopping its own listener deadlocked");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The listener was closed while the filter ran: the connection it allowed is dropped.
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(counts.opens.load(Ordering::SeqCst), 0);
+        g.shutdown();
+        g.join();
+    }
+
+    /// Driver mode with fewer workers than pollers: the one worker must not stay blocked in
+    /// the first driver while the second holds dials, their connections and their data.
+    #[test]
+    fn one_worker_polls_every_driver() {
+        let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        if std::env::var("AKIO_ROUNDS_POLLERS").as_deref() == Ok("dedicated") {
+            return; // driver mode only
+        }
+        let counts = Arc::new(Counts::default());
+        let mut cfg = Config::default();
+        cfg.shutdown_timeout = Duration::from_millis(500);
+        let g = RoundsGroup::bind(
+            None,
+            RoundsConfig::new(2, 1),
+            cfg,
+            Pool::new(PoolConfig::default()),
+        )
+        .expect("bind");
+        g.start().expect("start");
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let addr = server.local_addr().expect("addr");
+        const N: usize = 4;
+        for _ in 0..N {
+            g.dial(
+                addr,
+                Arc::new(Acc(counts.clone())),
+                Box::new(|e| panic!("dial: {e}")),
+            );
+        }
+        server.set_nonblocking(true).expect("nonblocking");
+        let mut peers = Vec::new();
+        let t0 = Instant::now();
+        while peers.len() < N {
+            match server.accept() {
+                Ok((s, _)) => peers.push(s),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("accept: {e}"),
+            }
+            if t0.elapsed() > Duration::from_secs(5) {
+                break;
+            }
+        }
+        let opened = |counts: &Counts| counts.opens.load(Ordering::SeqCst);
+        let t0 = Instant::now();
+        while opened(&counts) < N && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let opens = opened(&counts);
+        for p in &mut peers {
+            p.write_all(b"hi").expect("write");
+        }
+        let t0 = Instant::now();
+        while counts.bytes.load(Ordering::SeqCst) < 2 * N && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let bytes = counts.bytes.load(Ordering::SeqCst);
+        if opens < N || bytes < 2 * N {
+            // A driver is never polled: leave the group alone rather than wait for it.
+            std::mem::forget(g);
+            panic!(
+                "{opens} of {N} dials opened, {bytes} of {} bytes read",
+                2 * N
+            );
+        }
+        drop(peers);
+        g.shutdown();
+        g.join();
     }
 }

@@ -1177,3 +1177,71 @@ fn close_with_output_in_flight_keeps_the_loop_serving() {
     }
     stop(&e);
 }
+
+/// Server side of `a_close_posted_from_a_timer_callback_is_not_lost`: `w` fills the output
+/// queue (the peer never reads); the write timeout then closes the connection, and its
+/// `on_close` closes every other connection of the listener.
+struct Stalled(Arc<Mutex<Vec<Conn<Stalled>>>>);
+impl Handler for Stalled {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if data.contains(&b'w') {
+            let _ = c.send(&vec![7u8; 32 << 20]);
+        }
+    }
+    fn on_close(&mut self, c: &Conn<Self>, err: Option<Error>) {
+        if err.is_some() {
+            for o in self.0.lock().unwrap().iter() {
+                if o.id() != c.id() {
+                    o.close();
+                }
+            }
+        }
+    }
+}
+
+/// A close posted by a callback the loop runs from its timers (here `on_close` after a write
+/// timeout) for another connection of the same loop is handled at once, not when something
+/// else next wakes the loop: on an idle loop with no timer left that would be never.
+#[test]
+fn a_close_posted_from_a_timer_callback_is_not_lost() {
+    let conns: Arc<Mutex<Vec<Conn<Stalled>>>> = Arc::default();
+    let reg = conns.clone();
+    let e = Engine::builder()
+        .config({
+            let mut v = cfg();
+            v.write_timeout = Some(Duration::from_millis(200));
+            v
+        })
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |c: &Conn<Stalled>| {
+                    reg.lock().unwrap().push(c.clone());
+                    Stalled(reg.clone())
+                })),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    // The connection to be closed by the other one's `on_close`: idle, nothing queued.
+    let mut idle = connect(addr);
+    idle.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let t0 = std::time::Instant::now();
+    while conns.lock().unwrap().is_empty() {
+        assert!(t0.elapsed() < Duration::from_secs(5), "not accepted");
+        thread::sleep(Duration::from_millis(5));
+    }
+    // The stalled one: never read, so its write timeout fires.
+    let mut stalled = connect(addr);
+    stalled.write_all(b"w").unwrap();
+    let mut b = [0u8; 1];
+    match common::read_retry(&mut idle, &mut b) {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        r => panic!("the idle connection was not closed: {r:?}"),
+    }
+    drop(stalled);
+    stop(&e);
+}

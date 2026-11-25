@@ -159,6 +159,47 @@ fn mismatched_crypt_is_dropped_and_dead_link_closes() {
     e.shutdown();
 }
 
+/// Reports the close, then panics in `on_close`.
+struct PanicOnClose(mpsc::Sender<CloseReason>);
+impl KcpHandler for PanicOnClose {
+    fn on_message(&mut self, _s: &Session, _msg: Vec<u8>) {}
+    fn on_close(&mut self, _s: &Session, why: CloseReason) {
+        let _ = self.0.send(why);
+        panic!("on_close panics");
+    }
+}
+
+/// A dead link is found by the shared timer thread, which then runs `on_close`: a handler that
+/// panics there must not stop the thread, or no later session would ever time out (or
+/// retransmit).
+#[test]
+fn a_panicking_on_close_does_not_stop_the_timer() {
+    let (e, addr) = engine({
+        let mut v = KcpConfig::fast();
+        v.crypt = Some(Arc::new(Crypt::new("aes-128", &[1; 16]).unwrap()));
+        v
+    });
+    let mut cfg = KcpConfig::fast();
+    cfg.crypt = Some(Arc::new(Crypt::new("aes-128", &[2; 16]).unwrap()));
+    cfg.dead_link = 4;
+    let (ptx, prx) = mpsc::channel();
+    let a = akio_kcp::dial(&e, addr, cfg.clone(), PanicOnClose(ptx)).unwrap();
+    a.send(b"hello").unwrap();
+    assert_eq!(
+        prx.recv_timeout(Duration::from_secs(10)).unwrap(),
+        CloseReason::DeadLink
+    );
+    let (tx, _rx) = mpsc::channel();
+    let (ctx, crx) = mpsc::channel();
+    let b = akio_kcp::dial(&e, addr, cfg, Collect(tx, Some(ctx))).unwrap();
+    b.send(b"hello").unwrap();
+    assert_eq!(
+        crx.recv_timeout(Duration::from_secs(10)).unwrap(),
+        CloseReason::DeadLink
+    );
+    e.shutdown();
+}
+
 /// Counts what arrives (messages and bytes) without answering.
 struct Count(Arc<std::sync::atomic::AtomicUsize>);
 impl KcpHandler for Count {

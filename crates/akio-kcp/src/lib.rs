@@ -535,7 +535,11 @@ impl Ticker {
                     let d = h.pop().expect("peeked");
                     drop(h);
                     if let Some(s) = d.s.upgrade() {
-                        Session(s).on_timer(d.at);
+                        // A panic in a handler this reaches (`on_close` on a dead link) must not
+                        // take the thread down: no session's timer would ever fire again.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            Session(s).on_timer(d.at);
+                        }));
                     }
                     h = lock(&self.heap);
                 }

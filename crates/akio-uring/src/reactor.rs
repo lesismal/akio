@@ -600,6 +600,9 @@ pub(crate) struct LoopShared {
     waker: EventFd,
     cmds: Mutex<Vec<Cmd>>,
     wake_pending: AtomicBool,
+    /// The loop posted to itself since its last drain (written and read on the loop's thread
+    /// only): it drains again before it blocks.
+    self_posted: AtomicBool,
     pool: Arc<Pool>,
     pub(crate) stats: Arc<LoopStats>,
 }
@@ -626,6 +629,7 @@ impl LoopShared {
             waker: EventFd::new()?,
             cmds: Mutex::new(Vec::new()),
             wake_pending: AtomicBool::new(false),
+            self_posted: AtomicBool::new(false),
             pool,
             stats,
         });
@@ -646,11 +650,13 @@ impl LoopShared {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(cmd);
-        // The loop drains its queue after every batch of completions, so a post from the loop's
-        // own thread needs no wake-up.
-        if CURRENT_LOOP.with(Cell::get) != self.uid
-            && !self.wake_pending.swap(true, Ordering::AcqRel)
-        {
+        if CURRENT_LOOP.with(Cell::get) == self.uid {
+            // From the loop's own thread no wake-up is needed, but the post may come after the
+            // loop's drain (a callback run from its timers posting for another connection):
+            // the loop drains again before it blocks, or the command would wait for whatever
+            // wakes it next, on an idle loop never.
+            self.self_posted.store(true, Ordering::Relaxed);
+        } else if !self.wake_pending.swap(true, Ordering::AcqRel) {
             self.waker.wake();
         }
     }
@@ -677,6 +683,7 @@ impl LoopShared {
 
     fn take(&self) -> Vec<Cmd> {
         self.wake_pending.store(false, Ordering::Release);
+        self.self_posted.store(false, Ordering::Relaxed);
         std::mem::take(&mut *self.cmds.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
@@ -686,10 +693,16 @@ impl LoopShared {
     fn take_into(&self, batch: &mut Vec<Cmd>) {
         debug_assert!(batch.is_empty());
         self.wake_pending.store(false, Ordering::Release);
+        self.self_posted.store(false, Ordering::Relaxed);
         std::mem::swap(
             &mut *self.cmds.lock().unwrap_or_else(|p| p.into_inner()),
             batch,
         );
+    }
+
+    /// Loop side: commands the loop posted to itself are queued since its last drain.
+    pub(crate) fn self_posted(&self) -> bool {
+        self.self_posted.load(Ordering::Relaxed)
     }
 }
 
@@ -1160,6 +1173,11 @@ impl Loop {
             return;
         }
         loop {
+            // Commands posted to itself after the last drain (by callbacks run from timers,
+            // retiring or draining): handled before blocking, since nothing would wake it.
+            if self.shared.self_posted() {
+                self.drain_cmds();
+            }
             self.submit_sends();
             self.arm_loop_ops();
             if !self.graveyard.is_empty() {

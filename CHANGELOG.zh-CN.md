@@ -10,6 +10,27 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：四处引擎挂起（akio-epoll、akio-uring、akio-http、akio-ws、akio-h3、akio-quic、akio-webrtc、akio-turn、akio-kcp）
+
+- **共享定时器线程上的 panic 不再让进程里之后的所有定时器停摆。** akio-http、akio-ws、akio-h3
+  （客户端请求截止时间）、akio-quic、akio-webrtc、akio-turn 和 akio-kcp 的定时器线程运行任务时不捕获
+  panic，而这些任务会走到用户回调（handler 的 `on_close`、请求的回调）。一次 panic 就会杀死该线程；
+  此后 `after` 系列函数静默丢弃任务，请求、握手和关闭超时全部失效。现在会捕获任务中的 panic，与
+  akio-media 的定时器已有的做法一致。
+- **事件循环在排空之后投递给自己的命令不再被搁置。** 在循环自己的线程上投递时会跳过唤醒，因为循环
+  在每批事件之后都会排空队列；但在那次排空之后运行的回调（空闲、写或握手定时器触发的 `on_close`，
+  退役或排空时的回调）可能为同一循环上的其他连接投递命令，这些命令要等到别的事情唤醒循环才会处理：
+  在一个没有剩余定时器的空闲循环上，永远等不到。现在循环若给自己投递过命令，会在阻塞之前再排空一次
+  （epoll/kqueue 的 TCP 与 UDP 循环，以及 io_uring）。
+- **rounds 调度下，接受过滤器可以停止自己的监听器。** 过滤器在监听套接字的锁下运行，而
+  `stop_listening` 关闭套接字时要拿这把锁：移除自身监听器的过滤器会让 worker 死锁。现在过滤器在
+  这把锁之外运行；监听器关闭时正在检查的连接会被丢弃。
+- **driver 模式的 rounds 调度会轮询每个 poller。** worker 总是先尝试第一个 driver，其他线程排入的
+  工作也总是唤醒第一个 driver，不管是否有 worker 在其中等待；于是空闲 worker 少于 poller 时（例如
+  `RoundsConfig::new(2, 1)`），第二个 poller 的监听器、拨号和连接可能永远得不到轮询。现在 worker
+  轮流使用各个 driver；只要另有 driver 无人等待，阻塞中的 worker 每 10 ms 醒来轮询下一个；投递者会
+  打断确实有 worker 阻塞其中的 driver；即将阻塞的 worker 会先运行它上次查看之后排入的工作。
+
 ### 修复：在应用线程上进行 HTTP/3 QPACK 编码和 WebSocket 发送不再死锁（akio-h3、akio-quic）
 
 与客户端请求锁同类的死锁：在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，

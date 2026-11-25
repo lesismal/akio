@@ -61,15 +61,17 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      一轮一定能看到这个事件。正因如此，`Handler: Send`（不要求 `Sync`）无需任何改动。
    - **Worker 池**不用 `akio-pool`（单个由互斥锁保护的队列，为阻塞任务设计）：每个 worker 有自己
      的队列，空闲 worker 从别的 worker 的队列偷走一半，自旋 64 次后 park；投递方只在没有 worker 自旋
-     时才唤醒一个 park 的 worker（如果空闲 worker 都在 `epoll_wait` 中，就通过 driver 的 eventfd
-     打断其中一个）。从 worker 上发起的轮次（另一个连接的
+     时才唤醒一个 park 的 worker（如果空闲 worker 都在 `epoll_wait` 中，就通过它阻塞所在的 driver 的
+     eventfd 打断其中一个）。从 worker 上发起的轮次（另一个连接的
      handler 中的 send 需要刷出时）进入该 worker 自己的队列。其它 worker 都在 park 时，一次轮询为它
      放进队列的第一个任务不唤醒任何线程（由轮询的 worker 接着执行），之后每多一个任务唤醒一个 park 的
      worker（Tokio 的规则）：轻负载时一次轮询只发现一个连接，它的一轮执行时没有任何线程唤醒另一个线程。
      通过搜索找到任务的 worker 在还有任务排队时唤醒另一个。一个 park 的 worker 担任 *值守*，最多睡
      10 ms，以防 driver 的最后一个轮询者进入了很长的一轮；其它 worker 一直睡到被唤醒（或它们的循环定时器
      到期）。值守因有任务而被唤醒时，唤醒另一个 park 的 worker 把值守交出去；停止自旋的 worker 在阻塞到
-     driver 之前，先执行自旋期间入队的任务（有 worker 自旋时投递方不唤醒任何线程）。
+     driver 之前，先执行自旋期间入队的任务（有 worker 自旋时投递方不唤醒任何线程）。worker 轮流使用各个
+     driver；只要另有 driver 无人阻塞其中（空闲 worker 少于 driver），一次阻塞等待最多 10 ms，以保证
+     每个 driver 都得到轮询。
    - 阻塞任务仍然应该放到逻辑线程池（`spawn_blocking`、`run_on_pool`）：阻塞的 worker 会推迟排在
      它后面的连接，虽然其它 worker 会把它们偷走。
 3. **保持不变的部分**：`Conn` 与 `ConnInner`（本来就是线程安全的，ADR-002）、cork 与 flush 协议、

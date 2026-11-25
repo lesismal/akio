@@ -44,6 +44,13 @@ pub(crate) struct Timer {
 }
 
 impl Timer {
+    fn new() -> Timer {
+        Timer {
+            heap: Mutex::new(BinaryHeap::new()),
+            cv: Condvar::new(),
+        }
+    }
+
     pub(crate) fn schedule(&self, at: Instant, target: Weak<dyn Due>) {
         let mut h = self.heap.lock().unwrap_or_else(|e| e.into_inner());
         let earliest = h.peek().is_none_or(|d| at < d.at);
@@ -87,14 +94,17 @@ impl Timer {
                 Some(_) => {
                     let d = h.pop().expect("peeked");
                     drop(h);
-                    match d.target {
-                        Target::Weak(t) => {
-                            if let Some(t) = t.upgrade() {
-                                t.fire(d.at);
+                    // A panic in what an entry reaches (a user callback) must not take the
+                    // thread down: every later deadline of the process would never fire.
+                    let _ =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match d.target {
+                            Target::Weak(t) => {
+                                if let Some(t) = t.upgrade() {
+                                    t.fire(d.at);
+                                }
                             }
-                        }
-                        Target::Once(f) => f(),
-                    }
+                            Target::Once(f) => f(),
+                        }));
                     h = self.heap.lock().unwrap_or_else(|e| e.into_inner());
                 }
             }
@@ -105,14 +115,46 @@ impl Timer {
 pub(crate) fn timer() -> &'static Timer {
     static T: OnceLock<&'static Timer> = OnceLock::new();
     T.get_or_init(|| {
-        let t: &'static Timer = Box::leak(Box::new(Timer {
-            heap: Mutex::new(BinaryHeap::new()),
-            cv: Condvar::new(),
-        }));
+        let t: &'static Timer = Box::leak(Box::new(Timer::new()));
         std::thread::Builder::new()
             .name("akio-turn-timer".into())
             .spawn(move || t.run())
             .expect("spawn the TURN timer thread");
         t
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    struct Ping(mpsc::Sender<()>);
+    impl Due for Ping {
+        fn fire(&self, _at: Instant) {
+            let _ = self.0.send(());
+        }
+    }
+
+    /// A deferred callback that panics does not stop the thread: later entries still run.
+    #[test]
+    fn a_panicking_callback_does_not_stop_the_timer() {
+        let t: &'static Timer = Box::leak(Box::new(Timer::new()));
+        std::thread::spawn(move || t.run());
+        t.defer(Box::new(|| panic!("a deferred callback panics")));
+        let (tx, rx) = mpsc::channel();
+        let ping: Arc<dyn Due> = Arc::new(Ping(tx.clone()));
+        t.schedule(
+            Instant::now() + Duration::from_millis(20),
+            Arc::downgrade(&ping),
+        );
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a deadline after a panicking callback fires");
+        t.defer(Box::new(move || {
+            let _ = tx.send(());
+        }));
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("a deferred callback after a panicking one runs");
+    }
 }

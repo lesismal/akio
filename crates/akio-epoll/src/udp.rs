@@ -444,6 +444,11 @@ impl UdpLoop {
         crate::reactor::set_current_loop(&self.shared);
         let mut events: Vec<Event> = Vec::with_capacity(64);
         loop {
+            // Commands posted to itself after the last drain (by callbacks run from timers,
+            // retiring or draining): handled before blocking, since nothing would wake it.
+            if self.shared.self_posted() {
+                self.drain_cmds();
+            }
             let mut timeout = self.draining.map(|_| Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);

@@ -221,6 +221,7 @@ impl RoundsGroup {
                             lp: Mutex::new(Some(lp)),
                             shared: s.shared.clone(),
                             done: AtomicBool::new(false),
+                            blocked: AtomicBool::new(false),
                         })
                     })
                 })

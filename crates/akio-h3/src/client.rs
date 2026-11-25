@@ -2076,7 +2076,9 @@ mod timer {
             let now = Instant::now();
             while heap.peek().is_some_and(|Reverse(e)| e.0 <= now) {
                 let Reverse(Entry(_, _, job)) = heap.pop().expect("peeked");
-                job();
+                // A panicking job (a request's callback it reached) must not take the thread
+                // down: no later request deadline of the process would fire.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             }
             let msg = match heap.peek() {
                 Some(Reverse(e)) => rx.recv_timeout(e.0.saturating_duration_since(Instant::now())),
@@ -2096,5 +2098,24 @@ mod timer {
     /// Runs `job` on the timer thread at `at`.
     pub(super) fn at(at: Instant, job: impl FnOnce() + Send + 'static) {
         let _ = sender().send((at, Box::new(job)));
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::{sync::mpsc, time::Duration};
+
+        use super::*;
+
+        /// A job that panics does not stop the thread: later jobs still run.
+        #[test]
+        fn a_panicking_job_does_not_stop_the_timer() {
+            at(Instant::now(), || panic!("a job panics"));
+            let (tx, rx) = mpsc::channel();
+            at(Instant::now() + Duration::from_millis(20), move || {
+                tx.send(()).unwrap();
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("a job after a panicking one runs");
+        }
     }
 }
