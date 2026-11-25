@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: an HTTP client request's timeout no longer holds the request until it would pass (akio-http)
+
+akit's A171, found by akit's I25 benchmarks, where akit's proxy grew by about 240 bytes a request
+(1.8 GiB in a 35-second run at 230k requests a second): the timer thread's job for a request's
+`timeout` (`Client`) and for an h2 stream's timeout and header and idle checks (`H2Client`)
+stayed queued after the request ended, keeping its exchange's allocation (or its callback and
+stream control) until the delay passed. With a 60s timeout that is a minute of requests; with an
+hour, an hour. The job is now cancelled when the request ends, and the heap entries of cancelled
+jobs are compacted once they outnumber the live ones.
+
 ### Added: `Client::close_idle` (akio-http, akit's A10)
 
 `akio_http::client::Client::close_idle` closes every idle keep-alive connection of a client now,

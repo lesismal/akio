@@ -1144,6 +1144,18 @@ struct Exchange {
     /// Why the exchange gave up ([`GaveUp`]), 0 while it did not.
     gave_up: AtomicU8,
     hops: AtomicU32,
+    /// The timeout's job on the timer thread, cancelled when the exchange ends (A171).
+    timer: OnceLock<crate::timer::Key>,
+}
+
+impl Drop for Exchange {
+    /// The exchange ended (its job holds it only weakly): its timeout's job goes now rather
+    /// than when the timeout would have passed, with the allocation its `Weak` keeps.
+    fn drop(&mut self) {
+        if let Some(k) = self.timer.get() {
+            crate::timer::cancel(*k);
+        }
+    }
 }
 
 impl Exchange {
@@ -1494,6 +1506,7 @@ impl Client {
             conn: Mutex::new(None),
             gave_up: AtomicU8::new(0),
             hops: AtomicU32::new(0),
+            timer: OnceLock::new(),
         });
         if let Some(t) = &req.cancel {
             if !t.attach(&ex) {
@@ -1503,11 +1516,12 @@ impl Client {
         }
         if let Some(d) = req.timeout.or(self.inner.settings.timeout) {
             let weak = Arc::downgrade(&ex);
-            crate::timer::after(d, move || {
+            let key = crate::timer::after(d, move || {
                 if let Some(ex) = weak.upgrade() {
                     ex.give_up(GaveUp::Timeout);
                 }
             });
+            let _ = ex.timer.set(key);
         }
         ex
     }

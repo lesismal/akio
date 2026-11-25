@@ -405,6 +405,28 @@ struct StreamCtl {
     /// When the response last made progress ([`now_ms`]): its head, a DATA frame, the end of
     /// a hold.
     last: AtomicU64,
+    /// Its jobs on the timer thread, cancelled when the stream's control goes (A171).
+    jobs: StreamJobs,
+}
+
+/// A stream's pending header or idle check ([`arm`]) and a streamed request's timeout
+/// ([`H2Client::open`]), as [`crate::timer::Key::raw`] (0 for none).
+#[derive(Default)]
+struct StreamJobs {
+    armed: AtomicU64,
+    timeout: AtomicU64,
+}
+
+impl Drop for StreamJobs {
+    /// The stream is over (its jobs hold its control only weakly): its pending jobs go now
+    /// rather than when their delays would have passed.
+    fn drop(&mut self) {
+        for k in [&self.armed, &self.timeout] {
+            if let Some(k) = crate::timer::Key::from_raw(k.load(Ordering::Relaxed)) {
+                crate::timer::cancel(k);
+            }
+        }
+    }
 }
 
 impl StreamCtl {
@@ -784,7 +806,7 @@ impl StreamCtl {
 /// pending per stream at a time; none once the phase changed or the stream is over.
 fn arm(conn: Conn<H2Conn>, ctl: &Arc<StreamCtl>, phase: u8, d: Duration) {
     let weak = Arc::downgrade(ctl);
-    crate::timer::after(d, move || {
+    let key = crate::timer::after(d, move || {
         let Some(ctl) = weak.upgrade() else { return };
         if ctl.phase.load(Ordering::Acquire) != phase
             || ctl.stop.load(Ordering::Acquire) != STOP_NONE
@@ -798,6 +820,11 @@ fn arm(conn: Conn<H2Conn>, ctl: &Arc<StreamCtl>, phase: u8, d: Duration) {
         }
         let _ = conn.run_on_loop(move |h: &mut H2Conn, c| h.expire(c, &ctl, phase));
     });
+    // Kept for the stream's end (A171); one before it ran already, or is running now.
+    if let Some(old) = crate::timer::Key::from_raw(ctl.jobs.armed.swap(key.raw(), Ordering::AcqRel))
+    {
+        crate::timer::cancel(old);
+    }
 }
 
 /// What a connection's handler and its [`H2Client`]s share.
@@ -983,7 +1010,7 @@ impl H2Client {
         if let Some(d) = timeout {
             let once = Arc::new(Mutex::new(Some(done)));
             let (o2, ctl2, conn) = (once.clone(), ctl.clone(), self.conn.clone());
-            crate::timer::after(d, move || {
+            let key = crate::timer::after(d, move || {
                 let cb = o2.lock().unwrap_or_else(|p| p.into_inner()).take();
                 let Some(cb) = cb else { return };
                 if ctl2.give_up(STOP_TIMEOUT) {
@@ -992,6 +1019,8 @@ impl H2Client {
                 cb(Err(ClientError::Timeout));
             });
             done = Box::new(move |r| {
+                // The job holds the callback and the stream's control: it goes now (A171).
+                crate::timer::cancel(key);
                 let cb = once.lock().unwrap_or_else(|p| p.into_inner()).take();
                 if let Some(cb) = cb {
                     cb(r);
@@ -1041,13 +1070,14 @@ impl H2Client {
             up.lock().push(first);
         }
         if let Some(d) = req.timeout {
-            let (ctl, conn) = (Arc::downgrade(&ctl), self.conn.clone());
-            crate::timer::after(d, move || {
-                let Some(ctl) = ctl.upgrade() else { return };
+            let (weak, conn) = (Arc::downgrade(&ctl), self.conn.clone());
+            let key = crate::timer::after(d, move || {
+                let Some(ctl) = weak.upgrade() else { return };
                 if ctl.give_up(STOP_TIMEOUT) {
                     let _ = conn.run_on_loop(move |h: &mut H2Conn, c| h.stop(c, &ctl));
                 }
             });
+            ctl.jobs.timeout.store(key.raw(), Ordering::Release);
         }
         // As in `request`: to the loop directly, and `Closed` if it never starts there.
         let up_fail = up.clone();
