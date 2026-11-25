@@ -184,6 +184,13 @@ pub trait QuicHandler: Send + 'static {
     fn on_datagram(&mut self, _c: &Connection, _data: Bytes) {}
     /// The connection is over; called once, last.
     fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {}
+    /// Server: the UDP socket the connection's peer talks to is going away (its listener is
+    /// removed with a drain, `akio::Engine::shutdown_listener`; its bound socket drains,
+    /// `UdpBinding::shutdown`; or the engine shuts down), as `Acceptor::on_shutdown` says it
+    /// of the peer (ADR-155). Finish what is in flight, take nothing new and close: akio-h3
+    /// sends `GOAWAY`. Called at most once. The default does nothing: the connection ends with
+    /// the socket's drain deadline or its idle timeout.
+    fn on_shutdown(&mut self, _c: &Connection) {}
 }
 
 struct State {
@@ -210,6 +217,9 @@ struct Shared {
     /// A call made in [`Connection::without_driving`] left the driving to the timer thread,
     /// which has not driven the connection since.
     woken: AtomicBool,
+    /// `QuicHandler::on_shutdown` is due (ADR-155); `shut` once it was asked for.
+    shutdown: AtomicBool,
+    shut: AtomicBool,
 }
 
 /// A QUIC connection. Cheap to clone and usable from any thread.
@@ -262,8 +272,18 @@ impl Connection {
                 sending: AtomicBool::new(false),
                 tx_sock: Mutex::new(None),
                 woken: AtomicBool::new(false),
+                shutdown: AtomicBool::new(false),
+                shut: AtomicBool::new(false),
             }
         }))
+    }
+
+    /// Server: the peer's socket goes away; the handler hears of it (`on_shutdown`) once.
+    fn shut_down(&self) {
+        if !self.0.shut.swap(true, Ordering::AcqRel) {
+            self.0.shutdown.store(true, Ordering::Release);
+            self.kick();
+        }
     }
 
     /// The peer's current address.
@@ -716,7 +736,7 @@ impl Connection {
             return;
         }
         loop {
-            if lock(&self.0.events).is_empty() {
+            if lock(&self.0.events).is_empty() && !self.0.shutdown.load(Ordering::Acquire) {
                 return;
             }
             let Some(mut h) = lock(&self.0.handler).take() else {
@@ -746,6 +766,9 @@ impl Connection {
                         break;
                     }
                 }
+            }
+            if !closed && self.0.shutdown.swap(false, Ordering::AcqRel) {
+                h.on_shutdown(self);
             }
             DELIVERING.with(|d| d.set(prev));
             if closed {
@@ -1227,6 +1250,19 @@ impl Acceptor for QuicServer {
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
         lock(&self.0.socks).insert(c.peer_addr(), c.clone());
         Udp::new(self.0.clone(), false)
+    }
+
+    /// The peer's socket goes away (a drained listener or bound socket, or engine shutdown):
+    /// each connection of this server from that address hears of it
+    /// ([`QuicHandler::on_shutdown`]).
+    fn on_shutdown(&self, c: &Conn<Udp>) {
+        let peer = c.peer_addr();
+        let conns: Vec<Connection> = lock(&self.0.conns).values().cloned().collect();
+        for q in conns {
+            if q.remote_addr() == peer {
+                q.shut_down();
+            }
+        }
     }
 }
 
