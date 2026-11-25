@@ -24,6 +24,7 @@ fuzzing = []
 
 [dev-dependencies]
 akio-core = { workspace = true, features = ["fuzzing"] }
+akio-quic = { workspace = true, features = ["testing"] }
 akio-x509 = { workspace = true }
 
 [lints]

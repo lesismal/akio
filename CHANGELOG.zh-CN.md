@@ -10,6 +10,24 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：在应用线程上进行 HTTP/3 QPACK 编码和 WebSocket 发送不再死锁（akio-h3、akio-quic）
+
+与客户端请求锁同类的死锁：在 QUIC 连接的 handler 之外调用该连接的方法，会在调用线程上驱动连接，
+为待处理的事件运行 handler；另有两处调用方持有 handler 也要拿的锁：
+
+- 使用动态表的 QPACK 编码（服务端响应默认开启；客户端设置 `qpack_encoder_capacity` 后开启）在持有
+  编码器锁时于编码器流上发送插入指令，而 handler 读取对端解码器流时要锁编码器。在应用线程上写出
+  响应头或 trailers（分离的请求、流式响应的 trailers），或客户端发出请求时，若对端的确认正待处理，
+  该线程会永远挂起。现在插入指令在释放锁之后、按顺序、在一把 handler 从不等待的发送锁下发出（发现
+  该锁被占用的线程把它们留给持有者）。
+- 基于 HTTP/3 的 WebSocket（RFC 9220）在两端都持有发送方的锁进行发送，而 handler 回应 ping 或关闭、
+  以及应用回调中再发送时都要拿这把锁。在 ping（或其回调会发送的任意消息）待处理时从应用线程发送会
+  挂起。其流上的发送不再在调用线程上驱动连接。
+
+为此新增：`akio_quic::Connection::without_driving(f)`，在其中对连接的调用把驱动连接（及运行其 handler）
+交给连接的定时器线程，供持有 handler 也会拿的锁的调用方使用。akio-quic 的 `testing` feature（非公开
+API）提供一个强制这种交错的钩子，akio-h3 的 `off_handler` 测试使用它。
+
 ### 移除：akio-prefork（akio-prefork、akio、akio-sys）
 
 ADR-121。akio 和 akit 不使用 prefork；该 crate 自 cb49a04b 起暂停维护、不再测试。对这些项的外部

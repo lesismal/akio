@@ -57,8 +57,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use akio_http::Service;
 use akio_http::message::{Headers, Method, Request, Response, Version};
@@ -293,32 +293,86 @@ pub(crate) enum Uni {
 
 /// This side's QPACK encoder with its dynamic table, shared by everything that encodes on the
 /// connection (responses are sent from any thread).
+///
+/// A send on the connection from outside its handler runs the handler on the sending thread
+/// for whatever is pending, and the handler locks the encoder to read the peer's decoder
+/// stream. So nothing sends under the encoder's lock: a section leaves its inserts in
+/// `Encoder::out`, and they go out after, under `send` (which the handler never waits for).
+/// Taking them under `send` keeps the encoder stream in order; a thread that finds `send`
+/// taken leaves them to its holder (`again`), who may be the very thread whose send ran the
+/// handler that encoded them.
 pub(crate) struct EncShared {
     c: Connection,
     /// Our encoder stream.
     stream: StreamId,
     e: Mutex<Encoder>,
+    /// Held while inserts are sent; only ever tried.
+    send: Mutex<()>,
+    /// Inserts wait in `Encoder::out` for a sender.
+    again: AtomicBool,
+    /// Bytes taken out of `Encoder::out` and not yet handed to the connection.
+    sending: AtomicUsize,
 }
 
 impl EncShared {
+    fn new(c: Connection, stream: StreamId, e: Encoder) -> EncShared {
+        EncShared {
+            c,
+            stream,
+            e: Mutex::new(e),
+            send: Mutex::new(()),
+            again: AtomicBool::new(false),
+            sending: AtomicUsize::new(0),
+        }
+    }
+
     /// Encodes a field section for stream `id` into `out` with `f` adding its lines, then sends
-    /// the inserts it made (under the lock, so encoder stream instructions stay in order).
+    /// the inserts it made (before the caller sends the section, unless another thread is
+    /// sending inserts: then that one sends them, right after its own).
     fn section(
         &self,
         out: &mut Vec<u8>,
         id: StreamId,
         f: impl FnOnce(&mut Encoder, &mut Vec<u8>, &mut Section),
     ) {
-        let mut e = self.e.lock().unwrap_or_else(|p| p.into_inner());
-        // Inserts only as long as the encoder stream can take them now (else they are lost and
-        // the sections referencing them never decode).
-        e.room = self.c.send_capacity(self.stream).unwrap_or(0);
-        let (mut lines, mut sec) = e.begin(sid(id));
-        f(&mut e, &mut lines, &mut sec);
-        e.end(out, lines, sec);
-        if !e.out.is_empty() {
-            let ins = std::mem::take(&mut e.out);
-            let _ = self.c.send(self.stream, ins);
+        let inserted = {
+            let mut e = self.e.lock().unwrap_or_else(|p| p.into_inner());
+            // Inserts only as long as the encoder stream can take them (else they are lost and
+            // the sections referencing them never decode): its room, less what is on its way.
+            let room = self.c.send_capacity(self.stream).unwrap_or(0);
+            e.room = room.saturating_sub(self.sending.load(Ordering::Acquire));
+            let (mut lines, mut sec) = e.begin(sid(id));
+            f(&mut e, &mut lines, &mut sec);
+            e.end(out, lines, sec);
+            !e.out.is_empty()
+        };
+        if inserted {
+            self.again.store(true, Ordering::SeqCst);
+            self.flush();
+        }
+    }
+
+    /// Sends the inserts that wait, unless another thread is sending: it sends them then.
+    fn flush(&self) {
+        while self.again.load(Ordering::SeqCst) {
+            let _send = match self.send.try_lock() {
+                Ok(g) => g,
+                Err(TryLockError::Poisoned(p)) => p.into_inner(),
+                // Its holder checks again once it lets go.
+                Err(TryLockError::WouldBlock) => return,
+            };
+            while self.again.swap(false, Ordering::SeqCst) {
+                let ins = {
+                    let mut e = self.e.lock().unwrap_or_else(|p| p.into_inner());
+                    let ins = std::mem::take(&mut e.out);
+                    self.sending.store(ins.len(), Ordering::Release);
+                    ins
+                };
+                if !ins.is_empty() {
+                    let _ = self.c.send(self.stream, ins);
+                }
+                self.sending.store(0, Ordering::Release);
+            }
         }
     }
 }
@@ -388,11 +442,7 @@ impl Peer {
                     let mut first = vec![frame::STREAM_QPACK_ENCODER as u8];
                     first.append(&mut e.out);
                     let _ = c.send(id, first);
-                    self.enc = Some(Arc::new(EncShared {
-                        c: c.clone(),
-                        stream: id,
-                        e: Mutex::new(e),
-                    }));
+                    self.enc = Some(Arc::new(EncShared::new(c.clone(), id, e)));
                 }
             }
         }
@@ -1344,7 +1394,8 @@ impl StreamLink {
 
     fn end(&self) {
         if !self.done.swap(true, Ordering::AcqRel) {
-            let _ = self.c.finish(self.id);
+            // Under the sender's lock too (see `send`).
+            let _ = self.c.without_driving(|| self.c.finish(self.id));
         }
     }
 }
@@ -1354,8 +1405,10 @@ impl WsLink for StreamLink {
         if !self.is_open() {
             return Err(akio_core::Error::Closed);
         }
+        // The WebSocket's sender calls this holding its lock, which the handler takes too (to
+        // answer a ping, or in the application's callbacks): not driven here.
         self.c
-            .send(self.id, data_frame(&data))
+            .without_driving(|| self.c.send(self.id, data_frame(&data)))
             .map_err(|e| match e {
                 akio_quic::Error::Overloaded => akio_core::Error::Overloaded,
                 _ => akio_core::Error::Closed,

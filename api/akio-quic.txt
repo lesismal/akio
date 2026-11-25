@@ -239,6 +239,7 @@ pub fn akio_quic::Connection::spawn_blocking(&self, impl core::ops::function::Fn
 pub fn akio_quic::Connection::stats(&self) -> akio_quic::ConnectionStats
 pub fn akio_quic::Connection::stop(&self, akio_quic::StreamId, u32) -> core::result::Result<(), akio_quic::Error>
 pub fn akio_quic::Connection::version(&self) -> akio_quic::Version
+pub fn akio_quic::Connection::without_driving<R>(&self, impl core::ops::function::FnOnce() -> R) -> R
 impl core::clone::Clone for akio_quic::Connection
 pub fn akio_quic::Connection::clone(&self) -> Self
 impl core::fmt::Debug for akio_quic::Connection

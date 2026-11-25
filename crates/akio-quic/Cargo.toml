@@ -27,6 +27,8 @@ akio-x509 = { workspace = true, optional = true }
 unstable = []
 # Fuzz entry points for `fuzz/` (`akio_quic::fuzzing`); not a public API.
 fuzzing = ["dep:akio-x509"]
+# Hooks that force thread interleavings in tests (`akio_quic::testing`); not a public API.
+testing = []
 
 [dev-dependencies]
 akio-x509 = { workspace = true }

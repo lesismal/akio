@@ -63,6 +63,43 @@ mod types;
 #[doc(hidden)]
 pub mod fuzzing;
 
+/// Hooks that force thread interleavings in tests; not a public API.
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod testing {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    use crate::Side;
+
+    /// 0: off; 1: server connections; 2: client connections.
+    static DEFER: AtomicU8 = AtomicU8::new(0);
+
+    std::thread_local! {
+        /// This thread drives a connection from an API call made outside its handler.
+        pub(crate) static KICKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// While `Some(side)`, that side's connections (in this process) run their handler only
+    /// from API calls made outside it (`send`, `reset`, ...): what the I/O and timer threads
+    /// receive waits for such a call, which then runs it on the calling thread. Forces the
+    /// interleaving where an application thread's call runs the handler. Process-wide: keep
+    /// tests that use it in a test binary of their own.
+    pub fn defer_delivery(side: Option<Side>) {
+        let v = match side {
+            None => 0,
+            Some(Side::Server) => 1,
+            Some(Side::Client) => 2,
+        };
+        DEFER.store(v, Ordering::SeqCst);
+    }
+
+    /// Whether a connection of this side leaves its events for an API call to run.
+    pub(crate) fn deferred(server: bool) -> bool {
+        let v = DEFER.load(Ordering::SeqCst);
+        v != 0 && (v == 1) == server && !KICKING.with(std::cell::Cell::get)
+    }
+}
+
 use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
@@ -170,6 +207,9 @@ struct Shared {
     /// The UDP socket (peer) the last datagram went out on (server): the next one to the same
     /// address uses it without the endpoint's shared socket table. Used by the sender only.
     tx_sock: Mutex<Option<Conn<Udp>>>,
+    /// A call made in [`Connection::without_driving`] left the driving to the timer thread,
+    /// which has not driven the connection since.
+    woken: AtomicBool,
 }
 
 /// A QUIC connection. Cheap to clone and usable from any thread.
@@ -187,6 +227,8 @@ impl fmt::Debug for Connection {
 thread_local! {
     /// The connection whose handler this thread is running (its address), if any.
     static DELIVERING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The connection this thread calls in [`Connection::without_driving`] (its address).
+    static QUIET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -219,6 +261,7 @@ impl Connection {
                 outq: Mutex::new(VecDeque::new()),
                 sending: AtomicBool::new(false),
                 tx_sock: Mutex::new(None),
+                woken: AtomicBool::new(false),
             }
         }))
     }
@@ -447,13 +490,52 @@ impl Connection {
         self.kick();
     }
 
+    /// Runs `f`, in which this connection's calls (`send`, `finish`, `reset`, `stop`, resuming
+    /// reads, `close`) leave driving the connection to its timer thread, which does it at once,
+    /// instead of driving it on this thread.
+    ///
+    /// A call from outside the connection's handler normally drives the connection on the
+    /// calling thread: it sends what the call queued and runs the handler for whatever is
+    /// pending (data received, a stream reset), there and then. A caller holding a lock the
+    /// handler also takes would wait on itself; inside `f` it does not, at the cost of a thread
+    /// hand-off. Calls from the handler itself never drive the connection (it is driven once
+    /// the callback returns), with or without this.
+    pub fn without_driving<R>(&self, f: impl FnOnce() -> R) -> R {
+        let me = Arc::as_ptr(&self.0) as usize;
+        let prev = QUIET.with(|q| q.replace(me));
+        let r = f();
+        QUIET.with(|q| q.set(prev));
+        r
+    }
+
+    /// The timer thread drives the connection at once (for [`without_driving`]).
+    ///
+    /// [`without_driving`]: Self::without_driving
+    fn wake(&self) {
+        if !self.0.woken.swap(true, Ordering::AcqRel) {
+            let target: Weak<dyn timer::Due> = self.0.me.clone();
+            timer::timer().schedule(Instant::now(), target);
+        }
+    }
+
     /// After an API call: runs the state machine, unless the call came from this connection's
     /// own handler, whose delivering `drive` sends everything once the callback returns (so a
-    /// response, its FIN and the acknowledgments share packets).
+    /// response, its FIN and the acknowledgments share packets), or from
+    /// [`without_driving`](Self::without_driving), which leaves it to the timer thread.
     fn kick(&self) {
         let me = Arc::as_ptr(&self.0) as usize;
-        if DELIVERING.with(std::cell::Cell::get) != me {
+        if DELIVERING.with(std::cell::Cell::get) == me {
+            return;
+        }
+        if QUIET.with(std::cell::Cell::get) == me {
+            return self.wake();
+        }
+        {
+            #[cfg(feature = "testing")]
+            let prev = testing::KICKING.with(|k| k.replace(true));
             self.drive();
+            #[cfg(feature = "testing")]
+            testing::KICKING.with(|k| k.set(prev));
         }
     }
 
@@ -629,6 +711,10 @@ impl Connection {
     /// Runs queued events through the handler, one deliverer at a time (a nested or concurrent
     /// call finds the handler taken and leaves its events to the one running).
     fn deliver(&self) {
+        #[cfg(feature = "testing")]
+        if testing::deferred(self.0.ep.factory.is_some()) {
+            return;
+        }
         loop {
             if lock(&self.0.events).is_empty() {
                 return;
@@ -683,13 +769,16 @@ impl Connection {
 impl timer::Due for Shared {
     fn fire(&self, at: Instant) {
         let Some(me) = self.me.upgrade() else { return };
+        // Asked to drive (`Connection::wake`): any entry of this connection's does it.
+        let woken = self.woken.swap(false, Ordering::AcqRel);
         {
             let mut st = lock(&self.state);
-            if st.armed != Some(at) {
+            if st.armed == Some(at) {
+                st.armed = None;
+                st.conn.handle_timeout(Instant::now());
+            } else if !woken {
                 return;
             }
-            st.armed = None;
-            st.conn.handle_timeout(Instant::now());
         }
         Connection(me).drive();
     }

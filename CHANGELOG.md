@@ -10,6 +10,29 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: HTTP/3 QPACK encoding and WebSocket sends from an application thread no longer deadlock (akio-h3, akio-quic)
+
+The same kind of deadlock as the client's request lock: a call on a QUIC connection from outside
+its handler drives the connection on the calling thread and runs the handler for what is pending,
+and two more callers held a lock the handler takes:
+
+- QPACK encoding with the dynamic table (on by default for servers' responses; on for a client
+  with `qpack_encoder_capacity`) sent its inserts on the encoder stream under the encoder's lock,
+  and the handler locks the encoder to read the peer's decoder stream. A response head or trailers
+  written from an application thread (a detached request, a streamed response's trailers), or a
+  client request, hung that thread for good when an acknowledgment from the peer was waiting. The
+  inserts now go out after the lock is let go, in order, under a send lock the handler never
+  waits for (a thread finding it taken leaves them to its holder).
+- A WebSocket over HTTP/3 (RFC 9220), on either side, sent under its sender's lock, which the
+  handler takes to answer a ping or close, and in the application's callbacks that send. A send
+  from an application thread while a ping (or any message whose callback sends) was waiting hung
+  it. Its stream's sends no longer drive the connection on the calling thread.
+
+Added for it: `akio_quic::Connection::without_driving(f)`, in which the connection's calls leave
+driving it (and running its handler) to its timer thread, for callers holding a lock the handler
+also takes. akio-quic's `testing` feature (not a public API) has a hook that forces the
+interleaving; akio-h3's `off_handler` tests use it.
+
 ### Removed: akio-prefork (akio-prefork, akio, akio-sys)
 
 ADR-121. akio and akit do not use prefork; the crate had been on hold and untested since
