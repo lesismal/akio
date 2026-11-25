@@ -98,6 +98,7 @@ fn main() {
                             BodyEvent::End(_) => {
                                 ctx.text(200, n.load(Ordering::Relaxed).to_string());
                             }
+                            BodyEvent::TooLarge => {}
                         });
                     }),
                 )

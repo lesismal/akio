@@ -101,6 +101,7 @@ fn app(seen: Seen) -> Router {
                         }
                         let _ = seen.lock().unwrap().send("end".into());
                     }
+                    BodyEvent::TooLarge => {}
                 }
             });
         }))
@@ -159,6 +160,7 @@ fn app(seen: Seen) -> Router {
                             }
                             let _ = seen.lock().unwrap().send("end".into());
                         }
+                        BodyEvent::TooLarge => {}
                     }
                 });
             }),

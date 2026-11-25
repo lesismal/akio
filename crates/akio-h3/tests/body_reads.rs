@@ -43,6 +43,7 @@ fn held(ctx: &mut Context) {
             let t = total.load(Ordering::Relaxed);
             ctx.text(200, format!("{t},{}", at_release.load(Ordering::Relaxed)));
         }
+        BodyEvent::TooLarge => {}
     });
 }
 

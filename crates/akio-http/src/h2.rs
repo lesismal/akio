@@ -1788,6 +1788,7 @@ impl Core {
             trailers: Headers::new(),
             body: Vec::new(),
             peer: self.peer,
+            local: self.conn.local_addr(),
             protocol: protocol.map(str::to_owned),
             peer_certificates: self.peer_certs.get(&self.conn),
         })
@@ -1981,6 +1982,7 @@ impl H2Responder {
                 trailers: Headers::new(),
                 body: Vec::new(),
                 peer: c.peer,
+                local: c.conn.local_addr(),
                 protocol: None,
                 peer_certificates,
             };
@@ -2472,6 +2474,9 @@ impl<S: Service> H2Session<S> {
                 let g = crate::trace::begin(&mut ctx);
                 self.service.call(&mut ctx);
                 drop(g);
+                if ctx.body_stopped() {
+                    return self.stop_body(sid);
+                }
                 let parked = match ctx.take_upgrade() {
                     Some(up) => {
                         // A WebSocket accepted on an extended CONNECT (its `200` is out).
@@ -2490,6 +2495,9 @@ impl<S: Service> H2Session<S> {
             Action::Chunk(sid, range) => match self.take_parked(sid) {
                 Some(Parked::Ctx(mut ctx)) => {
                     ctx.deliver(BodyEvent::Chunk(&buf[range]));
+                    if ctx.body_stopped() {
+                        return self.stop_body(sid);
+                    }
                     self.park(sid, Parked::Ctx(ctx));
                 }
                 Some(Parked::Ws(mut ws)) => {
@@ -2509,6 +2517,18 @@ impl<S: Service> H2Session<S> {
                 None => {}
             },
         }
+    }
+
+    /// The stream's request body was refused (`Context::limit_body`, akit A49): its context
+    /// (answered, or detached) is not parked again, so later DATA goes nowhere, and the stream
+    /// gives the client no more window. A response already done reset the stream (`NO_ERROR`);
+    /// one still to come does once it is.
+    fn stop_body(&self, sid: u32) {
+        H2Reads {
+            core: Arc::downgrade(&self.core),
+            sid,
+        }
+        .hold(true);
     }
 
     fn take_parked(&self, sid: u32) -> Option<Parked> {

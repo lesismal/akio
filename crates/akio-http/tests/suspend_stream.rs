@@ -84,6 +84,7 @@ fn take_body(ctx: &mut Context, seen: &Arc<Seen>) {
             }
             off += b.len();
         }
+        BodyEvent::TooLarge => {}
         BodyEvent::End(_) => {
             let r = match bad {
                 None => format!("ok {off}"),
@@ -167,6 +168,7 @@ fn app(seen: &Arc<Seen>) -> Router {
                                 }
                                 off += b.len();
                             }
+                            BodyEvent::TooLarge => {}
                             BodyEvent::End(_) => ctx.text(200, format!("ok {off}")),
                         });
                     });

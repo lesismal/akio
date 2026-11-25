@@ -3,7 +3,7 @@
 use std::{
     borrow::Cow,
     net::SocketAddr,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -51,7 +51,8 @@ pub enum BodyMode {
     /// Fully received (and size-limited) before `call`; the body is `ctx.body()`.
     Buffered,
     /// `call` runs as soon as the head is parsed; register [`Context::on_body`] to receive the
-    /// chunks as they arrive. No size limit applies: the sink decides what to do with the data.
+    /// chunks as they arrive. No size limit applies but the one a middleware sets
+    /// ([`Context::limit_body`]): the sink decides what to do with the data.
     Stream,
 }
 
@@ -82,6 +83,12 @@ pub enum BodyEvent<'a> {
     Chunk(&'a [u8]),
     /// The body is complete; chunked bodies may carry trailer fields.
     End(&'a Headers),
+    /// The body grew past the limit [`Context::limit_body`] set (akit A49): delivery ends here,
+    /// the sink is dropped after this call and hears nothing more (the chunk that passed the
+    /// limit is not delivered). The request is answered `413` when nothing answered it yet,
+    /// HTTP/1 closes its connection once the response is out rather than read the rest, and
+    /// HTTP/2 and HTTP/3 stop the client's sending on the stream.
+    TooLarge,
 }
 
 impl<'a> std::fmt::Debug for BodyEvent<'a> {
@@ -335,22 +342,26 @@ impl Out {
     /// Sends `resp`, its filters applied, then ends the request's hooks [`End::Sent`] (a coded
     /// file's, streamed, once its stream finishes). A response with a held head or body filters
     /// goes through them first (ADR-128).
+    /// Returns the status sent, and whether an HTTP/1 response asked to close its connection
+    /// (`Connection: close`, akit A24) as it was sent here (not when it goes later, through a
+    /// held head or body filters).
     fn send(
         self,
         mut resp: Response,
         fin: &mut Finish,
         req: &mut ReqSrc<'_>,
         end: EndGuard,
-    ) -> u16 {
+    ) -> (u16, bool) {
         if fin.asyncs.is_some() && req.get().method != Method::Connect {
-            return send_async(self, resp, fin, req, end, false).0;
+            return (send_async(self, resp, fin, req, end, false).0, false);
         }
         fin.apply(&mut resp, req.get());
         self.deliver(resp, req.get(), end)
     }
 
-    /// Sends `resp`, whose filters ran, then ends the request's hooks.
-    fn deliver(self, resp: Response, req: &Request, mut end: EndGuard) -> u16 {
+    /// Sends `resp`, whose filters ran, then ends the request's hooks; see [`send`](Self::send)
+    /// for what it returns.
+    fn deliver(self, resp: Response, req: &Request, mut end: EndGuard) -> (u16, bool) {
         let status = resp.status;
         if resp.stream_coding.is_some()
             && resp.file.is_some()
@@ -360,15 +371,21 @@ impl Out {
         {
             // A file body a filter gave a coding (ADR-124): read and encoded on the disk pool.
             coded_file(self, resp, req, end);
-            return status;
+            return (status, false);
         }
-        match self {
+        let close = match self {
             Out::H1(r) => r.send(resp),
-            Out::H2(r) => r.send(resp),
-            Out::Ext(r) => r.send(resp),
-        }
+            Out::H2(r) => {
+                r.send(resp);
+                false
+            }
+            Out::Ext(r) => {
+                r.send(resp);
+                false
+            }
+        };
         end.sent();
-        status
+        (status, close)
     }
 }
 
@@ -380,11 +397,7 @@ fn coded_file(out: Out, mut resp: Response, req: &Request, end: EndGuard) {
     let Some(file) = resp.file.take() else { return };
     resp.streaming = true;
     resp.headers.remove("Content-Length");
-    let chunked = matches!(&out, Out::H1(r) if r.version == Version::Http11 && r.keep_alive);
-    if chunked {
-        resp.headers.set("Transfer-Encoding", "chunked");
-    }
-    let Some(stream) = open_stream(out, resp, req, chunked, end) else {
+    let Some(stream) = open_stream(out, resp, req, end) else {
         return;
     };
     if req.method == Method::Head || file.len == 0 {
@@ -481,14 +494,14 @@ impl FilePump {
         // `on_drain` may run at once, here: the pump is put in its cell after, and the flag
         // tells whether that happened.
         self.stream.on_drain(move || {
-            f.store(true, std::sync::atomic::Ordering::SeqCst);
+            f.store(true, Ordering::SeqCst);
             let p = c.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(p) = p {
                 p.submit();
             }
         });
         *cell.lock().unwrap_or_else(PoisonError::into_inner) = Some(self);
-        if fired.load(std::sync::atomic::Ordering::SeqCst) {
+        if fired.load(Ordering::SeqCst) {
             let p = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
             if let Some(p) = p {
                 p.submit();
@@ -676,17 +689,25 @@ impl Responder {
         }
     }
 
-    /// Sends `resp`, its filters applied.
-    fn send(mut self, resp: Response) {
+    /// Sends `resp`, its filters applied. A response whose `Connection` field says `close`
+    /// closes the connection once it is written, and the connection's reads stop now: the rest
+    /// of a request body it refused is not read (akit A24). Returns whether it did.
+    fn send(mut self, resp: Response) -> bool {
         self.forget_gone();
         let status = resp.status;
         // From the I/O thread's buffer pool: the connection gives it back there once written.
         let mut head = akio_buf::get(192 + resp.body.len());
-        resp.encode(self.version, self.keep_alive, self.head_only, &mut head);
+        let close = resp.encode(self.version, self.keep_alive, self.head_only, &mut head);
         resp.headers.recycle(Spare::Resp);
         // The body is in `head` now (or not sent at all): its buffer is the thread's spare.
         crate::message::recycle_body(resp.body);
         let bodyless = status < 200 || status == 204 || status == 304;
+        if close {
+            self.keep_alive = false;
+            if let Some(c) = self.slot.conn() {
+                c.hold_reads(true);
+            }
+        }
         match resp.file {
             Some(f) if !self.head_only && !bodyless => self.slot.fill_parts(
                 vec![
@@ -702,6 +723,7 @@ impl Responder {
             _ if self.keep_alive => self.slot.fill(head),
             _ => self.slot.fill_close(head),
         }
+        close
     }
 }
 
@@ -805,6 +827,18 @@ pub struct Context {
     /// A request whose streamed body was suspended (ADR-159): the side of its relay this
     /// context is.
     relay: Option<RelaySide>,
+    /// Streamed body bytes delivered to the sink so far.
+    body_seen: u64,
+    /// The bound [`limit_body`](Self::limit_body) set on the body (`u64::MAX`: none).
+    body_max: u64,
+    /// The streamed body was refused ([`limit_body`](Self::limit_body)): nothing more is
+    /// delivered, and the transport stops reading it.
+    body_stopped: bool,
+    /// HTTP/1: the response sent from this context asked to close the connection (akit A24).
+    closes: bool,
+    /// HTTP/1: the response streamed from this context asks to close the connection once it is
+    /// done (akit A24).
+    stream_closes: bool,
 }
 
 impl Drop for Context {
@@ -880,6 +914,11 @@ impl Context {
             reads: None,
             hooks: None,
             relay: None,
+            body_seen: 0,
+            body_max: u64::MAX,
+            body_stopped: false,
+            closes: false,
+            stream_closes: false,
         }
     }
 
@@ -929,6 +968,11 @@ impl Context {
             reads: None,
             hooks: None,
             relay: None,
+            body_seen: 0,
+            body_max: u64::MAX,
+            body_stopped: false,
+            closes: false,
+            stream_closes: false,
             responder: None,
         }
     }
@@ -951,6 +995,11 @@ impl Context {
             reads: None,
             hooks: None,
             relay: None,
+            body_seen: 0,
+            body_max: u64::MAX,
+            body_stopped: false,
+            closes: false,
+            stream_closes: false,
             responder: Some(Out::H2(responder)),
         }
     }
@@ -1008,6 +1057,13 @@ impl Context {
     /// ([`Request::peer`], ADR-118).
     pub fn peer(&self) -> SocketAddr {
         self.req.peer
+    }
+
+    /// The address the request came to ([`Request::local`], akit A148): the local address of
+    /// the connection's socket on HTTP/1.1 and HTTP/2, of the QUIC connection's UDP socket on
+    /// HTTP/3; unspecified where there is none.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.req.local
     }
 
     /// A route parameter (`:id`, `{id:re}` or `*rest`) matched by the router, percent-decoded
@@ -1165,15 +1221,110 @@ impl Context {
         self.sink = Some(Box::new(f));
     }
 
+    /// Bounds the request's body to `max` bytes for whatever handler reads it (akit A49), as
+    /// fit's `body_limit` does: a middleware calls it before (or after) the handler sets its
+    /// sink. It only lowers the bound: a buffered body is already within the listener's
+    /// `max_body_bytes`, and a second call keeps the lower of the two.
+    ///
+    /// - A body that is here already ([`BodyMode::Buffered`], or none) longer than `max` is
+    ///   answered `413` now; the connection stays (the body was read).
+    /// - A streamed body ([`BodyMode::Stream`]) whose declared `Content-Length` passes `max`, or
+    ///   of which more than `max` was delivered already, is refused now; one that grows past
+    ///   `max` later is refused then. Refused, its sink (if one is set) gets
+    ///   [`BodyEvent::TooLarge`] and nothing more, and the request is answered `413` unless a
+    ///   response was sent or taken ([`detach`](Self::detach),
+    ///   [`stream_response`](Self::stream_response)) already: whoever holds it answers, as the
+    ///   sink tells it. HTTP/1 then reads no more of the body and closes the connection once
+    ///   the response is out (the `413` says `Connection: close`); HTTP/2 stops giving the
+    ///   stream flow-control window and resets it once the response is done (`NO_ERROR`, as
+    ///   for any response sent before its request ended); HTTP/3 asks the client to stop
+    ///   sending (`STOP_SENDING` with `H3_NO_ERROR`).
+    ///
+    /// Returns `false` when the request was refused (now or before): the middleware does not
+    /// go on to the handler then.
+    pub fn limit_body(&mut self, max: u64) -> bool {
+        self.body_max = self.body_max.min(max);
+        if self.body_stopped {
+            return false;
+        }
+        if !self.streamed {
+            if self.req.body.len() as u64 > self.body_max {
+                self.respond(Response::text(413, "Payload Too Large"));
+                return false;
+            }
+            return true;
+        }
+        let declared = self
+            .req
+            .headers
+            .get("content-length")
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        if self.body_seen > self.body_max || declared.is_some_and(|n| n > self.body_max) {
+            self.refuse_body();
+            return false;
+        }
+        true
+    }
+
+    /// The streamed body passed its bound: the sink hears [`BodyEvent::TooLarge`] and is
+    /// dropped, and the request is answered `413` when nothing answered it.
+    fn refuse_body(&mut self) {
+        self.body_stopped = true;
+        if let Some(mut sink) = self.sink.take() {
+            sink(self, BodyEvent::TooLarge);
+            self.sink = None;
+        }
+        if let Some(out) = &self.responder {
+            let mut resp = Response::text(413, "Payload Too Large");
+            if matches!(out, Out::H1(_)) {
+                // Not read on: the connection closes once the answer is out (akit A24).
+                resp.headers.set("Connection", "close");
+            }
+            self.respond(resp);
+        }
+    }
+
+    /// Whether the streamed body was refused ([`limit_body`](Self::limit_body)): the transport
+    /// stops reading it.
+    pub(crate) fn body_stopped(&self) -> bool {
+        self.body_stopped
+    }
+
+    /// HTTP/1: whether the response sent from this context closes the connection, which then
+    /// reads no further (akit A24).
+    pub(crate) fn closes(&self) -> bool {
+        self.closes
+    }
+
+    /// HTTP/1: whether the response from this context, sent or streamed, ends the connection's
+    /// requests (akit A24): the ones pipelined behind it are not served. A streamed one stops
+    /// the connection's reads once it is done, not before (its request's body may still be
+    /// wanted meanwhile).
+    pub(crate) fn ends_connection(&self) -> bool {
+        self.closes || self.stream_closes
+    }
+
     /// Delivers a body event to the sink, if any; for a suspended request, to the context it
-    /// is resumed in (ADR-159).
+    /// is resumed in (ADR-159), which holds the body to its bound. Nothing once the body was
+    /// refused; a chunk that takes the body past its bound ([`limit_body`](Self::limit_body))
+    /// refuses it.
     pub(crate) fn deliver(&mut self, ev: BodyEvent<'_>) {
         if let Some(RelaySide::Feed(r)) = &self.relay {
             return r.push(ev);
         }
+        if self.body_stopped {
+            return;
+        }
+        if let BodyEvent::Chunk(d) = &ev {
+            self.body_seen = self.body_seen.saturating_add(d.len() as u64);
+            if self.body_seen > self.body_max {
+                return self.refuse_body();
+            }
+        }
         if let Some(mut sink) = self.sink.take() {
             sink(self, ev);
-            if self.sink.is_none() {
+            // Kept, unless it set another, or refused the body itself (`limit_body`).
+            if self.sink.is_none() && !self.body_stopped {
                 self.sink = Some(sink);
             }
         }
@@ -1360,11 +1511,19 @@ impl Context {
     }
 
     /// Sends `resp`. Only the first response counts; later calls are ignored.
+    ///
+    /// On HTTP/1, a response whose `Connection` field says `close` closes the connection once
+    /// it is written (akit A24), whatever the request asked, and sent from here, a
+    /// [`Detached`] or after a held head: the connection reads nothing more from then on (the
+    /// rest of a request body it refuses is not read), and the requests pipelined behind it
+    /// are not served. HTTP/2 and HTTP/3 drop the field.
     pub fn respond(&mut self, resp: Response) {
         if let Some(r) = self.responder.take() {
             let end = self.end_guard();
             let mut req = ReqSrc::Cell(&mut self.req);
-            self.status = Some(r.send(resp, &mut self.fin, &mut req, end));
+            let (status, close) = r.send(resp, &mut self.fin, &mut req, end);
+            self.status = Some(status);
+            self.closes |= close;
         }
     }
 
@@ -1431,12 +1590,23 @@ impl Context {
     }
 
     /// Starts a response whose body is produced piece by piece (server-sent events, large
-    /// generated downloads). `headers` are sent with the head; the framing is `chunked` on
-    /// keep-alive HTTP/1.1 and close-delimited otherwise. Response filters see the head
+    /// generated downloads). `headers` are sent with the head. Response filters see the head
     /// (status and headers, no body); the [`compress`](crate::middleware::compress)
     /// middleware compresses the body when [`Compress::stream`](crate::middleware::Compress)
-    /// is set, flushing the encoder on every write. `None` if a response was already started. Write from any thread; dropping the stream
-    /// without [`BodyStream::finish`] closes the connection.
+    /// is set, flushing the encoder on every write. `None` if a response was already started.
+    /// Write from any thread; dropping the stream without [`BodyStream::finish`] closes the
+    /// connection.
+    ///
+    /// On HTTP/1 the body is framed by the `Content-Length` the head gives, when it gives one
+    /// (akit A35): the pieces go as written, a write past the length is refused
+    /// (`Error::Io` of kind `InvalidInput`, nothing of it written), and a stream finished short
+    /// of it is cut (its connection closes). A coding a response filter sets
+    /// ([`Response::set_stream_coding`]) or a body filter ([`add_body_filter`](Self::add_body_filter))
+    /// changes the length: the field is dropped then. Without a length the body is `chunked` on
+    /// keep-alive HTTP/1.1, and delimited by the connection's close otherwise. A head whose
+    /// `Connection` field says `close` closes the connection once the body is done, and the
+    /// connection reads nothing more from then on (akit A24); the requests pipelined behind
+    /// this one are not served. HTTP/2 and HTTP/3 frame the body themselves and keep the field.
     ///
     /// On HTTP/2 and HTTP/3, a `2xx` streamed to an extended CONNECT (RFC 8441, RFC 9220) that
     /// the handler did not [`upgrade_websocket`](Self::upgrade_websocket) opens a tunnel
@@ -1445,6 +1615,7 @@ impl Context {
     /// peer that never ends its half after [`BodyStream::finish`] is reset after a few seconds.
     pub fn stream_response(&mut self, status: u16, headers: Headers) -> Option<BodyStream> {
         let out = self.responder.take()?;
+        self.stream_closes = matches!(out, Out::H1(_)) && headers.has_token("connection", "close");
         self.detached = true;
         self.status = Some(status);
         let end = self.end_guard();
@@ -1752,6 +1923,11 @@ impl Context {
             },
             hooks: self.hooks.take(),
             relay: relay.map(RelaySide::Take),
+            body_seen: 0,
+            body_max: self.body_max,
+            body_stopped: false,
+            closes: false,
+            stream_closes: false,
         };
         Some(Suspended(Some(Box::new(ctx))))
     }
@@ -1980,6 +2156,8 @@ impl Relay {
         match ev {
             BodyEvent::Chunk(d) => st.buf.extend_from_slice(d),
             BodyEvent::End(t) => st.end = Some(t.clone()),
+            // Not fed by the server: the resumed context refuses the body itself.
+            BodyEvent::TooLarge => {}
         }
     }
 
@@ -2216,16 +2394,35 @@ fn start_stream(
     let mut resp = Response::new(status);
     resp.headers = headers;
     resp.streaming = true;
-    // The filters run first: the compress middleware's picks the body's coding.
-    let chunked = is_chunked(&out);
-    if chunked {
+    // The filters run first, on the head as it would go: the compress middleware's picks the
+    // body's coding (and drops a length it changes). An HTTP/1 body of a length given goes
+    // framed by it (akit A35); `open_stream` settles the framing once they ran.
+    if is_chunked(&out) && h1_length(&resp).is_none() {
         resp.headers.set("Transfer-Encoding", "chunked");
     }
     if fin.asyncs.is_some() && req.get().method != Method::Connect {
         return send_async(out, resp, fin, req, end, true).1;
     }
     fin.apply(&mut resp, req.get());
-    open_stream(out, resp, req.get(), chunked, end)
+    open_stream(out, resp, req.get(), end)
+}
+
+/// The length a streamed HTTP/1 response's head gives its body (akit A35): its
+/// `Content-Length`, every value of which must parse and agree, unless the head is chunked
+/// already or its status has no body.
+fn h1_length(resp: &Response) -> Option<u64> {
+    if bodyless(resp.status) || resp.headers.get("transfer-encoding").is_some() {
+        return None;
+    }
+    let mut len = None;
+    for v in resp.headers.get_all("content-length") {
+        let n = v.trim().parse::<u64>().ok()?;
+        if len.is_some_and(|l| l != n) {
+            return None;
+        }
+        len = Some(n);
+    }
+    len
 }
 
 /// A status whose response has no body.
@@ -2267,6 +2464,7 @@ fn send_async(
         // Sent whole: undo the conversion when a filter made the response bodyless.
         resp.streaming = false;
     }
+    let body_filtered = !filters.is_empty();
     let mut filters = filters.into_iter();
     let mut front = None;
     let mut writer = None;
@@ -2294,6 +2492,7 @@ fn send_async(
         req: req.arc(),
         end,
         holds: holds.into_iter(),
+        body_filtered,
         filters: filters.collect(),
         front,
         file,
@@ -2312,6 +2511,8 @@ struct Going {
     end: EndGuard,
     /// The held heads still to go through.
     holds: std::vec::IntoIter<(Duration, HoldHook)>,
+    /// The body goes through body filters, which may change its length.
+    body_filtered: bool,
     /// The body filters after the first (which is the front gate's).
     filters: Vec<Box<dyn BodyFilter>>,
     /// The gate the body is written to, for a streamed (or converted) response.
@@ -2367,11 +2568,14 @@ impl Going {
         }
         resp.streaming = true;
         resp.body = Vec::new();
-        let chunked = is_chunked(&self.out);
-        if chunked {
+        if self.body_filtered {
+            // What the filters let out has a length of its own.
+            resp.headers.remove("Content-Length");
+        }
+        if is_chunked(&self.out) && h1_length(&resp).is_none() {
             resp.headers.set("Transfer-Encoding", "chunked");
         }
-        let Some(mut s) = open_stream(self.out, resp, &req, chunked, self.end) else {
+        let Some(mut s) = open_stream(self.out, resp, &req, self.end) else {
             front.fail();
             return;
         };
@@ -2515,13 +2719,15 @@ fn is_chunked(out: &Out) -> bool {
 }
 
 /// [`start_stream`] once the filters ran: the stream of `resp`, a streamed head.
-fn open_stream(
-    out: Out,
-    mut resp: Response,
-    req: &Request,
-    chunked: bool,
-    end: EndGuard,
-) -> Option<BodyStream> {
+///
+/// On HTTP/1 its framing settles here: a head the filters left a `Content-Length` (and no
+/// coding, which changes the length) is framed by it (akit A35), else it is chunked on a
+/// keep-alive HTTP/1.1 connection, else delimited by the connection's close.
+fn open_stream(out: Out, mut resp: Response, req: &Request, end: EndGuard) -> Option<BodyStream> {
+    if resp.stream_coding.is_some() {
+        // Encoded, the body is not the length given.
+        resp.headers.remove("Content-Length");
+    }
     // A HEAD answer has the coding's headers and no body to encode.
     let coder = resp
         .stream_coding
@@ -2540,15 +2746,29 @@ fn open_stream(
         .map(Box::new);
     let inner = match out {
         Out::H1(r) => {
+            let len = h1_length(&resp);
+            let chunked = resp.headers.get("transfer-encoding").is_some()
+                || (len.is_none() && r.version == Version::Http11 && r.keep_alive);
+            if chunked {
+                if resp.headers.get("transfer-encoding").is_none() {
+                    resp.headers.set("Transfer-Encoding", "chunked");
+                }
+                if !bodyless(resp.status) {
+                    // Not beside `Transfer-Encoding` (RFC 9112, 6.3).
+                    resp.headers.remove("Content-Length");
+                }
+            }
             let mut head = Vec::with_capacity(192);
-            resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
+            let close = resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
             Inner::H1 {
                 conn: r.slot.conn().cloned(),
                 gone: r.gone,
                 stream: r.slot.stream(head),
                 chunked,
-                keep_alive: r.keep_alive,
+                keep_alive: r.keep_alive && !close,
+                close_asked: close,
                 head_only: r.head_only,
+                left: len.map(std::sync::atomic::AtomicU64::new),
             }
         }
         Out::H2(r) => Inner::H2(r.start_stream(resp)?),
@@ -2594,7 +2814,12 @@ enum Inner {
         stream: ResponseStream,
         chunked: bool,
         keep_alive: bool,
+        /// The head's `Connection` field says `close` (akit A24): once the response is done,
+        /// the connection reads no more.
+        close_asked: bool,
         head_only: bool,
+        /// Framed by its length (akit A35): the bytes still to write.
+        left: Option<std::sync::atomic::AtomicU64>,
     },
     H2(H2Stream),
     Ext(Box<dyn crate::transport::BodySink>),
@@ -2695,17 +2920,31 @@ impl BodyStream {
     }
 
     /// Completes the body (the final chunk) and lets later responses go out.
+    ///
+    /// An HTTP/1 body framed by its `Content-Length` (akit A35) that was not written in full
+    /// is cut instead: the connection closes once what was written is out, as for a body cut
+    /// short, its tap hears [`TapEnd::Cut`](crate::TapEnd::Cut) and its request ends
+    /// [`End::Gone`].
     pub fn finish(mut self) {
         self.end_coding();
+        if self.inner.short() {
+            self.end_tap(crate::TapEnd::Cut);
+            return self.inner.finish();
+        }
         self.end_tap(crate::TapEnd::Finished);
         self.inner.finish();
         self.end.sent();
     }
 
     /// Like [`finish`](Self::finish), with trailer fields after the body (HTTP/2 trailers, or
-    /// the chunked trailer section on HTTP/1.1).
+    /// the chunked trailer section on HTTP/1.1; an HTTP/1 body framed by its length or by the
+    /// connection's close has none, and they are dropped).
     pub fn finish_with_trailers(mut self, trailers: Headers) {
         self.end_coding();
+        if self.inner.short() {
+            self.end_tap(crate::TapEnd::Cut);
+            return self.inner.finish();
+        }
         self.end_tap(crate::TapEnd::Trailers);
         self.inner.finish_with_trailers(trailers);
         self.end.sent();
@@ -2719,10 +2958,25 @@ impl Inner {
                 stream,
                 chunked,
                 head_only,
+                left,
                 ..
             } => {
                 if data.is_empty() || *head_only {
                     return Ok(());
+                }
+                if let Some(left) = left {
+                    // Framed by its length: a write past it is refused whole (akit A35).
+                    let n = data.len() as u64;
+                    if left
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |l| l.checked_sub(n))
+                        .is_err()
+                    {
+                        return Err(akio_core::Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "write past the response's Content-Length",
+                        )));
+                    }
+                    return stream.write(data.to_vec());
                 }
                 let mut out = Vec::with_capacity(data.len() + 20);
                 if *chunked {
@@ -2743,6 +2997,18 @@ impl Inner {
         }
     }
 
+    /// An HTTP/1 body framed by its length, not written in full (akit A35).
+    fn short(&self) -> bool {
+        match self {
+            Inner::H1 {
+                left: Some(left),
+                head_only: false,
+                ..
+            } => left.load(Ordering::Acquire) > 0,
+            _ => false,
+        }
+    }
+
     fn finish(self) {
         match self {
             Inner::H1 {
@@ -2751,13 +3017,17 @@ impl Inner {
                 stream,
                 chunked,
                 keep_alive,
+                close_asked,
                 head_only,
+                left,
             } => {
                 forget_gone(conn.as_ref(), gone, stream.seq());
                 if chunked && !head_only {
                     let _ = stream.write(b"0\r\n\r\n".to_vec());
                 }
-                stream.finish(!keep_alive);
+                let short = !head_only && left.is_some_and(|l| l.into_inner() > 0);
+                stop_reads(conn.as_ref(), close_asked);
+                stream.finish(!keep_alive || short);
             }
             Inner::H2(s) => s.finish(),
             Inner::Ext(s) => s.finish(None),
@@ -2773,9 +3043,12 @@ impl Inner {
                 stream,
                 chunked,
                 keep_alive,
+                close_asked,
                 head_only,
+                ..
             } => {
                 forget_gone(conn.as_ref(), gone, stream.seq());
+                stop_reads(conn.as_ref(), close_asked);
                 if chunked && !head_only {
                     let mut t = Vec::with_capacity(64);
                     t.extend_from_slice(b"0\r\n");
@@ -2794,6 +3067,13 @@ impl Inner {
             Inner::Ext(s) => s.finish(Some(trailers)),
             Inner::Gate(g) => g.finish(trailers),
         }
+    }
+}
+
+/// The response, done, asked to close the connection (akit A24): it reads no more.
+fn stop_reads(conn: Option<&Arc<akio_core::ConnInner>>, close_asked: bool) {
+    if let (Some(c), true) = (conn, close_asked) {
+        c.hold_reads(true);
     }
 }
 

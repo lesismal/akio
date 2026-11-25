@@ -207,6 +207,7 @@ fn serve_inner<S: Service>(
         ServerConn {
             svc: svc.clone(),
             peer: c.remote_addr(),
+            local: c.local_addr(),
             conn: Peer::new(&cfg),
             cfg: cfg.clone(),
             uni: StreamMap::default(),
@@ -615,8 +616,7 @@ pub(crate) fn on_uni(
 
 /// Where a streamed request body goes.
 pub(crate) enum Body {
-    /// Nowhere (the fuzz harness).
-    #[cfg_attr(not(any(test, feature = "fuzzing")), allow(dead_code))]
+    /// Nowhere: the fuzz harness, and a body the service refused (akit A49).
     Discard,
     /// The service's `Context::on_body` sink.
     Started(Started),
@@ -631,6 +631,9 @@ pub(crate) trait Host {
     fn streams(&self, req: &Request) -> bool;
     /// Dispatches `req` now; its body follows to the returned sink.
     fn start(&mut self, req: Request, head_only: bool) -> Body;
+    /// The service refused the rest of the body (`Context::limit_body`, akit A49): ask the
+    /// client to stop sending it.
+    fn refuse(&mut self) {}
 }
 
 /// A HEADERS frame waiting for QPACK inserts, and what the stream carried after it.
@@ -677,6 +680,8 @@ struct ServerConn<S> {
     svc: Arc<S>,
     cfg: Arc<H3Config>,
     peer: SocketAddr,
+    /// The address requests come to: the UDP socket's (`Request::local`, akit A148).
+    local: SocketAddr,
     conn: Peer,
     uni: StreamMap<Uni>,
     reqs: StreamMap<Req>,
@@ -727,6 +732,7 @@ struct ServerHost<'a, S> {
     id: StreamId,
     sink: &'a SharedSink,
     certs: &'a PeerCerts,
+    local: SocketAddr,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -736,6 +742,7 @@ impl<S: Service> Host for ServerHost<'_, S> {
 
     fn start(&mut self, mut request: Request, head_only: bool) -> Body {
         request.peer_certificates = peer_certs(self.certs, self.c);
+        request.local = self.local;
         if self.c.is_early(self.id) {
             request.headers.append("early-data", "1");
         }
@@ -749,7 +756,16 @@ impl<S: Service> Host for ServerHost<'_, S> {
                 return Body::Ws(Box::new(w));
             }
         }
+        if st.body_refused() {
+            // Refused before its body (a declared length past `Context::limit_body`).
+            self.refuse();
+            return Body::Discard;
+        }
         Body::Started(st)
+    }
+
+    fn refuse(&mut self) {
+        let _ = self.c.stop(self.id, code::NO_ERROR);
     }
 }
 
@@ -788,6 +804,7 @@ impl<S: Service> ServerConn<S> {
             id,
             sink: &self.sink,
             certs: &self.certs,
+            local: self.local,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -864,6 +881,7 @@ impl<S: Service> ServerConn<S> {
     #[inline(always)]
     fn dispatch(&self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
         request.peer_certificates = peer_certs(&self.certs, c);
+        request.local = self.local;
         if c.is_early(id) {
             // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
             // the application can answer 425 Too Early to what is not safe to repeat.
@@ -916,6 +934,7 @@ impl<S: Service> ServerConn<S> {
             id,
             sink: &self.sink,
             certs: &self.certs,
+            local: self.local,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -1135,7 +1154,13 @@ pub(crate) fn read_req(
                     return Err(Fail::Stream(code::MESSAGE_ERROR));
                 }
                 match sink {
-                    Some(Body::Started(s)) => s.body(p),
+                    Some(Body::Started(s)) => {
+                        s.body(p);
+                        if s.body_refused() {
+                            *sink = Some(Body::Discard);
+                            host.refuse();
+                        }
+                    }
                     Some(Body::Ws(w)) => w.on_data(p),
                     Some(Body::Discard) => {}
                     None => {

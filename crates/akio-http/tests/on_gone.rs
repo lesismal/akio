@@ -138,6 +138,7 @@ fn app(seen: Seen) -> Router {
                                 d.respond(Response::text(200, "got it"));
                             }
                         }
+                        BodyEvent::TooLarge => {}
                     }
                 });
             }),

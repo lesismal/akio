@@ -246,12 +246,17 @@ impl Service for Svc {
         } else if path.starts_with("/raw") {
             ctx.upgrade_raw(Raw);
         } else if path.starts_with("/stream") {
+            // A body bounded by a middleware (akit A49): `/stream-limit` refuses past 32 bytes.
+            if path.starts_with("/stream-limit") && !ctx.limit_body(32) {
+                return;
+            }
             ctx.on_body(|ctx, ev| match ev {
                 BodyEvent::Chunk(_) => {}
                 BodyEvent::End(t) => {
                     let n = t.len();
                     ctx.text(200, format!("{n} trailers"));
                 }
+                BodyEvent::TooLarge => {}
             });
         } else if path.starts_with("/sse") {
             if let Some(s) = ctx.stream_response(200, Headers::new()) {

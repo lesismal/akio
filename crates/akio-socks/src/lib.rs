@@ -1754,6 +1754,11 @@ impl StreamSide {
                 }
                 BodyEvent::Chunk(b) => st.early.extend_from_slice(b),
                 BodyEvent::End(_) => st.ended = true,
+                // A limit a middleware set (`Context::limit_body`): the tunnel is over.
+                BodyEvent::TooLarge => {
+                    drop(st);
+                    self.abort(413, "too much sent");
+                }
             }
             return;
         };
@@ -1783,6 +1788,10 @@ impl StreamSide {
             // The client ended its half: the upstream's ends too (a FIN once what it sent is
             // written, RFC 9113 §8.5); its answer still comes, until it closes, which ends ours.
             BodyEvent::End(_) => up.shutdown_write_after_send(),
+            BodyEvent::TooLarge => {
+                drop(st);
+                self.abort(413, "too much sent");
+            }
         }
     }
 

@@ -64,6 +64,8 @@ fn main() -> std::io::Result<()> {
                         let n = *total.lock().unwrap();
                         ctx.text(200, format!("received {n} bytes\n"));
                     }
+                    // Only past a limit a middleware set (`Context::limit_body`): answered 413.
+                    BodyEvent::TooLarge => {}
                 });
             }),
         );

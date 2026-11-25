@@ -202,6 +202,8 @@ struct State {
 struct Shared {
     h: proto::ConnHandle,
     ep: Arc<Ep>,
+    /// Server: the local address of the UDP socket the connection was accepted on.
+    local: Option<SocketAddr>,
     me: Weak<Shared>,
     state: Mutex<State>,
     events: Mutex<VecDeque<proto::Event>>,
@@ -246,7 +248,12 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Connection {
-    fn new(h: proto::ConnHandle, mut conn: proto::Connection, ep: Arc<Ep>) -> Connection {
+    fn new(
+        h: proto::ConnHandle,
+        mut conn: proto::Connection,
+        ep: Arc<Ep>,
+        local: Option<SocketAddr>,
+    ) -> Connection {
         Connection(Arc::new_cyclic(|me: &Weak<Shared>| {
             // A handshake suspended for an asynchronous anti-replay answer (ADR-062) is driven
             // again, from the thread that answers, once it is in.
@@ -259,6 +266,7 @@ impl Connection {
             Shared {
                 h,
                 ep,
+                local,
                 me: me.clone(),
                 state: Mutex::new(State {
                     conn,
@@ -289,6 +297,20 @@ impl Connection {
     /// The peer's current address.
     pub fn remote_addr(&self) -> SocketAddr {
         lock(&self.0.state).conn.remote_addr()
+    }
+
+    /// The local address of the connection's UDP socket (akit A148): on a server, the socket
+    /// it was accepted on (for one bound to `0.0.0.0` or `[::]`, that unspecified address with
+    /// its port); on a client, its own socket's once that is open, an unspecified address
+    /// (port 0) before.
+    pub fn local_addr(&self) -> SocketAddr {
+        if let Some(a) = self.0.local {
+            return a;
+        }
+        lock(&self.0.ep.socks)
+            .values()
+            .next()
+            .map_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)), |s| s.local_addr())
     }
 
     /// The negotiated ALPN protocol.
@@ -982,6 +1004,7 @@ impl Ep {
     fn on_datagram(
         self: &Arc<Ep>,
         peer: SocketAddr,
+        local: SocketAddr,
         ecn: u8,
         data: Rx<'_>,
         batch: Option<&mut Vec<Connection>>,
@@ -1028,7 +1051,7 @@ impl Ep {
                 }
             }
             Some(proto::DatagramEvent::New(h, conn)) => {
-                let c = Connection::new(h, *conn, self.clone());
+                let c = Connection::new(h, *conn, self.clone(), Some(local));
                 lock(&self.conns).insert(h, c.clone());
                 self.accepted.fetch_add(1, Ordering::Relaxed);
                 if let Some(f) = &self.factory {
@@ -1330,6 +1353,7 @@ impl Handler for Udp {
         let batch = self.batched.then_some(&mut self.pending);
         self.ep.on_datagram(
             c.peer_addr(),
+            c.local_addr(),
             c.rx_ecn(),
             Rx::Slice(data),
             batch,
@@ -1345,6 +1369,7 @@ impl Handler for Udp {
         let batch = self.batched.then_some(&mut self.pending);
         self.ep.on_datagram(
             c.peer_addr(),
+            c.local_addr(),
             c.rx_ecn(),
             Rx::Owned(data),
             batch,
@@ -1483,7 +1508,7 @@ pub fn dial<H: QuicHandler>(
         None,
         Some((config.tokens.clone(), server_name.to_string())),
     ));
-    let c = Connection::new(h, conn, ep.clone());
+    let c = Connection::new(h, conn, ep.clone(), None);
     *lock(&c.0.handler) = Some(Box::new(handler));
     lock(&ep.conns).insert(h, c.clone());
     let failed = c.clone();

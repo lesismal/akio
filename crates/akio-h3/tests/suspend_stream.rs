@@ -40,6 +40,7 @@ fn later(ctx: &mut Context, first: &Arc<AtomicUsize>) {
                     }
                     off += b.len();
                 }
+                BodyEvent::TooLarge => {}
                 BodyEvent::End(_) => {
                     let r = match bad {
                         None => format!("ok {off}"),

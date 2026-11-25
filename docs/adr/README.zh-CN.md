@@ -133,5 +133,6 @@
 - [ADR-154：每次拨号自己的连接超时，以及 I/O 线程之外的定时器](154-dial-options-and-send-timers.zh-CN.md)（2026-11-26 采纳；akit A12、A79、A45）
 - [ADR-155：每个连接自己的空闲超时，以及 UDP listener 的移除与排空](155-per-connection-idle-and-udp-listener-removal.zh-CN.md)（2026-11-26 采纳；akit A78、A22）
 - [ADR-156：拼接隧道与连接的 TCP 计数器](156-spliced-tunnels-and-tcp-counters.zh-CN.md)（2026-11-26 采纳；akit A170）
+- [ADR-157：关闭连接或带长度的响应，由中间件限制的请求 body](157-http1-close-length-body-limit.zh-CN.md)（2026-11-26 采纳；akit A24、A49、A35、A148）
 - [ADR-158：监听器的响应观察者，每个请求不分配内存](158-response-observer.zh-CN.md)（2026-11-26 采纳；akit A29）
 - [ADR-159：挂起 body 流式到达的请求，并扣住其读取](159-suspended-streamed-bodies.zh-CN.md)（2026-11-26 采纳；akit A75）

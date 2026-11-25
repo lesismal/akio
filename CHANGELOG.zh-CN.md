@@ -114,6 +114,42 @@ ADR-156。用 sockmap 中继拼接两个 `akio` 连接的代理不再需要伸�
 - akio-mux：`ProxyHeader::wire_len()` 是读取到的头在线上的长度（`parse`，因而也包括
   `ProxyProtocol` 附加的头），本地构造的头为 `None`。该结构体新增一个私有字段（请用 `proxy` /
   `local` 构造头），相等比较与哈希忽略它。
+### 新增：HTTP/1 响应的 `Connection: close` 关闭连接并停止读取 body（akio-http；akit A24）
+
+ADR-157。`Connection` 字段含 `close` 的响应（用 `respond` 发出、来自 `Detached`、在被扣住的
+响应头之后，或作为流式响应头）现在写出后关闭 HTTP/1 连接，不论请求要求什么，且连接不再读取：
+服务拒绝的请求 body（`413`、`401`）的其余部分不再读取，排在其后的流水线请求不再处理。完整响应
+在发出时停止读取，流式响应在结束时停止。此前该字段会发出，但 keep-alive 只由请求决定，body 一直
+读到 body 超时。HTTP/2 和 HTTP/3 与之前一样丢弃该字段。
+
+### 新增：`Context::limit_body`，由中间件限制的请求 body（akio-http、akio-h3；akit A49）
+
+ADR-157。`Context::limit_body(max) -> bool` 降低请求 body 的上限，可在 handler 设置 sink 之前或
+之后调用。已到达（缓冲）的 body 长于 `max` 时回答 `413`。流式 body（`BodyMode::Stream`）声明的
+长度超限时立即拒绝，增长超过 `max` 时在那时拒绝：其 sink 收到新的 `BodyEvent::TooLarge`，之后
+什么也收不到；除非响应已被取走（此时由 handler 回答），请求被回答 `413`；body 的其余部分不再
+读取：HTTP/1 在回答后关闭连接，HTTP/2 停止给流窗口并在回答后重置它（`NO_ERROR`），HTTP/3 发送
+`STOP_SENDING`（`H3_NO_ERROR`）。`transport::Started::body_refused` 告知 akio-http 之外的传输层。
+被拒绝时返回 `false`：中间件不再调用 handler。
+
+**破坏性变更（1.0.0 之前）：**`BodyEvent` 新增变体 `TooLarge`；对它的穷尽 `match` 需要增加
+分支（它只在 `limit_body` 之后出现）。
+
+### 新增：按 `Content-Length` 定界的流式 HTTP/1 响应（akio-http；akit A35）
+
+ADR-157。HTTP/1 上的 `stream_response`（及 `Detached::stream_response`）现在按响应头给出的
+`Content-Length` 为 body 定界：不用 chunked，各片按原样写出，超出长度的写入被拒绝（`Error::Io`，
+类别 `InvalidInput`，一个字节也不写），body 不足其长度时 `finish` 关闭连接（请求以 `End::Gone`
+结束，其 tap 收到 `TapEnd::Cut`）。响应过滤器设置的流式编码（`compress` 中间件的）或 body 过滤器
+会丢掉该字段并改用 chunked，因为 body 不再是那个长度。没有长度时定界与之前相同（keep-alive 的
+HTTP/1.1 上用 chunked，否则以关闭连接定界）；chunked 的响应头不再在 `Transfer-Encoding` 旁带
+`Content-Length`。HTTP/2 和 HTTP/3 不变。
+
+### 新增：`Request::local` 和 `Context::local_addr`，请求到达的地址（akio-http、akio-h3、akio-quic；akit A148）
+
+ADR-157。与 `Request::peer` 一样填写：HTTP/1.1 和 HTTP/2 上是连接的本地地址，HTTP/3 上是 UDP
+socket 的本地地址，没有时为未指定地址（`Request::new`、Unix 域 socket）。
+`akio_quic::Connection::local_addr` 给出 QUIC 连接的本地地址。
 
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 

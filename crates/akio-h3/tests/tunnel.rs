@@ -112,6 +112,7 @@ fn setup(seen: mpsc::Sender<String>) -> (Arc<Engine>, SocketAddr) {
                     }
                     let _ = seen.lock().unwrap().send("end".into());
                 }
+                BodyEvent::TooLarge => {}
             }
         });
     }));
@@ -144,6 +145,7 @@ fn setup(seen: mpsc::Sender<String>) -> (Arc<Engine>, SocketAddr) {
                         }
                         let _ = seen.lock().unwrap().send("end".into());
                     }
+                    BodyEvent::TooLarge => {}
                 }
             });
         }),

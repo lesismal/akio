@@ -491,6 +491,13 @@ pub struct Request {
     /// The client's address: the source a trusted PROXY header named, when akio-mux's
     /// `ProxyProtocol` layer read one for the connection, else the socket's peer (ADR-118).
     pub peer: SocketAddr,
+    /// The address the request came to (akit A148): the local address of the connection's
+    /// socket on HTTP/1.1 and HTTP/2, the local address of the UDP socket the QUIC connection
+    /// was accepted on for HTTP/3 (for a listener bound to `0.0.0.0` or `[::]`, that unspecified
+    /// address with its port). Not the destination a PROXY header names (`peer` takes the
+    /// header's source). An unspecified address, port 0, where there is none (a Unix-domain
+    /// socket, a virtual connection, a request built with [`Request::new`]).
+    pub local: SocketAddr,
     /// The `:protocol` of an extended CONNECT request (RFC 8441 / RFC 9220: `websocket` for
     /// WebSocket over HTTP/3); `None` for every other request.
     pub protocol: Option<String>,
@@ -506,7 +513,7 @@ pub struct Request {
 
 impl Request {
     /// A request with `method` for `target` (`/a/b?x=1`): HTTP/1.1, no headers, an empty body
-    /// and an unspecified peer address. Handy for testing services; set the other fields as
+    /// and unspecified peer and local addresses. Handy for testing services; set the other fields as
     /// needed.
     pub fn new(method: Method, target: impl Into<String>) -> Request {
         Request {
@@ -517,6 +524,7 @@ impl Request {
             trailers: Headers::new(),
             body: Vec::new(),
             peer: SocketAddr::from(([0, 0, 0, 0], 0)),
+            local: SocketAddr::from(([0, 0, 0, 0], 0)),
             protocol: None,
             peer_certificates: None,
         }
@@ -717,23 +725,30 @@ impl Response {
     }
 
     /// Serialises the response. `head_only` omits the body (HEAD) but keeps its length.
+    /// Returns whether the response's own `Connection` field asks to close the connection
+    /// (`close`), which the caller honours (akit A24); `keep_alive` adds a `Connection` field
+    /// only when the response has none.
     pub(crate) fn encode(
         &self,
         version: Version,
         keep_alive: bool,
         head_only: bool,
         out: &mut Vec<u8>,
-    ) {
+    ) -> bool {
         out.extend_from_slice(b"HTTP/1.1 ");
         push_uint(out, u64::from(self.status));
         out.push(b' ');
         out.extend_from_slice(reason(self.status).as_bytes());
         out.extend_from_slice(b"\r\n");
         let (mut has_len, mut has_date, mut has_conn) = (false, false, false);
+        let mut close = false;
         for (n, v) in self.headers.iter() {
             has_len |= n.eq_ignore_ascii_case("content-length");
             has_date |= n.eq_ignore_ascii_case("date");
-            has_conn |= n.eq_ignore_ascii_case("connection");
+            if n.eq_ignore_ascii_case("connection") {
+                has_conn = true;
+                close |= v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close"));
+            }
             out.extend_from_slice(n.as_bytes());
             out.extend_from_slice(b": ");
             // Header injection guard: a value cannot contain a line break.
@@ -766,6 +781,7 @@ impl Response {
         if !head_only && !bodyless {
             out.extend_from_slice(&self.body);
         }
+        close
     }
 }
 
@@ -1207,6 +1223,7 @@ mod tests {
             trailers: Headers::new(),
             body: vec![],
             peer: "127.0.0.1:1".parse().unwrap(),
+            local: "127.0.0.1:2".parse().unwrap(),
             protocol: None,
             peer_certificates: None,
         };
