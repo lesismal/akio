@@ -1487,19 +1487,29 @@ mod tests {
         e.wait();
     }
 
-    /// The connection goes between `collect` handing its request to the HTTP/2 client and the
-    /// request reaching the connection's I/O thread (the hop through the logical pool is
-    /// skipped): with no deadline, `collect` still returns, `UNAVAILABLE`, rather than wait for
-    /// ever.
+    /// A call made while the client's only pool thread is held still reaches the server (the
+    /// HTTP/2 client hands its request to the connection's loop with `Conn::run_on_loop`, not
+    /// through the pool), and with no deadline `collect` ends, `UNAVAILABLE`, when the
+    /// connection goes, rather than wait for ever.
     #[test]
-    fn collect_without_deadline_ends_when_the_connection_goes_before_the_hop() {
+    fn collect_without_deadline_ends_when_the_connection_goes() {
         use std::{io::Write, net::TcpStream, sync::mpsc};
 
-        // The server.
-        let (es, c0) = setup(GrpcServer::new().unary("/t.S/Echo", |_md, req, sink| {
-            sink.send(&req);
-            sink.finish(Status::ok());
-        }));
+        // The server: `Echo` answers; `Hang` keeps its call open until the connection goes.
+        let (arrived_tx, arrived) = mpsc::channel::<()>();
+        let arrived_tx = Mutex::new(arrived_tx);
+        let held: Mutex<Vec<Sink>> = Mutex::new(Vec::new());
+        let (es, c0) = setup(
+            GrpcServer::new()
+                .unary("/t.S/Echo", |_md, req, sink| {
+                    sink.send(&req);
+                    sink.finish(Status::ok());
+                })
+                .unary("/t.S/Hang", move |_md, _req, sink| {
+                    held.lock().expect("lock").push(sink);
+                    let _ = arrived_tx.lock().expect("lock").send(());
+                }),
+        );
         let addr = es.local_addrs()[0];
         // The client's engine: one pool thread, which a plain HTTP request holds.
         let (started_tx, started) = mpsc::channel();
@@ -1552,19 +1562,17 @@ mod tests {
         started
             .recv_timeout(Duration::from_secs(5))
             .expect("pool held");
-        // The call's hop waits in the pool's queue.
-        let queued_before = ec.pool_stats().queued;
+        // The call needs no pool thread to start: it reaches the server while the pool is held.
         let (tx, rx) = mpsc::channel();
         let call = thread::spawn(move || {
-            let _ = tx.send(c.collect("/t.S/Echo", vec![b"y".to_vec()], CallOptions::default()));
+            let _ = tx.send(c.collect("/t.S/Hang", vec![b"y".to_vec()], CallOptions::default()));
         });
-        // (Where the client reaches its loop without the pool, nothing is queued: the call is
-        // sent, and ends with the connection instead.)
+        arrived
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the call reached the server with the client's pool held");
+        assert_eq!(ec.pool_stats().queued, 0, "nothing waits for the pool");
+        // The connection goes (the server stops) while the call is open.
         let t = Instant::now();
-        while ec.pool_stats().queued == queued_before && t.elapsed() < Duration::from_secs(1) {
-            thread::sleep(Duration::from_millis(2));
-        }
-        // The connection goes (the server stops), then the pool runs the hop, too late.
         es.shutdown();
         es.wait();
         while h2.is_open() {
