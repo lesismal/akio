@@ -126,17 +126,17 @@ pub fn akio_mux::proxy::ProxyHeader::parse(&[u8]) -> core::result::Result<(akio_
 pub fn akio_mux::proxy::ProxyHeader::proxy(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> akio_mux::proxy::ProxyHeader
 pub fn akio_mux::proxy::ProxyHeader::source(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn akio_mux::proxy::ProxyHeader::tlv(&self, u8) -> core::option::Option<&[u8]>
+pub fn akio_mux::proxy::ProxyHeader::wire_len(&self) -> core::option::Option<usize>
 pub fn akio_mux::proxy::ProxyHeader::with_tlv(self, u8, impl core::convert::Into<alloc::vec::Vec<u8>>) -> akio_mux::proxy::ProxyHeader
 impl core::clone::Clone for akio_mux::proxy::ProxyHeader
 pub fn akio_mux::proxy::ProxyHeader::clone(&self) -> Self
 impl core::cmp::Eq for akio_mux::proxy::ProxyHeader
 impl core::cmp::PartialEq for akio_mux::proxy::ProxyHeader
-pub fn akio_mux::proxy::ProxyHeader::eq(&self, &Self) -> bool
+pub fn akio_mux::proxy::ProxyHeader::eq(&self, &akio_mux::proxy::ProxyHeader) -> bool
 impl core::fmt::Debug for akio_mux::proxy::ProxyHeader
 pub fn akio_mux::proxy::ProxyHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::hash::Hash for akio_mux::proxy::ProxyHeader
-pub fn akio_mux::proxy::ProxyHeader::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl core::marker::StructuralPartialEq for akio_mux::proxy::ProxyHeader
+pub fn akio_mux::proxy::ProxyHeader::hash<S: core::hash::Hasher>(&self, &mut S)
 impl core::marker::Send for akio_mux::proxy::ProxyHeader
 impl core::marker::Sync for akio_mux::proxy::ProxyHeader
 impl core::marker::Unpin for akio_mux::proxy::ProxyHeader

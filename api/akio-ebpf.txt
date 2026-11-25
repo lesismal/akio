@@ -2,7 +2,10 @@ pub mod akio_ebpf
 pub mod akio_ebpf::relay
 #[non_exhaustive] pub struct akio_ebpf::relay::ByteCounts
 pub akio_ebpf::relay::ByteCounts::received: u64
+pub akio_ebpf::relay::ByteCounts::unread: u64
 pub akio_ebpf::relay::ByteCounts::written: u64
+impl akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::consumed(&self) -> u64
 impl core::clone::Clone for akio_ebpf::relay::ByteCounts
 pub fn akio_ebpf::relay::ByteCounts::clone(&self) -> Self
 impl core::cmp::Eq for akio_ebpf::relay::ByteCounts
@@ -25,8 +28,12 @@ pub fn akio_ebpf::relay::Relay::new(u32) -> core::io::error::Result<akio_ebpf::r
 pub fn akio_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<akio_ebpf::relay::Relay>
 pub fn akio_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<akio_ebpf::relay::Splice>
 pub fn akio_ebpf::relay::Relay::splice_conns<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_conns_with<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>, &[u8]) -> core::result::Result<akio_ebpf::relay::Splice, akio_ebpf::relay::SpliceError>
 pub fn akio_ebpf::relay::Relay::splice_inner(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_inner_first(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner, &[u8]) -> core::result::Result<akio_ebpf::relay::Splice, akio_ebpf::relay::SpliceError>
 pub fn akio_ebpf::relay::Relay::splice_inner_with(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner, impl core::ops::function::FnOnce() -> core::io::error::Result<()>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::tunnel<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>, &[u8]) -> core::result::Result<akio_ebpf::Tunnel, akio_ebpf::relay::SpliceError>
+pub fn akio_ebpf::relay::Relay::tunnel_inner(&self, &alloc::rcs::arc::Arc<akio_core::conn::ConnInner>, &alloc::rcs::arc::Arc<akio_core::conn::ConnInner>, &[u8]) -> core::result::Result<akio_ebpf::Tunnel, akio_ebpf::relay::SpliceError>
 impl core::clone::Clone for akio_ebpf::relay::Relay
 pub fn akio_ebpf::relay::Relay::clone(&self) -> Self
 impl core::fmt::Debug for akio_ebpf::relay::Relay
@@ -38,6 +45,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Relay
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Relay
 pub struct akio_ebpf::relay::Splice
 impl akio_ebpf::relay::Splice
+pub fn akio_ebpf::relay::Splice::base(&self) -> core::option::Option<[akio_ebpf::relay::ByteCounts; 2]>
 pub fn akio_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
 pub fn akio_ebpf::relay::Splice::unsplice(self) -> core::io::error::Result<()>
 impl core::fmt::Debug for akio_ebpf::relay::Splice
@@ -47,9 +55,29 @@ impl core::marker::Sync for akio_ebpf::relay::Splice
 impl core::marker::Unpin for akio_ebpf::relay::Splice
 impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Splice
+#[non_exhaustive] pub struct akio_ebpf::relay::SpliceError
+pub akio_ebpf::relay::SpliceError::error: core::io::error::Error
+pub akio_ebpf::relay::SpliceError::written: usize
+impl akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::kind(&self) -> core::io::error::ErrorKind
+impl core::convert::From<akio_ebpf::relay::SpliceError> for core::io::error::Error
+pub fn core::io::error::Error::from(akio_ebpf::relay::SpliceError) -> core::io::error::Error
+impl core::error::Error for akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::relay::SpliceError
+impl core::marker::Sync for akio_ebpf::relay::SpliceError
+impl core::marker::Unpin for akio_ebpf::relay::SpliceError
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::SpliceError
+impl !core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::SpliceError
 pub const akio_ebpf::relay::DEFAULT_PAIRS: u32
 pub const akio_ebpf::relay::MIN_KERNEL: (u32, u32)
 pub fn akio_ebpf::relay::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
+pub fn akio_ebpf::relay::conn_byte_counts<H>(&akio_core::conn::Conn<H>) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
+pub fn akio_ebpf::relay::inner_byte_counts(&akio_core::conn::ConnInner) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
 pub mod akio_ebpf::xdp
 #[non_exhaustive] pub enum akio_ebpf::xdp::Attachment
 pub akio_ebpf::xdp::Attachment::Link
@@ -220,6 +248,25 @@ impl core::marker::Sync for akio_ebpf::Tier
 impl core::marker::Unpin for akio_ebpf::Tier
 impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::Tier
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::Tier
+pub enum akio_ebpf::TunnelSide
+pub akio_ebpf::TunnelSide::A
+pub akio_ebpf::TunnelSide::B
+impl core::clone::Clone for akio_ebpf::TunnelSide
+pub fn akio_ebpf::TunnelSide::clone(&self) -> Self
+impl core::cmp::Eq for akio_ebpf::TunnelSide
+impl core::cmp::PartialEq for akio_ebpf::TunnelSide
+pub fn akio_ebpf::TunnelSide::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_ebpf::TunnelSide
+pub fn akio_ebpf::TunnelSide::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_ebpf::TunnelSide
+pub fn akio_ebpf::TunnelSide::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_ebpf::TunnelSide
+impl core::marker::StructuralPartialEq for akio_ebpf::TunnelSide
+impl core::marker::Send for akio_ebpf::TunnelSide
+impl core::marker::Sync for akio_ebpf::TunnelSide
+impl core::marker::Unpin for akio_ebpf::TunnelSide
+impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::TunnelSide
+impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::TunnelSide
 #[non_exhaustive] pub struct akio_ebpf::AttachOptions
 pub akio_ebpf::AttachOptions::ebpf: bool
 impl core::clone::Clone for akio_ebpf::AttachOptions
@@ -236,7 +283,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::AttachOptions
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::AttachOptions
 #[non_exhaustive] pub struct akio_ebpf::ByteCounts
 pub akio_ebpf::ByteCounts::received: u64
+pub akio_ebpf::ByteCounts::unread: u64
 pub akio_ebpf::ByteCounts::written: u64
+impl akio_ebpf::relay::ByteCounts
+pub fn akio_ebpf::relay::ByteCounts::consumed(&self) -> u64
 impl core::clone::Clone for akio_ebpf::relay::ByteCounts
 pub fn akio_ebpf::relay::ByteCounts::clone(&self) -> Self
 impl core::cmp::Eq for akio_ebpf::relay::ByteCounts
@@ -300,8 +350,12 @@ pub fn akio_ebpf::relay::Relay::new(u32) -> core::io::error::Result<akio_ebpf::r
 pub fn akio_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<akio_ebpf::relay::Relay>
 pub fn akio_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<akio_ebpf::relay::Splice>
 pub fn akio_ebpf::relay::Relay::splice_conns<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_conns_with<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>, &[u8]) -> core::result::Result<akio_ebpf::relay::Splice, akio_ebpf::relay::SpliceError>
 pub fn akio_ebpf::relay::Relay::splice_inner(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::splice_inner_first(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner, &[u8]) -> core::result::Result<akio_ebpf::relay::Splice, akio_ebpf::relay::SpliceError>
 pub fn akio_ebpf::relay::Relay::splice_inner_with(&self, &akio_core::conn::ConnInner, &akio_core::conn::ConnInner, impl core::ops::function::FnOnce() -> core::io::error::Result<()>) -> core::io::error::Result<akio_ebpf::relay::Splice>
+pub fn akio_ebpf::relay::Relay::tunnel<A, B>(&self, &akio_core::conn::Conn<A>, &akio_core::conn::Conn<B>, &[u8]) -> core::result::Result<akio_ebpf::Tunnel, akio_ebpf::relay::SpliceError>
+pub fn akio_ebpf::relay::Relay::tunnel_inner(&self, &alloc::rcs::arc::Arc<akio_core::conn::ConnInner>, &alloc::rcs::arc::Arc<akio_core::conn::ConnInner>, &[u8]) -> core::result::Result<akio_ebpf::Tunnel, akio_ebpf::relay::SpliceError>
 impl core::clone::Clone for akio_ebpf::relay::Relay
 pub fn akio_ebpf::relay::Relay::clone(&self) -> Self
 impl core::fmt::Debug for akio_ebpf::relay::Relay
@@ -333,6 +387,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::SharedSteering
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::SharedSteering
 pub struct akio_ebpf::Splice
 impl akio_ebpf::relay::Splice
+pub fn akio_ebpf::relay::Splice::base(&self) -> core::option::Option<[akio_ebpf::relay::ByteCounts; 2]>
 pub fn akio_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
 pub fn akio_ebpf::relay::Splice::unsplice(self) -> core::io::error::Result<()>
 impl core::fmt::Debug for akio_ebpf::relay::Splice
@@ -342,6 +397,24 @@ impl core::marker::Sync for akio_ebpf::relay::Splice
 impl core::marker::Unpin for akio_ebpf::relay::Splice
 impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::Splice
+#[non_exhaustive] pub struct akio_ebpf::SpliceError
+pub akio_ebpf::SpliceError::error: core::io::error::Error
+pub akio_ebpf::SpliceError::written: usize
+impl akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::kind(&self) -> core::io::error::ErrorKind
+impl core::convert::From<akio_ebpf::relay::SpliceError> for core::io::error::Error
+pub fn core::io::error::Error::from(akio_ebpf::relay::SpliceError) -> core::io::error::Error
+impl core::error::Error for akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for akio_ebpf::relay::SpliceError
+pub fn akio_ebpf::relay::SpliceError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::relay::SpliceError
+impl core::marker::Sync for akio_ebpf::relay::SpliceError
+impl core::marker::Unpin for akio_ebpf::relay::SpliceError
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::relay::SpliceError
+impl !core::panic::unwind_safe::UnwindSafe for akio_ebpf::relay::SpliceError
 #[non_exhaustive] pub struct akio_ebpf::SteerInfo
 pub akio_ebpf::SteerInfo::ebpf_unavailable: core::option::Option<alloc::string::String>
 pub akio_ebpf::SteerInfo::migrate: bool
@@ -365,6 +438,24 @@ impl core::marker::Sync for akio_ebpf::SteerInfo
 impl core::marker::Unpin for akio_ebpf::SteerInfo
 impl core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::SteerInfo
 impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::SteerInfo
+pub struct akio_ebpf::Tunnel
+impl akio_ebpf::Tunnel
+pub fn akio_ebpf::Tunnel::activity(&self) -> u64
+pub fn akio_ebpf::Tunnel::base(&self) -> [akio_ebpf::relay::ByteCounts; 2]
+pub fn akio_ebpf::Tunnel::close_after_forward(&self, akio_ebpf::TunnelSide, core::time::Duration)
+pub fn akio_ebpf::Tunnel::counts(&self, akio_ebpf::TunnelSide) -> core::option::Option<akio_ebpf::relay::ByteCounts>
+pub fn akio_ebpf::Tunnel::late_payload(&self)
+pub fn akio_ebpf::Tunnel::moved(&self) -> bool
+pub fn akio_ebpf::Tunnel::relayed_from(&self, akio_ebpf::TunnelSide) -> core::option::Option<u64>
+pub fn akio_ebpf::Tunnel::splice(&self) -> &akio_ebpf::relay::Splice
+pub fn akio_ebpf::Tunnel::unsplice(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for akio_ebpf::Tunnel
+pub fn akio_ebpf::Tunnel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_ebpf::Tunnel
+impl core::marker::Sync for akio_ebpf::Tunnel
+impl core::marker::Unpin for akio_ebpf::Tunnel
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_ebpf::Tunnel
+impl !core::panic::unwind_safe::UnwindSafe for akio_ebpf::Tunnel
 #[non_exhaustive] pub struct akio_ebpf::XdpLimit
 pub akio_ebpf::XdpLimit::burst: u32
 pub akio_ebpf::XdpLimit::count: akio_ebpf::xdp::Count
@@ -385,5 +476,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_ebpf::xdp::XdpLimit
 pub const akio_ebpf::MAX_SHARED_SOCKETS: usize
 pub fn akio_ebpf::attach_reuseport(&[i32], akio_ebpf::Steering, akio_ebpf::AttachOptions) -> core::io::error::Result<akio_ebpf::SteerInfo>
 pub fn akio_ebpf::byte_counts(&std::net::tcp::TcpStream) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
+pub fn akio_ebpf::conn_byte_counts<H>(&akio_core::conn::Conn<H>) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
 pub fn akio_ebpf::cpu_pinning(usize) -> core::io::error::Result<alloc::vec::Vec<alloc::vec::Vec<usize>>>
+pub fn akio_ebpf::inner_byte_counts(&akio_core::conn::ConnInner) -> core::io::error::Result<akio_ebpf::relay::ByteCounts>
 pub fn akio_ebpf::probe() -> akio_ebpf::Probe

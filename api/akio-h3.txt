@@ -169,4 +169,5 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_h3::H3WsOptions
 impl core::panic::unwind_safe::UnwindSafe for akio_h3::H3WsOptions
 pub fn akio_h3::serve<S: akio_http::context::Service>(akio_quic::types::ServerConfig, S) -> akio_quic::QuicServer
 pub fn akio_h3::serve_with<S: akio_http::context::Service>(akio_quic::types::ServerConfig, akio_h3::H3Config, S) -> akio_quic::QuicServer
+pub fn akio_h3::serve_with_observer<S: akio_http::context::Service>(akio_quic::types::ServerConfig, akio_h3::H3Config, S, alloc::rcs::arc::Arc<dyn akio_http::observer::ResponseObserver>) -> akio_quic::QuicServer
 pub fn akio_h3::server_config(alloc::vec::Vec<akio_tls::config::Certificate>, akio_tls::config::PrivateKey) -> core::result::Result<akio_quic::types::ServerConfig, akio_quic::Error>

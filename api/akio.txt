@@ -8,18 +8,22 @@ pub use akio::DatagramSender
 pub use akio::Datagrams
 pub use akio::DatagramsHandler
 pub use akio::DatagramsIter
+pub use akio::DialOptions
 pub use akio::Error
 pub use akio::FnAcceptor
 pub use akio::Handler
 pub use akio::IcmpError
+pub use akio::Job
 pub use akio::Live
 pub use akio::LoopCounters
 pub use akio::LoopMeta
 pub use akio::LoopMetrics
 pub use akio::Metrics
 pub use akio::Part
+pub use akio::Pool
 pub use akio::PoolConfig
 pub use akio::PoolStats
+pub use akio::Rejected
 pub use akio::ReloadReport
 pub use akio::Replies
 pub use akio::ResponseSlot
@@ -353,6 +357,7 @@ pub fn akio::Engine::dial_from<A: akio_core::handler::Acceptor>(&self, core::net
 pub fn akio::Engine::dial_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_udp_from<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::dial_unix<A: akio_core::handler::Acceptor>(&self, &std::path::Path, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn akio::Engine::dial_with<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, akio_core::dial::DialOptions, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::listeners(&self) -> alloc::vec::Vec<akio::ListenerInfo>
 pub fn akio::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn akio::Engine::metrics(&self) -> akio_core::telemetry::Metrics

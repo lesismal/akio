@@ -679,9 +679,9 @@ impl<H: akio_crypto::hash::Hash> core::fmt::Debug for akio_crypto::mac::Hmac<H>
 pub fn akio_crypto::mac::Hmac<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<H: core::clone::Clone + akio_crypto::hash::Hash> core::clone::Clone for akio_crypto::mac::Hmac<H>
 pub fn akio_crypto::mac::Hmac<H>::clone(&self) -> Self
-impl<H> core::marker::Send for akio_crypto::mac::Hmac<H> where H: core::marker::Send
-impl<H> core::marker::Sync for akio_crypto::mac::Hmac<H> where H: core::marker::Sync
-impl<H> core::marker::Unpin for akio_crypto::mac::Hmac<H> where H: core::marker::Unpin
+impl<H> core::marker::Send for akio_crypto::mac::Hmac<H> where H: core::marker::Send + core::marker::Send
+impl<H> core::marker::Sync for akio_crypto::mac::Hmac<H> where H: core::marker::Sync + core::marker::Sync
+impl<H> core::marker::Unpin for akio_crypto::mac::Hmac<H> where H: core::marker::Unpin + core::marker::Unpin
 impl<H> core::panic::unwind_safe::RefUnwindSafe for akio_crypto::mac::Hmac<H> where H: core::panic::unwind_safe::RefUnwindSafe + core::panic::unwind_safe::RefUnwindSafe
 impl<H> core::panic::unwind_safe::UnwindSafe for akio_crypto::mac::Hmac<H> where H: core::panic::unwind_safe::UnwindSafe + core::panic::unwind_safe::UnwindSafe
 pub mod akio_crypto::p256

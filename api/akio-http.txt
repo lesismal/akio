@@ -639,6 +639,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_http::message::Headers
 #[non_exhaustive] pub struct akio_http::message::Request
 pub akio_http::message::Request::body: alloc::vec::Vec<u8>
 pub akio_http::message::Request::headers: akio_http::message::Headers
+pub akio_http::message::Request::local: core::net::socket_addr::SocketAddr
 pub akio_http::message::Request::method: akio_http::message::Method
 pub akio_http::message::Request::peer: core::net::socket_addr::SocketAddr
 pub akio_http::message::Request::peer_certificates: core::option::Option<alloc::rcs::arc::Arc<[alloc::vec::Vec<u8>]>>
@@ -919,6 +920,7 @@ pub fn akio_http::trace::connection_span(core::net::socket_addr::SocketAddr, &'s
 pub enum akio_http::BodyEvent<'a>
 pub akio_http::BodyEvent::Chunk(&'a [u8])
 pub akio_http::BodyEvent::End(&'a akio_http::message::Headers)
+pub akio_http::BodyEvent::TooLarge
 impl<'a> core::fmt::Debug for akio_http::BodyEvent<'a>
 pub fn akio_http::BodyEvent<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Send for akio_http::BodyEvent<'a>
@@ -1039,7 +1041,7 @@ impl core::marker::Sync for akio_http::BodyChunk
 impl core::marker::Unpin for akio_http::BodyChunk
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::BodyChunk
 impl core::panic::unwind_safe::UnwindSafe for akio_http::BodyChunk
-pub struct akio_http::BodyReads(_)
+pub struct akio_http::BodyReads
 impl akio_http::BodyReads
 pub fn akio_http::BodyReads::hold(&self, bool)
 impl core::clone::Clone for akio_http::BodyReads
@@ -1099,7 +1101,9 @@ pub fn akio_http::Context::bytes(&mut self, u16, &str, alloc::vec::Vec<u8>)
 pub fn akio_http::Context::detach(&mut self) -> core::option::Option<akio_http::Detached>
 pub fn akio_http::Context::header(&self, &str) -> core::option::Option<&str>
 pub fn akio_http::Context::hold_response_head(&mut self, core::time::Duration, impl core::ops::function::FnOnce(akio_http::HeldHead, &akio_http::message::Request) + core::marker::Send + 'static)
+pub fn akio_http::Context::limit_body(&mut self, u64) -> bool
 pub fn akio_http::Context::local(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::Context::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_http::Context::method(&self) -> &akio_http::message::Method
 pub fn akio_http::Context::on_body(&mut self, impl core::ops::function::FnMut(&mut akio_http::Context, akio_http::BodyEvent<'_>) + core::marker::Send + 'static)
 pub fn akio_http::Context::on_end(&mut self, impl core::ops::function::FnOnce(akio_http::End) + core::marker::Send + 'static) -> bool
@@ -1115,6 +1119,7 @@ pub fn akio_http::Context::respond(&mut self, akio_http::message::Response)
 pub fn akio_http::Context::responded(&self) -> bool
 pub fn akio_http::Context::route(&self) -> core::option::Option<&'static akio_http::RouteInfo>
 pub fn akio_http::Context::set_local(&mut self, &str, impl core::convert::Into<alloc::string::String>)
+pub fn akio_http::Context::set_observed(&mut self, [u64; 2]) -> bool
 pub fn akio_http::Context::set_response_time_header(&mut self, &str)
 pub fn akio_http::Context::span_context(&self) -> core::option::Option<akio_log::span::SpanContext>
 pub fn akio_http::Context::status(&self) -> core::option::Option<u16>
@@ -1264,6 +1269,8 @@ impl core::marker::Unpin for akio_http::HeldHead
 impl core::panic::unwind_safe::RefUnwindSafe for akio_http::HeldHead
 impl core::panic::unwind_safe::UnwindSafe for akio_http::HeldHead
 pub struct akio_http::HttpAcceptor<S>
+impl<S> akio_http::HttpAcceptor<S>
+pub fn akio_http::HttpAcceptor<S>::observer(self, alloc::rcs::arc::Arc<dyn akio_http::ResponseObserver>) -> Self
 impl<S: akio_http::Service> akio_core::handler::Acceptor for akio_http::HttpAcceptor<S>
 pub type akio_http::HttpAcceptor<S>::Handler = akio_http::Session<S>
 pub fn akio_http::HttpAcceptor<S>::on_open(&self, &akio_core::conn::Conn<akio_http::Session<S>>) -> akio_http::Session<S>
@@ -1273,12 +1280,13 @@ pub fn akio_http::HttpAcceptor<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> 
 impl<S> core::marker::Send for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Send
 impl<S> core::marker::Sync for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Sync
 impl<S> core::marker::Unpin for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin
-impl<S> core::panic::unwind_safe::RefUnwindSafe for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::RefUnwindSafe
-impl<S> core::panic::unwind_safe::UnwindSafe for akio_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::UnwindSafe
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_http::HttpAcceptor<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for akio_http::HttpAcceptor<S>
 #[non_exhaustive] pub struct akio_http::HttpConfig
 pub akio_http::HttpConfig::body_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::h2: core::option::Option<akio_http::H2Config>
 pub akio_http::HttpConfig::head_timeout: core::option::Option<core::time::Duration>
+pub akio_http::HttpConfig::idle_drain_grace: core::time::Duration
 pub akio_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::max_body_bytes: usize
 pub akio_http::HttpConfig::max_header_bytes: usize
@@ -1297,6 +1305,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_http::HttpConfig
 #[non_exhaustive] pub struct akio_http::Request
 pub akio_http::Request::body: alloc::vec::Vec<u8>
 pub akio_http::Request::headers: akio_http::message::Headers
+pub akio_http::Request::local: core::net::socket_addr::SocketAddr
 pub akio_http::Request::method: akio_http::message::Method
 pub akio_http::Request::peer: core::net::socket_addr::SocketAddr
 pub akio_http::Request::peer_certificates: core::option::Option<alloc::rcs::arc::Arc<[alloc::vec::Vec<u8>]>>
@@ -1409,9 +1418,9 @@ impl<S> core::fmt::Debug for akio_http::Session<S>
 pub fn akio_http::Session<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::ops::drop::Drop for akio_http::Session<S>
 pub fn akio_http::Session<S>::drop(&mut self)
-impl<S> core::marker::Send for akio_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<alloc::rcs::arc::Arc<Watch<akio_http::Session<S>>>>: core::marker::Send, core::option::Option<H2Session<S>>: core::marker::Send
+impl<S> core::marker::Send for akio_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<alloc::rcs::arc::Arc<Watch<akio_http::Session<S>>>>: core::marker::Send, core::option::Option<alloc::boxed::Box<H2Session<S>>>: core::marker::Send
 impl<S> !core::marker::Sync for akio_http::Session<S>
-impl<S> core::marker::Unpin for akio_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<alloc::rcs::arc::Arc<Watch<akio_http::Session<S>>>>: core::marker::Unpin, core::option::Option<H2Session<S>>: core::marker::Unpin
+impl<S> core::marker::Unpin for akio_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<alloc::rcs::arc::Arc<Watch<akio_http::Session<S>>>>: core::marker::Unpin, core::option::Option<alloc::boxed::Box<H2Session<S>>>: core::marker::Unpin
 impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_http::Session<S>
 impl<S> !core::panic::unwind_safe::UnwindSafe for akio_http::Session<S>
 pub struct akio_http::Streaming<S>(pub S)
@@ -1464,6 +1473,8 @@ pub trait akio_http::Middleware: core::marker::Send + core::marker::Sync + 'stat
 pub fn akio_http::Middleware::handle(&self, &mut akio_http::Context, &dyn akio_http::Service)
 impl<F> akio_http::Middleware for F where F: core::ops::function::Fn(&mut akio_http::Context, &dyn akio_http::Service) + core::marker::Send + core::marker::Sync + 'static
 pub fn F::handle(&self, &mut akio_http::Context, &dyn akio_http::Service)
+pub trait akio_http::ResponseObserver: core::marker::Send + core::marker::Sync + 'static
+pub fn akio_http::ResponseObserver::on_response(&self, &akio_http::message::Response, &akio_http::message::Request, [u64; 2], std::time::Instant)
 pub trait akio_http::Service: core::marker::Send + core::marker::Sync + 'static
 pub fn akio_http::Service::body_mode(&self, &akio_http::message::Request) -> akio_http::BodyMode
 pub fn akio_http::Service::call(&self, &mut akio_http::Context)

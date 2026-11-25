@@ -1,7 +1,9 @@
 pub mod akio_core
 pub use akio_core::Job
+pub use akio_core::Pool
 pub use akio_core::PoolConfig
 pub use akio_core::PoolStats
+pub use akio_core::Rejected
 pub use akio_core::SharedBuf
 pub mod akio_core::metrics
 #[non_exhaustive] pub enum akio_core::metrics::Kind
@@ -422,6 +424,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMetri
 impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMetrics
 #[non_exhaustive] pub struct akio_core::telemetry::Metrics
 pub akio_core::telemetry::Metrics::loops: alloc::vec::Vec<akio_core::telemetry::LoopMetrics>
+pub akio_core::telemetry::Metrics::open_accepted: usize
 pub akio_core::telemetry::Metrics::open_connections: usize
 pub akio_core::telemetry::Metrics::pool: core::option::Option<akio_pool::PoolStats>
 pub akio_core::telemetry::Metrics::total: akio_core::telemetry::LoopCounters
@@ -483,6 +486,7 @@ pub fn akio_core::telemetry::Telemetry::live(&self) -> &akio_core::telemetry::Li
 pub fn akio_core::telemetry::Telemetry::metrics(&self) -> akio_core::telemetry::Metrics
 pub fn akio_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
 pub fn akio_core::telemetry::Telemetry::notify_reload(&self)
+pub fn akio_core::telemetry::Telemetry::open_accepted(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::open_connections(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>, &[(&str, &str)]) -> akio_core::metrics::CollectorId
 pub fn akio_core::telemetry::Telemetry::reload(&self, &akio_core::Config) -> akio_core::telemetry::ReloadReport
@@ -503,6 +507,23 @@ pub const akio_core::telemetry::SLOW_RING: usize
 pub fn akio_core::telemetry::connections_json(&[akio_core::telemetry::ConnInfo]) -> alloc::string::String
 pub fn akio_core::telemetry::slow_callbacks_json(&[akio_core::telemetry::SlowRecord]) -> alloc::string::String
 pub mod akio_core::timer
+pub struct akio_core::timer::SendTimer
+impl akio_core::timer::SendTimer
+pub fn akio_core::timer::SendTimer::cancel(self) -> bool
+impl core::clone::Clone for akio_core::timer::SendTimer
+pub fn akio_core::timer::SendTimer::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::timer::SendTimer
+impl core::cmp::PartialEq for akio_core::timer::SendTimer
+pub fn akio_core::timer::SendTimer::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::timer::SendTimer
+pub fn akio_core::timer::SendTimer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::timer::SendTimer
+impl core::marker::StructuralPartialEq for akio_core::timer::SendTimer
+impl core::marker::Send for akio_core::timer::SendTimer
+impl core::marker::Sync for akio_core::timer::SendTimer
+impl core::marker::Unpin for akio_core::timer::SendTimer
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::timer::SendTimer
+impl core::panic::unwind_safe::UnwindSafe for akio_core::timer::SendTimer
 pub struct akio_core::timer::Timer
 impl akio_core::timer::Timer
 pub fn akio_core::timer::Timer::cancel(self) -> bool
@@ -521,8 +542,10 @@ impl core::marker::Unpin for akio_core::timer::Timer
 impl core::panic::unwind_safe::RefUnwindSafe for akio_core::timer::Timer
 impl core::panic::unwind_safe::UnwindSafe for akio_core::timer::Timer
 pub const akio_core::timer::MAX_DELAY: core::time::Duration
+pub const akio_core::timer::MAX_SEND_TIMERS: usize
 pub const akio_core::timer::MAX_TIMERS_PER_LOOP: usize
 pub fn akio_core::timer::after(core::time::Duration, impl core::ops::function::FnOnce() + 'static) -> akio_core::Result<akio_core::timer::Timer>
+pub fn akio_core::timer::after_send(core::time::Duration, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> akio_core::Result<akio_core::timer::SendTimer>
 pub fn akio_core::timer::on_loop() -> bool
 #[non_exhaustive] pub enum akio_core::Error
 pub akio_core::Error::Closed
@@ -620,6 +643,8 @@ pub fn akio_core::Conn<H>::send(&self, &[u8]) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::send_owned(&self, alloc::vec::Vec<u8>) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::send_segments(&self, alloc::vec::Vec<u8>, usize) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::send_shared(&self, akio_buf::SharedBuf) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::set_idle_counts_writes(&self, bool) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::set_idle_timeout(&self, core::option::Option<core::time::Duration>) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::set_relayed(&self, bool)
 pub fn akio_core::Conn<H>::shutdown_write_after_send(&self)
 pub fn akio_core::Conn<H>::with_transport<R>(&self, impl core::ops::function::FnOnce(&mut dyn akio_core::Transport) -> R) -> core::option::Option<R>
@@ -703,6 +728,27 @@ impl<'a> !core::marker::Sync for akio_core::DatagramsIter<'a>
 impl<'a> core::marker::Unpin for akio_core::DatagramsIter<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for akio_core::DatagramsIter<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for akio_core::DatagramsIter<'a>
+#[non_exhaustive] pub struct akio_core::DialOptions
+pub akio_core::DialOptions::connect_timeout: core::option::Option<core::time::Duration>
+impl akio_core::DialOptions
+pub const fn akio_core::DialOptions::connect_timeout(self, core::time::Duration) -> akio_core::DialOptions
+pub const fn akio_core::DialOptions::new() -> akio_core::DialOptions
+impl core::clone::Clone for akio_core::DialOptions
+pub fn akio_core::DialOptions::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::DialOptions
+impl core::cmp::PartialEq for akio_core::DialOptions
+pub fn akio_core::DialOptions::eq(&self, &Self) -> bool
+impl core::default::Default for akio_core::DialOptions
+pub fn akio_core::DialOptions::default() -> Self
+impl core::fmt::Debug for akio_core::DialOptions
+pub fn akio_core::DialOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio_core::DialOptions
+impl core::marker::StructuralPartialEq for akio_core::DialOptions
+impl core::marker::Send for akio_core::DialOptions
+impl core::marker::Sync for akio_core::DialOptions
+impl core::marker::Unpin for akio_core::DialOptions
+impl core::panic::unwind_safe::RefUnwindSafe for akio_core::DialOptions
+impl core::panic::unwind_safe::UnwindSafe for akio_core::DialOptions
 pub struct akio_core::FnAcceptor<H, F>
 impl<H, F> akio_core::Acceptor for akio_core::FnAcceptor<H, F> where H: akio_core::Handler, F: core::ops::function::Fn(&akio_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
 pub type akio_core::FnAcceptor<H, F>::Handler = H
@@ -853,6 +899,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMetri
 impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMetrics
 #[non_exhaustive] pub struct akio_core::Metrics
 pub akio_core::Metrics::loops: alloc::vec::Vec<akio_core::telemetry::LoopMetrics>
+pub akio_core::Metrics::open_accepted: usize
 pub akio_core::Metrics::open_connections: usize
 pub akio_core::Metrics::pool: core::option::Option<akio_pool::PoolStats>
 pub akio_core::Metrics::total: akio_core::telemetry::LoopCounters
@@ -1001,6 +1048,7 @@ pub fn akio_core::telemetry::Telemetry::live(&self) -> &akio_core::telemetry::Li
 pub fn akio_core::telemetry::Telemetry::metrics(&self) -> akio_core::telemetry::Metrics
 pub fn akio_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
 pub fn akio_core::telemetry::Telemetry::notify_reload(&self)
+pub fn akio_core::telemetry::Telemetry::open_accepted(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::open_connections(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>, &[(&str, &str)]) -> akio_core::metrics::CollectorId
 pub fn akio_core::telemetry::Telemetry::reload(&self, &akio_core::Config) -> akio_core::telemetry::ReloadReport
@@ -1041,6 +1089,7 @@ pub fn akio_core::UdpBinding::send_to_on(&self, &[u8], core::net::socket_addr::S
 pub fn akio_core::UdpBinding::set_dont_fragment(&self, bool) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_recv_interface(&self, bool) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_unicast_hops(&self, u32) -> core::io::error::Result<()>
+pub fn akio_core::UdpBinding::shutdown(&self, core::time::Duration)
 impl core::clone::Clone for akio_core::UdpBinding
 pub fn akio_core::UdpBinding::clone(&self) -> Self
 impl core::fmt::Debug for akio_core::UdpBinding

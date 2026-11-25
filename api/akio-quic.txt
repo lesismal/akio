@@ -222,6 +222,7 @@ pub fn akio_quic::Connection::finish(&self, akio_quic::StreamId) -> core::result
 pub fn akio_quic::Connection::hold_reads(&self, akio_quic::StreamId, bool) -> core::result::Result<(), akio_quic::Error>
 pub fn akio_quic::Connection::is_closed(&self) -> bool
 pub fn akio_quic::Connection::is_early(&self, akio_quic::StreamId) -> bool
+pub fn akio_quic::Connection::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_quic::Connection::migrate(&self, &akio::Engine) -> core::result::Result<(), akio_quic::Error>
 pub fn akio_quic::Connection::open_bi(&self) -> core::option::Option<akio_quic::StreamId>
 pub fn akio_quic::Connection::open_uni(&self) -> core::option::Option<akio_quic::StreamId>
@@ -287,6 +288,7 @@ pub fn akio_quic::QuicServer::refused_connections(&self) -> u64
 impl akio_core::handler::Acceptor for akio_quic::QuicServer
 pub type akio_quic::QuicServer::Handler = Udp
 pub fn akio_quic::QuicServer::on_open(&self, &akio_core::conn::Conn<Udp>) -> Udp
+pub fn akio_quic::QuicServer::on_shutdown(&self, &akio_core::conn::Conn<Udp>)
 impl akio_core::metrics::Collector for akio_quic::QuicServer
 pub fn akio_quic::QuicServer::collect(&self, &mut akio_core::metrics::Families)
 impl core::clone::Clone for akio_quic::QuicServer
@@ -403,6 +405,7 @@ pub trait akio_quic::QuicHandler: core::marker::Send + 'static
 pub fn akio_quic::QuicHandler::on_close(&mut self, &akio_quic::Connection, akio_quic::ConnectionError)
 pub fn akio_quic::QuicHandler::on_connected(&mut self, &akio_quic::Connection)
 pub fn akio_quic::QuicHandler::on_datagram(&mut self, &akio_quic::Connection, akio_quic::Bytes)
+pub fn akio_quic::QuicHandler::on_shutdown(&mut self, &akio_quic::Connection)
 pub fn akio_quic::QuicHandler::on_stream_data(&mut self, &akio_quic::Connection, akio_quic::StreamId, akio_quic::Bytes, bool)
 pub fn akio_quic::QuicHandler::on_stream_opened(&mut self, &akio_quic::Connection, akio_quic::StreamId)
 pub fn akio_quic::QuicHandler::on_stream_reset(&mut self, &akio_quic::Connection, akio_quic::StreamId, u64)
