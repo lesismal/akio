@@ -58,7 +58,7 @@ is a one-time step for a maintainer.
 ## Running the examples
 
 ```console
-$ book/check-guides.sh             # every guide-* example plus echo, udp-echo, hello, prefork-http
+$ book/check-guides.sh             # every guide-* example plus echo, udp-echo, hello
 $ book/check-guides.sh guide-h3    # one of them
 $ AKIO_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux, ADR-029)
 ```

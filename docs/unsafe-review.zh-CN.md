@@ -10,7 +10,7 @@ akio 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 
 | Crate | 状态 | 原因 |
 |---|---|---|
-| `akio-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿，也是工作区自有的操作系统绑定（`ffi`：C 类型、常量、`#[repr(C)]` 结构体、`extern "C"` 声明；不再使用 `libc` crate）：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`）、TUN 设备与接口 ioctl（ADR-096） |
+| `akio-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿，也是工作区自有的操作系统绑定（`ffi`：C 类型、常量、`#[repr(C)]` 结构体、`extern "C"` 声明；不再使用 `libc` crate）：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、CPU 亲和性与信号（`sched_setaffinity`、`sigaction`）、内核 CSPRNG（`getrandom` / `getentropy`）、TUN 设备与接口 ioctl（ADR-096） |
 | `akio-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许（以及仅测试用的 `eval` 测量工具） | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `akio-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 与 `xsk` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya）；AF_XDP socket、其 UMEM 与环（`xsk`，ADR-063） |
 | `akio-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `akio_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
@@ -84,11 +84,11 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | akio-dpdk | 32 | 0 | 1 | 1 |
 | akio-ebpf | 50 | 4 | 3 | 2 |
 | akio-http | 0 | 0 | 0 | 8 |
-| akio-sys | 169 | 5 | 3 | 0 |
+| akio-sys | 163 | 5 | 3 | 0 |
 | akio-uring | 43 | 5 | 2 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **459** | **87** | **11** | **40** |
+| **total** | **453** | **87** | **11** | **40** |
 
 按用途：
 
@@ -98,7 +98,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | `akio-sys/src/net.rs` | 28 | `socket`/`bind`/`listen`/`connect`（含为 TCP 同时打开而从已绑定的共享端口发起的 connect，ADR-044，以及 Unix 域 connect，ADR-120）、`setsockopt`、`sendfile`、`SocketAddr` <-> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用）、读回“不分片”设置（`getsockopt`） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `akio-sys/src/iface.rs` | 11 + `unsafe fn read_addr`、`copy` | 接口列表（`getifaddrs` / `if_nametoindex` / `freeifaddrs`；akio-tls 的网卡卸载检测也经由它）与从指定接口发出一个数据报（带 `IP_PKTINFO` / `IPV6_PKTINFO` 控制消息的 `sendmsg`），Linux 与 macOS | 链表只在 `getifaddrs` 与 `freeifaddrs` 之间遍历（只释放一次），名字在释放前复制出来；套接字地址按地址族（在 `sin_family` 的偏移处读取，macOS 上是一个字节）逐字节复制进清零的 `sockaddr_in` / `sockaddr_in6`，从不就地引用，macOS 上最多复制 `sa_len` 字节（子网掩码会被截短）；控制消息是 `#[repr(C)]` 的 `cmsghdr` + `in_pktinfo` / `in6_pktinfo`，其 `CMSG_LEN` / `CMSG_SPACE` 在测试中与 `libc` 对照，构造时不用 `unsafe`，`msghdr` 只指向存活的局部变量 |
 | `akio-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
-| `akio-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
+| `akio-sys/src/process.rs` | 7 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 处理器只调用 `write`（异步信号安全），并保存和恢复 `errno` |
 | `akio-sys/src/fswatch.rs` | 12（Linux 7 个，macOS 5 个） | 供 akio-http 静态文件缓存使用的变更通知：`inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`、对 inotify fd 与 eventfd 的 `ppoll`、读取事件（Linux）；`kqueue`、`fcntl`、带 `EVFILT_VNODE` / `EVFILT_USER` 的 `kevent` 注册与等待（macOS） | fd 立即被拥有；路径是以 NUL 结尾的 `CString`；读取不越过缓冲区，记录按字节解析；kevent 的 `udata` 是监视 id，从不解引用；`O_EVTONLY` 描述符由 `std` 打开并归监视器所有 |
 | `akio-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `akio-sys/src/ktls.rs` | 12 | 内核 TLS（akio-tls 的 `ktls`，ADR-067）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥；网卡 TLS 卸载检测：`SIOCETHTOOL` ioctl（`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`）用的 `socket`/`ioctl`/`close`；接口地址来自 `iface` | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；ethtool 命令缓冲区按其中写入的计数分配，`ifreq` 名称以 NUL 结尾（布局与 `libc::ifreq` 对照） |

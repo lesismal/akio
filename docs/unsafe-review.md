@@ -18,7 +18,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 
 | Crate | Status | Why |
 |---|---|---|
-| `akio-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls, and the workspace's own OS bindings (`ffi`: C types, constants, `#[repr(C)]` structs, `extern "C"` declarations; no `libc` crate): epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals), the kernel CSPRNG (`getrandom` / `getentropy`), TUN devices and interface ioctls (ADR-096) |
+| `akio-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls, and the workspace's own OS bindings (`ffi`: C types, constants, `#[repr(C)]` structs, `extern "C"` declarations; no `libc` crate): epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, CPU affinity and signals (`sched_setaffinity`, `sigaction`), the kernel CSPRNG (`getrandom` / `getentropy`), TUN devices and interface ioctls (ADR-096) |
 | `akio-uring` | `#![deny(unsafe_code)]`, allowed in `group`, `reactor` and `ring` only (and the test-only `eval` harness) | io_uring submission entries point into memory the kernel writes asynchronously; `ring` is the own io_uring binding (setup/enter/register, mmap'd SQ/CQ rings; no `io-uring` crate) |
 | `akio-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` and `xsk` only | raw `bpf(2)` and socket options (no libbpf/aya); AF_XDP sockets, their UMEM and rings (`xsk`, ADR-063) |
 | `akio-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` and `sys` only; the TCP/IP stack (`net`) is `#![forbid(unsafe_code)]` | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts); TAP (`/dev/net/tun`, `TUNSETIFF`) and AF_PACKET sockets through `akio_sys::ffi` |
@@ -159,11 +159,11 @@ contain no `unsafe`.
 | akio-dpdk | 32 | 0 | 1 | 1 |
 | akio-ebpf | 50 | 4 | 3 | 2 |
 | akio-http | 0 | 0 | 0 | 8 |
-| akio-sys | 169 | 5 | 3 | 0 |
+| akio-sys | 163 | 5 | 3 | 0 |
 | akio-uring | 43 | 5 | 2 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **459** | **87** | **11** | **40** |
+| **total** | **453** | **87** | **11** | **40** |
 
 By purpose:
 
@@ -173,7 +173,7 @@ By purpose:
 | `akio-sys/src/net.rs` | 28 | `socket`/`bind`/`listen`/`connect` (also a connect from a bound, shared port for TCP simultaneous open, ADR-044, and a Unix-domain connect, ADR-120), `setsockopt`, `sendfile`, `SocketAddr` <-> `sockaddr_storage`, `listen` again on a live socket (backlog reload), `TCP_INFO` read of a listener's backlog (tests), the "don't fragment" setting read back (`getsockopt`) | sockaddr length matches family; fd owned before any fallible step |
 | `akio-sys/src/iface.rs` | 11 + `unsafe fn read_addr`, `copy` | the interface list (`getifaddrs` / `if_nametoindex` / `freeifaddrs`; also behind akio-tls's NIC offload check) and one datagram out of a given interface (`sendmsg` with an `IP_PKTINFO` / `IPV6_PKTINFO` control message), Linux and macOS | the list is walked only between `getifaddrs` and `freeifaddrs` (freed once), names are copied out before the free; socket addresses are copied byte-wise into a zeroed `sockaddr_in` / `sockaddr_in6` by their family (read at `sin_family`'s offset, a byte on macOS), never referenced in place, and on macOS at most `sa_len` bytes (netmasks are cut short); the control message is a `#[repr(C)]` `cmsghdr` + `in_pktinfo` / `in6_pktinfo` whose `CMSG_LEN` / `CMSG_SPACE` are checked against `libc` in a test, built without `unsafe`, and the `msghdr` points only at live locals |
 | `akio-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
-| `akio-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
+| `akio-sys/src/process.rs` | 7 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the handler only calls `write` (async-signal-safe) and saves and restores `errno` |
 | `akio-sys/src/fswatch.rs` | 12 (7 Linux, 5 macOS) | change notification for akio-http's static file cache: `inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`, `ppoll` on the inotify fd and an eventfd, `read` of events (Linux); `kqueue`, `fcntl`, `kevent` changes and waits with `EVFILT_VNODE` / `EVFILT_USER` (macOS) | fds owned immediately; paths are NUL-terminated `CString`s; reads stay within the buffer and records are parsed from bytes; the kevent `udata` is a watch id, never dereferenced; `O_EVTONLY` descriptors are opened by `std` and owned by the watcher |
 | `akio-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
 | `akio-sys/src/ktls.rs` | 12 | kernel TLS (akio-tls `ktls`, ADR-067): `TCP_ULP` and `SOL_TLS` `setsockopt`, `sendmsg`/`recvmsg` with the record-type cmsg, `uname`, wiping the copied key; NIC TLS offload detection: `socket`/`ioctl`/`close` for the `SIOCETHTOOL` ioctls (`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`); the interface addresses come from `iface` | crypto-info structs built whole on the stack and checked against `libc` in the layout tests; the cmsg buffer is 8-aligned and `CMSG_SPACE(1)` long; cmsgs walked with `CMSG_*` within `msg_controllen`; ethtool command buffers sized for the counts written in them, the `ifreq` name NUL-terminated (layout checked against `libc::ifreq`) |

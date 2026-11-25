@@ -10,6 +10,22 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 移除：akio-prefork（akio-prefork、akio、akio-sys）
+
+ADR-121。akio 和 akit 不使用 prefork；该 crate 自 cb49a04b 起暂停维护、不再测试。对这些项的外部
+使用者是破坏性变更：
+
+- crate `akio-prefork`（`Prefork`、`BpfSteering`、`ListenMode`、`CpuPinning`、`Controller`、
+  `Supervisor`、`Status`、`WorkerInfo`、`Worker`）、它的示例 `prefork-http` 以及书中“多进程服务
+  （prefork）”一章。
+- `akio::EbpfConfig::shared`（只有 akio-prefork 的 worker 设置它）。`akio_ebpf::SharedSteering`
+  保留。
+- `akio_sys::process::{ChildSetup, configure_child, take_inherited_fd, reserve_reuseport,
+  SIGQUIT, SIGUSR1}`，以及隐藏的 `akio_sys::ffi` 中的 `prctl`、`PR_SET_PDEATHSIG`、`getpid`、
+  `getppid`、`ESRCH`、`SIGQUIT`、`SIGUSR1`。
+- 保留：`Listener::tcp_from_std`（systemd socket 激活）、`akio_sys::process::{allowed_cpus,
+  pin_current_thread, signal_pipe, kill, SIGHUP, SIGINT, SIGTERM, SIGUSR2}`。
+
 ### 变更：io_uring 后端通过环发送响应（akio-uring、akio-core）
 
 ADR-106。行为不变；公开 API 没有变化：

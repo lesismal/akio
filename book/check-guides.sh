@@ -5,7 +5,7 @@
 #   * every `guide-*` example: each starts its servers, drives them with its own clients and
 #     exits 0, or fails (non-zero exit, panic or timeout);
 #   * the serve-only examples the books include (guide-media, guide-media-rtsp, echo,
-#     udp-echo, udp-dns, hello, prefork-http): started, probed from outside (TCP/UDP echo, a DNS
+#     udp-echo, udp-dns, hello): started, probed from outside (TCP/UDP echo, a DNS
 #     query, HTTP/1.1, HTTP/2, RTSP OPTIONS, RTMP connect), then stopped;
 #   * the gRPC chapter's generated stubs (tools/protobuf-test): its gRPC test.
 #
@@ -43,7 +43,7 @@ logs="$(mktemp -d "${TMPDIR:-/tmp}/akio-guides.XXXXXX")"
 guides=()
 while IFS= read -r f; do guides+=("$(basename "$f" .rs)"); done < <(
   find crates -path '*/examples/guide-*.rs' | sort -t/ -k4)
-serve_only=(guide-media guide-media-rtsp echo udp-echo udp-dns hello prefork-http)
+serve_only=(guide-media guide-media-rtsp echo udp-echo udp-dns hello)
 all=()
 for g in "${guides[@]}"; do
   case " ${serve_only[*]} " in *" $g "*) ;; *) all+=("$g") ;; esac
@@ -294,12 +294,6 @@ probe() {
           http://127.0.0.1:8080/ | tee /dev/stderr | grep -q '^h2 / -> 2 200$'
       fi
       stop
-      ;;
-    prefork-http)
-      serve "$log" tcp/8080 -- "$bin/prefork-http"
-      http_get http://127.0.0.1:8080/ ''
-      http_get http://127.0.0.1:8080/ ''
-      stop TERM # drains and stops the workers
       ;;
     grpc-stubs)
       cargo test --offline --quiet -p protobuf-test --test grpc >"$log" 2>&1

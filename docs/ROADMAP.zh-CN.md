@@ -111,7 +111,7 @@ Engine::builder()
 | HTTP/3 + QUIC | ✓（自研） | P1 | M5 | 基于 quinn-proto 或 quiche 的 sans-io 核心 |
 | KCP | ✓ | P1 | M5 | 兼容 skywind3000/kcp、kcp-go（含 FEC/加密） |
 | 异步 HTTP 客户端（h1/h2/h3/ws） | ✓ | P1 | M4–M5 | 回调 / future 两种结果通道 |
-| Prefork（多进程 SO_REUSEPORT） | ✓ | P2 | M6 | Rust 无 GC，收益小，降级为可选 |
+| Prefork（多进程 SO_REUSEPORT） | ✓ | P2 | M6 | Rust 无 GC，收益小，降级为可选；已实现，2026-11-25 删除（ADR-121） |
 | 流媒体（RTMP/RTSP/SRT/FLV/HLS/WHIP/WHEP） | ✓ | P2 | M7 | 体量大，拆独立 crate |
 | WebRTC（ICE/DTLS-SRTP/DataChannel/TURN） | ✓ | P2 | M7 | 自研 sans-io 协议栈（DEV-PLAN 第 D 波） |
 | BitTorrent（含 DHT/uTP/MSE） | ✓ | P2 | M7 | 独立 crate，最后做 |
@@ -157,5 +157,5 @@ Engine::builder()
 3. **线程模型**：同意“连接归属单个 IO 线程（thread-per-core）”，放弃 fib 那种“每轮任意 worker”的无亲和模型吗？
 4. **平台**：Linux 一等 + macOS(kqueue) 开发后端，不做 Windows，是否可以？
 5. **异步桥**（`Future` 适配）是否放到 1.0 之后？
-6. **P2 的重型协议**（流媒体 / WebRTC / BitTorrent）和 Prefork 是否接受放在 1.0 之后、独立 crate？
+6. **P2 的重型协议**（流媒体 / WebRTC / BitTorrent）和 Prefork 是否接受放在 1.0 之后、独立 crate？（Prefork：2026-11-25 已删除，ADR-121。）
 7. **许可证与 MSRV**：沿用 fib 的 LICENSE？MSRV 策略（建议 edition 2024，跟随 stable-2）。

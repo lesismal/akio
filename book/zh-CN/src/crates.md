@@ -25,7 +25,6 @@ $ cargo doc --workspace --no-deps --open
 | `akio-epoll` | epoll / kqueue 后端、UDP 线程组 | [Engine 与后端](concepts/engine.md) |
 | `akio-uring` | io_uring 后端 | [Engine 与后端](concepts/engine.md) |
 | `akio-ebpf` | `SO_REUSEPORT` 分流、sockmap 转发 | [Engine 与后端](concepts/engine.md) |
-| `akio-prefork` | 多进程服务：supervisor、worker 重启、优雅关闭与重载 | [Prefork](prefork.md) |
 | `akio-dpdk`（`akio::dpdk`，实验性） | 内核旁路：基于 DPDK / TAP / AF_PACKET 的自研用户态 TCP/IP 协议栈 | [内核旁路（DPDK）](dpdk.md) |
 | `akio-tls`（`akio::tls`） | 作为连接 transport 的 TLS 1.3 / 1.2（自研） | [TLS](protocols/tls.md) |
 | `akio-http` | HTTP/1.1、HTTP/2、Router、中间件、静态文件、客户端、可观测性 | [HTTP 服务端](protocols/http-server.md) |

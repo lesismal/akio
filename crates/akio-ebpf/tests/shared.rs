@@ -1,7 +1,7 @@
 //! Shared (bpffs-pinned) steering and listener migration (ADR-063). Privileged: skipped without
 //! `CAP_BPF` and a bpffs mount at /sys/fs/bpf, unless `AKIO_TEST_EXPECT_EBPF=1` (then a skip
-//! fails). One process plays every "worker" here; the cross-process case is akio-prefork's
-//! `bpf` test.
+//! fails). One process plays every "worker" here (each owner of a slot range stands for
+//! one process).
 #![allow(missing_docs)]
 #![cfg(target_os = "linux")]
 

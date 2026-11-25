@@ -99,8 +99,7 @@ Every check costs waiting; each change gets the checks its kind needs, no more.
 18. **Tests by reach.** While working, run the tests of the crates a change touches and of those
     that depend on them; the whole workspace suite (macOS, Linux arm64 in Docker with epoll and
     io_uring, x86_64 Linux natively) runs once before a merge or a push. At most two sessions run
-    the whole suite at once. `akio-prefork` is on hold and left out of every test run
-    (`--exclude akio-prefork`; DEV-PLAN, "Open, not scheduled").
+    the whole suite at once.
 
 ## 8. Cleaning up
 

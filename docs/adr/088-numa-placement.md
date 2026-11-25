@@ -2,7 +2,8 @@
 
 English | [简体中文](088-numa-placement.zh-CN.md)
 
-Status: accepted (2026-11-23)
+Status: accepted (2026-11-23). akio-prefork, named in the context, was removed by
+[ADR-121](121-akio-prefork-removed.md) (2026-11-25).
 
 ## Context
 

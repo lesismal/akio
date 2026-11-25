@@ -8,7 +8,7 @@
 //!   a `REUSEPORT_SOCKARRAY` (privileged) for CPU steering. Without either, the kernel's default
 //!   4-tuple hash stays in place. The facade wires this to `Listener::accel(Accel::Ebpf(..))`.
 //! * **shared steering** ([`SharedSteering`]): the same policies for a `SO_REUSEPORT` group
-//!   whose sockets belong to several processes (prefork workers): one program and socket array
+//!   whose sockets belong to several processes (each binding the same port): one program and socket array
 //!   pinned in bpffs, each process filling its own slots; with Linux 5.14+ it also picks where a
 //!   closing listener's queued connections migrate (`BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`).
 //! * **sockmap relay** ([`Relay`]): splices two TCP sockets in the kernel (`SOCKHASH` +

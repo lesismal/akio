@@ -29,7 +29,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | BitTorrent | tracker（HTTP/UDP，客户端与服务端）、带 MSE 的 peer wire、Fast 扩展、元数据交换与 PEX、uTP（LEDBAT）、主线 DHT、客户端；与 libtorrent 和 aria2 互通 |
 | 流媒体 | akio-media：统一的流 hub（GOP 缓存、慢播放者丢帧、鉴权钩子、统计），前接 RTMP（digest 握手、Enhanced RTMP 的 H.265/Opus）、RTSP 服务端（TCP 与 UDP，推流与播放）、SRT live（ARQ、TSBPD、AES 加密、主叫推拉流）、HTTP-FLV、WS-FLV、HLS（MPEG-TS 或 fMP4、LL-HLS 分片、阻塞式刷新；从 MP4 文件按关键帧切出点播）以及承载 WebRTC 媒体的 WHIP/WHEP，另有用于转发的 RTMP 与 RTSP 客户端；已与 ffmpeg、mediamtx 与 pion 互通测试 |
 | WebRTC、STUN、TURN | 自研、sans-io、无第三方依赖的 WebRTC（ICE-lite 服务端与完整 ICE agent、DTLS-SRTP、SCTP 数据通道、带 NACK/RTX、TWCC 与带宽估计的 RTP/RTCP 媒体）；STUN 与 TURN 服务器；与 pion、fib、Chrome、coturn 互通 |
-| 运维 | Prometheus 指标、连接表、慢回调记录、JSON 调试端点、基于 `log` 的结构化日志、运行时设置热更新；多进程 prefork 服务，支持 worker 重启与不停机重载（[akio-prefork](crates/akio-prefork/README.zh-CN.md)） |
+| 运维 | Prometheus 指标、连接表、慢回调记录、JSON 调试端点、基于 `log` 的结构化日志、运行时设置热更新 |
 
 实测性能（单台机器，请先看注意事项）：[docs/BENCHMARKS.zh-CN.md](docs/BENCHMARKS.zh-CN.md)。
 

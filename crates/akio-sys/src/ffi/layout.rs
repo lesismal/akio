@@ -113,7 +113,6 @@ fn common_constants() {
     same_value!(
         EPERM,
         ENOENT,
-        ESRCH,
         EINTR,
         EBADF,
         EAGAIN,
@@ -147,9 +146,7 @@ fn common_constants() {
         IFF_MULTICAST,
         SIGHUP,
         SIGINT,
-        SIGQUIT,
         SIGTERM,
-        SIGUSR1,
         SIGUSR2,
         SA_RESTART,
     );
@@ -369,7 +366,6 @@ fn linux_constants() {
         POLLOUT,
         POLLERR,
         POLLRDHUP,
-        PR_SET_PDEATHSIG,
         PROT_READ,
         PROT_WRITE,
         MAP_SHARED,

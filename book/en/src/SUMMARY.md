@@ -36,7 +36,6 @@
 - [Configuration reference](configuration.md)
 - [Observability and hot reload](observability.md)
 - [Performance tuning](performance.md)
-- [Multi-process serving (prefork)](prefork.md)
 - [Kernel bypass (DPDK)](dpdk.md)
 - [Troubleshooting and FAQ](troubleshooting.md)
 

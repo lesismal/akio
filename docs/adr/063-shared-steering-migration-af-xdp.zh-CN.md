@@ -2,7 +2,9 @@
 
 [English](063-shared-steering-migration-af-xdp.md) | 简体中文
 
-状态：已采纳（2026-11-21）
+状态：已采纳（2026-11-21）。akio-prefork 相关部分（`Prefork::bpf_steering` 及其测试）与
+`EbpfConfig::shared` 已被 [ADR-121](121-akio-prefork-removed.zh-CN.md)（2026-11-25）取代：已删除。
+`akio_ebpf::SharedSteering`、监听器迁移与 AF_XDP 保留。
 
 ## 背景
 

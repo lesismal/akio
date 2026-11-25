@@ -354,9 +354,5 @@ I/O 线程后即返回，不等待它生效（扩容到一个正在退出的退�
 - UDP listener（在 UDP `SO_REUSEPORT` 组里增删套接字会把对端挪到别的线程）、DPDK 以及设置了
   `Accel::Ebpf` 分流的 listener 不支持，返回 `Unsupported`。
 
-在 akio-prefork 下，`Controller::reload_in_place()`（或向 supervisor 发送 SIGUSR1）会运行每个
-worker 的 `Worker::on_reload` 钩子，worker 在其中重新读取配置并调用 `Engine::reload` 和
-`Engine::set_threads`：见 [prefork](prefork.md#原地重载)。
-
 akio 自己不监视配置文件：从你使用的机制触发 `reload`（`SIGHUP` 处理器、文件监视器、或者像
 上例那样的管理路由）。

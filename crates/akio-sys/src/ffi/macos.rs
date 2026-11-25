@@ -22,7 +22,6 @@ pub struct ifreq_mtu {
 // ---- errno -------------------------------------------------------------------------------
 pub const EPERM: c_int = 1;
 pub const ENOENT: c_int = 2;
-pub const ESRCH: c_int = 3;
 pub const EINTR: c_int = 4;
 pub const EBADF: c_int = 9;
 pub const EINVAL: c_int = 22;
@@ -105,9 +104,7 @@ pub const EV_EOF: u16 = 0x8000;
 // ---- signals -------------------------------------------------------------------------------
 pub const SIGHUP: c_int = 1;
 pub const SIGINT: c_int = 2;
-pub const SIGQUIT: c_int = 3;
 pub const SIGTERM: c_int = 15;
-pub const SIGUSR1: c_int = 30;
 pub const SIGUSR2: c_int = 31;
 pub const SA_RESTART: c_int = 0x0002;
 

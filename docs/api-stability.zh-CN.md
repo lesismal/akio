@@ -24,7 +24,7 @@
 
 | 级别 | Crate | 承诺 |
 |---|---|---|
-| 公开 | `akio`、`akio-core`、`akio-log`、`akio-tls`、`akio-http`、`akio-ws`、`akio-mux`、`akio-socks`、`akio-arpc`、`akio-grpc`、`akio-protobuf`、`akio-protobuf-build`、`akio-kcp`、`akio-quic`、`akio-h3`、`akio-ebpf`、`akio-prefork`、`akio-turn`、`akio-webrtc`、`akio-media` | 其公开 API（见下）完整遵循 semver。 |
+| 公开 | `akio`、`akio-core`、`akio-log`、`akio-tls`、`akio-http`、`akio-ws`、`akio-mux`、`akio-socks`、`akio-arpc`、`akio-grpc`、`akio-protobuf`、`akio-protobuf-build`、`akio-kcp`、`akio-quic`、`akio-h3`、`akio-ebpf`、`akio-turn`、`akio-webrtc`、`akio-media` | 其公开 API（见下）完整遵循 semver。 |
 | 内部 | `akio-sys`、`akio-buf`、`akio-timer`、`akio-pool`、`akio-epoll`、`akio-uring`、`akio-crypto`、`akio-x509`、`akio-dtls`、`akio-srtp`、`akio-rtp`、`akio-sctp`、`akio-ice`、`akio-deflate`、`akio-brotli`、`akio-zstd`、`akio-regex` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `akio` / `akio-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `akio-core` 和 `akio` 中的再导出受到保护。 |
 | 实验性 | `akio-dpdk`，以及 `akio` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`akio::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/akio-dpdk.txt` 只用于让变化可见。 |
 

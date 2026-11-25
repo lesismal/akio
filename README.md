@@ -31,7 +31,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | BitTorrent | trackers (HTTP/UDP, client and server), peer wire with MSE, Fast extension, metadata exchange and PEX, uTP (LEDBAT), mainline DHT, a client; interop with libtorrent and aria2 |
 | Streaming media | akio-media: one stream hub (GOP cache, slow-player dropping, auth hooks, stats) behind RTMP (digest handshake, Enhanced RTMP H.265/Opus), RTSP server (TCP and UDP, record and play), SRT live (ARQ, TSBPD, AES encryption, caller push/pull), HTTP-FLV, WS-FLV, HLS (MPEG-TS or fMP4, LL-HLS parts, blocking reload; VOD cut from MP4 files at keyframes) and WHIP/WHEP with WebRTC media, plus RTMP and RTSP clients for relaying; interop-tested with ffmpeg, mediamtx and pion |
 | WebRTC, STUN, TURN | In-house sans-io WebRTC with no third-party dependencies (ICE-lite server and full ICE agent, DTLS-SRTP, SCTP data channels, RTP/RTCP media with NACK/RTX, TWCC and bandwidth estimation); STUN and TURN servers; interop with pion, fib, Chrome and coturn |
-| Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings; multi-process prefork serving with worker restarts and zero-downtime reload ([akio-prefork](crates/akio-prefork/README.md)) |
+| Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings |
 
 Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 

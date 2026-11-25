@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed: akio-prefork (akio-prefork, akio, akio-sys)
+
+ADR-121. akio and akit do not use prefork; the crate had been on hold and untested since
+cb49a04b. Breaking for any outside user of these items:
+
+- The crate `akio-prefork` (`Prefork`, `BpfSteering`, `ListenMode`, `CpuPinning`, `Controller`,
+  `Supervisor`, `Status`, `WorkerInfo`, `Worker`), its example `prefork-http` and the book chapter
+  "Multi-process serving (prefork)".
+- `akio::EbpfConfig::shared` (only akio-prefork's workers set it). `akio_ebpf::SharedSteering`
+  stays.
+- `akio_sys::process::{ChildSetup, configure_child, take_inherited_fd, reserve_reuseport,
+  SIGQUIT, SIGUSR1}`, and in the hidden `akio_sys::ffi`: `prctl`, `PR_SET_PDEATHSIG`, `getpid`,
+  `getppid`, `ESRCH`, `SIGQUIT`, `SIGUSR1`.
+- Kept: `Listener::tcp_from_std` (systemd socket activation), `akio_sys::process::{allowed_cpus,
+  pin_current_thread, signal_pipe, kill, SIGHUP, SIGINT, SIGTERM, SIGUSR2}`.
+
 ### Changed: the io_uring backend sends responses through the ring (akio-uring, akio-core)
 
 ADR-106. Behaviour is unchanged; no public API changed:

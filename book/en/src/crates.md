@@ -26,7 +26,6 @@ changes: [CHANGELOG.md](https://github.com/lesismal/akio/blob/main/CHANGELOG.md)
 | `akio-epoll` | epoll / kqueue backend, UDP groups | [Engine and backends](concepts/engine.md) |
 | `akio-uring` | io_uring backend | [Engine and backends](concepts/engine.md) |
 | `akio-ebpf` | `SO_REUSEPORT` steering, sockmap relay | [Engine and backends](concepts/engine.md) |
-| `akio-prefork` | multi-process serving: supervisor, worker restarts, graceful shutdown and reload | [Prefork](prefork.md) |
 | `akio-dpdk` (`akio::dpdk`, experimental) | kernel bypass: its own userspace TCP/IP stack over DPDK / TAP / AF_PACKET | [Kernel bypass (DPDK)](dpdk.md) |
 | `akio-tls` (`akio::tls`) | TLS 1.3 / 1.2 (in-house) as a connection transport | [TLS](protocols/tls.md) |
 | `akio-http` | HTTP/1.1, HTTP/2, Router, middleware, static files, clients, observability | [HTTP servers](protocols/http-server.md) |

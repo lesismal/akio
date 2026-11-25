@@ -119,7 +119,7 @@ jobs:
         if: matrix.backend == 'epoll'
         # One test at a time, so a hang shows which test it is; the step timeout keeps the log.
         timeout-minutes: 15
-        run: cargo test --workspace --exclude akio-prefork -- --test-threads=1
+        run: cargo test --workspace -- --test-threads=1
       - name: Tests (io_uring), crates that honour AKIO_TEST_BACKEND
         if: matrix.backend == 'uring'
         timeout-minutes: 15
@@ -142,7 +142,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets
       - name: Tests (kqueue)
         timeout-minutes: 15
-        run: cargo test --workspace --exclude akio-prefork -- --test-threads=1
+        run: cargo test --workspace -- --test-threads=1
 
   msrv:
     runs-on: ubuntu-latest
@@ -540,7 +540,7 @@ jobs:
           -p akio -p akio-core -p akio-tls -p akio-http -p akio-ws -p akio-mux
           -p akio-socks -p akio-arpc -p akio-grpc -p akio-protobuf -p akio-protobuf-build
           -p akio-kcp -p akio-quic -p akio-h3
-          -p akio-ebpf -p akio-prefork -p akio-bittorrent
+          -p akio-ebpf -p akio-bittorrent
 
   sanitizers:
     # AddressSanitizer (with LeakSanitizer) and ThreadSanitizer over every workspace crate's

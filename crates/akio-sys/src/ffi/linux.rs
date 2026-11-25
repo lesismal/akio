@@ -29,7 +29,6 @@ pub type sa_family_t = u16;
 // ---- errno -------------------------------------------------------------------------------
 pub const EPERM: c_int = 1;
 pub const ENOENT: c_int = 2;
-pub const ESRCH: c_int = 3;
 pub const EINTR: c_int = 4;
 pub const EIO: c_int = 5;
 pub const EBADF: c_int = 9;
@@ -184,12 +183,9 @@ pub const POLLRDHUP: c_short = 0x2000;
 // ---- signals and processes -----------------------------------------------------------------
 pub const SIGHUP: c_int = 1;
 pub const SIGINT: c_int = 2;
-pub const SIGQUIT: c_int = 3;
-pub const SIGUSR1: c_int = 10;
 pub const SIGUSR2: c_int = 12;
 pub const SIGTERM: c_int = 15;
 pub const SA_RESTART: c_int = 0x1000_0000;
-pub const PR_SET_PDEATHSIG: c_int = 1;
 
 // ---- memory mapping (io_uring rings) -------------------------------------------------------
 pub const PROT_READ: c_int = 1;
@@ -534,7 +530,7 @@ pub unsafe fn cmsg_nxthdr(mhdr: *const msghdr, cmsg: *const cmsghdr) -> *mut cms
 
 // Soundness of the declarations: each matches the C prototype in the glibc / musl headers for 64-bit
 // Linux (argument and return types as laid out above); the variadic ones (`fcntl`, `ioctl`,
-// `open`, `prctl`, `syscall`) are declared variadic, as C callers see them.
+// `open`, `syscall`) are declared variadic, as C callers see them.
 unsafe extern "C" {
     pub fn __errno_location() -> *mut c_int;
 
@@ -614,10 +610,7 @@ unsafe extern "C" {
     pub fn uname(buf: *mut utsname) -> c_int;
     pub fn syscall(num: c_long, ...) -> c_long;
 
-    pub fn getpid() -> pid_t;
-    pub fn getppid() -> pid_t;
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
-    pub fn prctl(option: c_int, ...) -> c_int;
     pub fn sched_setaffinity(pid: pid_t, size: size_t, set: *const cpu_set_t) -> c_int;
     pub fn sched_getaffinity(pid: pid_t, size: size_t, set: *mut cpu_set_t) -> c_int;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;

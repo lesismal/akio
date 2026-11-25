@@ -327,8 +327,8 @@ const MD_MIGRATING_SK: i16 = 48;
 /// is only read by the latter). With `migrate` the program is loaded for
 /// `BPF_SK_REUSEPORT_SELECT_OR_MIGRATE`: when the kernel moves a request or an accepted-queue
 /// connection off a closing listener (`migrating_sk` set), it selects
-/// `sockarray[hash % n]`, the slot's current socket, which after a prefork reload is the new
-/// worker's; an empty slot leaves the choice to the kernel (a random live listener).
+/// `sockarray[hash % n]`, the slot's current socket, which after a process replaced its sockets is the new
+/// process's; an empty slot leaves the choice to the kernel (a random live listener).
 pub(crate) fn reuseport_shared(
     sockarray: i32,
     slots: i32,

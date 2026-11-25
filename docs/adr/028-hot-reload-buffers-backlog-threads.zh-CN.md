@@ -2,7 +2,8 @@
 
 [English](028-hot-reload-buffers-backlog-threads.md) | 简体中文
 
-状态：已采纳（2026-11-17）
+状态：已采纳（2026-11-17）。“akio-prefork”部分已被 [ADR-121](121-akio-prefork-removed.zh-CN.md)
+（2026-11-25）取代：该 crate 已删除。
 
 ## 背景
 

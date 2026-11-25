@@ -27,7 +27,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 
 | Tier | Crates | Promise |
 |---|---|---|
-| Public | `akio`, `akio-core`, `akio-log`, `akio-tls`, `akio-http`, `akio-ws`, `akio-mux`, `akio-socks`, `akio-arpc`, `akio-grpc`, `akio-protobuf`, `akio-protobuf-build`, `akio-kcp`, `akio-quic`, `akio-h3`, `akio-ebpf`, `akio-prefork`, `akio-turn`, `akio-webrtc`, `akio-media` | Full semver for their public API (below). |
+| Public | `akio`, `akio-core`, `akio-log`, `akio-tls`, `akio-http`, `akio-ws`, `akio-mux`, `akio-socks`, `akio-arpc`, `akio-grpc`, `akio-protobuf`, `akio-protobuf-build`, `akio-kcp`, `akio-quic`, `akio-h3`, `akio-ebpf`, `akio-turn`, `akio-webrtc`, `akio-media` | Full semver for their public API (below). |
 | Internal | `akio-sys`, `akio-buf`, `akio-timer`, `akio-pool`, `akio-epoll`, `akio-uring`, `akio-crypto`, `akio-x509`, `akio-dtls`, `akio-srtp`, `akio-rtp`, `akio-sctp`, `akio-ice`, `akio-deflate`, `akio-brotli`, `akio-zstd`, `akio-regex` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `akio` / `akio-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `akio-core` and `akio`. |
 | Experimental | `akio-dpdk`, and the `dpdk` / `dpdk-pmd` features of `akio` (`Backend::Dpdk`, `akio::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/akio-dpdk.txt` only makes changes visible. |
 

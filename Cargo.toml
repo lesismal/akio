@@ -34,7 +34,6 @@ members = [
     "crates/akio-quic",
     "crates/akio-h3",
     "crates/akio-ebpf",
-    "crates/akio-prefork",
     "crates/akio-dpdk",
     "crates/akio-tun",
     "crates/akio-turn",

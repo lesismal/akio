@@ -5,7 +5,7 @@
 #   tools/sanitizers/run.sh --docker address|thread [crate...]   # in a Linux container
 #
 # With no crates, every workspace member with a library or test target is run, except
-# akio-dpdk (needs libdpdk) and akio-prefork (on hold, docs/DEV-PLAN.md). Each crate gets SAN_TIMEOUT seconds (default 1800).
+# akio-dpdk (needs libdpdk). Each crate gets SAN_TIMEOUT seconds (default 1800).
 # AKIO_TEST_BACKEND (epoll | uring) is passed through. One log per crate goes to
 # $SAN_LOG_DIR (default target/sanitizers/<san>/); a summary line per crate goes to stdout.
 # See tools/sanitizers/README.md.
@@ -56,7 +56,7 @@ export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1 second_deadlock_stack=1 sup
 
 if [ $# -eq 0 ]; then
     set -- $(cd "$root" && cargo metadata --no-deps --format-version 1 |
-        python3 -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"] if p["name"] not in ("akio-dpdk", "akio-prefork") and any(k in ("lib", "test") for t in p["targets"] for k in t["kind"])))')
+        python3 -c 'import json,sys; print(" ".join(p["name"] for p in json.load(sys.stdin)["packages"] if p["name"] != "akio-dpdk" and any(k in ("lib", "test") for t in p["targets"] for k in t["kind"])))')
 fi
 logs=${SAN_LOG_DIR:-$root/target/sanitizers/$san}
 mkdir -p "$logs"

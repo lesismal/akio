@@ -416,9 +416,5 @@ take effect (growing into the index of a retired thread that is just exiting joi
 - Not available for UDP listeners (adding or removing a socket of a UDP `SO_REUSEPORT` group would
   move peers between threads), DPDK, and listeners with `Accel::Ebpf` steering: `Unsupported`.
 
-Under akio-prefork, `Controller::reload_in_place()` (or SIGUSR1 to the supervisor) runs each
-worker's `Worker::on_reload` hook, where the worker re-reads its configuration and calls
-`Engine::reload` and `Engine::set_threads`: see [prefork](prefork.md#reload-in-place).
-
 `akio` does not watch configuration files itself: trigger `reload` from whatever you use (a
 `SIGHUP` handler, a file watcher, an admin route as in the example above).

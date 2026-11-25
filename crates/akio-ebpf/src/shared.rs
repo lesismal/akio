@@ -1,7 +1,7 @@
 //! `SO_REUSEPORT` steering shared by several processes through bpffs (ADR-063).
 //!
 //! [`attach_reuseport`](crate::attach_reuseport) gives each process its own program and socket
-//! array: in a group shared by several processes (prefork workers binding the same port), the
+//! array: in a group shared by several processes (each binding the same port), the
 //! last process to attach replaces the group's program with one that only knows its own
 //! sockets. [`SharedSteering`] instead pins one program and one `REUSEPORT_SOCKARRAY` in bpffs:
 //! a supervisor [creates](SharedSteering::create) them for `sockets` slots, every worker
@@ -140,7 +140,7 @@ impl SharedSteering {
     }
 
     /// A handle that [joins](Self::join) at slots `first..first + count` (by default a handle
-    /// covers every slot). Prefork worker `i` with `t` I/O threads takes `at(i * t, t)`.
+    /// covers every slot). Process `i` of several with `t` sockets each takes `at(i * t, t)`.
     /// Fails with `InvalidInput` when the range does not fit in the group.
     pub fn at(&self, first: usize, count: usize) -> io::Result<SharedSteering> {
         if count == 0

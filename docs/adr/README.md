@@ -120,3 +120,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-118: A request's peer is the client a trusted PROXY header names](118-http-peer-from-proxy-header.md) (accepted 2026-11-24)
 - [ADR-119: A proxy's tunnel checked once connected, and its connect timeout](119-socks-connected-check-and-connect-timeout.md) (accepted 2026-11-24)
 - [ADR-120: Dialing a Unix-domain socket, and the HTTP client over one](120-unix-socket-dial.md) (accepted 2026-11-24)
+- [ADR-121: akio-prefork removed](121-akio-prefork-removed.md) (accepted 2026-11-25)

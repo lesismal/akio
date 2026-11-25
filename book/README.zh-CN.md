@@ -56,7 +56,7 @@ $ python3 book/check-site.py target/site --serve 8000   # http://127.0.0.1:8000/
 ## 运行示例
 
 ```console
-$ book/check-guides.sh             # 每个 guide-* 示例，以及 echo、udp-echo、hello、prefork-http
+$ book/check-guides.sh             # 每个 guide-* 示例，以及 echo、udp-echo、hello
 $ book/check-guides.sh guide-h3    # 只运行其中一个
 $ AKIO_DEFAULT_BACKEND=uring book/check-guides.sh   # 在 io_uring 上运行（Linux，ADR-029）
 ```

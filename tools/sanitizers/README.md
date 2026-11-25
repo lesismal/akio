@@ -19,7 +19,7 @@ tools/sanitizers/run.sh thread akio-sys akio-crypto  # natively, on Linux with n
 ```
 
 With no crate names, every workspace member with a library or test target is run, except
-`akio-dpdk` (needs libdpdk) and `akio-prefork` (on hold: not tested, see docs/DEV-PLAN.md). Each crate is one `cargo test --lib --tests -- --test-threads=1`;
+`akio-dpdk` (needs libdpdk). Each crate is one `cargo test --lib --tests -- --test-threads=1`;
 the script prints `crate rc=… reports=… seconds` and keeps one log per crate in
 `target/sanitizers/<sanitizer>[-<backend>-docker]/` (or `$SAN_LOG_DIR`). A crate fails on a
 test failure, a sanitizer report (`halt_on_error`) or after `SAN_TIMEOUT` seconds (default 1800).

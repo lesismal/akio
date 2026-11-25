@@ -299,16 +299,6 @@ name = "akio-pool"
 version = "1.0.0-rc.1"
 
 [[package]]
-name = "akio-prefork"
-version = "1.0.0-rc.1"
-dependencies = [
- "akio",
- "akio-http",
- "akio-log",
- "akio-sys",
-]
-
-[[package]]
 name = "akio-protobuf"
 version = "1.0.0-rc.1"
 
