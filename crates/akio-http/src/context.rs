@@ -802,6 +802,9 @@ pub struct Context {
     reads: Option<Arc<H1Reads>>,
     /// The request's end hooks and peer-gone callback, once one is registered (ADR-127).
     hooks: Option<Arc<Hooks>>,
+    /// A request whose streamed body was suspended (ADR-159): the side of its relay this
+    /// context is.
+    relay: Option<RelaySide>,
 }
 
 impl Drop for Context {
@@ -812,6 +815,11 @@ impl Drop for Context {
             if let Some(h) = &self.hooks {
                 h.end(End::Gone);
             }
+        }
+        // The server's side of a suspended streamed body gone before the body ended: the
+        // client went (ADR-159).
+        if let Some(RelaySide::Feed(r)) = &self.relay {
+            r.cut();
         }
     }
 }
@@ -871,6 +879,7 @@ impl Context {
             streamed: false,
             reads: None,
             hooks: None,
+            relay: None,
         }
     }
 
@@ -919,6 +928,7 @@ impl Context {
             streamed: false,
             reads: None,
             hooks: None,
+            relay: None,
             responder: None,
         }
     }
@@ -940,6 +950,7 @@ impl Context {
             streamed: false,
             reads: None,
             hooks: None,
+            relay: None,
             responder: Some(Out::H2(responder)),
         }
     }
@@ -1154,8 +1165,12 @@ impl Context {
         self.sink = Some(Box::new(f));
     }
 
-    /// Delivers a body event to the sink, if any.
+    /// Delivers a body event to the sink, if any; for a suspended request, to the context it
+    /// is resumed in (ADR-159).
     pub(crate) fn deliver(&mut self, ev: BodyEvent<'_>) {
+        if let Some(RelaySide::Feed(r)) = &self.relay {
+            return r.push(ev);
+        }
         if let Some(mut sink) = self.sink.take() {
             sink(self, ev);
             if self.sink.is_none() {
@@ -1170,6 +1185,16 @@ impl Context {
     /// [`stream_response`](Self::stream_response)): take it before. It works after `detach`,
     /// from any thread. See [`BodyReads::hold`].
     pub fn body_reads(&mut self) -> Option<BodyReads> {
+        let inner = self.reads_inner()?;
+        let relay = match &self.relay {
+            Some(RelaySide::Take(r)) => Some(r.clone()),
+            _ => None,
+        };
+        Some(BodyReads { inner, relay })
+    }
+
+    /// The hold on this streamed request body's reads, through the response's transport.
+    fn reads_inner(&mut self) -> Option<ReadsInner> {
         if !self.streamed {
             return None;
         }
@@ -1190,7 +1215,7 @@ impl Context {
             Out::H2(r) => ReadsInner::H2(r.reads()),
             Out::Ext(e) => ReadsInner::Ext(e.0.clone(), e.1),
         };
-        Some(BodyReads(inner))
+        Some(inner)
     }
 
     /// Calls `f` once if the client goes before the response is finished (ADR-108): on
@@ -1651,18 +1676,51 @@ impl Context {
     /// pool, see [`suspend_to_pool`](Self::suspend_to_pool) (ADR-109).
     ///
     /// The context the server keeps reads as detached once `call` returns. `None` (nothing
-    /// changed) when the response was sent or taken, the request was upgraded, or its body is
-    /// streamed ([`BodyMode::Stream`]): the server feeds such a body to this context after
-    /// `call`, so it cannot move. A service that wants to suspend a request with a body asks
-    /// for it whole in [`Service::body_mode`].
+    /// changed) when the response was sent or taken, or the request was upgraded.
+    ///
+    /// A request whose body streams ([`BodyMode::Stream`]) is suspended with its body's reads
+    /// held (ADR-159, akit A75), as [`BodyReads::hold`] holds them: the client is paced, and
+    /// what was read already (on HTTP/1.1 at most one read's worth, on HTTP/2 and HTTP/3 at
+    /// most the stream's flow-control window) is kept for the resumed context. Once
+    /// [`Suspended::resume`]'s closure returns, the body goes to the sink it registered
+    /// ([`on_body`](Self::on_body); a sink registered before suspending goes with the
+    /// request): what was kept first, then the rest as it arrives, in order, and the reads go
+    /// on. A handler that takes [`body_reads`](Self::body_reads) in the closure and holds them
+    /// keeps them held until it lets them go. The resumed context lives until its body ended,
+    /// as a streamed request's does, and is answered `500` then if it neither responded nor
+    /// detached. A client that goes meanwhile runs [`on_gone`](Self::on_gone) as for any
+    /// suspended request, and the body's sink is dropped. Dropped unresumed, the request is
+    /// answered `500` and its body read and dropped. A context already resumed and taking its
+    /// body cannot be suspended again (`None`); one suspended again inside the closure can.
     ///
     /// A resumed context may be suspended again (a second check). It cannot take the connection over
     /// ([`upgrade_websocket`](Self::upgrade_websocket), [`upgrade_raw`](Self::upgrade_raw)), as
     /// one run on the pool cannot.
     pub fn suspend(&mut self) -> Option<Suspended> {
-        if self.streamed || self.upgrade.is_some() || self.raw.is_some() || self.detached {
+        if self.upgrade.is_some() || self.raw.is_some() || self.detached || self.responder.is_none()
+        {
             return None;
         }
+        let relay = if self.streamed {
+            match &self.relay {
+                // Resumed and taking its body already: it stays.
+                Some(RelaySide::Take(r)) if r.installed() => return None,
+                // Suspended again inside `resume`'s closure: the same relay, still holding.
+                Some(RelaySide::Take(_)) => match self.relay.take() {
+                    Some(RelaySide::Take(r)) => Some(r),
+                    _ => None,
+                },
+                Some(RelaySide::Feed(_)) => return None,
+                None => {
+                    let inner = self.reads_inner()?;
+                    let r = Arc::new(Relay::new(inner));
+                    self.relay = Some(RelaySide::Feed(r.clone()));
+                    Some(r)
+                }
+            }
+        } else {
+            None
+        };
         let responder = self.responder.take()?;
         self.detached = true;
         // The request moves whole, so the resumed context can change it (`req_mut`); the one the
@@ -1679,11 +1737,21 @@ impl Context {
             pooled: true,
             upgrade: None,
             raw: None,
-            sink: None,
+            // A streamed body's sink goes with the request.
+            sink: if relay.is_some() {
+                self.sink.take()
+            } else {
+                None
+            },
             route: self.route,
-            streamed: false,
-            reads: None,
+            streamed: relay.is_some(),
+            reads: if relay.is_some() {
+                self.reads.clone()
+            } else {
+                None
+            },
             hooks: self.hooks.take(),
+            relay: relay.map(RelaySide::Take),
         };
         Some(Suspended(Some(Box::new(ctx))))
     }
@@ -1722,7 +1790,11 @@ impl Context {
 /// Holds the reads of a streamed request body; see [`Context::body_reads`]. Cheap to clone and
 /// usable from any thread.
 #[derive(Clone)]
-pub struct BodyReads(ReadsInner);
+pub struct BodyReads {
+    inner: ReadsInner,
+    /// A request resumed after a suspension (ADR-159): its hold goes with the suspension's.
+    relay: Option<Arc<Relay>>,
+}
 
 #[derive(Clone)]
 enum ReadsInner {
@@ -1750,7 +1822,16 @@ impl BodyReads {
     ///
     /// [`ConnSink::hold_reads`]: crate::transport::ConnSink::hold_reads
     pub fn hold(&self, hold: bool) {
-        match &self.0 {
+        match &self.relay {
+            Some(r) => r.hold_by_handler(hold),
+            None => self.inner.hold(hold),
+        }
+    }
+}
+
+impl ReadsInner {
+    fn hold(&self, hold: bool) {
+        match self {
             ReadsInner::H1(r) => r.hold(hold),
             ReadsInner::H2(r) => r.hold(hold),
             ReadsInner::Ext(s, tag) => s.get().hold_reads(*tag, hold),
@@ -1788,6 +1869,202 @@ impl H1Reads {
     }
 }
 
+/// Which side of a suspended streamed body's [`Relay`] a context is (ADR-159).
+enum RelaySide {
+    /// The context the server keeps and feeds the body to: it passes the body on.
+    Feed(Arc<Relay>),
+    /// The context suspended and resumed: it takes the body.
+    Take(Arc<Relay>),
+}
+
+/// The body of a request suspended while it streams (ADR-159, akit A75): the server goes on
+/// feeding the context it kept ([`RelaySide::Feed`]), which passes the body on to the context
+/// resumed from the suspension ([`RelaySide::Take`]) once that one is installed here, and
+/// keeps it until then. The suspension holds the body's reads, so what is kept is what was
+/// read already: on HTTP/1.1 one read's worth, on HTTP/2 and HTTP/3 the stream's flow-control
+/// window. The body reaches the resumed context's sink in order, from one thread at a time
+/// (`busy`) and never under the lock: the server's thread as it arrives, the resuming thread
+/// for what was kept.
+pub(crate) struct Relay {
+    reads: ReadsInner,
+    st: Mutex<RelaySt>,
+}
+
+#[derive(Default)]
+struct RelaySt {
+    /// The hold the resumed context's handler asked for ([`BodyReads::hold`]).
+    handler: bool,
+    /// The suspension holds the reads: until the resumed context is installed.
+    suspended: bool,
+    /// Whether the reads are held now, as last applied (or being applied).
+    held: bool,
+    /// A thread applies a change to the hold now (outside the lock; it checks again after).
+    applying: bool,
+    /// Body bytes, and the body's end with its trailers, the resumed context has not had yet.
+    buf: Vec<u8>,
+    end: Option<Headers>,
+    /// The resumed context, installed and idle.
+    ctx: Option<Box<Context>>,
+    /// The resumed context was installed (it takes the body from now on).
+    installed: bool,
+    /// A thread delivers to the resumed context now (it is out of `ctx`).
+    busy: bool,
+    /// Its body ended and was delivered; or the client went first: nothing more.
+    done: bool,
+}
+
+fn lock_relay(m: &Mutex<RelaySt>) -> std::sync::MutexGuard<'_, RelaySt> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Relay {
+    /// A relay whose suspension holds the reads, from now.
+    fn new(reads: ReadsInner) -> Relay {
+        let r = Relay {
+            reads,
+            st: Mutex::new(RelaySt {
+                suspended: true,
+                ..RelaySt::default()
+            }),
+        };
+        r.apply();
+        r
+    }
+
+    /// Holds or lets the reads go as the handler and the suspension ask. Never under the
+    /// lock: letting them go may deliver what was held on this thread (HTTP/3), into
+    /// [`push`](Self::push). One thread applies at a time and looks again after, so changes
+    /// made meanwhile by others are applied, last one last.
+    fn apply(&self) {
+        loop {
+            let want = {
+                let mut st = lock_relay(&self.st);
+                let want = st.handler || st.suspended;
+                if st.applying || want == st.held {
+                    return;
+                }
+                st.applying = true;
+                st.held = want;
+                want
+            };
+            self.reads.hold(want);
+            let mut st = lock_relay(&self.st);
+            st.applying = false;
+            if (st.handler || st.suspended) == st.held {
+                return;
+            }
+        }
+    }
+
+    fn hold_by_handler(&self, hold: bool) {
+        lock_relay(&self.st).handler = hold;
+        self.apply();
+    }
+
+    fn installed(&self) -> bool {
+        lock_relay(&self.st).installed
+    }
+
+    /// The server feeds a piece of the body (or its end).
+    fn push(&self, ev: BodyEvent<'_>) {
+        let mut st = lock_relay(&self.st);
+        if st.done {
+            return;
+        }
+        if let Some(ctx) = st.ctx.take() {
+            st.busy = true;
+            drop(st);
+            return self.drain(ctx, Some(ev));
+        }
+        // Not installed yet, or another thread delivers what was kept: kept, in order.
+        match ev {
+            BodyEvent::Chunk(d) => st.buf.extend_from_slice(d),
+            BodyEvent::End(t) => st.end = Some(t.clone()),
+        }
+    }
+
+    /// The resumed context takes the body: what was kept, then the rest as it arrives; the
+    /// suspension's hold on the reads ends.
+    fn install(&self, ctx: Box<Context>) {
+        {
+            let mut st = lock_relay(&self.st);
+            if st.done {
+                // The client went: the context goes, unanswered.
+                drop(st);
+                return drop(ctx);
+            }
+            st.installed = true;
+            st.busy = true;
+        }
+        self.drain(ctx, None);
+        lock_relay(&self.st).suspended = false;
+        self.apply();
+    }
+
+    /// Delivers `first`, then whatever was kept meanwhile, to `ctx` (this thread is `busy`),
+    /// then parks it for the next piece; or, the body ended, answers it if it did not.
+    fn drain(&self, mut ctx: Box<Context>, first: Option<BodyEvent<'_>>) {
+        if let Some(ev) = first {
+            let end = matches!(ev, BodyEvent::End(_));
+            ctx.deliver(ev);
+            if end {
+                return self.finish(ctx);
+            }
+        }
+        loop {
+            let (buf, end) = {
+                let mut st = lock_relay(&self.st);
+                if st.done {
+                    st.busy = false;
+                    drop(st);
+                    return drop(ctx);
+                }
+                if st.buf.is_empty() && st.end.is_none() {
+                    st.ctx = Some(ctx);
+                    st.busy = false;
+                    return;
+                }
+                (std::mem::take(&mut st.buf), st.end.take())
+            };
+            if !buf.is_empty() {
+                ctx.deliver(BodyEvent::Chunk(&buf));
+            }
+            if let Some(t) = end {
+                ctx.deliver(BodyEvent::End(&t));
+                return self.finish(ctx);
+            }
+        }
+    }
+
+    /// The body ended at the resumed context: answered `500` unless it responded or detached.
+    fn finish(&self, mut ctx: Box<Context>) {
+        {
+            let mut st = lock_relay(&self.st);
+            st.done = true;
+            st.busy = false;
+        }
+        if !ctx.responded() && !ctx.detached {
+            ctx.respond(Response::text(500, "handler did not respond"));
+        }
+    }
+
+    /// The server's side went before the body ended (the connection closed, the stream was
+    /// reset): the body never completes; the resumed context, once installed, is dropped with
+    /// its sink, as a streamed request's is.
+    fn cut(&self) {
+        let ctx = {
+            let mut st = lock_relay(&self.st);
+            if st.done || st.end.is_some() {
+                return;
+            }
+            st.done = true;
+            st.buf = Vec::new();
+            st.ctx.take()
+        };
+        drop(ctx);
+    }
+}
+
 /// A request paused by [`Context::suspend`], to go on later from any thread with
 /// [`resume`](Self::resume). Dropping it unresumed answers the request `500`.
 pub struct Suspended(Option<Box<Context>>);
@@ -1813,7 +2090,7 @@ impl Suspended {
     pub fn resume(mut self, f: impl FnOnce(&mut Context)) {
         if let Some(mut ctx) = self.0.take() {
             f(&mut ctx);
-            finish_suspended(&mut ctx);
+            go_on(ctx);
         }
     }
 }
@@ -1822,7 +2099,17 @@ impl Drop for Suspended {
     fn drop(&mut self) {
         if let Some(mut ctx) = self.0.take() {
             finish_suspended(&mut ctx);
+            go_on(ctx);
         }
+    }
+}
+
+/// A resumed context goes on: one whose body streams takes it now (ADR-159), and is answered
+/// at its end; any other is answered now.
+fn go_on(mut ctx: Box<Context>) {
+    match &ctx.relay {
+        Some(RelaySide::Take(r)) => r.clone().install(ctx),
+        _ => finish_suspended(&mut ctx),
     }
 }
 

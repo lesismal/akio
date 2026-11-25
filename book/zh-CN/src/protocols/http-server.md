@@ -20,6 +20,7 @@ listener，或者用 `Tls::server` 包装成 HTTPS。`HttpConfig`：
 | `head_timeout` | 10 s | 从请求头第一个字节到结束（第一个请求从连接建立算起），一次滴一个字节的对端无法让半个请求头一直存活（slowloris）；超时返回 408 并关闭。HTTP/2：等待客户端的 `SETTINGS`（GOAWAY `SETTINGS_TIMEOUT`） |
 | `keep_alive_timeout` | 75 s | 等待下一个请求；仍在准备的响应会在关闭前发出。HTTP/2：这么久没有任何帧且没有打开的 stream 时发送 GOAWAY |
 | `body_timeout` | 60 s | 请求 body 这么久没有进展：返回 408（流式的 HTTP/1 body 直接断开）。HTTP/2：只针对缓冲的上传（流式上传，例如 gRPC stream，由其 service 自己控制节奏） |
+| `idle_drain_grace` | 250 ms | 排空时（`shutdown_listener`、`shutdown`），空闲的 HTTP/1 连接保持打开这么久，等待客户端可能已经发出的请求，并以 `Connection: close` 应答；以排空的期限为上限。`Duration::ZERO` 立即关闭 |
 
 每个超时设为 `None` 即关闭。它们由每个进程一个的清扫线程检查，节拍是最短超时的一小部分
 （5 ms 到 1 s），因此在超时之后、最多两个节拍内触发，绝不会提前。
@@ -100,6 +101,17 @@ stream 互不影响。handler 一返回，I/O 线程就空闲了。
 `ctx.on_body` 逐块接收 body，最后收到带 trailer 的 `BodyEvent::End`。流式 body 没有大小限制，
 由接收方自行决定。
 
+中间件可以 `ctx.suspend()` body 流式到达的请求（ADR-159），先检查些什么：期间扣住 body 的读取
+（一次读取带来的、或一个流窗口的数据被保留），`Suspended::resume` 的闭包返回后，它注册的 `on_body`
+接收器按序拿到完整的 body。
+
+## 观察响应
+
+`serve_with(cfg, svc).observer(Arc<dyn ResponseObserver>)` 设置监听器的响应观察者（ADR-158）：
+调用了 `ctx.set_observed([u64; 2])` 的请求，其响应发出时观察者被告知一次，在发送它的线程上，带着
+它存下的两个字（指标槽位、日志分片）和存下的时间。每个请求不分配内存，而携带同样内容的响应过滤器
+要分配一次。HTTP/3：`akio_h3::serve_with_observer`。
+
 ## 已为你处理的协议细节
 
 - keep-alive、`Connection: close`、HTTP/1.0；流水线且响应保持顺序。
@@ -108,7 +120,8 @@ stream 互不影响。handler 一返回，I/O 线程就空闲了。
 - 请求走私防护：`Content-Length` 与 `Transfer-Encoding` 同时出现、重复的 `Content-Length`。
 - GET 路由自动应答不带 body 的 HEAD。
 - HTTP/2：HPACK、双向流控、h2c 升级、服务端推送、停机时发送 `GOAWAY`；h2spec strict 147/147。
-- 优雅停机：在途响应完成后关闭 HTTP/1 连接；HTTP/2 发送 `GOAWAY`。
+- 优雅停机：在途响应完成后关闭 HTTP/1 连接（空闲的连接在 `idle_drain_grace` 之后关闭，期间到达的
+  请求以 `Connection: close` 应答）；HTTP/2 发送 `GOAWAY`。
 
 ## 对比
 

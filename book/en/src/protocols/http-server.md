@@ -20,6 +20,7 @@ listener directly, or wrap it in `Tls::server` for HTTPS. `HttpConfig`:
 | `head_timeout` | 10 s | from the first byte of a request head to its end (from the connection start for the first one), so a peer trickling bytes cannot hold a half-received head (slowloris); 408 and close. HTTP/2: until the client's `SETTINGS` (GOAWAY `SETTINGS_TIMEOUT`) |
 | `keep_alive_timeout` | 75 s | wait for the next request; responses still being prepared are sent before the close. HTTP/2: no frame for this long and no open stream, then GOAWAY |
 | `body_timeout` | 60 s | no progress on a request body for this long: 408 (a streamed HTTP/1 body is cut). HTTP/2: buffered uploads only (streamed ones, gRPC streams say, are paced by their service) |
+| `idle_drain_grace` | 250 ms | on a drain (`shutdown_listener`, `shutdown`), an idle HTTP/1 connection stays open this long for a request its client may have sent already, answered with `Connection: close`; capped by the drain's deadline. `Duration::ZERO` closes it at once |
 
 Each timeout is `None` to disable it. They are checked by one sweeper thread per process at a
 fraction of the shortest timeout (5 ms to 1 s), so they fire between the timeout and two ticks
@@ -104,6 +105,19 @@ Wrap a service in `Streaming(svc)` (or override `Service::body_mode`) to run it 
 head is parsed and receive the body with `ctx.on_body`, chunk by chunk, then `BodyEvent::End`
 with any trailers. No size limit applies to streamed bodies: the sink decides.
 
+A middleware may `ctx.suspend()` a request whose body streams (ADR-159), to check something
+first: the body's reads are held meanwhile (what one read brought, or a stream's window, is kept),
+and once `Suspended::resume`'s closure returns, the `on_body` sink it registered gets the whole
+body in order.
+
+## Observing responses
+
+`serve_with(cfg, svc).observer(Arc<dyn ResponseObserver>)` sets a listener's response observer
+(ADR-158): each request that calls `ctx.set_observed([u64; 2])` has it told of its response, once,
+when the response goes, on the thread that sends it, with the two words it stored (a metrics
+slot, a log shard) and the time it stored them. No allocation per request, where a response
+filter carrying the same costs one. HTTP/3: `akio_h3::serve_with_observer`.
+
 ## Protocol details handled for you
 
 - Keep-alive, `Connection: close`, HTTP/1.0; pipelining with in-order responses.
@@ -114,8 +128,9 @@ with any trailers. No size limit applies to streamed bodies: the sink decides.
 - HEAD answered from GET routes without a body.
 - HTTP/2: HPACK, flow control in both directions, h2c upgrade, server push, `GOAWAY` on
   shutdown; h2spec strict 147/147.
-- Graceful shutdown: in-flight responses finish, then HTTP/1 connections close; HTTP/2 sends
-  `GOAWAY`.
+- Graceful shutdown: in-flight responses finish, then HTTP/1 connections close (an idle one after
+  `idle_drain_grace`, answering a request that arrives meanwhile with `Connection: close`); HTTP/2
+  sends `GOAWAY`.
 
 ## Comparison
 

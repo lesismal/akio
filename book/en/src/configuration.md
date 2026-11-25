@@ -94,7 +94,7 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 
 | Type | Field: default |
 |---|---|
-| `akio_http::HttpConfig` | `max_header_bytes`: 64 KiB, `max_body_bytes`: 1 MiB, `h2`: `Some(H2Config::default())`, `head_timeout`: 10 s, `keep_alive_timeout`: 75 s, `body_timeout`: 60 s |
+| `akio_http::HttpConfig` | `max_header_bytes`: 64 KiB, `max_body_bytes`: 1 MiB, `h2`: `Some(H2Config::default())`, `head_timeout`: 10 s, `keep_alive_timeout`: 75 s, `body_timeout`: 60 s, `idle_drain_grace`: 250 ms |
 | `akio_http::H2Config` | `max_concurrent_streams`: 128, `initial_window`: 1 MiB, `conn_window`: 16 MiB, `max_header_list`: 64 KiB, `max_body_bytes`: 1 MiB, `max_pending_bytes`: 8 MiB, `max_conn_pending_bytes`: 32 MiB, `max_resets`: 100, `max_control_frames`: 1000, `reset_window`: 30 s |
 | `akio_http::files::Files` | `index`: `index.html`, `max_cached_bytes`: 256 KiB, `max_open_files`: 64, `check_interval`: 5 s, `watch`: off, `max_watches`: 1024, `cache_control`: none |
 | `akio_http::middleware::Cors` | `allow_origin`: `*`, `allow_methods`: GET, POST, PUT, PATCH, DELETE, OPTIONS, `allow_headers`: Content-Type, Authorization, `max_age`: 600 s |

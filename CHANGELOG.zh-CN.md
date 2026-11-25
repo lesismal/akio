@@ -10,6 +10,36 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：被排空的空闲 HTTP/1 连接在宽限期后关闭（akio-http；akit A54）
+
+`HttpConfig::idle_drain_grace`（默认 250 ms）：排空监听器时（`Engine::shutdown_listener`、
+`Engine::shutdown`），空闲的 HTTP/1 keep-alive 连接不再被立即关闭，从而与客户端可能已经发出的请求
+竞争。它最多保持打开到宽限期结束；期间到达的请求、或已在接收缓冲区中的请求，以
+`Connection: close` 应答，并在响应后关闭连接；只收到一部分的请求、或 body 正在到达的请求，算作
+忙碌，同样如此应答；没有请求则在宽限期结束时关闭连接。排空的期限是宽限期的上限。
+`Duration::ZERO` 保持旧行为。在宽限期内转为 HTTP/2 的连接立即收到 `GOAWAY`。
+
+### 新增：监听器的响应观察者，每个请求不分配内存（akio-http、akio-h3；akit A29）
+
+ADR-158。`ResponseObserver::on_response(&self, resp, req, words: [u64; 2], started: Instant)`，
+用 `HttpAcceptor::observer`（HTTP/1.1 和 HTTP/2）或 `akio_h3::serve_with_observer`（HTTP/3）设置
+一次；请求用 `Context::set_observed(words) -> bool` 选择被观察，它把两个字和时间内联存储。每个被
+观察的请求，观察者在其响应发出时运行一次，在发送它的线程上，位于过滤器之后，无论响应是内联发出、
+分离后发出、挂起后发出、经扣住的响应头发出还是流式发出（在响应头时）；从未发出的响应不被观察。
+每个连接克隆自己对观察者的句柄，所以请求不会增加其他线程共享的计数；被观察的 HTTP/1.1 请求不分配
+内存（有测试计数）。新增 `transport::ConnSink::observer` 和 `transport::conn_observer`，供接缝上的
+传输使用。HTTP/2 会话装箱在 HTTP/1 会话中（每个 HTTP/2 连接一次分配），让空闲的 HTTP/1 连接保持在
+其大小预算内。
+
+### 新增：可以挂起 body 流式到达的请求（akio-http、akio-h3；akit A75）
+
+ADR-159。对 body 流式到达的请求（`BodyMode::Stream`），`Context::suspend` 不再返回 `None`：从挂起
+起扣住 body 的读取（HTTP/1.1 停止读连接，HTTP/2 停止归还窗口，HTTP/3 扣住流），已经读到的数据
+（一次读取的量，或一个流窗口）被保留，`Suspended::resume` 的闭包返回后，恢复的上下文的 `on_body`
+接收器按序拿到完整的 body，读取继续。在闭包中扣住读取（`body_reads`）的处理器保持扣住；期间离开
+的客户端触发 `on_gone`；未恢复就被丢弃的请求应答 `500`，其 body 被读过。HTTP/1.1、HTTP/2 和
+HTTP/3。
+
 ### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
 使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在
