@@ -196,6 +196,13 @@ pub fn dispatch_conn_on_pool<S: Service>(
     );
 }
 
+/// Runs `job` on the HTTP layer's timer thread after `delay` (for a protocol crate that must
+/// try something again later without blocking an I/O thread: `akio-h3` asking a full pool
+/// again). Jobs must be quick: one thread runs them all.
+pub fn after(delay: std::time::Duration, job: impl FnOnce() + Send + 'static) {
+    crate::timer::after(delay, job);
+}
+
 /// A [`Request::target`] for a new request: `target` copied into the buffer of a request this
 /// thread finished with earlier (see [`dispatch_conn`]), so it allocates only when there is
 /// none or it is too small. HTTP/1.1 and HTTP/2 build their targets the same way.

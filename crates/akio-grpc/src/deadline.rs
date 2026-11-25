@@ -7,11 +7,18 @@
 //! number of live timers, not the number ever scheduled. The thread sleeps until the earliest
 //! deadline and is woken only when a new timer is due before that.
 //!
+//! Timer callbacks run on that one thread, so they must be short and never block: a callback
+//! that waits for a call to end would wait for a deadline only this thread can fire, and every
+//! deadline in the process would stall. Callbacks the crate does not control (a call's `done`)
+//! are passed on with [`hand_off`] to a second thread, the callbacks thread, so they may make a
+//! blocking call; only the crate's own waiters (a condition variable to signal) are signalled
+//! on the deadline thread itself.
+//!
 //! The same module is in `akio-grpc` and `akio-arpc` (`src/deadline.rs`); keep them identical.
 
 use std::{
     cell::Cell,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{
         Condvar, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -44,6 +51,87 @@ impl Timer {
     pub(crate) fn cancel(&self) {
         service().cancel(self);
     }
+}
+
+/// Most callbacks waiting for the callbacks thread; past it each further one gets a thread of
+/// its own (the callbacks thread is stuck in a callback that blocks, or far behind).
+const MAX_HANDED_OFF: usize = 4096;
+
+/// Runs `f` on the callbacks thread, after the callbacks handed off before it: for a callback
+/// the crate does not control (a call's `done` at its deadline), which may block without
+/// stalling the deadline thread. Never runs `f` on the calling thread.
+pub(crate) fn hand_off(f: impl FnOnce() + Send + 'static) {
+    let f: TimerFn = Box::new(f);
+    let cb = callbacks();
+    let mut q = cb.q.lock().unwrap_or_else(|p| p.into_inner());
+    if q.len() < MAX_HANDED_OFF {
+        q.push_back(f);
+        drop(q);
+        cb.cv.notify_one();
+        return;
+    }
+    drop(q);
+    // A full queue: a thread of its own rather than an unbounded queue. Should even that fail
+    // (no threads left), it waits in the queue after all.
+    let slot = std::sync::Arc::new(Mutex::new(Some(f)));
+    let s2 = slot.clone();
+    let spawned = std::thread::Builder::new()
+        .name(concat!(env!("CARGO_PKG_NAME"), "-callback").into())
+        .spawn(move || {
+            let f = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(f) = f {
+                f();
+            }
+        });
+    if spawned.is_err() {
+        let f = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(f) = f {
+            cb.q.lock().unwrap_or_else(|p| p.into_inner()).push_back(f);
+            cb.cv.notify_one();
+        }
+    }
+}
+
+/// The callbacks thread's queue ([`hand_off`]).
+struct Callbacks {
+    q: Mutex<VecDeque<TimerFn>>,
+    cv: Condvar,
+}
+
+fn callbacks() -> &'static Callbacks {
+    static C: OnceLock<&'static Callbacks> = OnceLock::new();
+    C.get_or_init(|| {
+        let c: &'static Callbacks = Box::leak(Box::new(Callbacks {
+            q: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+        }));
+        std::thread::Builder::new()
+            .name(concat!(env!("CARGO_PKG_NAME"), "-callbacks").into())
+            .spawn(move || {
+                loop {
+                    let f = {
+                        let mut q = c.q.lock().unwrap_or_else(|p| p.into_inner());
+                        loop {
+                            if let Some(f) = q.pop_front() {
+                                break f;
+                            }
+                            q = c.cv.wait(q).unwrap_or_else(|p| p.into_inner());
+                        }
+                    };
+                    // A panicking callback must not take the thread (and every later
+                    // callback) with it.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+                }
+            })
+            .expect("callbacks thread");
+        c
+    })
+}
+
+/// Whether this is the deadline thread (whose callbacks must not block).
+#[cfg(test)]
+pub(crate) fn on_deadline_thread() -> bool {
+    std::thread::current().name() == Some(concat!(env!("CARGO_PKG_NAME"), "-deadlines"))
 }
 
 /// Timers scheduled and not yet run or cancelled, in every shard.
@@ -237,6 +325,27 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(t0.elapsed() < Duration::from_secs(1));
         far.cancel();
+    }
+
+    /// A handed-off callback runs on the callbacks thread, never on the caller's or the
+    /// deadline thread, and may wait for a deadline: the deadline thread goes on firing.
+    #[test]
+    fn handed_off_callbacks_may_block_on_deadlines() {
+        let (tx, rx) = mpsc::channel();
+        Timer::at(Instant::now(), move || {
+            assert!(on_deadline_thread());
+            hand_off(move || {
+                assert!(!on_deadline_thread());
+                // Blocks until a later deadline fires.
+                let (t2, r2) = mpsc::channel();
+                Timer::at(Instant::now() + Duration::from_millis(20), move || {
+                    let _ = t2.send(());
+                });
+                let fired = r2.recv_timeout(Duration::from_secs(5)).is_ok();
+                let _ = tx.send(fired);
+            });
+        });
+        assert!(rx.recv_timeout(Duration::from_secs(10)).expect("ran"));
     }
 
     /// A flood of long deadlines that are all cancelled leaves nothing behind (the callbacks,

@@ -413,6 +413,16 @@ impl std::error::Error for CallError {}
 pub type CallResult = Result<Vec<u8>, CallError>;
 type CallCb = Box<dyn FnOnce(CallResult) + Send>;
 
+/// A call waiting for its answer.
+struct PendingCall {
+    done: CallCb,
+    timer: Option<Timer>,
+    /// `done` is the crate's own, which only signals a waiter ([`Peer::call`]): it may run on
+    /// the deadline thread. A caller's `done` may block, so at the deadline it goes to the
+    /// callbacks thread ([`deadline::hand_off`]).
+    inline: bool,
+}
+
 /// One message of a stream, or its end.
 pub enum StreamEvent<'a> {
     /// A message's payload.
@@ -436,7 +446,7 @@ struct PeerInner {
     routes: Arc<Routes>,
     seq: AtomicU64,
     /// Calls waiting for their answer, with their timeout.
-    pending: Mutex<HashMap<u64, (CallCb, Option<Timer>)>>,
+    pending: Mutex<HashMap<u64, PendingCall>>,
     /// The length of `pending`, stored under its lock (read without it by pools).
     pending_len: AtomicUsize,
     streams: Mutex<Streams>,
@@ -550,6 +560,13 @@ impl Peer {
 
     /// Calls `method`; `done` receives the answer, an error, or `Timeout` after `timeout`
     /// (`None`: the routes' [`call_timeout`](Routes::call_timeout), 30 s by default).
+    ///
+    /// `done` runs on the connection's I/O thread for an answer or the connection's loss, and
+    /// must not block there; at once on this thread when the call is not sent (`Overloaded`,
+    /// `Closed`); and for `Timeout` on the callbacks thread (`akio-arpc-callbacks`, shared by
+    /// every peer in the process, never the thread that fires deadlines), where a blocking
+    /// [`call`](Self::call)`.wait()` does not stall other calls' deadlines, but does delay the
+    /// other calls' `done` at their timeouts.
     pub fn call_async(
         &self,
         method: &str,
@@ -570,6 +587,20 @@ impl Peer {
         values: &Values,
         done: impl FnOnce(CallResult) + Send + 'static,
     ) {
+        self.start_call(method, payload, timeout, values, Box::new(done), false);
+    }
+
+    /// [`call_async_with`](Self::call_async_with); `inline`: `done` is the crate's own and only
+    /// signals a waiter, so it may run on the deadline thread.
+    fn start_call(
+        &self,
+        method: &str,
+        payload: &[u8],
+        timeout: Option<Duration>,
+        values: &Values,
+        done: CallCb,
+        inline: bool,
+    ) {
         let seq = self.0.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let frame = self
             .0
@@ -589,11 +620,18 @@ impl Peer {
                 let me = Arc::downgrade(&self.0);
                 Timer::at(at, move || {
                     if let Some(p) = me.upgrade() {
-                        Peer(p).complete(seq, Err(CallError::Timeout));
+                        Peer(p).time_out(seq);
                     }
                 })
             });
-            pending.insert(seq, (Box::new(done), timer));
+            pending.insert(
+                seq,
+                PendingCall {
+                    done,
+                    timer,
+                    inline,
+                },
+            );
             self.0.pending_len.store(pending.len(), Ordering::Relaxed);
         }
         if !self.send(frame) {
@@ -606,7 +644,8 @@ impl Peer {
     pub fn call(&self, method: &str, payload: &[u8], timeout: Option<Duration>) -> CallFuture {
         let shared = Arc::new(Shared::default());
         let s = shared.clone();
-        self.call_async(method, payload, timeout, move |r| s.done(r));
+        let done: CallCb = Box::new(move |r| s.done(r));
+        self.start_call(method, payload, timeout, &Values::new(), done, true);
         CallFuture(shared)
     }
 
@@ -620,7 +659,8 @@ impl Peer {
     ) -> CallFuture {
         let shared = Arc::new(Shared::default());
         let s = shared.clone();
-        self.call_async_with(method, payload, timeout, values, move |r| s.done(r));
+        let done: CallCb = Box::new(move |r| s.done(r));
+        self.start_call(method, payload, timeout, values, done, true);
         CallFuture(shared)
     }
 
@@ -683,18 +723,32 @@ impl Peer {
         }
     }
 
+    fn take_pending(&self, seq: u64) -> Option<PendingCall> {
+        let mut g = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let e = g.remove(&seq);
+        self.0.pending_len.store(g.len(), Ordering::Relaxed);
+        e
+    }
+
     fn complete(&self, seq: u64, r: CallResult) {
-        let entry = {
-            let mut g = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
-            let e = g.remove(&seq);
-            self.0.pending_len.store(g.len(), Ordering::Relaxed);
-            e
-        };
-        if let Some((cb, timer)) = entry {
-            if let Some(t) = timer {
+        if let Some(c) = self.take_pending(seq) {
+            if let Some(t) = c.timer {
                 t.cancel();
             }
-            cb(r);
+            (c.done)(r);
+        }
+    }
+
+    /// The call's deadline passed (on the deadline thread): a caller's `done` runs on the
+    /// callbacks thread, so a blocking call there cannot stall every deadline.
+    fn time_out(&self, seq: u64) {
+        if let Some(c) = self.take_pending(seq) {
+            if c.inline {
+                (c.done)(Err(CallError::Timeout));
+            } else {
+                let done = c.done;
+                deadline::hand_off(move || done(Err(CallError::Timeout)));
+            }
         }
     }
 
@@ -704,11 +758,11 @@ impl Peer {
             self.0.pending_len.store(0, Ordering::Relaxed);
             g.drain().map(|(_, c)| c).collect()
         };
-        for (cb, timer) in pending {
-            if let Some(t) = timer {
+        for c in pending {
+            if let Some(t) = c.timer {
                 t.cancel();
             }
-            cb(Err(CallError::Closed));
+            (c.done)(Err(CallError::Closed));
         }
         let streams: Vec<_> = {
             let mut g = self.0.streams.lock().unwrap_or_else(|p| p.into_inner());
@@ -1527,6 +1581,35 @@ mod tests {
             assert_eq!(f.wait(), Err(CallError::Closed));
         }
         assert!(deadline::pending() < before + 50);
+        e.shutdown();
+        e.wait();
+    }
+
+    /// A `call_async` whose `done` makes a blocking call when it times out: `done` runs off
+    /// the deadline thread, so the inner call's own deadline still fires (before, `done` ran
+    /// on the deadline thread and `.wait()` waited for a deadline only that thread could fire,
+    /// stalling every deadline in the process).
+    #[test]
+    fn done_at_timeout_may_make_a_blocking_call() {
+        let server = Server::new(Arc::new(
+            Routes::new().handle("/never", |ctx| drop(ctx.detach())),
+        ));
+        let e = engine(server);
+        let peer = dial_blocking(&e, e.local_addrs()[0], Arc::new(Routes::new())).expect("dial");
+        let (tx, rx) = mpsc::channel();
+        let p2 = peer.clone();
+        peer.call_async("/never", b"", Some(Duration::from_millis(30)), move |r| {
+            let on_deadline_thread = deadline::on_deadline_thread();
+            let inner = p2
+                .call("/never", b"", Some(Duration::from_millis(30)))
+                .wait();
+            let _ = tx.send((r, on_deadline_thread, inner));
+        });
+        let (r, on_deadline_thread, inner) =
+            rx.recv_timeout(Duration::from_secs(10)).expect("done ran");
+        assert_eq!(r, Err(CallError::Timeout));
+        assert!(!on_deadline_thread);
+        assert_eq!(inner, Err(CallError::Timeout));
         e.shutdown();
         e.wait();
     }

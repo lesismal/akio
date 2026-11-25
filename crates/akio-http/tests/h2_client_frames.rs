@@ -142,6 +142,27 @@ fn setup_with(
     settings: &[(u16, u32)],
     script: impl FnOnce(&mut Srv) + Send + 'static,
 ) -> (Arc<Engine>, H2Client, thread::JoinHandle<()>) {
+    setup_on(
+        Engine::builder()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(300);
+                v
+            })
+            .client_threads(1),
+        opts,
+        settings,
+        script,
+    )
+}
+
+/// [`setup_with`], the client's engine built from `b`.
+fn setup_on(
+    b: akio::EngineBuilder,
+    opts: H2Options,
+    settings: &[(u16, u32)],
+    script: impl FnOnce(&mut Srv) + Send + 'static,
+) -> (Arc<Engine>, H2Client, thread::JoinHandle<()>) {
     let settings = settings.to_vec();
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -171,17 +192,7 @@ fn setup_with(
         // bytes would reset the connection and could discard responses still in flight.
         while srv.read().is_some() {}
     });
-    let e = Arc::new(
-        Engine::builder()
-            .config({
-                let mut v = Config::default();
-                v.shutdown_timeout = Duration::from_millis(300);
-                v
-            })
-            .client_threads(1)
-            .build()
-            .unwrap(),
-    );
+    let e = Arc::new(b.build().unwrap());
     e.start().unwrap();
     let c = H2Client::dial_blocking(&e, addr, None, opts).unwrap();
     (e, c, t)
@@ -983,6 +994,98 @@ fn upload_queue_is_bounded_and_drains() {
     let mut want = vec![1u8; 100];
     want.extend_from_slice(&[3; 30]);
     assert_eq!(body, want);
+    stop(&e, t);
+}
+
+/// A write whose hop to the connection's I/O thread is refused (here by a full logical pool)
+/// is not taken: written again, the bytes go out once (they used to stay queued, and went out
+/// twice). Where writes reach the I/O thread without the pool, the first write just succeeds.
+#[test]
+fn upload_writes_refused_by_a_full_pool_are_not_taken() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (body_tx, body_rx) = mpsc::channel();
+    // The client's engine: one pool thread and one queue slot, which a plain HTTP request
+    // holds until `released`.
+    let released = Arc::new(AtomicBool::new(false));
+    let r2 = released.clone();
+    let hold = move |ctx: &mut akio_http::Context| {
+        let ex = ctx.executor().expect("executor");
+        for first in [true, false] {
+            let (r, started) = (r2.clone(), Arc::new(AtomicBool::new(false)));
+            let s2 = started.clone();
+            ex.execute(move || {
+                s2.store(true, Ordering::Release);
+                let end = std::time::Instant::now() + Duration::from_secs(10);
+                while !r.load(Ordering::Acquire) && std::time::Instant::now() < end {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            })
+            .expect("queued");
+            // The first job takes the thread before the second fills the queue.
+            let end = std::time::Instant::now() + Duration::from_secs(5);
+            while first && !started.load(Ordering::Acquire) && std::time::Instant::now() < end {
+                thread::yield_now();
+            }
+        }
+        ctx.text(200, "held");
+    };
+    let mut pool = akio::PoolConfig::default();
+    pool.max_threads = 1;
+    pool.queue_capacity = 1;
+    let b = Engine::builder()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v
+        })
+        .pool(pool)
+        .client_threads(1)
+        .listen(
+            akio::Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .threads(1)
+                .serve(akio_http::serve(hold)),
+        );
+    let (e, c, t) = setup_on(b, H2Options::default(), &[(3, 50)], move |srv| {
+        let (sid, _) = srv.request();
+        let mut body = Vec::new();
+        loop {
+            let f = srv.until(|f| f.ty == DATA && f.sid == sid).unwrap();
+            body.extend_from_slice(&f.payload);
+            if f.flags & END_STREAM != 0 {
+                break;
+            }
+        }
+        body_tx.send(body).unwrap();
+        srv.respond(sid, b"stored");
+    });
+    eventually(|| c.max_concurrent_streams() == 50);
+    let (on_event, evs) = recorder();
+    let up = c.open(ClientRequest::post("http://x/u", Vec::new()), on_event);
+    eventually(|| c.open_streams() == 1);
+    // Hold the pool.
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut buf = [0u8; 256];
+    let n = s.read(&mut buf).unwrap();
+    assert!(buf[..n].starts_with(b"HTTP/1.1 200"));
+    eventually(|| e.pool_stats().queued == 1);
+    let refused = up.try_write(b"abc").is_err();
+    if refused {
+        assert_eq!(up.queued_bytes(), 0);
+    }
+    released.store(true, Ordering::Release);
+    eventually(|| e.pool_stats().queued == 0);
+    if refused {
+        up.try_write(b"abc").unwrap();
+    }
+    assert!(up.finish());
+    assert_eq!(until_over(&evs), ["head 200", "data stored", "end"]);
+    assert_eq!(
+        body_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        b"abc"
+    );
+    drop(s);
     stop(&e, t);
 }
 

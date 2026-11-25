@@ -143,7 +143,9 @@ for the reasoning behind these rules.
   requests (`open`) are handed their body as it arrives and are not limited in size.
 - Streaming both ways: `open(req, on_event)` returns an `H2Upload` (`write`, `finish`) for the
   request body, and reports `H2Event::Head`, `Data`, `Trailers`, `End` or `Error` as the response
-  arrives. akio-grpc's client is built on it.
+  arrives. akio-grpc's client is built on it. A `try_write` that fails took nothing (`Overloaded`
+  past `max_queued_bytes`, `Closed` once the stream is over): written again, the bytes go out
+  once.
 - WebSockets on the same connection (RFC 8441): `websocket(url, &H2WsOptions, handler, done)`
   or `websocket_blocking`; see [WebSocket over HTTP/2](websocket.md#websocket-over-http2).
 - `is_open()`, `close()`.

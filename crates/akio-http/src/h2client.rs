@@ -473,10 +473,35 @@ struct UpShared {
 #[derive(Default)]
 struct UpQ {
     chunks: VecDeque<Vec<u8>>,
+    /// Chunks ever queued, and ever taken from the front by the pump: a write whose hop was
+    /// refused finds its chunk by its number, or knows the pump has it.
+    pushed: u64,
+    taken: u64,
     finished: bool,
     trailers: Option<Headers>,
     /// A pump is on its way to the I/O thread.
     scheduled: bool,
+}
+
+impl UpQ {
+    /// Queues a chunk; its number.
+    fn push(&mut self, data: Vec<u8>) -> u64 {
+        self.chunks.push_back(data);
+        self.pushed += 1;
+        self.pushed - 1
+    }
+
+    /// The pump takes every chunk queued.
+    fn take_all(&mut self) -> VecDeque<Vec<u8>> {
+        self.taken = self.pushed;
+        std::mem::take(&mut self.chunks)
+    }
+
+    /// Takes chunk `n` back, unless the pump has it already.
+    fn take_back(&mut self, n: u64) -> Option<Vec<u8>> {
+        let at = usize::try_from(n.checked_sub(self.taken)?).ok()?;
+        self.chunks.remove(at)
+    }
 }
 
 impl UpShared {
@@ -562,7 +587,7 @@ impl H2Upload {
     /// Queues body bytes: `Err(Closed)` when the stream is over (ended, reset, cancelled, timed
     /// out), the body finished or the connection gone; `Err(Overloaded)` when they would pass
     /// [`H2Options::max_queued_bytes`] (a write is taken whatever its size when nothing is
-    /// queued).
+    /// queued). An error means the bytes were not taken: written again, they go out once.
     pub fn try_write(&self, data: &[u8]) -> akio::Result<()> {
         if self.up.closed.load(Ordering::Acquire)
             || self.up.ctl.stop.load(Ordering::Acquire) != STOP_NONE
@@ -577,19 +602,30 @@ impl H2Upload {
         if queued > 0 && queued + n > self.up.max {
             return Err(akio::Error::Overloaded);
         }
-        {
+        let seq = {
             let mut q = self.up.lock();
             if q.finished {
                 return Err(akio::Error::Closed);
             }
-            q.chunks.push_back(data.to_vec());
+            let seq = q.push(data.to_vec());
             self.up.queued.fetch_add(n, Ordering::AcqRel);
-        }
+            seq
+        };
         if self.kick() {
-            Ok(())
-        } else {
-            Err(akio::Error::Closed)
+            return Ok(());
         }
+        // Not handed over: take the bytes back, so a caller that writes them again does not
+        // send them twice. Unless the stream's start took them meanwhile: then they go out.
+        if self.up.lock().take_back(seq).is_none() {
+            return Ok(());
+        }
+        let _ = self
+            .up
+            .queued
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |q| {
+                Some(q.saturating_sub(n))
+            });
+        Err(akio::Error::Closed)
     }
 
     /// Bytes written and not yet sent in a DATA frame (waiting for the stream's or the
@@ -1010,7 +1046,7 @@ impl H2Client {
         let first = std::mem::take(&mut req.body);
         if !first.is_empty() {
             up.queued.store(first.len(), Ordering::Release);
-            up.lock().chunks.push_back(first);
+            up.lock().push(first);
         }
         if let Some(d) = req.timeout {
             let (ctl, conn) = (Arc::downgrade(&ctl), self.conn.clone());
@@ -1905,7 +1941,7 @@ impl H2Conn {
             if sid == 0 {
                 return; // not started yet: the start drains the queue
             }
-            (std::mem::take(&mut q.chunks), q.finished, q.trailers.take())
+            (q.take_all(), q.finished, q.trailers.take())
         };
         let Some(st) = self.streams.get_mut(&sid) else {
             return;
