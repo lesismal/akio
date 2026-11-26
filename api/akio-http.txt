@@ -1280,6 +1280,7 @@ impl<S> core::panic::unwind_safe::UnwindSafe for akio_http::HttpAcceptor<S> wher
 pub akio_http::HttpConfig::body_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::h2: core::option::Option<akio_http::H2Config>
 pub akio_http::HttpConfig::head_timeout: core::option::Option<core::time::Duration>
+pub akio_http::HttpConfig::http1: bool
 pub akio_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::max_body_bytes: usize
 pub akio_http::HttpConfig::max_header_bytes: usize

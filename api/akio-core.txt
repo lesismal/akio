@@ -313,13 +313,17 @@ pub struct akio_core::telemetry::Live
 impl akio_core::telemetry::Live
 pub fn akio_core::telemetry::Live::backlog(&self) -> i32
 pub fn akio_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::max_accepted_connections(&self) -> usize
 pub fn akio_core::telemetry::Live::max_connections(&self) -> usize
+pub fn akio_core::telemetry::Live::max_pending_bytes(&self) -> core::option::Option<usize>
 pub fn akio_core::telemetry::Live::max_queued_bytes(&self) -> usize
 pub fn akio_core::telemetry::Live::read_buffer(&self) -> usize
 pub fn akio_core::telemetry::Live::retire_timeout(&self) -> core::option::Option<core::time::Duration>
 pub fn akio_core::telemetry::Live::set_backlog(&self, i32)
 pub fn akio_core::telemetry::Live::set_idle_timeout(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_max_accepted_connections(&self, usize)
 pub fn akio_core::telemetry::Live::set_max_connections(&self, usize)
+pub fn akio_core::telemetry::Live::set_max_pending_bytes(&self, core::option::Option<usize>)
 pub fn akio_core::telemetry::Live::set_max_queued_bytes(&self, usize)
 pub fn akio_core::telemetry::Live::set_read_buffer(&self, usize)
 pub fn akio_core::telemetry::Live::set_retire_timeout(&self, core::option::Option<core::time::Duration>)
@@ -348,6 +352,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Live
 pub akio_core::telemetry::LoopCounters::accept_errors: u64
 pub akio_core::telemetry::LoopCounters::accepted: u64
 pub akio_core::telemetry::LoopCounters::backpressure: u64
+pub akio_core::telemetry::LoopCounters::budget_pauses: u64
 pub akio_core::telemetry::LoopCounters::bytes_in: u64
 pub akio_core::telemetry::LoopCounters::bytes_out: u64
 pub akio_core::telemetry::LoopCounters::callback_ns: u64
@@ -422,6 +427,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMetri
 impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMetrics
 #[non_exhaustive] pub struct akio_core::telemetry::Metrics
 pub akio_core::telemetry::Metrics::loops: alloc::vec::Vec<akio_core::telemetry::LoopMetrics>
+pub akio_core::telemetry::Metrics::open_accepted: usize
 pub akio_core::telemetry::Metrics::open_connections: usize
 pub akio_core::telemetry::Metrics::pool: core::option::Option<akio_pool::PoolStats>
 pub akio_core::telemetry::Metrics::total: akio_core::telemetry::LoopCounters
@@ -483,7 +489,10 @@ pub fn akio_core::telemetry::Telemetry::live(&self) -> &akio_core::telemetry::Li
 pub fn akio_core::telemetry::Telemetry::metrics(&self) -> akio_core::telemetry::Metrics
 pub fn akio_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
 pub fn akio_core::telemetry::Telemetry::notify_reload(&self)
+pub fn akio_core::telemetry::Telemetry::open_accepted(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::open_connections(&self) -> usize
+pub fn akio_core::telemetry::Telemetry::over_budget(&self) -> bool
+pub fn akio_core::telemetry::Telemetry::pending_bytes(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>, &[(&str, &str)]) -> akio_core::metrics::CollectorId
 pub fn akio_core::telemetry::Telemetry::reload(&self, &akio_core::Config) -> akio_core::telemetry::ReloadReport
 pub fn akio_core::telemetry::Telemetry::render_prometheus(&self) -> alloc::string::String
@@ -571,7 +580,9 @@ pub akio_core::Config::backlog: i32
 pub akio_core::Config::connect_timeout: core::option::Option<core::time::Duration>
 pub akio_core::Config::idle_timeout: core::option::Option<core::time::Duration>
 pub akio_core::Config::log_level: core::option::Option<akio_log::LevelFilter>
+pub akio_core::Config::max_accepted_connections: usize
 pub akio_core::Config::max_connections: usize
+pub akio_core::Config::max_pending_bytes: core::option::Option<usize>
 pub akio_core::Config::max_pending_responses: core::option::Option<usize>
 pub akio_core::Config::max_queued_bytes: usize
 pub akio_core::Config::read_buffer: usize
@@ -744,13 +755,17 @@ pub struct akio_core::Live
 impl akio_core::telemetry::Live
 pub fn akio_core::telemetry::Live::backlog(&self) -> i32
 pub fn akio_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn akio_core::telemetry::Live::max_accepted_connections(&self) -> usize
 pub fn akio_core::telemetry::Live::max_connections(&self) -> usize
+pub fn akio_core::telemetry::Live::max_pending_bytes(&self) -> core::option::Option<usize>
 pub fn akio_core::telemetry::Live::max_queued_bytes(&self) -> usize
 pub fn akio_core::telemetry::Live::read_buffer(&self) -> usize
 pub fn akio_core::telemetry::Live::retire_timeout(&self) -> core::option::Option<core::time::Duration>
 pub fn akio_core::telemetry::Live::set_backlog(&self, i32)
 pub fn akio_core::telemetry::Live::set_idle_timeout(&self, core::option::Option<core::time::Duration>)
+pub fn akio_core::telemetry::Live::set_max_accepted_connections(&self, usize)
 pub fn akio_core::telemetry::Live::set_max_connections(&self, usize)
+pub fn akio_core::telemetry::Live::set_max_pending_bytes(&self, core::option::Option<usize>)
 pub fn akio_core::telemetry::Live::set_max_queued_bytes(&self, usize)
 pub fn akio_core::telemetry::Live::set_read_buffer(&self, usize)
 pub fn akio_core::telemetry::Live::set_retire_timeout(&self, core::option::Option<core::time::Duration>)
@@ -779,6 +794,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::Live
 pub akio_core::LoopCounters::accept_errors: u64
 pub akio_core::LoopCounters::accepted: u64
 pub akio_core::LoopCounters::backpressure: u64
+pub akio_core::LoopCounters::budget_pauses: u64
 pub akio_core::LoopCounters::bytes_in: u64
 pub akio_core::LoopCounters::bytes_out: u64
 pub akio_core::LoopCounters::callback_ns: u64
@@ -853,6 +869,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_core::telemetry::LoopMetri
 impl core::panic::unwind_safe::UnwindSafe for akio_core::telemetry::LoopMetrics
 #[non_exhaustive] pub struct akio_core::Metrics
 pub akio_core::Metrics::loops: alloc::vec::Vec<akio_core::telemetry::LoopMetrics>
+pub akio_core::Metrics::open_accepted: usize
 pub akio_core::Metrics::open_connections: usize
 pub akio_core::Metrics::pool: core::option::Option<akio_pool::PoolStats>
 pub akio_core::Metrics::total: akio_core::telemetry::LoopCounters
@@ -1001,7 +1018,10 @@ pub fn akio_core::telemetry::Telemetry::live(&self) -> &akio_core::telemetry::Li
 pub fn akio_core::telemetry::Telemetry::metrics(&self) -> akio_core::telemetry::Metrics
 pub fn akio_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<akio_core::telemetry::Telemetry>
 pub fn akio_core::telemetry::Telemetry::notify_reload(&self)
+pub fn akio_core::telemetry::Telemetry::open_accepted(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::open_connections(&self) -> usize
+pub fn akio_core::telemetry::Telemetry::over_budget(&self) -> bool
+pub fn akio_core::telemetry::Telemetry::pending_bytes(&self) -> usize
 pub fn akio_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn akio_core::metrics::Collector>, &[(&str, &str)]) -> akio_core::metrics::CollectorId
 pub fn akio_core::telemetry::Telemetry::reload(&self, &akio_core::Config) -> akio_core::telemetry::ReloadReport
 pub fn akio_core::telemetry::Telemetry::render_prometheus(&self) -> alloc::string::String
