@@ -631,17 +631,31 @@ impl Pool {
     }
 
     /// Waits for every thread to exit. Call after [`shutdown`](Self::shutdown).
+    ///
+    /// Called from one of the pool's own threads (a job that shuts the pool down and joins
+    /// it), it waits for the other threads and not for the calling one, which cannot wait for
+    /// itself: that thread exits on its own once its job returns. Its handle is kept, so a
+    /// later `join` from outside the pool waits for it too.
     pub fn join(&self) {
+        let me = thread::current().id();
         let handles = std::mem::take(&mut self.lock().handles);
+        let mut own = None;
         for h in handles {
-            let _ = h.join();
+            if h.thread().id() == me {
+                own = Some(h);
+            } else {
+                let _ = h.join();
+            }
+        }
+        if let Some(h) = own {
+            self.lock().handles.push(h);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::*;
 
@@ -686,6 +700,33 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(10), "timed out");
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn a_job_that_shuts_down_and_joins_its_own_pool_does_not_join_itself() {
+        // Two threads: the job's join waits for the other one and skips its own.
+        let p = Pool::new(cfg(2, 2, 16));
+        let joined = Arc::new(AtomicBool::new(false));
+        let (p2, j) = (p.clone(), joined.clone());
+        p.try_execute(Box::new(move || {
+            p2.shutdown();
+            p2.join();
+            j.store(true, Ordering::SeqCst);
+        }))
+        .unwrap();
+        wait_until(|| p.stats().completed == 1);
+        assert!(joined.load(Ordering::SeqCst));
+        assert_eq!(p.stats().panicked, 0);
+        // The test thread's join waits for the job's thread too, which exits now.
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            p.join();
+            let _ = tx.send(p.stats().threads);
+        });
+        let threads = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("join from outside the pool returns");
+        assert_eq!(threads, 0);
     }
 
     #[test]

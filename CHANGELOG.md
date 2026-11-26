@@ -10,6 +10,18 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: joining the pool or waiting for the engine from one of its own threads (akio-pool, akio)
+
+- `Pool::join` called from one of the pool's threads (a job that shuts its pool down and joins
+  it) joined that thread too, and std panicked ("failed to join thread"). It now waits for the
+  other threads only; the calling one exits once its job returns, and a later `join` from
+  outside the pool waits for it.
+- `Engine::wait` (and `run`) called on one of the engine's logical-pool threads or on an I/O
+  thread waited for its own thread to exit: it held that pool thread forever, or hung or
+  panicked joining its own I/O group. It now returns at once without waiting and logs an error
+  (target `akio`): call it from a thread of the application's own. I/O threads are told by the
+  timer wheel every backend installs on them, so an I/O thread of any engine counts.
+
 ### Added: a pool thread that waits is stood in for (akio-pool, akio-core, akio, akio-http, akio-arpc, akio-h3, akio-ws, akio-socks, akio-grpc, akio-bittorrent, akio-media, akio-webrtc)
 
 `akio::blocking(f)` (also `akio_core::blocking`, `akio_pool::blocking`) runs a wait telling the

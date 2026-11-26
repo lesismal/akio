@@ -461,3 +461,72 @@ fn run_on_loop_work_that_cannot_run_is_dropped() {
     assert_eq!(counts.1.load(Ordering::SeqCst), 100);
     stop(&e);
 }
+
+/// `Engine::wait` called on one of the engine's own threads (a pool job, a handler on an I/O
+/// thread) would wait for that thread to exit: it returns at once instead, and the engine
+/// still shuts down and waits normally from the test thread.
+#[test]
+fn wait_on_a_pool_or_io_thread_returns_at_once() {
+    type Slot = Arc<std::sync::OnceLock<std::sync::Weak<Engine>>>;
+    struct H(Slot);
+    fn verdict(t: Instant) -> &'static str {
+        if t.elapsed() < Duration::from_secs(2) {
+            "ok"
+        } else {
+            "slow"
+        }
+    }
+    impl Handler for H {
+        fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+            let engine = self.0.get().and_then(std::sync::Weak::upgrade).unwrap();
+            if data == b"i" {
+                let t = Instant::now();
+                engine.wait();
+                let _ = c.send(format!("io:{}", verdict(t)).as_bytes());
+                return;
+            }
+            c.spawn_blocking(
+                move || {
+                    let t = Instant::now();
+                    engine.wait();
+                    verdict(t)
+                },
+                |_me: &mut H, c, v| {
+                    let _ = c.send(format!("pool:{v}").as_bytes());
+                },
+            )
+            .unwrap();
+        }
+    }
+    let slot: Slot = Arc::default();
+    let s2 = slot.clone();
+    let e = Arc::new(
+        Engine::builder()
+            .config(quick())
+            .listen(
+                Listener::tcp(localhost())
+                    .backend(common::backend())
+                    .threads(1)
+                    .serve(fn_acceptor(move |_c: &Conn<H>| H(s2.clone()))),
+            )
+            .build()
+            .unwrap(),
+    );
+    slot.set(Arc::downgrade(&e)).unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let mut s = connect(addr);
+    s.write_all(b"p").unwrap();
+    assert_eq!(read_n(&mut s, 7), b"pool:ok");
+    s.write_all(b"i").unwrap();
+    assert_eq!(read_n(&mut s, 5), b"io:ok");
+    drop(s);
+    // The test thread's wait is bounded: on a helper thread, with a deadline.
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        stop(&e);
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("shutdown and wait from the test thread return");
+}

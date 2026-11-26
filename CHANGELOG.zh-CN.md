@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：在线程池或 engine 自己的线程上 join 线程池或等待 engine（akio-pool、akio）
+
+- 在线程池的某个线程上调用 `Pool::join`（任务关闭自己所在的线程池后 join 它）会连同该线程一起 join，
+  std 因此 panic（"failed to join thread"）。现在它只等待其他线程；调用线程在任务返回后自行退出，之后在
+  线程池外调用的 `join` 会等待它。
+- 在 engine 的逻辑线程池线程或 I/O 线程上调用 `Engine::wait`（以及 `run`）会等待自己的线程退出：永久占住
+  那个线程池线程，或在 join 自己的 I/O 线程组时挂起或 panic。现在它立即返回、不等待，并记录一条错误日志
+  （target `akio`）：应从应用自己的线程调用。I/O 线程由各后端在其上安装的定时器轮识别，因此任何 engine
+  的 I/O 线程都算在内。
+
 ### 新增：等待中的线程池线程有线程顶替（akio-pool、akio-core、akio、akio-http、akio-arpc、akio-h3、akio-ws、akio-socks、akio-grpc、akio-bittorrent、akio-media、akio-webrtc）
 
 `akio::blocking(f)`（以及 `akio_core::blocking`、`akio_pool::blocking`）执行一次等待，并告诉调用线程

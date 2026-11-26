@@ -2230,7 +2230,25 @@ impl Engine {
 
     /// Blocks until [`shutdown`](Self::shutdown) has completed: it was called and every I/O
     /// thread has exited, those of listeners added at run time included.
+    ///
+    /// Call it from a thread of the application's own. Called on one of this engine's
+    /// logical-pool threads (a `spawn_blocking` job) or on an I/O thread (a handler, a
+    /// completion), it would wait for its own thread to exit, which never happens: it returns
+    /// at once without waiting, and logs an error. (I/O threads are told by the timer wheel
+    /// every backend installs on them, so this covers an I/O thread of any engine, where
+    /// blocking is never allowed anyway.)
     pub fn wait(&self) {
+        let on = if self.pool.is_current() {
+            "logical-pool thread"
+        } else if timer::on_loop() {
+            "I/O thread"
+        } else {
+            ""
+        };
+        if !on.is_empty() {
+            akio_log::error!(target: "akio", thread = on; "Engine::wait (or run) called on an I/O or logical-pool thread, which must not wait for the engine: returning without waiting; call it from a thread of the application's own");
+            return;
+        }
         self.groups.iter().for_each(|g| g.join());
         let mut st = lock(&self.rt.state);
         while !st.stopped {
@@ -2289,7 +2307,8 @@ impl Engine {
             })
     }
 
-    /// `start` + `wait`.
+    /// `start` + `wait`. Like [`wait`](Self::wait), it returns at once (after starting) when
+    /// called on one of this engine's logical-pool threads or on an I/O thread.
     pub fn run(&self) -> io::Result<()> {
         self.start()?;
         self.wait();
