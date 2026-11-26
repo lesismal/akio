@@ -679,12 +679,17 @@ fn tunnel_writes_first_then_relays_and_drains_on_close() {
         t.counts(ebpf::TunnelSide::A)
             .is_some_and(|c| c.written == 8)
     });
-    assert!(t.moved());
-    assert!(!t.moved());
+    // Whether the greeting's movement is seen by the first `moved` depends on when the kernel
+    // relayed it against the tunnel's baseline (io_uring and rounds scheduling may relay it
+    // first); either way the tunnel goes quiet once the kernel is done with it.
+    let _ = t.moved();
+    wait_until("the tunnel quiet", || !t.moved());
 
     // Bulk, then close at once: the upstream must get every byte before its EOF.
     let bulk: Vec<u8> = (0..BULK).map(|i| (i % 251) as u8).collect();
     s.write_all(&bulk).unwrap();
+    // The bulk is moving through the kernel: the idle probe sees it.
+    wait_until("the bulk seen moving", || t.moved());
     drop(s);
     let closing = Instant::now();
     let (first, total, ok) = urx.recv_timeout(Duration::from_secs(30)).unwrap();
