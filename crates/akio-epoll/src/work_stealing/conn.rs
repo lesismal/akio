@@ -314,6 +314,9 @@ impl RConn {
         }
         if bits & TASK != 0 {
             let tasks = std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|p| p.into_inner()));
+            // With work stealing, what is posted for a connection waits in its own list, not the
+            // poller's commands: the deepest batch is counted here, on the worker running it.
+            ctx.stats.cmd_batch(tasks.len());
             for task in tasks {
                 let Some(h) = st.handler.as_mut() else { break };
                 let t0 = self.home.cfg.telemetry.timing();
