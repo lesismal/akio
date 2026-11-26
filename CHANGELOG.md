@@ -52,6 +52,20 @@ Go's golang.org/x/crypto output (fit's Argon2id setting among them); `ct-dudect`
 targets, `xchacha20poly1305-open-tag` and `blake2b-key`. Argon2id reads memory at
 password-dependent indices after its first half pass, by design (docs/constant-time.md).
 
+### Fixed: connections reset when the thread count shrinks again soon after growing (akio-epoll, akio-uring)
+
+Growing the I/O threads asks the loop holding an `SO_REUSEPORT` socket handed on by an earlier
+shrink to give it back, and it was posted straight to the loop of that index named at the time.
+When the group shrank again before that command was handled, that loop could already have retired
+and exited: the socket sat in a queue nobody read, stayed in the kernel's `SO_REUSEPORT` group
+taking its share of new connections, and was dropped, resetting them all, when the next growth
+replaced the loop. The socket now goes back through the roster, posted under its read lock like
+every other hand-over, so it reaches its home loop, or an active one, before any `Retire`. The
+same race could drop a connection handed over by accept-time balancing (ADR-105): the target loop
+was picked under the lock and posted to after it; both now happen under it. Seen as
+`balancing_survives_resizing` failing about one run in eight (all four clients reset at once);
+0 in 60 runs each on epoll and io_uring since.
+
 ### Changed: fewer wake-ups in the logical pool (akio-pool, akio-core, akio-http)
 
 A job queued on the logical pool wakes a sleeping thread only when no thread is free to take it

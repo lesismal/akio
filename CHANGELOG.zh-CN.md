@@ -46,6 +46,17 @@ XChaCha20-Poly1305 向量以及 Go 的 golang.org/x/crypto 输出（含 fit 的 
 新增两个目标 `xchacha20poly1305-open-tag` 和 `blake2b-key`。Argon2id 在第一遍的前半之后按依赖口令的
 下标读取内存，这是设计使然（docs/constant-time.md）。
 
+### 修复：线程扩容后很快又缩容时连接被重置（akio-epoll、akio-uring）
+
+扩容时，组会让持有某个 `SO_REUSEPORT` socket 的线程把它交回（这个 socket 是之前缩容时转交出去的），
+而交回的目标是发命令那一刻该下标上的线程，直接投递给它。如果这条命令被处理之前组又缩容了，那个线程
+可能已经退役并退出：socket 停在一个没人再读的队列里，仍留在内核的 `SO_REUSEPORT` 组中分到新连接，直到
+下一次扩容替换掉那个线程时被丢弃，队列里的连接全部被重置。现在交回也通过 roster 进行，像其他转交一样在
+它的读锁内投递，因此一定先于任何 `Retire` 到达 socket 的"家"或另一个活跃线程。accept 时的负载均衡
+（ADR-105）转交连接也有同样的竞态：目标在锁内选出，却在锁外投递；现在两者都在锁内完成。表现为
+`balancing_survives_resizing` 大约每 8 次失败 1 次（四个客户端同时被重置）；修复后 epoll 和 io_uring
+各跑 60 次，没有失败。
+
 ### 变更：逻辑线程池减少唤醒（akio-pool、akio-core、akio-http）
 
 放进逻辑线程池的任务，只有在没有空闲线程能接走它时才唤醒一个睡眠线程（原先每个任务都唤醒一次，即使
