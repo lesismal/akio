@@ -36,7 +36,7 @@ Engine series (one per I/O thread, labelled `listener`, `backend`, `thread`):
 | `akio_backpressure_events_total`, `akio_overloaded_total` | counter |
 | `akio_tls_handshake_failures_total`, `akio_transport_errors_total` | counter |
 | `akio_loop_iterations_total`, `akio_loop_events_total`, `akio_loop_callbacks_total`, `akio_loop_callback_seconds_total`, `akio_slow_callbacks_total` | counter |
-| `akio_connections_open`, `akio_loop_running` | gauge |
+| `akio_connections_open`, `akio_loop_running`, `akio_loop_max_command_batch` (the most commands the thread took from its command list at once) | gauge |
 | `akio_pool_threads`, `akio_pool_active`, `akio_pool_queued`, `akio_pool_resumes`, `akio_pool_max_queued`, `akio_pool_blocked`, `akio_pool_watched` | gauge |
 | `akio_pool_completed_total`, `akio_pool_panicked_total`, `akio_pool_rejected_total`, `akio_pool_compensated_total`, `akio_pool_blocked_at_ceiling_total`, `akio_pool_pressure_warnings_total{level="50"...}` | counter |
 | `akio_uptime_seconds` | gauge |

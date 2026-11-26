@@ -28,6 +28,10 @@ akio 的所有重要变更都记录在这里。格式遵循
   `akio_pool_watched`（gauge）、`akio_pool_compensated_total`、`akio_pool_blocked_at_ceiling_total` 和
   `akio_pool_pressure_warnings_total{level}`（counter）；`Metrics::to_json` 的 `pool` 也加上这些字段。
 - akio-pool 依赖 akio-log（workspace 内的 crate）。
+- I/O 线程记录自己一次从命令列表取走的最深批次（`LoopCounters::max_cmd_batch`，指标
+  `akio_loop_max_command_batch`；epoll、kqueue、UDP、work-stealing 和 io_uring 的 loop）。一批超过
+  1024 条命令时，这个 loop 被交给同一个监视线程，它记录超过 1024、16384 和 131072 条的批次，连续一秒
+  没有批次超过 1024 后放开这个 loop。
 
 ### 修复：在线程池或 engine 自己的线程上 join 线程池或等待 engine（akio-pool、akio）
 

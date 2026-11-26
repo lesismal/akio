@@ -134,6 +134,12 @@ akio 的阻塞客户端已经这样做：`ResponseFuture::wait` 和 `wait_timeou
 `akio_pool_blocked_at_ceiling_total`（[可观测性](../observability.md)）。50% 的 warn 提示该看一看，
 并非故障；100% 的 error 表示正在回复 `Overloaded`。
 
+同一个监视线程也照看 I/O 线程的命令列表（其他线程投递给某个 loop 的命令：唤醒、关闭、`run_on_loop`
+工作），它们本身没有容量上限。每个 loop 记录自己一次取走的最深批次（`akio_loop_max_command_batch`）；
+一批超过 1024 条命令时，这个 loop 被交给监视线程：批次超过 1024 和 16384 条时记 warn，超过 131072
+条时记 error，连续一秒没有批次超过 1024 后放开它并记一条 info。出现这样的批次，说明 loop 收到命令的
+速度超过了它处理的速度，或者被某个阻塞的回调拖住了。
+
 ## 自己的线程池
 
 某一类不能拖住其他任何事情的阻塞任务（例如缓存的磁盘层，其磁盘可能卡住）应有一个自己的线程池，

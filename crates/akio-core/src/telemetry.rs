@@ -11,7 +11,7 @@ use std::{
     fmt::Write as _,
     net::SocketAddr,
     sync::{
-        Arc, Mutex, RwLock, Weak,
+        Arc, Mutex, OnceLock, RwLock, Weak,
         atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
@@ -47,6 +47,15 @@ impl Counter {
             self.0.load(Ordering::Relaxed).wrapping_add(n),
             Ordering::Relaxed,
         );
+    }
+
+    /// Raises the value to `n` if it is lower, when only one thread ever writes this counter
+    /// (the owning I/O thread): a plain load, and a store only when it rises.
+    #[inline]
+    pub fn raise_local(&self, n: u64) {
+        if n > self.0.load(Ordering::Relaxed) {
+            self.0.store(n, Ordering::Relaxed);
+        }
     }
 
     /// Subtracts `n` (gauges); safe from any thread.
@@ -100,6 +109,9 @@ macro_rules! loop_counters {
             /// Connections handed to this thread by another one at accept time (ADR-105) and
             /// not opened here yet.
             incoming: AtomicU64,
+            /// The pressure watcher's handle on this thread's command list, made by the first
+            /// batch past [`DepthWatch::LINE`](akio_pool::DepthWatch::LINE).
+            cmd_watch: OnceLock<Arc<akio_pool::DepthWatch>>,
             $( #[doc(hidden)] pub $field: Counter, )*
         }
 
@@ -113,7 +125,7 @@ macro_rules! loop_counters {
         impl LoopStats {
             /// Counters of a thread described by `meta`.
             pub fn new(meta: LoopMeta) -> LoopStats {
-                LoopStats { meta, running: AtomicBool::new(false), retiring: AtomicBool::new(false), incoming: AtomicU64::new(0), $( $field: Counter::default(), )* }
+                LoopStats { meta, running: AtomicBool::new(false), retiring: AtomicBool::new(false), incoming: AtomicU64::new(0), cmd_watch: OnceLock::new(), $( $field: Counter::default(), )* }
             }
 
             /// Copies the counters.
@@ -198,9 +210,45 @@ loop_counters! {
     callback_ns: "nanos", "akio_loop_callback_seconds_total", "Time spent in handler callbacks.";
     /// Callbacks longer than the slow-callback threshold.
     slow_callbacks: "counter", "akio_slow_callbacks_total", "Callbacks longer than the slow-callback threshold.";
+    /// The most commands (wake-ups, closes, tasks, sends posted from other threads) the thread
+    /// has taken from its command list in one batch (a gauge; in `Metrics::total`, the sum over
+    /// threads). Past 1024 the pressure watcher logs it (target `akio-pool`).
+    max_cmd_batch: "gauge", "akio_loop_max_command_batch", "The most commands an I/O thread took from its command list at once.";
 }
 
 impl LoopStats {
+    /// The loop took a batch of `n` commands from its command list: records the deepest
+    /// (`max_cmd_batch`), and hands a batch past [`DepthWatch::LINE`](akio_pool::DepthWatch::LINE)
+    /// to the pressure watcher. Called by the owning I/O thread only; below the line, a load
+    /// and a compare. Backend-facing.
+    #[inline]
+    pub fn cmd_batch(&self, n: usize) {
+        self.max_cmd_batch.raise_local(n as u64);
+        if n > akio_pool::DepthWatch::LINE {
+            self.deep_cmd_batch(n);
+        }
+    }
+
+    #[cold]
+    fn deep_cmd_batch(&self, n: usize) {
+        self.cmd_watch
+            .get_or_init(|| {
+                let m = &self.meta;
+                let on = m
+                    .listener
+                    .map_or_else(|| "client".to_owned(), |a| a.to_string());
+                akio_pool::DepthWatch::new(format!("I/O thread {} {} ({on})", m.backend, m.thread))
+            })
+            .report(n);
+    }
+
+    /// The pressure watcher's handle on this thread's command list, once a batch passed the
+    /// line. Backend-facing (tests).
+    #[doc(hidden)]
+    pub fn cmd_watch(&self) -> Option<&Arc<akio_pool::DepthWatch>> {
+        self.cmd_watch.get()
+    }
+
     /// Which thread this is.
     pub fn meta(&self) -> &LoopMeta {
         &self.meta
@@ -1795,6 +1843,26 @@ mod tests {
             t.metrics()
                 .to_prometheus()
                 .contains("akio_connections_filtered_total")
+        );
+    }
+
+    /// The deepest command batch is kept; only one past the line makes a pressure watcher
+    /// handle and reports to it.
+    #[test]
+    fn command_batches_record_the_deepest_and_report_past_the_line() {
+        let s = LoopStats::new(LoopMeta::new("epoll", None, 3));
+        s.cmd_batch(5);
+        s.cmd_batch(2);
+        s.cmd_batch(akio_pool::DepthWatch::LINE);
+        assert_eq!(s.snapshot().max_cmd_batch, 1024);
+        assert!(s.cmd_watch().is_none(), "at the line: nothing reported");
+        s.cmd_batch(2000);
+        assert_eq!(s.snapshot().max_cmd_batch, 2000);
+        let w = s.cmd_watch().expect("past the line");
+        assert!(w.watched());
+        assert_eq!(
+            format!("{w:?}"),
+            "DepthWatch { name: \"I/O thread epoll 3 (client)\", .. }"
         );
     }
 

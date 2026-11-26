@@ -152,6 +152,14 @@ and `akio_pool_watched`, beside `akio_pool_resumes`, `akio_pool_max_queued`,
 ([Observability](../observability.md)). A warning at 50% is a sign to look, not a fault; an
 error at 100% means `Overloaded` answers are going out.
 
+The same watcher looks after the I/O threads' command lists (what other threads post to a loop:
+wake-ups, closes, `run_on_loop` work), which have no capacity of their own. Each loop records
+the deepest batch it took (`akio_loop_max_command_batch`); a batch of more than 1024 commands
+hands that loop to the watcher, which warns when batches pass 1024 and 16384 commands, logs an
+error past 131072, and lets the loop go, with an info line, once no batch has passed 1024 for a
+second. A loop that takes such batches is being fed faster than it runs, or is held up by a
+callback that blocks.
+
 ## A pool of your own
 
 Blocking work of one kind that must hold up nothing else (a cache's disk tier, whose disk may

@@ -559,3 +559,54 @@ fn open_accepted_counts_accepted_tcp_connections_only() {
     );
     stop(&e);
 }
+
+/// The deepest batch of commands an I/O thread took is recorded: a handler holds its loop
+/// while another thread posts 3000 `run_on_loop` closures, which the loop then takes at once.
+#[test]
+fn the_deepest_command_batch_is_recorded() {
+    const POSTS: usize = 3000;
+    struct H;
+    impl Handler for H {
+        fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let c2 = c.clone();
+            thread::spawn(move || {
+                for i in 0..POSTS {
+                    let _ = c2.run_on_loop(move |_h: &mut H, c| {
+                        if i == POSTS - 1 {
+                            let _ = c.send(b"D");
+                        }
+                    });
+                }
+                let _ = tx.send(());
+            });
+            // Holds the loop (a test only) until every closure is queued.
+            let _ = rx.recv_timeout(Duration::from_secs(10));
+        }
+    }
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<H>| H)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(b"x").unwrap();
+    assert_eq!(read_n(&mut s, 1), b"D");
+    let m = e.metrics();
+    assert!(
+        m.loops[0].counters.max_cmd_batch >= POSTS as u64,
+        "{:?}",
+        m.loops[0].counters
+    );
+    assert!(
+        m.to_prometheus()
+            .contains("# TYPE akio_loop_max_command_batch gauge")
+    );
+    stop(&e);
+}

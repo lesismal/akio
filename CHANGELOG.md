@@ -33,6 +33,11 @@ comparison and a flag read under the lock it already holds.
   `akio_pool_blocked_at_ceiling_total` and `akio_pool_pressure_warnings_total{level}`
   (counters); `Metrics::to_json` adds the same fields to `pool`.
 - akio-pool depends on akio-log (in the workspace).
+- I/O threads record the deepest batch they took from their command list
+  (`LoopCounters::max_cmd_batch`, metric `akio_loop_max_command_batch`; epoll, kqueue, UDP,
+  work-stealing and io_uring loops). A batch of more than 1024 commands hands the loop to the
+  same watcher, which logs batches past 1024, 16384 and 131072 commands and lets the loop go
+  once none has passed 1024 for a second.
 
 ### Fixed: joining the pool or waiting for the engine from one of its own threads (akio-pool, akio)
 

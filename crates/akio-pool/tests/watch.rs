@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use akio_pool::{Job, Pool, PoolConfig, blocking, watch_list_has, watcher_running};
+use akio_pool::{DepthWatch, Job, Pool, PoolConfig, blocking, watch_list_has, watcher_running};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -279,4 +279,38 @@ fn no_registration_is_lost_while_the_watcher_leaves() {
     wait_until("the watcher exits", || !watcher_running());
     assert!(!p.stats().watched);
     shut(&p);
+}
+
+/// An I/O thread's command list (`DepthWatch`): a batch past 1024 starts the watcher, rises
+/// past 1024 and 16384 are counted, and once no batch has passed the line for a second the
+/// queue leaves and the watcher exits. A second episode starts it again.
+#[test]
+fn deep_command_batches_are_watched_until_they_stop() {
+    let _g = serial();
+    let q = DepthWatch::new("I/O thread test 0 (client)".to_owned());
+    q.report(1024);
+    assert!(!q.watched(), "at the line: not reported");
+    assert!(!watcher_running());
+    for episode in 1..=2u64 {
+        q.report(2000);
+        assert!(q.watched());
+        wait_until("the watcher runs", watcher_running);
+        wait_until("past 1024 counted", || q.warnings()[0] == episode);
+        q.report(20_000);
+        wait_until("past 16384 counted", || q.warnings()[1] == episode);
+        wait_until("the queue leaves", || !q.watched());
+        wait_until("the watcher exits", || !watcher_running());
+        assert_eq!(q.warnings(), [episode, episode, 0]);
+    }
+    let over = logs()
+        .0
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(l, m)| {
+            *l == akio_log::Level::Info
+                && m.starts_with("I/O thread test 0 (client): command batches back under 1024")
+        })
+        .count();
+    assert_eq!(over, 2);
 }

@@ -47,7 +47,7 @@ use std::{
 mod watch;
 
 #[doc(hidden)]
-pub use watch::{watch_list_has, watcher_running};
+pub use watch::{DepthWatch, watch_list_has, watcher_running};
 
 /// How long a thread that finds the queue empty keeps looking (without the lock) before it
 /// sleeps: work arriving meanwhile costs no wake-up. Short, so an idle pool goes quiet at once

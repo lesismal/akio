@@ -1100,6 +1100,8 @@ impl RLoop {
             if batch.is_empty() {
                 break;
             }
+            // The deepest batch, and one past the line to the pressure watcher.
+            self.shared.stats.cmd_batch(batch.len());
             for cmd in batch.drain(..) {
                 self.on_cmd(cmd);
             }
