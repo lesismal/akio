@@ -116,10 +116,14 @@ pub struct H2Config {
     /// of the connection's I/O thread, so handlers may block and the streams of one connection
     /// are served at the same time. Requests whose body the service takes as a stream, and
     /// CONNECTs (extended or not), stay on the I/O thread. When the pool's queue is full the stream is
-    /// answered `503`. Default `true`: one multiplexed connection is otherwise served one stream
-    /// at a time on its I/O thread, so a slow stream holds up its siblings and the thread's
-    /// other connections. Turn it off for handlers that never block, where inline is faster
-    /// (no hand-off per request).
+    /// answered `503`. Default `false` (ADR-176), as for every other protocol: handlers run
+    /// inline, one stream at a time on the connection's I/O thread, and must not block (a single
+    /// request can still go to the pool with [`Context::detach_to_pool`]). Turn it on for
+    /// handlers that block, so that a slow stream holds up neither its siblings nor the thread's
+    /// other connections; it costs two hand-offs between threads per request, several times
+    /// what a handler that never blocks costs inline.
+    ///
+    /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
     pub run_on_pool: bool,
 }
 
@@ -138,7 +142,7 @@ impl Default for H2Config {
             reset_window: Duration::from_secs(30),
             stats: None,
             enable_connect_protocol: true,
-            run_on_pool: true,
+            run_on_pool: false,
         }
     }
 }

@@ -91,15 +91,13 @@ HTTP/1.1 客户端（复用 keep-alive 连接时）和 HTTP/2 客户端（每个
 - docs/rules.zh-CN.md 规则 2：线程池任务从不等待同一线程池中的其他任务，线程池任务中的阻塞调用都带
   超时，进入事件循环使用 `run_on_loop`。
 
-### 变更：HTTP/2 stream 默认在逻辑线程池上执行（akio-http）
+### 变更：HTTP/2 handler 默认仍在 I/O 线程上 inline 执行（akio-http）
 
-`H2Config::run_on_pool` 的默认值改为 `true`（ADR-094 的 2026-11-25 更新）。过去一个 HTTP/2 连接的
-各个 stream 在它的 I/O 线程上逐个处理，慢 handler 会拖住同一连接的其他 stream 以及该线程上的所有
-其他连接；现在每个完整请求的中间件和 handler 在引擎的逻辑线程池上执行，同一连接的各个 stream 同时
-处理。流式请求体和 CONNECT（包括 HTTP/2 上的 WebSocket）仍在 I/O 线程上执行。使用默认配置的服务会
-看到的变化：同一连接的响应可能以任意顺序完成；线程池满时回 `503` 并带 `Retry-After: 1`；handler 中
-调用 `Context::after` 时，回调在共享的定时器线程上执行。handler 从不阻塞的服务可设置
-`run_on_pool: false` 保留 inline 路径。HTTP/1.1、HTTP/3、gRPC 和 arpc 的开关仍默认关闭。
+`H2Config::run_on_pool` 的默认值改回 `false`（ADR-176），与 HTTP/1.1、HTTP/3、gRPC 和 arpc 一致。
+2026-11-25 改为线程池默认（ADR-094 的更新）后从未进入任何发布版本；开启期间，同一台机器上 `http-bench`
+的 h2c 每秒 0.47-0.53 M 请求，inline 时为 4.4-6.1 M，每个请求要付出两次跨线程交接。同一天的客户端
+死锁修复（`Conn::run_on_loop`）并不依赖这个默认值。HTTP/2 handler 会阻塞的服务设置
+`run_on_pool: true`（或用 `Context::detach_to_pool` 把这些请求交给线程池）。
 
 ### 修复：四处引擎挂起（akio-epoll、akio-uring、akio-http、akio-ws、akio-h3、akio-quic、akio-webrtc、akio-turn、akio-kcp）
 

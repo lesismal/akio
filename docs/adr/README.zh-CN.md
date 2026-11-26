@@ -130,3 +130,4 @@
 - [ADR-128：由别处的工作扣住响应头、过滤响应 body](128-held-response-heads-and-body-filters.zh-CN.md)（2026-11-25 采纳；akit A166、A167；ADR-125 的 W6）
 - [ADR-129：删除 akio-prefork](129-akio-prefork-removed.zh-CN.md)（2026-11-25 采纳）
 - [ADR-130：同一后端的 listener 共享一组 I/O 线程](130-shared-io-groups.zh-CN.md)（2026-11-25 采纳；第一至三阶段：epoll/kqueue 事件循环、轮次调度、io_uring）
+- [ADR-176：HTTP/2 handler 默认重新 inline 执行](176-http2-handlers-inline-by-default.zh-CN.md)（2026-11-26 采纳；撤销 ADR-094 在 2026-11-25 设的默认值）

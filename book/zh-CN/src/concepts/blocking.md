@@ -98,9 +98,9 @@ panic 和被拒绝的任务数。
 ## 让所有 handler 在线程池上执行
 
 HTTP、gRPC 和 arpc 服务端也可以把**每个**请求的 handler 都放到线程池上执行：handler 可以阻塞，
-同一连接上的多个请求同时处理，而不是一个接一个。按协议分别设置，只有 HTTP/2 默认开启，否则它的各个
-stream 会在所属连接的 I/O 线程上逐个处理（handler 从不阻塞时可设置 `h2.run_on_pool = false`
-保持 inline）：
+同一连接上的多个请求同时处理，而不是一个接一个。按协议分别设置，所有协议默认都关闭（ADR-176）：从不
+阻塞的 handler 在 inline 时比走线程池快数倍，线程池每个请求要付出两次跨线程交接。handler 会阻塞时再
+打开它，尤其是 HTTP/2，否则它的各个 stream 会在所属连接的 I/O 线程上逐个处理：
 
 ```rust,ignore
 let mut http = HttpConfig::default();

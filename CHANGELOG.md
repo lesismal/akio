@@ -115,18 +115,14 @@ way, so a jammed pool also stopped them.
 - docs/rules.md rule 2: a pool task never waits for another task of the same pool, blocking
   calls from pool tasks carry a timeout, and reaching a loop uses `run_on_loop`.
 
-### Changed: HTTP/2 streams run on the logical pool by default (akio-http)
+### Changed: HTTP/2 handlers stay inline by default (akio-http)
 
-`H2Config::run_on_pool` now defaults to `true` (ADR-094, update of 2026-11-25). The streams of
-one HTTP/2 connection used to be served one at a time on its I/O thread, so a slow handler held
-up its connection's other streams and every other connection of that thread; now each complete
-request's middleware and handler run on the engine's logical pool, and the streams of a
-connection are served at the same time. Streamed request bodies and CONNECTs (WebSocket over
-HTTP/2 included) still run on the I/O thread. What changes for a service on the default:
-responses of one connection may finish in any order, a full pool answers `503` with
-`Retry-After: 1`, and `Context::after` from a handler runs its callback on the shared timer
-thread. Set `run_on_pool: false` to keep the inline path for handlers that never block. HTTP/1.1,
-HTTP/3, gRPC and arpc keep their switches off.
+`H2Config::run_on_pool` defaults to `false` again (ADR-176), as for HTTP/1.1, HTTP/3, gRPC and
+arpc. The pool default of 2026-11-25 (ADR-094's update) never shipped in a release; while it was
+on, h2c in `http-bench` served 0.47-0.53 M requests/s against 4.4-6.1 M inline on the same host,
+each request paying two hand-offs between threads. The clients' deadlock fix of the same day
+(`Conn::run_on_loop`) does not depend on it. A service whose HTTP/2 handlers block sets
+`run_on_pool: true` (or sends those requests to the pool with `Context::detach_to_pool`).
 
 ### Fixed: four engine hangs (akio-epoll, akio-uring, akio-http, akio-ws, akio-h3, akio-quic, akio-webrtc, akio-turn, akio-kcp)
 
