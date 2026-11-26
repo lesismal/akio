@@ -640,6 +640,30 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 交接本身占了大头：同样 4 个 CPU 上，inline 的 h2c 每秒 320 万–400 万请求，走线程池（`H2Config::handlers_on_logical_pool`，
 2026-11-25 至 2026-11-26 期间默认开启）约 49 万，给线程池更多 CPU 也提不高这个上限。
 
+**后续：Rounds 模式下的线程池路径，以及线程池线程数上限**（2026-11-26，相同设置，5 轮，
+`shared.sh all,h2`，不绑核）。HTTP/2 现在默认 inline；`h2pool` 打开 `handlers_on_logical_pool`，
+`上限 N` 把逻辑线程池限制为最多 N 个线程（`PoolConfig::max_threads`，这 4 个 CPU 上默认 32）。Rounds
+为 1 个 poller、4 个 worker，由 3 个 listener 共享。“h2c 后线程数”是 h2c 跑完后服务端的线程数（没有
+线程池线程时为 6）。
+
+| h2c 64 连接 × 16 流分到 3 个 | inline | h2pool（32） | 上限 16 | 上限 8 | 上限 4 |
+|---|---:|---:|---:|---:|---:|
+| epoll（loops） | 3,466,777（±5%） | 485,785 | 483,260 | 456,821 | 380,733 |
+| io_uring（loops） | 3,572,412（±8%） | 496,780 | 504,114 | 480,455 | 409,361 |
+| rounds（epoll） | 4,120,683（±1%） | 488,080 | 489,025 | 469,483 | 390,489 |
+| h2c 后线程数 | 6 | 38 | 22 | 14 | 10 |
+
+3 个 listener 上的 HTTP/1.1 plaintext（各列都是 inline 执行）：loops 为 61 万–75 万，各轮之间波动
+±5–13%；rounds 为 61.5 万–62 万（±1–2%），每百万请求约 6 CPU 秒，loops 约 5 秒。
+
+**结论。**（1）走线程池时约每秒 49 万请求的上限，在 loops（epoll、io_uring）和 rounds 上都一样，并且
+稳定在 ±1% 以内：瓶颈不在 I/O 这一侧。（2）1024 个并发 stream 下线程池确实会扩到上限（32 个线程），
+但上限也不是原因：16 个线程结果相同，更少则更低（上限 4：38 万–41 万）。handler 很轻时，这个上限既不
+随 I/O 模型变，也不随留给线程池的 CPU 和线程数变，指向交接本身（线程池唯一一把锁保护的队列、每个任务
+一次唤醒，以及完成后投递回事件循环），还有待 profile 确认。（3）inline 时，rounds 是不绑核配置里
+h2c 最快的（412 万 ±1%；不绑核的 loops 为 350 万左右、±5–8%，绑核的 loops 为 400 万）；HTTP/1.1
+上它比 loops 稳定，但更慢。
+
 ### 密码学（`akio-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +

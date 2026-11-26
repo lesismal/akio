@@ -126,7 +126,8 @@ HTTP/1.1 客户端（复用 keep-alive 连接时）和 HTTP/2 客户端（每个
 `Routes::handlers_on_logical_pool(bool)`（arpc），原名都是 `run_on_pool`（尚未随任何版本发布，所以不保留
 deprecated 别名）。`H2Config` 的开关自 2026-11-25 起默认开启，现在改回关闭（ADR-094 的 2026-11-26
 更新）：同样 4 个 CPU 上，线程池交接让很轻的 HTTP/2 handler 从每秒 320 万–400 万请求降到约 49 万
-（docs/BENCHMARKS.zh-CN.md）。除非服务自己打开开关，HTTP/2 stream 重新在 I/O 线程上 inline 执行；
+（docs/BENCHMARKS.zh-CN.md；Rounds 模式下、线程池限制为 16 个线程时上限相同，线程更少则更低）。
+除非服务自己打开开关，HTTP/2 stream 重新在 I/O 线程上 inline 执行；
 单个请求仍可用 `Context::detach_to_pool` 放到线程池。
 
 ### 修复：四处引擎挂起（akio-epoll、akio-uring、akio-http、akio-ws、akio-h3、akio-quic、akio-webrtc、akio-turn、akio-kcp）

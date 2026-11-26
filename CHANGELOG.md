@@ -155,7 +155,8 @@ renamed after what it moves: `HttpConfig::handlers_on_logical_pool`,
 all formerly `run_on_pool` (no release had it, so no deprecated alias). `H2Config`'s was on by
 default from 2026-11-25 and is off again (ADR-094, update of 2026-11-26): the pool hand-off cut
 trivial HTTP/2 handlers from 3.2M–4.0M to about 0.49M requests/s on the same 4 CPUs
-(docs/BENCHMARKS.md). HTTP/2 streams run inline on the I/O thread again unless a service turns
+(docs/BENCHMARKS.md; the same ceiling on Rounds and with the pool capped at 16 threads, less
+with fewer). HTTP/2 streams run inline on the I/O thread again unless a service turns
 the switch on; a single request can still go to the pool with `Context::detach_to_pool`.
 
 ### Fixed: four engine hangs (akio-epoll, akio-uring, akio-http, akio-ws, akio-h3, akio-quic, akio-webrtc, akio-turn, akio-kcp)
