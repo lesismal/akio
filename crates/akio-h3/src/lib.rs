@@ -1327,6 +1327,14 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
     } else if scheme.is_none() || path.is_none_or(str::is_empty) {
         return None;
     }
+    // `:path` is in origin form, or `*` for `OPTIONS` (RFC 9114 §4.3.1): an absolute URI or
+    // anything else is malformed, so no request is routed by a target that is not a path
+    // (akio-http's ADR-177).
+    if let Some(p) = path {
+        if !(p.starts_with('/') || (p == "*" && method == Method::Options)) {
+            return None;
+        }
+    }
     // Room for `host` too; a request with few fields keeps their positions inline.
     let mut headers =
         akio_http::transport::request_headers(fields.regular() + 1, fields.bytes() + 4);
@@ -2639,9 +2647,26 @@ mod tests {
             [&base[..], &[("x-a", "a\0b")]].concat(),
             [&base[..], &[("x-a", "a\rb")]].concat(),
             [&base[..], &[("x-a", "a\nb")]].concat(),
+            // `:path` in origin form, or `*` for OPTIONS alone (RFC 9114 §4.3.1, ADR-177).
+            vec![
+                (":method", "GET"),
+                (":scheme", "https"),
+                (":path", "https://a.example/admin"),
+            ],
+            vec![(":method", "GET"), (":scheme", "https"), (":path", "admin")],
+            vec![(":method", "GET"), (":scheme", "https"), (":path", "*")],
+            vec![
+                (":method", "CONNECT"),
+                (":protocol", "websocket"),
+                (":scheme", "https"),
+                (":authority", "a"),
+                (":path", "chat"),
+            ],
         ] {
             assert!(head(&bad).is_none(), "{bad:?}");
         }
+        let (r, _) = head(&[(":method", "OPTIONS"), (":scheme", "https"), (":path", "*")]).unwrap();
+        assert_eq!(r.target, "*");
         let (r, _) = head(&[(":method", "CONNECT"), (":authority", "h:443")]).unwrap();
         assert_eq!(r.target, "h:443");
         let (r, head_only) = head(&[

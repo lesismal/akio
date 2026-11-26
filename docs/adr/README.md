@@ -140,3 +140,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-173: A connection limit that counts only accepted connections](173-accepted-connection-limit.md) (accepted 2026-11-26; akit A215)
 - [ADR-174: An HTTP server of HTTP/2 alone](174-http2-alone.md) (accepted 2026-11-26; akit A168)
 - [ADR-176: HTTP/2 handlers inline by default again](176-http2-handlers-inline-by-default.md) (accepted 2026-11-26; reverses the 2026-11-25 default of ADR-094)
+- [ADR-177: Request targets in absolute form, taken as an origin server takes them](177-absolute-form-request-targets.md) (accepted 2026-11-26; akit A200)

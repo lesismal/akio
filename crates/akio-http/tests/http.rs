@@ -252,6 +252,78 @@ fn basic_routing_head_404_405() {
     stop(&e);
 }
 
+/// A target in absolute form is taken as RFC 9112 §3.2.2 asks of an origin server (akit A200,
+/// ADR-177): routed by its path, its authority (without user information) the request's host
+/// over `Host`, the target as sent kept in `raw_target`. Authority form is `CONNECT`'s alone.
+#[test]
+fn absolute_form_targets_are_routed_by_their_path() {
+    let router = app()
+        .get("/admin/*rest", |ctx: &mut Context| {
+            ctx.text(401, "protected");
+        })
+        .get("/whoami", |ctx: &mut Context| {
+            let r = ctx.req();
+            let hosts = r.headers.get_all("host").collect::<Vec<_>>().join(",");
+            let body = format!("{}|{}|{}|{}", r.path(), r.target, r.raw_target(), hosts);
+            ctx.text(200, body);
+        })
+        .get("/*all", |ctx: &mut Context| ctx.text(200, "catch-all"));
+    let e = start(serve(router));
+    let a = e.local_addrs()[0];
+    let r = request(
+        a,
+        "GET http://a.example/admin/x?q HTTP/1.1\r\nHost: x\r\n\r\n",
+    );
+    assert_eq!((r.status, r.text().as_str()), (401, "protected"));
+    assert_eq!(
+        request(
+            a,
+            "GET https://a.example/users/42 HTTP/1.1\r\nHost: x\r\n\r\n"
+        )
+        .text(),
+        "user 42"
+    );
+    assert_eq!(
+        request(a, "GET http://a.example?q=hi HTTP/1.1\r\nHost: x\r\n\r\n").text(),
+        "root"
+    );
+    assert_eq!(
+        request(
+            a,
+            "GET http://u:p@a.example:8080/whoami?k HTTP/1.1\r\nHost: other\r\n\r\n"
+        )
+        .text(),
+        "/whoami|/whoami?k|http://u:p@a.example:8080/whoami?k|a.example:8080"
+    );
+    // HTTP/1.0 needs no `Host`: the target's authority is the host all the same.
+    assert_eq!(
+        request(a, "GET http://a.example/whoami HTTP/1.0\r\n\r\n").text(),
+        "/whoami|/whoami|http://a.example/whoami|a.example"
+    );
+    // A target in origin form is as it was.
+    assert_eq!(
+        request(a, "GET /whoami HTTP/1.1\r\nHost: x\r\n\r\n").text(),
+        "/whoami|/whoami|/whoami|x"
+    );
+    for bad in [
+        // HTTP/1.1 still needs exactly one `Host` (RFC 9112 §3.2).
+        "GET http://a.example/whoami HTTP/1.1\r\n\r\n",
+        "GET http://a.example/whoami HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n",
+        // No host, authority form, a path that is not one, `*` but for OPTIONS.
+        "GET http:///admin/x HTTP/1.1\r\nHost: x\r\n\r\n",
+        "GET a.example:443 HTTP/1.1\r\nHost: x\r\n\r\n",
+        "GET admin/x HTTP/1.1\r\nHost: x\r\n\r\n",
+        "GET * HTTP/1.1\r\nHost: x\r\n\r\n",
+    ] {
+        assert_eq!(request(a, bad).status, 400, "{bad:?}");
+    }
+    assert_ne!(
+        request(a, "OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n").status,
+        400
+    );
+    stop(&e);
+}
+
 #[test]
 fn bodies_content_length_chunked_with_trailers_and_limits() {
     let e = start(serve_with(
