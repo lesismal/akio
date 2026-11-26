@@ -2,7 +2,7 @@
 
 English | [简体中文](125-wasm-runtime-for-plugins.zh-CN.md)
 
-Status: accepted (2026-11-25). Built in the milestones of section 8; W1 (decoder and validator), W2 (translation and interpreter) and W3 (host API and WASI) are done, see "As built" at the end.
+Status: accepted (2026-11-25). Built in the milestones of section 8; W1 to W6 are done (W5, the performance pass, on 2026-11-26), see "As built" at the end.
 
 ## Context
 
@@ -539,6 +539,56 @@ akio-http. Section 4 as written, with these decisions:
 - One mutex guards the queues and counters; each thread waits on a condition variable of its own,
   so `submit_to` wakes the instance it names and `submit` the most recently idle one. W5 measures
   whether that lock matters next to the interpreter.
+
+### W5: the performance pass (2026-11-26, akit's A180)
+
+Measured before cutting, with `crates/akio-wasm/examples/wasm-bench.rs` and fit's
+`BenchmarkGuestCall` (wazero) on the same `.wasm`; the numbers are in docs/BENCHMARKS ("WebAssembly
+guest call"). A call of fit's Go `headers` guest on a warm instance cost 9.1 µs on gpu51 against
+3.5 µs on wazero's compiler (42 µs on its interpreter). 89% of it was the interpreter's loop: about
+3,000 register instructions a call at about 15 cycles each. Entering the guest is 75 ns, the 9 host
+calls about 250 ns; a `c-shared` Go export makes no WASI call per request (Go's scheduler resumes
+in the guest), and no guest memory is copied but what the host functions read and write. So the
+pass is about dispatches, and the ones cut are those Go's `wasm` code makes and an interpreter
+does not need. Decided while building it:
+
+- **Folded at translation**: `i64.extend_i32_u` emits nothing, because a slot holds an `i32`
+  zero-extended (an invariant every writer of an `i32` already kept, now relied on: typed host
+  results are written so too); the integer conversions of a constant (`wrap`, the `extend`s) are
+  constants. An `i32.wrap_i64` whose result is only a load's or store's address is dropped, the
+  access reading the 64-bit slot, whose low 32 bits are the address; nothing runs between the
+  two and no branch lands between them (every branch target starts with a `Fuel`, or follows the
+  branch that made it).
+- **Fused instructions**: stores of a constant (`Store8I`, `Store16I`, `Store32I`, and `Store64I`
+  for a constant that fits 32 bits signed), a constant return (`Return1C`), a call whose first
+  argument is a constant (`CallC`: Go passes 0 to every function), `br_if` on `eqz(eqz x)` as a
+  test of `x`, and `x ± imm` written to a local and to a global (`I32AddGlobal`, Go's stack
+  pointer, when the global's index fits 16 bits). An instruction is still 16 bytes.
+- **Fuel taken by the branch**: a branch whose target starts with `Fuel { n }` takes `n` and jumps
+  past it; a `br_if` that does not jump takes the `Fuel` that follows it (`f`, its fuel plus one);
+  a call takes the callee's first block's; `br_table` takes its chosen `Br`'s and jumps, without
+  dispatching it. The fuel taken, and where a call runs out, are as before (tests check exact fuel
+  across threaded branches); a comparison's branch threads only fuel that fits its 16 bits.
+- **Typed host functions over slots**: `func_wrap`'s functions take their arguments from the
+  slots and write their results to them (`WasmParams::from_slots`, `WasmResults::write_slots`,
+  doc-hidden, with a default for `WasmResults` implemented elsewhere), with no `Value` and no
+  type check per call: the types were checked when the import was linked. `func_new`'s and WASI's
+  stay over `Value`s. `call_host` no longer clones the function's type.
+- **Not done, each a few percent**: Go's jump to a block through its resume loop
+  (`PC_B = k; br loop; br_table`, about 60 dispatches a call) could go straight to the table's
+  target, but would take two blocks' fuel at once; the `Fuel` that follows instructions other than
+  `br_if` stays a dispatch; a host call still clones the function's `Arc` (two atomic operations);
+  moving the rare handlers (tables, bulk memory) out of the loop was measured and lost (5.3 to
+  5.5 µs). Section 8's "local slots in registers of the loop" is left to the compiler: safe Rust has
+  no way to pin them.
+- **No compiler.** The call is 5.1 µs, 1.44 times wazero's compiler (2.58 before), 8.2 times
+  faster than wazero's interpreter: 72% of the gap closed, the rest being the dispatch itself.
+  Section 1's condition for a compiler ADR ("if W5 shows the interpreter's cost blocks akit's
+  benchmark row") does not hold.
+- **The pool's hand-off** (`submit` to completion, one job at a time) adds 6.7 µs to a call when
+  the instance's thread sleeps between jobs, before and after: a wake-up, which under load a
+  thread that finds the next job queued does not pay. The pool's one lock did not show in the
+  profile.
 
 ### W6: held response heads and asynchronous body filters (2026-11-25)
 

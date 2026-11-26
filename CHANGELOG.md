@@ -47,6 +47,30 @@ Measured on gpu51 (docs/BENCHMARKS.md): h2c through the pool +30% to +39% (0.49M
 requests/s); inline unchanged. What remains is the logical pool's own hand-off (a futex wake and a
 context switch per job).
 
+### Fixed: a request target in absolute form is taken by its path and host (akio-http, akio-h3; akit A200)
+
+ADR-177. An HTTP/1 request whose target is in absolute form (`GET http://a.example/admin/x?q
+HTTP/1.1`) is taken as RFC 9112 §3.2.2 asks of an origin server: `Request::target` is its origin
+form (`/admin/x?q`, `/` for an empty path) and the target's authority, without user information,
+replaces `Host`. The target was kept whole, so a router took the request for no path it knew
+while a proxy asked its upstream for the path: akit's fuzzing found such a request passing a
+route that protected `/admin/*`. `Request::raw_target()` gives the target as sent, and the access
+log writes it. `Host` is still required once on HTTP/1.1. Targets in no form RFC 9112 gives an
+origin server (authority form but for `CONNECT`, a relative path, `*` but for `OPTIONS`, an absolute
+form without a host) are answered 400. On HTTP/2 and HTTP/3 a `:path` that is not in origin form
+(or `*` for `OPTIONS`), an absolute URI included, makes the request malformed (RFC 9113 §8.3.1,
+RFC 9114 §4.3.1).
+
+### Changed: a WebAssembly guest call 44% cheaper (akio-wasm; akit A180)
+
+ADR-125's W5. A call of fit's Go `headers` guest on a warm instance takes 5.1 µs instead of
+9.1 on the benchmark host (wazero's compiler 3.5 µs, its interpreter 42 µs), a typed host call
+17.5 ns instead of 28. The translator folds and fuses what Go's `wasm` code does needlessly
+(`i64.extend_i32_u`, address wraps, constants stored, returned and passed, double `eqz`
+tests, the stack pointer's update), branches take their target block's fuel, and typed host
+functions (`Linker::func_wrap`) run over slots instead of `Value`s. Fuel is metered exactly as
+before. No public API change; `examples/wasm-bench.rs` measures a call and its parts.
+
 ### Added: a connect timeout per dial, `Engine::dial_with` (akio, akio-core, backends, akio-http; akit A12, A79)
 
 ADR-154. `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)`

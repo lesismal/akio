@@ -478,7 +478,12 @@ pub enum Version {
 pub struct Request {
     /// Request method.
     pub method: Method,
-    /// The request target exactly as sent (`/a/b?x=1`).
+    /// The request target in origin form (`/a/b?x=1`), as sent but for one in absolute form
+    /// (`http://a.example/a/b?x=1`), which the HTTP/1 server gives here by its path and query, its
+    /// authority becoming the `Host` field (RFC 9112 §3.2.2, ADR-177); [`raw_target`] keeps it as
+    /// sent. `*` for `OPTIONS *`, the authority (`a.example:443`) for a `CONNECT`.
+    ///
+    /// [`raw_target`]: Request::raw_target
     pub target: String,
     /// Protocol version.
     pub version: Version,
@@ -509,6 +514,8 @@ pub struct Request {
     /// arrived as TLS 1.3 early data, before the client's certificate. Shared by the
     /// connection's requests (ADR-109).
     pub peer_certificates: Option<Arc<[Vec<u8>]>>,
+    /// An HTTP/1 target in absolute form, as sent (`raw_target`).
+    pub(crate) absolute: Option<Box<str>>,
 }
 
 impl Request {
@@ -527,7 +534,15 @@ impl Request {
             local: SocketAddr::from(([0, 0, 0, 0], 0)),
             protocol: None,
             peer_certificates: None,
+            absolute: None,
         }
+    }
+
+    /// The request target as the client sent it: [`target`](Request::target), but for an HTTP/1
+    /// target in absolute form (`GET http://a.example/a?b HTTP/1.1`), which `target` gives in
+    /// origin form (`/a?b`) and this as sent, for logs (ADR-177).
+    pub fn raw_target(&self) -> &str {
+        self.absolute.as_deref().unwrap_or(&self.target)
     }
 
     /// The path of the target, without the query.
@@ -1226,6 +1241,7 @@ mod tests {
             local: "127.0.0.1:2".parse().unwrap(),
             protocol: None,
             peer_certificates: None,
+            absolute: None,
         };
         assert_eq!(r.path(), "/a/b");
         assert_eq!(r.query_param("x"), Some("1"));

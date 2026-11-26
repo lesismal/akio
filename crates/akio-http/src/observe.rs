@@ -790,9 +790,9 @@ pub fn access_log() -> impl Middleware {
             let rid = rid.as_deref().unwrap_or("");
             akio_log::info!(
                 target: "akio_http::access",
-                method = req.method.as_str(), target = req.target.as_str(), status = resp.status,
+                method = req.method.as_str(), target = req.raw_target(), status = resp.status,
                 peer:% = peer, elapsed_us = elapsed_us, request_id = rid;
-                "{} {} {} {}us", req.method.as_str(), req.target, resp.status, elapsed_us
+                "{} {} {} {}us", req.method.as_str(), req.raw_target(), resp.status, elapsed_us
             );
         });
         next.call(ctx);

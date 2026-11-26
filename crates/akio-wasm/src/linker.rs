@@ -44,7 +44,7 @@ impl<S> Clone for Def<S> {
     fn clone(&self) -> Self {
         Self {
             ty: self.ty.clone(),
-            f: Arc::clone(&self.f),
+            f: self.f.clone(),
         }
     }
 }
@@ -142,7 +142,7 @@ impl<S> Linker<S> {
         + Sync
         + 'static,
     ) -> Result<&mut Self, LinkError> {
-        self.define(module, name, ty, Arc::new(f))
+        self.define(module, name, ty, HostFn::Values(Arc::new(f)))
     }
 
     /// Defines `module`.`name`, a typed host function: its type is `P` to `R` (a tuple of
@@ -163,14 +163,11 @@ impl<S> Linker<S> {
             module,
             name,
             ty,
-            Arc::new(
-                move |c: &mut Caller<'_, S>, args: &[Value], results: &mut [Value]| {
-                    let p =
-                        P::from_values(args).ok_or(Trap::BadCall("arguments of the wrong type"))?;
-                    f(c, p)?.write_values(results);
-                    Ok(())
-                },
-            ),
+            // Over slots: the types were checked when the guest's import was linked.
+            HostFn::Slots(Arc::new(move |c: &mut Caller<'_, S>, slots: &mut [u64]| {
+                let p = P::from_slots(&slots[..P::N]);
+                f(c, p)?.write_slots(&mut slots[..R::N])
+            })),
         )
     }
 
@@ -244,7 +241,7 @@ impl<S> Linker<S> {
             };
             let key = (imp.module.clone(), imp.name.clone());
             let f = match self.defs.get(&key) {
-                Some(d) if d.ty == *want => store.func_arc(&d.ty, Arc::clone(&d.f)),
+                Some(d) if d.ty == *want => store.func_arc(&d.ty, d.f.clone()),
                 Some(_) => {
                     return Err(InstantiateError::Unlinkable {
                         index,
@@ -256,9 +253,11 @@ impl<S> Linker<S> {
                         format!("called unresolved import {}.{}", imp.module, imp.name).into();
                     store.func_arc(
                         want,
-                        Arc::new(move |_: &mut Caller<'_, S>, _: &[Value], _: &mut [Value]| {
-                            Err(Trap::Host(msg.clone()))
-                        }),
+                        HostFn::Values(Arc::new(
+                            move |_: &mut Caller<'_, S>, _: &[Value], _: &mut [Value]| {
+                                Err(Trap::Host(msg.clone()))
+                            },
+                        )),
                     )
                 }
                 None => return Err(unknown()),
