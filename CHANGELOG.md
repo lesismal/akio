@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a request head of many fields read in pieces is answered as in one piece (akio-http, akio-ws)
+
+A head of more than 32 fields is parsed again with room for the limit (100); arriving in pieces,
+the 32-field attempt resumed with the count of the larger one, which `fields` compared with `==`
+and so never stopped at a limit: a head past 100 fields with a malformed line after them was
+answered 400, where the same head read in one piece is answered 431 (fuzzing, `http1_request`).
+`parse_head` now goes straight to the larger parse once a head has shown more than 32 fields
+(through the new `Resume::fields`), which also keeps such heads from being parsed from scratch
+on every piece, and akio-ws's field loop checks the limit with `>=`. The input is a corpus seed
+of `http1_request`, and a test feeds heads split at every offset.
+
 ### Added: an accept filter on UDP listeners, bound UDP sockets and QUIC servers (akio, akio-core, akio-epoll, akio-uring, akio-quic; akit A220)
 
 ADR-178. `Listener::filter` now works on UDP listeners: it is asked for each datagram from a
