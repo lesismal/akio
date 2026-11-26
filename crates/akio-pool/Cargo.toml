@@ -13,7 +13,8 @@ keywords = ["thread-pool", "network"]
 categories = ["network-programming", "concurrency"]
 
 [dependencies]
-
+# The pressure watcher's logs (target `akio-pool`); in-workspace, depends on akio-regex only.
+akio-log = { workspace = true }
 
 [lints]
 workspace = true

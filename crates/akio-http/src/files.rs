@@ -414,6 +414,7 @@ pub(crate) fn disk_pool() -> &'static Arc<Pool> {
         let mut cfg = PoolConfig::default();
         cfg.max_threads = 16;
         cfg.queue_capacity = 4096;
+        cfg.name = "akio-http-disk".to_owned();
         Pool::new(cfg)
     })
 }

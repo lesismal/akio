@@ -1331,6 +1331,94 @@ fn loop_labels(out: &mut String, m: &LoopMeta) {
     );
 }
 
+/// The logical pool's unlabelled series: `(name, type, help, value)`, rendered the same by
+/// [`Metrics::write_prometheus`] and [`Metrics::collect_into`].
+fn pool_series(p: &PoolStats) -> [(&'static str, &'static str, &'static str, u64); 12] {
+    [
+        (
+            "akio_pool_threads",
+            "gauge",
+            "Logical pool threads.",
+            p.threads as u64,
+        ),
+        (
+            "akio_pool_active",
+            "gauge",
+            "Logical pool threads running a job.",
+            p.threads.saturating_sub(p.idle) as u64,
+        ),
+        (
+            "akio_pool_queued",
+            "gauge",
+            "Jobs waiting in the logical pool queue.",
+            p.queued as u64,
+        ),
+        (
+            "akio_pool_completed_total",
+            "counter",
+            "Jobs the logical pool completed.",
+            p.completed,
+        ),
+        (
+            "akio_pool_panicked_total",
+            "counter",
+            "Jobs that panicked.",
+            p.panicked,
+        ),
+        (
+            "akio_pool_rejected_total",
+            "counter",
+            "Jobs refused because the queue was full.",
+            p.rejected,
+        ),
+        (
+            "akio_pool_resumes",
+            "gauge",
+            "Resumed jobs (the next step of admitted work) waiting in the logical pool.",
+            p.resumes as u64,
+        ),
+        (
+            "akio_pool_max_queued",
+            "gauge",
+            "The most jobs, new and resumed, that have waited in the logical pool at once.",
+            p.max_queued as u64,
+        ),
+        (
+            "akio_pool_blocked",
+            "gauge",
+            "Logical pool threads waiting in akio::blocking.",
+            p.blocked as u64,
+        ),
+        (
+            "akio_pool_compensated_total",
+            "counter",
+            "Logical pool threads started beyond max_threads for threads waiting in akio::blocking.",
+            p.compensated,
+        ),
+        (
+            "akio_pool_blocked_at_ceiling_total",
+            "counter",
+            "Times queued work found no thread because max_blocked_threads was reached.",
+            p.blocked_at_ceiling,
+        ),
+        (
+            "akio_pool_watched",
+            "gauge",
+            "Whether the pressure watcher watches the logical pool (its queue passed half).",
+            u64::from(p.watched),
+        ),
+    ]
+}
+
+/// The pressure warnings series, labelled `level` ([`POOL_LEVELS`]).
+const POOL_WARNINGS: (&str, &str) = (
+    "akio_pool_pressure_warnings_total",
+    "Times the logical pool backlog rose to a level of its queue capacity (percent).",
+);
+
+/// The `level` labels of [`POOL_WARNINGS`], in `PoolStats::warnings` order.
+const POOL_LEVELS: [&str; 4] = ["50", "75", "90", "100"];
+
 /// Writes a `# HELP` / `# TYPE` header (Prometheus text exposition format 0.0.4).
 #[doc(hidden)]
 pub fn prometheus_header(out: &mut String, name: &str, kind: &str, help: &str) {
@@ -1404,46 +1492,13 @@ impl Metrics {
             let _ = writeln!(out, " {}", u8::from(l.retiring));
         }
         if let Some(p) = &self.pool {
-            for (name, kind, help, v) in [
-                (
-                    "akio_pool_threads",
-                    "gauge",
-                    "Logical pool threads.",
-                    p.threads as u64,
-                ),
-                (
-                    "akio_pool_active",
-                    "gauge",
-                    "Logical pool threads running a job.",
-                    p.threads.saturating_sub(p.idle) as u64,
-                ),
-                (
-                    "akio_pool_queued",
-                    "gauge",
-                    "Jobs waiting in the logical pool queue.",
-                    p.queued as u64,
-                ),
-                (
-                    "akio_pool_completed_total",
-                    "counter",
-                    "Jobs the logical pool completed.",
-                    p.completed,
-                ),
-                (
-                    "akio_pool_panicked_total",
-                    "counter",
-                    "Jobs that panicked.",
-                    p.panicked,
-                ),
-                (
-                    "akio_pool_rejected_total",
-                    "counter",
-                    "Jobs refused because the queue was full.",
-                    p.rejected,
-                ),
-            ] {
+            for (name, kind, help, v) in pool_series(p) {
                 prometheus_header(out, name, kind, help);
                 let _ = writeln!(out, "{name} {v}");
+            }
+            prometheus_header(out, POOL_WARNINGS.0, "counter", POOL_WARNINGS.1);
+            for (level, v) in POOL_LEVELS.iter().zip(p.warnings) {
+                let _ = writeln!(out, "{}{{level=\"{level}\"}} {v}", POOL_WARNINGS.0);
             }
         }
         prometheus_header(
@@ -1510,42 +1565,21 @@ impl Metrics {
             );
         }
         if let Some(p) = &self.pool {
-            out.gauge(
-                "akio_pool_threads",
-                "Logical pool threads.",
-                &[],
-                p.threads as f64,
-            );
-            out.gauge(
-                "akio_pool_active",
-                "Logical pool threads running a job.",
-                &[],
-                p.threads.saturating_sub(p.idle) as f64,
-            );
-            out.gauge(
-                "akio_pool_queued",
-                "Jobs waiting in the logical pool queue.",
-                &[],
-                p.queued as f64,
-            );
-            out.counter(
-                "akio_pool_completed_total",
-                "Jobs the logical pool completed.",
-                &[],
-                p.completed as f64,
-            );
-            out.counter(
-                "akio_pool_panicked_total",
-                "Jobs that panicked.",
-                &[],
-                p.panicked as f64,
-            );
-            out.counter(
-                "akio_pool_rejected_total",
-                "Jobs refused because the queue was full.",
-                &[],
-                p.rejected as f64,
-            );
+            for (name, kind, help, v) in pool_series(p) {
+                if kind == "counter" {
+                    out.counter(name, help, &[], v as f64);
+                } else {
+                    out.gauge(name, help, &[], v as f64);
+                }
+            }
+            for (level, v) in POOL_LEVELS.iter().zip(p.warnings) {
+                out.counter(
+                    POOL_WARNINGS.0,
+                    POOL_WARNINGS.1,
+                    &[("level", level)],
+                    v as f64,
+                );
+            }
         }
         out.gauge(
             "akio_uptime_seconds",
@@ -1589,8 +1623,23 @@ impl Metrics {
             Some(p) => {
                 let _ = write!(
                     o,
-                    "{{\"threads\":{},\"idle\":{},\"queued\":{},\"completed\":{},\"panicked\":{},\"rejected\":{}}}",
-                    p.threads, p.idle, p.queued, p.completed, p.panicked, p.rejected
+                    "{{\"threads\":{},\"idle\":{},\"queued\":{},\"completed\":{},\"panicked\":{},\"rejected\":{},\"resumes\":{},\"max_queued\":{},\"blocked\":{},\"compensated\":{},\"blocked_at_ceiling\":{},\"warnings\":[{},{},{},{}],\"watched\":{}}}",
+                    p.threads,
+                    p.idle,
+                    p.queued,
+                    p.completed,
+                    p.panicked,
+                    p.rejected,
+                    p.resumes,
+                    p.max_queued,
+                    p.blocked,
+                    p.compensated,
+                    p.blocked_at_ceiling,
+                    p.warnings[0],
+                    p.warnings[1],
+                    p.warnings[2],
+                    p.warnings[3],
+                    p.watched
                 );
             }
             None => o.push_str("null"),

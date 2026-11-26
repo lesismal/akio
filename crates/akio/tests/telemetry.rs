@@ -155,6 +155,9 @@ fn metrics_count_connections_bytes_and_render_prometheus() {
     )));
     assert!(text.contains("# TYPE akio_send_queue_bytes gauge"));
     assert!(text.contains("akio_pool_threads "));
+    assert!(text.contains("akio_pool_blocked_at_ceiling_total 0"));
+    assert!(text.contains("akio_pool_pressure_warnings_total{level=\"100\"} 0"));
+    assert!(text.contains("akio_pool_watched 0"));
     // Every sample line is `name{labels} value` or `name value`.
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         let v = line.rsplit(' ').next().unwrap();

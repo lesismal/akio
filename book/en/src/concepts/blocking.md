@@ -74,6 +74,7 @@ pool.max_threads = cores * 8 (at least 8);  // started on demand
 pool.queue_capacity = 65_536;               // beyond it: Error::Overloaded
 pool.keep_alive = Duration::from_secs(30);  // idle threads above min_threads retire
 pool.max_blocked_threads = cores * 8 (at least 8); // stand-ins for threads in akio::blocking
+pool.name = "akio-pool".into();             // in the pressure logs; the engine's pool is "akio"
 EngineBuilder::pool(pool)
 ```
 
@@ -121,6 +122,36 @@ fits (rules §1).
 than `max_blocked_threads` stands in for (`blocked_at_ceiling`): raise the limit, or wait less
 on the pool. `max_blocked_threads = 0` turns the stand-ins off.
 
+### Pressure: what the pool logs
+
+A pool says when it is under pressure, through `akio-log` (target `akio-pool`, with the pool's
+`name` in the message and the `pool` field), and costs nothing while it is not: no timer, no
+thread. A submission that finds the backlog (new and resumed jobs waiting) past half of
+`queue_capacity`, a submission refused for a full queue, and work held up by
+`max_blocked_threads` each hand the pool to a watcher thread, `akio-pool-watch`, started then
+and shared by every pool of the process. While some pool is watched, it samples the watched
+pools every 100 ms:
+
+- the backlog rising to 50, 75 or 90% of `queue_capacity` is a warning, to 100% (new work
+  refused) an error; a level is left only once the backlog falls 10 points below it, and a
+  refusal or a hit of the stand-in limit between two samples counts as 100%, so a burst the
+  samples miss is still seen;
+- threads blocked at the `max_blocked_threads` ceiling get a warning of their own;
+- each line is logged at most once per 10 s per pool and level; the next one says how many were
+  held back meanwhile;
+- once the backlog has stayed under 40% for a second, with no refusal and no stand-in limit hit,
+  the pool leaves with one info line summing up the episode (how long, the deepest backlog, the
+  refusals, the threads started for blocked ones). When no pool is left, the watcher exits; the
+  next pool past the line starts it again.
+
+`PoolStats::warnings` counts the rises per level (50, 75, 90, 100%; held-back lines included)
+and `PoolStats::watched` tells whether the pool is watched now. The metrics endpoint exports
+them for the engine's pool as `akio_pool_pressure_warnings_total{level="50"|"75"|"90"|"100"}`
+and `akio_pool_watched`, beside `akio_pool_resumes`, `akio_pool_max_queued`,
+`akio_pool_blocked`, `akio_pool_compensated_total` and `akio_pool_blocked_at_ceiling_total`
+([Observability](../observability.md)). A warning at 50% is a sign to look, not a fault; an
+error at 100% means `Overloaded` answers are going out.
+
 ## A pool of your own
 
 Blocking work of one kind that must hold up nothing else (a cache's disk tier, whose disk may
@@ -141,6 +172,8 @@ match disk.try_execute(Box::new(move || { /* read the file, then conn.run_on_loo
 `try_execute` never blocks; `Rejected` gives the job back when the queue is full or the pool is
 shut down. `resume` queues the next step of work the pool admitted before and is refused only
 once the pool is shut down (see above). `Pool::stats()` reports it as `Engine::pool_stats()` does the engine's.
+Give it a `name` (`cfg.name = "disk".into()`) so its pressure logs tell it from the others;
+akio's own disk pools are `akio-http-disk` and `akio-bittorrent-disk`.
 
 ## In protocol crates
 

@@ -592,6 +592,7 @@ impl Client {
         let mut pc = PoolConfig::default();
         pc.min_threads = 1;
         pc.max_threads = cfg.disk_threads.max(1);
+        pc.name = "akio-bittorrent-disk".to_owned();
         let pool = Pool::new(pc);
         let trackers = TrackerClient::new(engine.clone(), cfg.tracker_timeout, 3);
         let dht = cfg.dht.then(|| {

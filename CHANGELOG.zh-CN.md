@@ -10,6 +10,25 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：线程池承压时会说出来，且只在那时运行监视线程（akio-pool、akio-core、akio、akio-http、akio-bittorrent）
+
+提交时发现线程池的积压（排队的新任务和续投任务）超过 `queue_capacity` 的一半、提交因队列已满被拒绝，
+或工作被 `max_blocked_threads` 卡住，都会把线程池交给进程级的监视线程 `akio-pool-watch`，它在这时启动。
+它每 100 ms 采样一次被监视的线程池，并通过 `akio-log`（target `akio-pool`）记录：积压升到容量的 50、75
+或 90% 时记 warn，升到 100% 时记 error（两次采样之间的拒绝或补位上限也按 100% 计），线程在
+`max_blocked_threads` 上限处阻塞时记 warn；每个线程池、每一档最多 10 秒一条，下一条会说明压下了多少条；
+积压比某一档低 10 个百分点才离开该档。线程池平静一秒（低于 40%、没有拒绝、没有碰到上限）后离开监视，
+并记一条 info 总结这一轮；没有线程池需要监视时线程退出，所以所有线程池都平静时没有任何定时器在跑。
+提交路径只多了一次比较和一次标志读取，都在本来就持有的锁内。
+
+- `PoolConfig::name`（默认 `"akio-pool"`）是这些日志里线程池的名字；engine 的线程池叫 `"akio"`，HTTP 和
+  BitTorrent 的磁盘线程池叫 `akio-http-disk` 和 `akio-bittorrent-disk`。线程名仍是 `akio-pool`。
+- `PoolStats` 新增 `warnings`（各档升档次数）和 `watched`。
+- 指标端点导出线程池的 `akio_pool_resumes`、`akio_pool_max_queued`、`akio_pool_blocked`、
+  `akio_pool_watched`（gauge）、`akio_pool_compensated_total`、`akio_pool_blocked_at_ceiling_total` 和
+  `akio_pool_pressure_warnings_total{level}`（counter）；`Metrics::to_json` 的 `pool` 也加上这些字段。
+- akio-pool 依赖 akio-log（workspace 内的 crate）。
+
 ### 修复：在线程池或 engine 自己的线程上 join 线程池或等待 engine（akio-pool、akio）
 
 - 在线程池的某个线程上调用 `Pool::join`（任务关闭自己所在的线程池后 join 它）会连同该线程一起 join，

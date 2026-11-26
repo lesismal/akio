@@ -1164,7 +1164,8 @@ impl EngineBuilder {
     }
 
     /// Sizes the logical pool that runs [`Conn::spawn_blocking`] work (default: no threads until
-    /// used, up to 8 per core, 65,536 queued jobs).
+    /// used, up to 8 per core, 65,536 queued jobs). A pool left with the default
+    /// [`name`](PoolConfig::name) is named `"akio"` in the pressure logs.
     #[must_use]
     pub fn pool(mut self, pool: PoolConfig) -> Self {
         self.pool = pool;
@@ -1231,6 +1232,10 @@ impl EngineBuilder {
         let telemetry = self.cfg.telemetry.clone();
         telemetry.bind(&self.cfg);
         let mut groups: Vec<Arc<dyn Group>> = Vec::new();
+        if self.pool.name == PoolConfig::DEFAULT_NAME {
+            // The pressure logs (target "akio-pool") tell the engine's pool from others.
+            self.pool.name = "akio".to_owned();
+        }
         let pool = Pool::new(self.pool.clone());
         telemetry.set_pool(&pool);
         let mut udp_last: Option<usize> = None;

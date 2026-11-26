@@ -16,7 +16,7 @@
 | `Engine::metrics()` | `Metrics`：每线程的 `LoopMetrics`（所属、是否运行、计数器）、`total`、`open_connections`、`open_accepted`（只计 accept 的 TCP 连接，不含拨出的连接和 UDP 对端；也可用 `Telemetry::open_accepted()`）、`pool`、`uptime`；`to_prometheus()`、`to_json()` |
 | `Engine::connections(timeout)` | 连接表：每个连接一个 `ConnInfo`（id、对端、本端、所属线程、存活时长、空闲时长、收发字节、排队字节、是否暂停读、是否背压、transport、是否 UDP）。通过询问每个 I/O 线程收集；不要在 I/O 线程的回调里调用 |
 | `Engine::slow_callbacks()` | 最近的慢回调（最多 256 条），由旧到新 |
-| `Engine::pool_stats()` | 逻辑线程池的线程数、空闲数、排队数、完成数、panic 数、拒绝数 |
+| `Engine::pool_stats()` | 逻辑线程池的线程数、空闲数、排队数、完成数、panic 数、拒绝数；排队的续作任务数、最深积压、在 `akio::blocking` 里阻塞的线程数、补位线程数、碰到补位上限的次数；各档压力告警次数，以及池子此刻是否被监视（[阻塞任务](concepts/blocking.md)） |
 | `Engine::udp_stats()` | 打开的 UDP 对端数，以及被 `udp_max_peers` 拒绝的数据报数 |
 | `Engine::accel_status()` | 每个 listener 的 eBPF 分流状态 |
 | `Telemetry::collect()`、`Telemetry::render_prometheus()` | 已注册收集器的 `Families`（Prometheus 或 JSON）；engine 序列加收集器序列，即 `metrics_handler` 输出的内容 |
@@ -36,8 +36,8 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 | `akio_tls_handshake_failures_total`、`akio_transport_errors_total` | counter |
 | `akio_loop_iterations_total`、`akio_loop_events_total`、`akio_loop_callbacks_total`、`akio_loop_callback_seconds_total`、`akio_slow_callbacks_total` | counter |
 | `akio_connections_open`、`akio_loop_running` | gauge |
-| `akio_pool_threads`、`akio_pool_active`、`akio_pool_queued` | gauge |
-| `akio_pool_completed_total`、`akio_pool_panicked_total`、`akio_pool_rejected_total` | counter |
+| `akio_pool_threads`、`akio_pool_active`、`akio_pool_queued`、`akio_pool_resumes`、`akio_pool_max_queued`、`akio_pool_blocked`、`akio_pool_watched` | gauge |
+| `akio_pool_completed_total`、`akio_pool_panicked_total`、`akio_pool_rejected_total`、`akio_pool_compensated_total`、`akio_pool_blocked_at_ceiling_total`、`akio_pool_pressure_warnings_total{level="50"...}` | counter |
 | `akio_uptime_seconds` | gauge |
 
 `observe::HttpMetrics` 提供的 HTTP 指标：`akio_http_requests_total{class="2xx"...}`、

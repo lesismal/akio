@@ -17,7 +17,7 @@ locked or allocated per event); snapshots are assembled on demand.
 | `Engine::metrics()` | `Metrics`: per-thread `LoopMetrics` (owner, running, counters), `total`, `open_connections`, `open_accepted` (accepted TCP connections only, without dialed ones and UDP peers; also `Telemetry::open_accepted()`), `pool`, `uptime`; `to_prometheus()`, `to_json()` |
 | `Engine::connections(timeout)` | the connection table: one `ConnInfo` per connection (id, peer, local, owning thread, age, idle, bytes in/out, queued bytes, read-held, backpressure, transport, udp). Gathered by asking each I/O thread; never call it from an I/O thread's callback |
 | `Engine::slow_callbacks()` | the most recent slow callbacks (up to 256), oldest first |
-| `Engine::pool_stats()` | logical pool threads, idle, queued, completed, panicked, rejected |
+| `Engine::pool_stats()` | logical pool threads, idle, queued, completed, panicked, rejected; resumed jobs waiting, the deepest backlog, threads blocked in `akio::blocking`, stand-ins started, stand-in limit hits; pressure warnings per level and whether the pool is watched ([blocking work](concepts/blocking.md)) |
 | `Engine::udp_stats()` | UDP peers open and datagrams rejected by `udp_max_peers` |
 | `Engine::accel_status()` | eBPF steering per listener |
 | `Telemetry::collect()`, `Telemetry::render_prometheus()` | the registered collectors' `Families` (Prometheus or JSON); the engine's series followed by the collectors', as served by `metrics_handler` |
@@ -37,8 +37,8 @@ Engine series (one per I/O thread, labelled `listener`, `backend`, `thread`):
 | `akio_tls_handshake_failures_total`, `akio_transport_errors_total` | counter |
 | `akio_loop_iterations_total`, `akio_loop_events_total`, `akio_loop_callbacks_total`, `akio_loop_callback_seconds_total`, `akio_slow_callbacks_total` | counter |
 | `akio_connections_open`, `akio_loop_running` | gauge |
-| `akio_pool_threads`, `akio_pool_active`, `akio_pool_queued` | gauge |
-| `akio_pool_completed_total`, `akio_pool_panicked_total`, `akio_pool_rejected_total` | counter |
+| `akio_pool_threads`, `akio_pool_active`, `akio_pool_queued`, `akio_pool_resumes`, `akio_pool_max_queued`, `akio_pool_blocked`, `akio_pool_watched` | gauge |
+| `akio_pool_completed_total`, `akio_pool_panicked_total`, `akio_pool_rejected_total`, `akio_pool_compensated_total`, `akio_pool_blocked_at_ceiling_total`, `akio_pool_pressure_warnings_total{level="50"...}` | counter |
 | `akio_uptime_seconds` | gauge |
 
 HTTP series from `observe::HttpMetrics`: `akio_http_requests_total{class="2xx"...}`,

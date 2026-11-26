@@ -10,6 +10,30 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a pool under pressure says so, and only then runs a watcher (akio-pool, akio-core, akio, akio-http, akio-bittorrent)
+
+A submission that finds a pool's backlog (new and resumed jobs waiting) past half of
+`queue_capacity`, is refused for a full queue, or finds work held up by `max_blocked_threads`
+hands the pool to a process-wide watcher thread, `akio-pool-watch`, started then. It samples the
+watched pools every 100 ms and logs through `akio-log` (target `akio-pool`): a warning when the
+backlog rises to 50, 75 or 90% of the capacity, an error at 100% (a refusal or a stand-in limit
+hit between samples counts as 100%), a warning when threads are blocked at the
+`max_blocked_threads` ceiling; at most one line per 10 s per pool and level, the next one
+counting those held back; a level is left 10 points below it. A pool calm for a second (under
+40%, no refusal, no limit hit) leaves with an info line summing up the episode; with no pool
+left the thread exits, so no timer runs while every pool is calm. The submit path gains a
+comparison and a flag read under the lock it already holds.
+
+- `PoolConfig::name` (default `"akio-pool"`) names the pool in those lines; the engine's pool
+  is `"akio"`, the HTTP and BitTorrent disk pools `akio-http-disk` and `akio-bittorrent-disk`.
+  Threads keep the name `akio-pool`.
+- `PoolStats` gains `warnings` (rises per level) and `watched`.
+- The metrics endpoint exports the pool's `akio_pool_resumes`, `akio_pool_max_queued`,
+  `akio_pool_blocked`, `akio_pool_watched` (gauges), `akio_pool_compensated_total`,
+  `akio_pool_blocked_at_ceiling_total` and `akio_pool_pressure_warnings_total{level}`
+  (counters); `Metrics::to_json` adds the same fields to `pool`.
+- akio-pool depends on akio-log (in the workspace).
+
 ### Fixed: joining the pool or waiting for the engine from one of its own threads (akio-pool, akio)
 
 - `Pool::join` called from one of the pool's threads (a job that shuts its pool down and joins

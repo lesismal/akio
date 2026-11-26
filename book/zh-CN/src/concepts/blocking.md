@@ -70,6 +70,7 @@ pool.max_threads = cores * 8 (至少 8);      // 按需启动
 pool.queue_capacity = 65_536;               // 超出后：Error::Overloaded
 pool.keep_alive = Duration::from_secs(30);  // 超过 min_threads 的空闲线程退出
 pool.max_blocked_threads = cores * 8 (至少 8); // 顶替在 akio::blocking 中等待的线程
+pool.name = "akio-pool".into();             // 压力日志里的名字；engine 的线程池叫 "akio"
 EngineBuilder::pool(pool)
 ```
 
@@ -109,6 +110,30 @@ akio 的阻塞客户端已经这样做：`ResponseFuture::wait` 和 `wait_timeou
 线程超过 `max_blocked_threads` 所能顶替的数量而找不到线程的次数（`blocked_at_ceiling`）：调高这个上限，
 或减少线程池上的等待。`max_blocked_threads = 0` 关闭顶替。
 
+### 压力：线程池记录什么日志
+
+线程池承压时会通过 `akio-log` 说出来（target 为 `akio-pool`，消息和 `pool` 字段里带线程池的
+`name`），不承压时没有任何开销：没有定时器，也没有线程。提交时发现积压（排队的新任务和续投任务）超过
+`queue_capacity` 的一半、提交因队列已满被拒绝、或工作被 `max_blocked_threads` 卡住，都会把线程池交给
+监视线程 `akio-pool-watch`；它在这时启动，由进程里所有线程池共用。只要还有线程池被监视，它每 100 ms
+采样一次被监视的线程池：
+
+- 积压升到 `queue_capacity` 的 50、75 或 90% 记一条 warn，升到 100%（新工作被拒绝）记一条 error；
+  积压要比某一档低 10 个百分点才算离开这一档；两次采样之间出现的拒绝或补位上限也按 100% 计，采样
+  错过的突发仍会被看到；
+- 线程在 `max_blocked_threads` 上限处阻塞时单独记一条 warn；
+- 每个线程池、每一档最多 10 秒记一条，下一条会说明这期间压下了多少条；
+- 积压连续一秒低于 40%，且没有拒绝、没有碰到补位上限时，线程池离开监视，并记一条 info 总结这一轮
+  （持续多久、最深积压、拒绝数、为阻塞线程启动的线程数）。没有线程池需要监视时监视线程退出；下一个
+  越线的线程池会再启动它。
+
+`PoolStats::warnings` 按档（50、75、90、100%）统计积压升档的次数（被压下的日志也计入），
+`PoolStats::watched` 表示线程池此刻是否被监视。指标端点为 engine 的线程池导出
+`akio_pool_pressure_warnings_total{level="50"|"75"|"90"|"100"}` 和 `akio_pool_watched`，以及
+`akio_pool_resumes`、`akio_pool_max_queued`、`akio_pool_blocked`、`akio_pool_compensated_total` 和
+`akio_pool_blocked_at_ceiling_total`（[可观测性](../observability.md)）。50% 的 warn 提示该看一看，
+并非故障；100% 的 error 表示正在回复 `Overloaded`。
+
 ## 自己的线程池
 
 某一类不能拖住其他任何事情的阻塞任务（例如缓存的磁盘层，其磁盘可能卡住）应有一个自己的线程池，
@@ -128,7 +153,9 @@ match disk.try_execute(Box::new(move || { /* 读文件，然后 conn.run_on_loop
 
 `try_execute` 从不阻塞；队列已满或线程池已关闭时，`Rejected` 把任务交还。`resume` 投递线程池
 之前接受的工作的下一步，只在线程池关闭后被拒绝（见上文）。`Pool::stats()` 报告它的
-状态，就像 `Engine::pool_stats()` 报告 engine 的线程池一样。
+状态，就像 `Engine::pool_stats()` 报告 engine 的线程池一样。给它起个 `name`
+（`cfg.name = "disk".into()`），它的压力日志就能和其他线程池区分开；akio 自己的磁盘线程池叫
+`akio-http-disk` 和 `akio-bittorrent-disk`。
 
 ## 在协议 crate 中
 

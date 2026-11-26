@@ -20,6 +20,14 @@
 //! thread in its place (up to [`PoolConfig::max_blocked_threads`] such threads), and the extra
 //! thread leaves as soon as it is not needed.
 //!
+//! A pool under pressure says so. When a submission finds the queue more than half full (or is
+//! refused, or finds work held up by the stand-in limit), the pool is handed to a process-wide
+//! watcher thread, `akio-pool-watch`, started then: it samples the pool every 100 ms, logs
+//! (target `akio-pool`) each time the backlog rises to 50, 75, 90 or 100% of `queue_capacity`,
+//! and lets the pool go, with a summary, once the backlog has stayed under 40% for a second. With
+//! no pool under pressure no watcher runs and no timer fires ([`PoolStats::warnings`],
+//! [`PoolStats::watched`]).
+//!
 //! Guide: [Blocking work: the logical pool](https://lesismal.github.io/akio/en/concepts/blocking.html)
 //! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/akio/zh-CN/concepts/blocking.html)).
 #![warn(clippy::unwrap_used)]
@@ -35,6 +43,11 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+
+mod watch;
+
+#[doc(hidden)]
+pub use watch::{watch_list_has, watcher_running};
 
 /// How long a thread that finds the queue empty keeps looking (without the lock) before it
 /// sleeps: work arriving meanwhile costs no wake-up. Short, so an idle pool goes quiet at once
@@ -159,7 +172,8 @@ pub struct PoolConfig {
     /// default `max_threads`.
     pub max_blocked_threads: usize,
     /// Jobs that may wait, new work and resumed work together; beyond it [`Pool::try_execute`]
-    /// rejects ([`Pool::resume`] does not).
+    /// rejects ([`Pool::resume`] does not). Past half of it the pool is watched and its pressure
+    /// logged (see the [crate docs](crate)).
     pub queue_capacity: usize,
     /// How long a thread above `min_threads` may sit idle before it exits.
     pub keep_alive: Duration,
@@ -167,6 +181,15 @@ pub struct PoolConfig {
     /// pins the thread here, ADR-088). `#[doc(hidden)]`: engine-facing.
     #[doc(hidden)]
     pub on_start: Option<ThreadHook>,
+    /// The pool's name in the pressure logs (target `akio-pool`, field `pool`), so that a
+    /// process with several pools tells which one is under pressure. Threads keep the name
+    /// `akio-pool`. Default: `"akio-pool"`; the engine's logical pool is `"akio"`.
+    pub name: String,
+}
+
+impl PoolConfig {
+    /// The default [`name`](Self::name).
+    pub const DEFAULT_NAME: &'static str = "akio-pool";
 }
 
 /// A function each pool thread runs when it starts ([`PoolConfig::on_start`]).
@@ -192,6 +215,7 @@ impl Default for PoolConfig {
             queue_capacity: 65_536,
             keep_alive: Duration::from_secs(30),
             on_start: None,
+            name: PoolConfig::DEFAULT_NAME.to_owned(),
         }
     }
 }
@@ -233,6 +257,14 @@ pub struct PoolStats {
     /// [`blocking`] than `max_blocked_threads` stands in for: a sign that limit (or a wait in a
     /// pool task) is what holds the work up.
     pub blocked_at_ceiling: u64,
+    /// Times the backlog (new and resumed jobs waiting) rose to 50, 75, 90 and 100% of
+    /// `queue_capacity`, one count per rise at the highest level reached, whether or not the
+    /// log line was held back by its rate limit. A refusal, or work held up by the stand-in
+    /// limit (`blocked_at_ceiling`), between two samples counts as 100%.
+    pub warnings: [u64; 4],
+    /// Whether the pressure watcher watches the pool now: it passed half of `queue_capacity`
+    /// (or refused work, or hit the stand-in limit) and has not stayed calm since.
+    pub watched: bool,
 }
 
 struct State {
@@ -253,8 +285,34 @@ struct State {
     compensated: u64,
     /// [`PoolStats::blocked_at_ceiling`].
     blocked_at_ceiling: u64,
+    /// The pool is in the pressure watcher's list, or a submitter is putting it there. Set by
+    /// submitters, cleared by the watcher, both under this lock (`watch` module).
+    watched: bool,
+    /// Refusals for a full queue since the watcher's last sample.
+    refused_since: u64,
+    /// `blocked_at_ceiling` events since the watcher's last sample.
+    ceiling_since: u64,
+    /// The watcher's per-pool memory (levels logged, rate limits), kept across episodes.
+    watch: watch::PoolWatch,
     closed: bool,
     handles: Vec<JoinHandle<()>>,
+}
+
+/// What [`Pool::queued_locked`] asks of the caller once the lock is dropped.
+#[derive(Default)]
+struct Queued {
+    /// Sleeping threads to wake.
+    wake: usize,
+    /// Register the pool with the pressure watcher.
+    watch: bool,
+}
+
+/// What [`Pool::grow_locked`] did.
+struct Grown {
+    /// Threads started.
+    started: usize,
+    /// Register the pool with the pressure watcher.
+    watch: bool,
 }
 
 /// The pool. Share it as an `Arc<Pool>`.
@@ -300,6 +358,10 @@ impl Pool {
                 blocked: 0,
                 compensated: 0,
                 blocked_at_ceiling: 0,
+                watched: false,
+                refused_since: 0,
+                ceiling_since: 0,
+                watch: watch::PoolWatch::default(),
                 closed: false,
                 handles: Vec::new(),
             }),
@@ -331,17 +393,47 @@ impl Pool {
     pub fn try_execute(&self, job: Job) -> Result<(), Rejected> {
         let mut st = self.lock();
         if st.closed || st.queue.len() + st.resumes.len() >= self.cfg.queue_capacity {
+            let watch = !st.closed && Self::refused_locked(&mut st, 1);
             drop(st);
             self.rejected.fetch_add(1, Ordering::Relaxed);
+            if watch {
+                self.register_watch();
+            }
             return Err(Rejected(job));
         }
         st.queue.push_back(job);
-        let wake = self.queued_locked(&mut st, 1);
+        let q = self.queued_locked(&mut st, 1);
         drop(st);
-        for _ in 0..wake {
+        self.after_queued(q);
+        Ok(())
+    }
+
+    /// Wakes the threads [`queued_locked`](Self::queued_locked) asked for and, if it marked
+    /// the pool watched, hands it to the pressure watcher (after the pool's lock is dropped).
+    fn after_queued(&self, q: Queued) {
+        for _ in 0..q.wake {
             self.cv.notify_one();
         }
-        Ok(())
+        if q.watch {
+            self.register_watch();
+        }
+    }
+
+    /// Marks the pool watched (under the lock) if it is not yet; true when the caller is to
+    /// register it with the watcher once the lock is dropped.
+    fn watch_locked(st: &mut State) -> bool {
+        if st.watched {
+            return false;
+        }
+        st.watched = true;
+        true
+    }
+
+    /// `n` submissions refused for a full queue (under the lock): counted for the watcher's
+    /// next sample. True when the caller is to register the pool.
+    fn refused_locked(st: &mut State, n: u64) -> bool {
+        st.refused_since += n;
+        Self::watch_locked(st)
     }
 
     /// Queues the jobs of `jobs` in one go (one lock, the wake-ups they need), as
@@ -361,19 +453,20 @@ impl Pool {
         };
         let n = room.min(jobs.len());
         st.queue.extend(jobs.drain(..n));
-        let wake = if n == 0 {
-            0
+        let mut q = if n == 0 {
+            Queued::default()
         } else {
             self.queued_locked(&mut st, n)
         };
+        if !jobs.is_empty() && !st.closed {
+            q.watch |= Self::refused_locked(&mut st, jobs.len() as u64);
+        }
         drop(st);
         if !jobs.is_empty() {
             self.rejected
                 .fetch_add(jobs.len() as u64, Ordering::Relaxed);
         }
-        for _ in 0..wake {
-            self.cv.notify_one();
-        }
+        self.after_queued(q);
     }
 
     /// Queues `job` as the next step of work the pool admitted before (the next piece of a
@@ -390,11 +483,9 @@ impl Pool {
             return Err(job);
         }
         st.resumes.push_back(job);
-        let wake = self.queued_locked(&mut st, 1);
+        let q = self.queued_locked(&mut st, 1);
         drop(st);
-        for _ in 0..wake {
-            self.cv.notify_one();
-        }
+        self.after_queued(q);
         Ok(())
     }
 
@@ -413,18 +504,25 @@ impl Pool {
     /// queue instead woke again, for every new job, the sleepers already woken for the earlier
     /// ones: at 2k requests/s, one more context switch per request, 12% more CPU.) A thread
     /// busy with a job looks at the queue before it sleeps, so it is never woken.
-    fn queued_locked(&self, st: &mut State, added: usize) -> usize {
+    ///
+    /// Also marks the pool watched when the backlog passes half of `queue_capacity` (or the
+    /// stand-in limit held work up) and it is not watched yet: one comparison and a flag read
+    /// on what the lock already guards, nothing more while the pool is calm or watched.
+    fn queued_locked(&self, st: &mut State, added: usize) -> Queued {
         let len = st.queue.len() + st.resumes.len();
         self.queued.store(len, Ordering::SeqCst);
         st.max_queued = st.max_queued.max(len);
         // Read under the lock: a spinner stops counting itself before it takes the lock to look
         // at the queue, so either it is counted here or it sees these jobs.
         let spinning = self.spinning.load(Ordering::SeqCst);
-        let started = self.grow_locked(st, len, spinning);
+        let grown = self.grow_locked(st, len, spinning);
         let free_spinners = spinning.saturating_sub(len - added);
-        added
-            .saturating_sub(free_spinners + started)
-            .min(st.idle - st.starting)
+        let wake = added
+            .saturating_sub(free_spinners + grown.started)
+            .min(st.idle - st.starting);
+        let watch = grown.watch
+            || (len.saturating_mul(2) > self.cfg.queue_capacity && Self::watch_locked(st));
+        Queued { wake, watch }
     }
 
     /// How many threads may run (under the lock): `max_threads`, plus one for each thread
@@ -437,8 +535,9 @@ impl Pool {
 
     /// Starts threads (under the lock) while `len` queued jobs are more than the idle and
     /// `spinning` threads will take and the [`allowance`](Self::allowance) has room. Returns
-    /// how many it started.
-    fn grow_locked(&self, st: &mut State, len: usize, spinning: usize) -> usize {
+    /// how many it started, and whether the caller is to register the pool with the watcher
+    /// (work was held up by the stand-in limit and the pool was not watched).
+    fn grow_locked(&self, st: &mut State, len: usize, spinning: usize) -> Grown {
         let allowance = self.allowance(st);
         let mut started = 0;
         while st.idle + spinning < len && st.threads < allowance {
@@ -460,8 +559,16 @@ impl Pool {
             && st.threads >= allowance
         {
             st.blocked_at_ceiling += 1;
+            st.ceiling_since += 1;
+            return Grown {
+                started,
+                watch: Self::watch_locked(st),
+            };
         }
-        started
+        Grown {
+            started,
+            watch: false,
+        }
     }
 
     /// The calling pool thread starts waiting in [`blocking`]: counts it, and starts a thread
@@ -474,7 +581,11 @@ impl Pool {
             // Read under the lock, as in `queued_locked`. A thread started here looks at the
             // queue when it starts; sleeping ones were woken for the jobs when they came.
             let spinning = self.spinning.load(Ordering::SeqCst);
-            self.grow_locked(&mut st, len, spinning);
+            let watch = self.grow_locked(&mut st, len, spinning).watch;
+            drop(st);
+            if watch {
+                self.register_watch();
+            }
         }
     }
 
@@ -612,7 +723,14 @@ impl Pool {
             blocked: st.blocked,
             compensated: st.compensated,
             blocked_at_ceiling: st.blocked_at_ceiling,
+            warnings: st.watch.warnings,
+            watched: st.watched,
         }
+    }
+
+    /// The pool's name ([`PoolConfig::name`]).
+    pub fn name(&self) -> &str {
+        &self.cfg.name
     }
 
     /// Whether the calling thread is one of this pool's threads.
@@ -667,6 +785,7 @@ mod tests {
             keep_alive: Duration::from_millis(100),
             max_blocked_threads: max,
             on_start: None,
+            name: "test".to_owned(),
         }
     }
 
