@@ -2580,6 +2580,9 @@ impl<S: Service> H2Session<S> {
             }
         };
         let batch = Batch(&self.core);
+        // Declared after `batch`, so dropped before it: a `503` for a request the pool refuses
+        // goes out with the rest of the read.
+        let gather = crate::pool::Gather::begin(self.pool.is_some());
         let buf = held.as_deref().unwrap_or(data);
         let mut pos = 0;
         let mut actions = SPARE_ACTIONS.take();
@@ -2627,6 +2630,7 @@ impl<S: Service> H2Session<S> {
         // Streams finished during this read are covered by the deadline armed after it.
         c.finished = false;
         drop(c);
+        drop(gather);
         drop(batch);
         SPARE_ACTIONS.set(actions);
     }

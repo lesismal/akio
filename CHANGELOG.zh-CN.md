@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：逻辑线程池减少唤醒（akio-pool、akio-core、akio-http）
+
+放进逻辑线程池的任务，只有在没有空闲线程能接走它时才唤醒一个睡眠线程（原先每个任务都唤醒一次，即使
+所有线程都在忙也要一次 futex 调用）；新增 `Pool::try_execute_batch` 和 `ConnInner::execute_batch`，一次
+加锁放入多个任务，HTTP/2 一次 read 的请求即这样交给线程池；睡下前，同一时刻最多一个线程再找 10 µs 的活，
+每次查看之间让出 CPU，并且只在最近这样做找到过活时才这样做。gpu51（4 个 CPU）上 h2c 走线程池：epoll +12%、io_uring +16%、工作窃取 +20%（每秒 68 万到 76 万–81 万请求），低负载下 CPU 与改动前相同
+（docs/BENCHMARKS.zh-CN.md，其中也记录了试过的变体：忙等自旋的线程从 I/O 线程那里占走一个 CPU，慢了
+4%–12%）。
+
 ### 变更：调度模式改名：`Scheduling::Rounds` 改为 `WorkStealing`，`Scheduling::Loops` 改为 `EventLoops`（akio、akio-epoll）
 
 ADR-104 的 2026-11-26 更新。`Scheduling::Rounds(RoundsConfig)` 现在是

@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: fewer wake-ups in the logical pool (akio-pool, akio-core, akio-http)
+
+A job queued on the logical pool wakes a sleeping thread only when no thread is free to take it
+(it used to wake one for every job, a futex call even with every thread busy); new
+`Pool::try_execute_batch` and `ConnInner::execute_batch` queue several jobs under one lock, and
+HTTP/2 hands the requests of one read to the pool that way; before sleeping, one thread at a time
+looks for work for 10 µs, yielding the CPU between looks, but only while looking has lately found
+work. h2c through the pool on gpu51 (4 CPUs): +12% on epoll, +16% on io_uring and +20% with work stealing (0.68M to 0.76M–0.81M requests/s), and the same CPU as before at light load (docs/BENCHMARKS.md, which also records
+the variants tried: a busy-spinning thread cost 4–12% by taking a CPU from the I/O threads).
+
 ### Changed: scheduling modes renamed: `Scheduling::Rounds` is `WorkStealing`, `Scheduling::Loops` is `EventLoops` (akio, akio-epoll)
 
 ADR-104, update of 2026-11-26. `Scheduling::Rounds(RoundsConfig)` is now

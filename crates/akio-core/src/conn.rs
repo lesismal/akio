@@ -2600,6 +2600,19 @@ impl ConnInner {
         true
     }
 
+    /// [`execute`](Self::execute) for several jobs at once: one lock on the pool's queue and
+    /// the wake-ups they need ([`Pool::try_execute_batch`](akio_pool::Pool::try_execute_batch)).
+    /// What the pool cannot take (its queue full, no pool, the connection closed) is left in
+    /// `jobs`, unrun.
+    pub fn execute_batch(&self, jobs: &mut Vec<akio_pool::Job>) {
+        if !self.is_open() {
+            return;
+        }
+        if let Some(pool) = self.link.pool() {
+            pool.try_execute_batch(jobs);
+        }
+    }
+
     /// Reserves the next response position. Call in request order (on the I/O thread).
     pub fn reserve(&self) -> u64 {
         let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());

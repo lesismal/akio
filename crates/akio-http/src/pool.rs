@@ -56,6 +56,30 @@ impl Executor {
             Kind::Ext(s) => s.get().execute(job),
         }
     }
+
+    /// Runs the jobs of `jobs` on the pool, all queued at once where the transport allows;
+    /// what the pool refuses is left in `jobs`, in order.
+    fn try_execute_batch(&self, jobs: &mut Vec<Job>) {
+        match &self.0 {
+            Kind::Conn(c) => c.execute_batch(jobs),
+            Kind::Ext(_) => {
+                let mut refused = Vec::new();
+                for job in jobs.drain(..) {
+                    if let Err(job) = self.try_execute(job) {
+                        refused.push(job);
+                    }
+                }
+                *jobs = refused;
+            }
+        }
+    }
+
+    fn same(&self, other: &Executor) -> bool {
+        match (&self.0, &other.0) {
+            (Kind::Conn(a), Kind::Conn(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 thread_local! {
@@ -68,6 +92,76 @@ thread_local! {
     /// thread to be written with the others of its connection (`h2::Deferred`); work the
     /// handler posts to the pool itself (`detach_to_pool`, `executor`) answers on its own.
     static DEFERRING: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
+    /// The pooled requests of the read an I/O thread is handling ([`Gather`]): handed to the
+    /// pool together when it is done.
+    static GATHERED: std::cell::RefCell<Option<(Executor, Vec<Job>)>> =
+        const { std::cell::RefCell::new(None) };
+    /// A [`Gather`] is open on this thread.
+    static GATHERING: Cell<bool> = const { Cell::new(false) };
+    /// The emptied vector of the last [`Gather`], for the next one.
+    static SPARE_JOBS: Cell<Vec<Job>> = const { Cell::new(Vec::new()) };
+}
+
+/// While it lives, the requests an HTTP/2 read dispatches to the pool are collected, then queued
+/// at once when it drops: one lock on the pool's queue and the wake-ups they need, instead of
+/// one each (`Pool::try_execute_batch`). A request the pool refuses is answered `503` then.
+pub(crate) struct Gather(bool);
+
+impl Gather {
+    /// Starts collecting if `on` (the connection runs its requests on the pool) and nothing
+    /// collects already.
+    pub(crate) fn begin(on: bool) -> Gather {
+        let on = on && !GATHERING.get();
+        if on {
+            GATHERING.set(true);
+        }
+        Gather(on)
+    }
+}
+
+impl Drop for Gather {
+    fn drop(&mut self) {
+        if !self.0 {
+            return;
+        }
+        GATHERING.set(false);
+        let Some((exec, mut jobs)) = GATHERED.take() else {
+            return;
+        };
+        exec.try_execute_batch(&mut jobs);
+        for job in jobs.drain(..) {
+            REFUSED.set(true);
+            job();
+            REFUSED.set(false);
+        }
+        SPARE_JOBS.set(jobs);
+    }
+}
+
+/// Queues `job` on `exec`, into the open [`Gather`] if there is one for this connection.
+fn queue_gathered(exec: &Executor, job: Job) {
+    if GATHERING.get() {
+        let job = GATHERED.with_borrow_mut(|g| match g {
+            Some((e, jobs)) if e.same(exec) => {
+                jobs.push(job);
+                None
+            }
+            Some(_) => Some(job),
+            None => {
+                let mut jobs = SPARE_JOBS.take();
+                jobs.push(job);
+                *g = Some((exec.clone(), jobs));
+                None
+            }
+        });
+        let Some(job) = job else { return };
+        queue(exec, job);
+        return;
+    }
+    queue(exec, job);
 }
 
 /// Whether this thread is running a pooled request's service (see [`DEFERRING`]).
@@ -116,7 +210,7 @@ fn busy() -> Response {
 /// HTTP/1.1 (the context holds its reserved position). When the pool refuses, `503`.
 pub(crate) fn call_on_pool<S: Service + ?Sized>(svc: Arc<S>, mut ctx: Context, exec: &Executor) {
     ctx.set_pooled();
-    queue(
+    queue_gathered(
         exec,
         Box::new(move || {
             if REFUSED.get() {
