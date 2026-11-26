@@ -83,7 +83,9 @@ accept，其 `user_data` 标明 listener 和 socket。移除一个 listener 会�
 CPU 上；NUMA 放置或 BPF 引流已绑定的线程组保持不变。不默认开启的原因：绑核的线程无法避开同一 CPU
 上其他繁忙的线程。实测（docs/BENCHMARKS.zh-CN.md）：绑核后，3 个 listener 共享 4 个线程的
 HTTP/1.1 与 12 个独占线程相当，波动在 1% 以内；handler 在同一组 CPU 的逻辑线程池上执行的 h2c 最多
-下降一半。
+下降一半。改为 inline 执行（关闭 `run_on_pool`）后，绑核的 h2c 是最快的配置（每秒 400 万请求），
+说明下降来自线程池。`EngineBuilder::reserve_pool_cpus(n)` 在绑核时给线程池单独的 CPU；它对 io_uring
+上走线程池的 h2c 有帮助，对 epoll 没有，所以它是用来测量的工具，而不是推荐配置。
 
 ## 未做
 

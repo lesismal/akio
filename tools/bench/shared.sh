@@ -13,7 +13,9 @@
 # Every case is the sum of the per-listener requests/s. Servers ($MODES): `dedicated` (N x
 # $THREADS I/O threads) and `shared` ($THREADS I/O threads), each also `-pinned`
 # (`AKIO_PIN_IO_THREADS=1`: one CPU per I/O thread), on epoll and, where it runs, io_uring
-# ($BACKENDS, default "epoll uring"). Also recorded per run: the server's threads and its CPU
+# ($BACKENDS, default "epoll uring"). Further suffixes: `-inline` serves HTTP/2 on the I/O
+# threads (`run_on_pool` off, `AKIO_BENCH_H2_INLINE=1`); `-pool<N>` keeps N of the server's CPUs
+# for the logical pool and pins $THREADS - N I/O threads to the others (`AKIO_POOL_CPUS=N`). Also recorded per run: the server's threads and its CPU
 # seconds per million requests of the `all` case. Knobs as in lib.sh, plus LISTENERS (default 3);
 # HTTP/1.1 is driven by `h2load --h1` (one generator per listener, so wrk is not used).
 set -u
@@ -30,9 +32,16 @@ HTTP_BENCH=${HTTP_BENCH:-${CARGO_TARGET_DIR:-/tmp/t}/release/examples/http-bench
 # start_multi <mode> <backend>: the server with $LISTENERS listeners from $PORT up, pinned to
 # $SRV_CPUS. The pid is in $SPID.
 start_multi() {
-  local mode=$1 backend=$2 shared=0 pin=0 i busy
+  local mode=$1 backend=$2 shared=0 pin=0 inline=0 pool=0 threads=$THREADS i busy
   case $mode in shared*) shared=1 ;; esac
-  case $mode in *-pinned) pin=1 ;; esac
+  case $mode in *-pinned*) pin=1 ;; esac
+  case $mode in *-inline*) inline=1 ;; esac
+  case $mode in *-pool[0-9]*)
+    pool=${mode##*-pool}
+    pin=1
+    threads=$((THREADS - pool))
+    ;;
+  esac
   # Ports still held by sockets of an earlier run are skipped (see start_server).
   while :; do
     PORT=$((PORT + LISTENERS + 1))
@@ -43,7 +52,8 @@ start_multi() {
     [ -z "$busy" ] && break
   done
   AKIO_BENCH_LISTENERS=$LISTENERS AKIO_BENCH_SHARED=$shared AKIO_PIN_IO_THREADS=$pin \
-    taskset -c "$SRV_CPUS" "$HTTP_BENCH" "127.0.0.1:$PORT" "$THREADS" "$backend" >/dev/null 2>&1 &
+    AKIO_BENCH_H2_INLINE=$inline AKIO_POOL_CPUS=$pool \
+    taskset -c "$SRV_CPUS" "$HTTP_BENCH" "127.0.0.1:$PORT" "$threads" "$backend" >/dev/null 2>&1 &
   SPID=$!
   for i in $(seq 0 $((LISTENERS - 1))); do wait_port $((PORT + i)); done
 }

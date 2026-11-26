@@ -10,6 +10,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：绑核时为逻辑线程池保留 CPU（akio、tools/bench）
+
+`EngineBuilder::reserve_pool_cpus(n)`（或 `AKIO_POOL_CPUS=n`），配合 `pin_io_threads`：进程可用
+CPU 中的最后 `n` 个运行逻辑线程池的线程，I/O 线程绑到其余 CPU 上。未开启绑核、NUMA 放置时以及
+线程池已有启动钩子时忽略。仅 Linux。`http-bench` 新增 `AKIO_BENCH_H2_INLINE=1`（HTTP/2 在 I/O
+线程上执行），`tools/bench/shared.sh` 新增 `-inline` 和 `-pool<N>` 模式。
+
+实测（docs/BENCHMARKS.zh-CN.md）：绑核后 h2c 的下降来自逻辑线程池（inline 执行时，绑核的 h2c
+最快，每秒 400 万请求 ±1%）；4 个 CPU 中保留 2 个给线程池对 io_uring 有帮助（49.6 万到 84 万），
+对 epoll 没有（48.5 万到 33.7 万），并且让 HTTP/1.1 下降。同一批测量还表明，对很轻的 HTTP/2 handler
+来说线程池交接占了大头：inline 每秒 320 万–400 万请求，`H2Config::run_on_pool`（自 2026-11-25
+起默认开启）约 49 万。
+
 ### 新增：I/O 线程绑核，以及共享线程组基准（akio、tools/bench）
 
 `EngineBuilder::pin_io_threads(bool)`（或 `AKIO_PIN_IO_THREADS=1`），默认关闭，把每个 I/O 线程

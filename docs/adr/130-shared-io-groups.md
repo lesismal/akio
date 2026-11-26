@@ -96,7 +96,10 @@ pins each I/O thread to one allowed CPU in turn over the groups; groups NUMA pla
 steering pin are left alone. It is not the default: pinned threads cannot get out of the way of
 other busy threads on their CPUs. Measured (docs/BENCHMARKS.md): pinned, HTTP/1.1 over 3
 listeners sharing 4 threads matched 12 dedicated threads with a 1% spread; h2c, whose handlers
-run on the logical pool on the same CPUs, fell by up to half.
+run on the logical pool on the same CPUs, fell by up to half. Served inline (`run_on_pool` off),
+h2c pinned was the fastest configuration (4.0M requests/s), which puts the drop on the pool.
+`EngineBuilder::reserve_pool_cpus(n)` gives the pool CPUs of its own when pinning; it helped
+pooled h2c on io_uring and not on epoll, so it is a tool to measure with, not a recommendation.
 
 ## Not done
 

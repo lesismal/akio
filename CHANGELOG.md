@@ -10,6 +10,20 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: CPUs kept for the logical pool when pinning (akio, tools/bench)
+
+`EngineBuilder::reserve_pool_cpus(n)` (or `AKIO_POOL_CPUS=n`), with `pin_io_threads`: the last
+`n` of the CPUs the process may use run the logical pool's threads, the I/O threads are pinned to
+the others. Ignored without pinning, under NUMA placement and when the pool has a start hook.
+Linux only. `http-bench` gains `AKIO_BENCH_H2_INLINE=1` (HTTP/2 on the I/O threads) and
+`tools/bench/shared.sh` the `-inline` and `-pool<N>` modes.
+
+Measured (docs/BENCHMARKS.md): the drop of pinned h2c is the logical pool's (served inline, h2c
+pinned is fastest, 4.0M requests/s ±1%); keeping 2 of 4 CPUs for the pool helped io_uring (496k
+to 840k) but not epoll (485k to 337k) and cost HTTP/1.1. The same runs show that the pool
+hand-off dominates trivial HTTP/2 handlers: 3.2M–4.0M requests/s inline against about 0.49M with
+`H2Config::run_on_pool`, the default since 2026-11-25.
+
 ### Added: pinning I/O threads to CPUs, and a shared-group benchmark (akio, tools/bench)
 
 `EngineBuilder::pin_io_threads(bool)` (or `AKIO_PIN_IO_THREADS=1`), off by default, pins each I/O

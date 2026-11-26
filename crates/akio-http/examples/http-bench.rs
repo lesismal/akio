@@ -14,13 +14,15 @@
 //! same app on `n` listeners, at the ports `port`, `port + 1`, ... of `addr` (plain only). Each
 //! has `<threads>` I/O threads of its own (`Listener::threads`, as every listener had before
 //! ADR-130), or with `AKIO_BENCH_SHARED=1` they share `<threads>` (`EngineBuilder::io_threads`).
+//! `AKIO_BENCH_H2_INLINE=1` serves HTTP/2 streams on the I/O threads (`H2Config::run_on_pool`
+//! off) instead of the logical pool.
 
 use akio::{
     Backend, Engine, Listener,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 use akio_http::{
-    Context, Router, WsOptions, serve,
+    Context, HttpConfig, Router, WsOptions, serve_with,
     ws::{Message, WsHandler, WsSender},
 };
 
@@ -81,6 +83,15 @@ fn main() -> std::io::Result<()> {
                 ctx.upgrade_websocket(Echo, &opts);
             })
     };
+    let http = || {
+        let mut c = HttpConfig::default();
+        if std::env::var("AKIO_BENCH_H2_INLINE").as_deref() == Ok("1") {
+            if let Some(h2) = c.h2.as_mut() {
+                h2.run_on_pool = false;
+            }
+        }
+        c
+    };
     let listeners: usize = std::env::var("AKIO_BENCH_LISTENERS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -99,7 +110,7 @@ fn main() -> std::io::Result<()> {
             }
             let l = Listener::tcp(at).backend(backend.clone());
             let l = if shared { l } else { l.threads(threads) };
-            b = b.listen(l.serve(serve(app())));
+            b = b.listen(l.serve(serve_with(http(), app())));
         }
         let engine = b.build()?;
         println!("listening on {:?}", engine.local_addrs());
@@ -122,9 +133,9 @@ fn main() -> std::io::Result<()> {
             _ => akio::tls::Ktls::Off,
         })
         .build()?;
-        l.serve(Tls::server(cfg, serve(app)))
+        l.serve(Tls::server(cfg, serve_with(http(), app)))
     } else {
-        l.serve(serve(app))
+        l.serve(serve_with(http(), app))
     };
     let engine = Engine::builder().listen(l).build()?;
     println!("listening on {:?}", engine.local_addrs());
