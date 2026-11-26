@@ -218,9 +218,11 @@ pub fn dispatch_conn_on_pool<S: Service>(
     );
 }
 
-/// Runs `job` on the HTTP layer's timer thread after `delay` (for a protocol crate that must
-/// try something again later without blocking an I/O thread: `akio-h3` asking a full pool
-/// again). Jobs must be quick: one thread runs them all.
+/// Runs `job` on the HTTP layer's timer thread after `delay`, for a protocol crate whose logic
+/// is about time (a timeout, an idle connection retired) and that must not block an I/O thread.
+/// Jobs must be quick: one thread runs them all. Not for asking a full pool again: work a pool
+/// refuses is answered for, and the next step of work admitted already goes through `resume`,
+/// which a full queue does not refuse (rules.md rule 2).
 pub fn after(delay: std::time::Duration, job: impl FnOnce() + Send + 'static) {
     crate::timer::after(delay, job);
 }

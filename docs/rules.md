@@ -44,6 +44,9 @@ for a proxy built on an event-loop library.
    full queue does not refuse; its owner keeps one such step queued or running at a time, which
    bounds the lane. A refused submission is never tried again from a timer: a timer stands in
    only for logic that is about time (timeouts, idle retirement, periodic work).
+   Every pool submission in the libraries is listed, with its lane and what happens when it is
+   refused, in [`crates/akio/tests/pool_submissions.rs`](../crates/akio/tests/pool_submissions.rs),
+   which fails on an unlisted one and says at its top how to register it.
 3. **Library code that must call a blocking API** (a tracker announce resolving a host name, a
    file served on a cache miss) does it on the pool or on a dedicated thread of its own, never
    on the loop that happened to trigger it. Only an in-memory fast path stays on the loop.

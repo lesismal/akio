@@ -8,8 +8,9 @@
 //! none runs. The thread samples the listed pools every [`SAMPLE`]: it logs each rise of the
 //! backlog to 50, 75, 90 and 100% of the capacity ([`LEVELS`]), and lets a pool go, with a
 //! summary, once its backlog has stayed under 40% ([`LEVELS`]`[0]` less [`HYSTERESIS`]) for
-//! [`CALM_SAMPLES`] samples in a row with no refusal and no stand-in limit hit. With the list
-//! empty the thread exits; the next pool to pass the line starts another one.
+//! [`CALM_SAMPLES`] samples in a row with no refusal and no stand-in limit hit (the summary is
+//! rate limited per pool as the level lines are, [`LOG_EVERY`]). With the list empty the thread
+//! exits; the next pool to pass the line starts another one.
 //!
 //! The same thread watches the command queues of the I/O threads ([`DepthWatch`]): a loop that
 //! takes a batch of more than [`DepthWatch::LINE`] commands reports it, and the watcher logs
@@ -46,8 +47,8 @@ const HYSTERESIS: usize = 10;
 /// Samples in a row (1 s) a pool must stay calm before it leaves the list.
 const CALM_SAMPLES: u32 = 10;
 
-/// At most one log line per pool and level (and for the stand-in limit) this often; the next
-/// one says how many were held back meanwhile.
+/// At most one log line per pool and level (and for the stand-in limit, and for the summary
+/// of an episode) this often; the next one says how many were held back meanwhile.
 const LOG_EVERY: Duration = Duration::from_secs(10);
 
 /// The watcher's memory of one pool, kept in the pool's state (under its lock) across episodes,
@@ -64,6 +65,11 @@ pub(crate) struct PoolWatch {
     ceiling_last_log: Option<Instant>,
     /// Samples with the stand-in limit hit not logged since it was last logged.
     ceiling_held: u64,
+    /// When the summary of an episode ("pressure over") was last logged: a pool flapping
+    /// around the line would otherwise log one about every second.
+    over_last_log: Option<Instant>,
+    /// Summaries not logged since the last one.
+    over_held: u64,
 }
 
 /// Whether a line for something last logged at `last` may be logged `now`
@@ -372,7 +378,8 @@ impl Episode {
         // docs): `w` is declared after `p`, so it is dropped first.
         let p = self.pool.upgrade();
         let mut w = watch_lock();
-        // `Some(compensated so far)` when it leaves calm, `None` when it is gone or shut down.
+        // `Some((compensated so far, summaries held back))` when it leaves calm and its summary
+        // is due, `None` when it is gone or shut down, or the summary is held back.
         let summary = match &p {
             None => None,
             Some(p) => {
@@ -387,19 +394,28 @@ impl Episode {
                     return false;
                 }
                 st.watched = false;
-                (!st.closed).then_some(st.compensated)
+                if st.closed || !self.started {
+                    None
+                } else {
+                    // Rate limited per pool, as the level lines are.
+                    let compensated = st.compensated;
+                    let w = &mut st.watch;
+                    may_log(&mut w.over_last_log, &mut w.over_held, Instant::now())
+                        .map(|held| (compensated, held))
+                }
             }
         };
         let me: *const Pool = self.pool.as_ptr();
         w.pools.retain(|t| !t.is(me.cast()));
         drop(w);
-        if let (true, Some(compensated)) = (self.started, summary) {
+        if let Some((compensated, held)) = summary {
             let compensated = compensated.saturating_sub(self.compensated0);
             let name = &self.name;
             let secs = self.start.elapsed().as_secs_f64();
             let (peak, cap, refused) = (self.peak, self.capacity, self.refusals);
-            akio_log::info!(target: "akio-pool", pool:% = name, seconds = secs, peak = peak, capacity = cap, refused = refused, compensated = compensated;
-                "pool {name}: pressure over after {secs:.1} s (peak {peak}/{cap} jobs waiting, {refused} refused, {compensated} threads started for blocked ones)");
+            let more = held_back(held);
+            akio_log::info!(target: "akio-pool", pool:% = name, seconds = secs, peak = peak, capacity = cap, refused = refused, compensated = compensated, held_back = held;
+                "pool {name}: pressure over after {secs:.1} s (peak {peak}/{cap} jobs waiting, {refused} refused, {compensated} threads started for blocked ones){more}");
         }
         true
     }
@@ -484,6 +500,9 @@ struct DepthState {
     warnings: [u64; 3],
     last_log: [Option<Instant>; 3],
     held: [u64; 3],
+    /// The summary line of an episode, rate limited as the pool's is.
+    over_last_log: Option<Instant>,
+    over_held: u64,
 }
 
 impl std::fmt::Debug for DepthWatch {
@@ -614,6 +633,7 @@ impl DepthEpisode {
     fn try_leave(&mut self) -> bool {
         let q = self.queue.upgrade();
         let mut w = watch_lock();
+        let mut summary = None;
         if let Some(q) = &q {
             let mut st = q.lock();
             if st.deepest != 0 {
@@ -622,16 +642,20 @@ impl DepthEpisode {
                 return false;
             }
             st.watched = false;
+            if self.started {
+                let st = &mut *st;
+                summary = may_log(&mut st.over_last_log, &mut st.over_held, Instant::now());
+            }
         }
         let me: *const DepthWatch = self.queue.as_ptr();
         w.pools.retain(|t| !t.is(me.cast()));
         drop(w);
-        if self.started && q.is_some() {
+        if let Some(held) = summary {
             let name = &self.name;
             let secs = self.start.elapsed().as_secs_f64();
-            let peak = self.peak;
-            akio_log::info!(target: "akio-pool", queue:% = name, seconds = secs, peak = peak;
-                "{name}: command batches back under {} after {secs:.1} s (deepest {peak})", DepthWatch::LINE);
+            let (peak, more) = (self.peak, held_back(held));
+            akio_log::info!(target: "akio-pool", queue:% = name, seconds = secs, peak = peak, held_back = held;
+                "{name}: command batches back under {} after {secs:.1} s (deepest {peak}){more}", DepthWatch::LINE);
         }
         true
     }
@@ -686,5 +710,78 @@ mod tests {
         );
         assert_eq!(may_log(&mut last, &mut held, t0 + LOG_EVERY), Some(2));
         assert_eq!(held, 0);
+    }
+
+    /// A pool flapping around the line leaves the list about once a second: its "pressure
+    /// over" summary is logged at most once per [`LOG_EVERY`], and the next one counts those
+    /// held back.
+    #[test]
+    fn pressure_over_summary_is_rate_limited() {
+        let p = Pool::new(crate::PoolConfig {
+            min_threads: 0,
+            max_threads: 1,
+            queue_capacity: 4,
+            name: "flapping".into(),
+            ..Default::default()
+        });
+        let leave = || {
+            p.lock().watched = true;
+            let mut e = Episode::new(Arc::downgrade(&p));
+            assert!(e.sample(Instant::now()));
+            assert!(e.try_leave(), "a calm pool leaves");
+            assert!(!p.lock().watched);
+        };
+        let state = || {
+            let st = p.lock();
+            (st.watch.over_last_log, st.watch.over_held)
+        };
+        leave();
+        let (first, held) = state();
+        assert!(first.is_some(), "the first summary is logged");
+        assert_eq!(held, 0);
+        leave();
+        leave();
+        assert_eq!(state(), (first, 2), "two summaries held back within 10 s");
+        // Ten seconds later the next one is logged, saying how many were held back.
+        let back = Instant::now()
+            .checked_sub(LOG_EVERY)
+            .expect("an instant 10 s ago");
+        p.lock().watch.over_last_log = Some(back);
+        leave();
+        let (last, held) = state();
+        assert!(last.is_some_and(|t| t > back));
+        assert_eq!(held, 0, "the held-back count went out with the summary");
+        // A shut-down pool leaves with no summary.
+        p.shutdown();
+        let mut e = Episode::new(Arc::downgrade(&p));
+        e.started = true;
+        p.lock().watched = true;
+        assert!(e.try_leave());
+        assert_eq!(state(), (last, 0));
+        p.join();
+    }
+
+    /// The same for a queue of deep command batches.
+    #[test]
+    fn depth_summary_is_rate_limited() {
+        let q = DepthWatch::new("flapping-loop".into());
+        let leave = || {
+            q.lock().watched = true;
+            let mut e = DepthEpisode::new(Arc::downgrade(&q));
+            assert!(e.sample(Instant::now()));
+            assert!(e.try_leave());
+        };
+        leave();
+        leave();
+        leave();
+        let (first, held) = {
+            let st = q.lock();
+            (st.over_last_log, st.over_held)
+        };
+        assert!(first.is_some());
+        assert_eq!(held, 2);
+        q.lock().over_last_log = Instant::now().checked_sub(LOG_EVERY);
+        leave();
+        assert_eq!(q.lock().over_held, 0);
     }
 }

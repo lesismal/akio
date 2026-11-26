@@ -10,6 +10,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：每一处线程池投递都登记了它的车道（测试）
+
+workspace 测试 `crates/akio/tests/pool_submissions.rs` 扫描各库源码中把工作交给线程池的调用
+（`try_execute`、`try_execute_batch`、`execute_batch`、`execute`、`spawn_blocking`、`resume`、
+`detach_to_pool`），逐个对照一张表：所在函数、车道（新工作、已接受工作的下一步、转交调用方选择的包装、
+或根本不是线程池）以及被拒绝时的处理。出现未登记的调用、登记了但已不存在的调用、登记为续投却没有调用
+`resume` 的调用，或同一函数中投递之后出现定时器调用（被拒绝后稍后重试）时，测试失败。目前登记 46 处：
+新工作 14 处、续投 4 处、包装 18 处、同名但与线程池无关 10 处。
+
+压力监视线程的 "pressure over" 总结，以及 I/O 线程命令队列的 "command batches back under 1024" 一行，
+现在和各档日志一样按线程池或队列限速（每 10 秒一条，下一条说明压下了多少条）：在线附近来回波动的线程池
+原先大约每秒记一条。`akio_http::transport::after` 的文档不再把它说成可用于向已满的线程池重新投递。
+
 ### 新增：线程池承压时会说出来，且只在那时运行监视线程（akio-pool、akio-core、akio、akio-http、akio-bittorrent）
 
 提交时发现线程池的积压（排队的新任务和续投任务）超过 `queue_capacity` 的一半、提交因队列已满被拒绝，

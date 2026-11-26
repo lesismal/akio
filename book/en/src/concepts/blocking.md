@@ -141,7 +141,8 @@ pools every 100 ms:
   held back meanwhile;
 - once the backlog has stayed under 40% for a second, with no refusal and no stand-in limit hit,
   the pool leaves with one info line summing up the episode (how long, the deepest backlog, the
-  refusals, the threads started for blocked ones). When no pool is left, the watcher exits; the
+  refusals, the threads started for blocked ones), itself at most once per 10 s per pool, as
+  above. When no pool is left, the watcher exits; the
   next pool past the line starts it again.
 
 `PoolStats::warnings` counts the rises per level (50, 75, 90, 100%; held-back lines included)

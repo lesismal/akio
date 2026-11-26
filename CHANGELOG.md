@@ -10,6 +10,23 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: every pool submission is registered with its lane (tests)
+
+A workspace test, `crates/akio/tests/pool_submissions.rs`, scans the libraries' sources for
+calls that hand work to a pool (`try_execute`, `try_execute_batch`, `execute_batch`, `execute`,
+`spawn_blocking`, `resume`, `detach_to_pool`) and checks each against a table giving its
+function, its lane (new work, the next step of admitted work, a wrapper forwarding its caller's
+choice, or no pool at all) and what happens when it is refused. It fails on an unlisted call, on
+a listed one that is gone, on a resumed step that does not call `resume`, and on a timer call
+following a submission in the same function (a refusal tried again later). 46 calls are listed:
+14 new work, 4 resumed steps, 18 wrappers, 10 named alike but no pool.
+
+The pressure watcher's "pressure over" summary, and the "command batches back under 1024" line
+of an I/O thread's queue, are rate limited per pool or queue as the level lines are (one per
+10 s, the next counting those held back): a pool flapping around the line logged one about every
+second. The doc of `akio_http::transport::after` no longer offers it for asking a full pool
+again.
+
 ### Added: a pool under pressure says so, and only then runs a watcher (akio-pool, akio-core, akio, akio-http, akio-bittorrent)
 
 A submission that finds a pool's backlog (new and resumed jobs waiting) past half of

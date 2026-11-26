@@ -164,7 +164,8 @@ fn pressure_starts_the_watcher_and_calm_stops_it_each_episode() {
             [episode, episode, 0, episode],
             "90% was jumped over"
         );
-        assert_eq!(logged("episodes", "pressure over").len() as u64, episode);
+        // The summary is rate limited as the level lines are: the second came within 10 s.
+        assert_eq!(logged("episodes", "pressure over").len(), 1);
     }
     // The first episode's lines were logged; the second's came within 10 s, so were held back.
     let full = logged("episodes", "queue full");
@@ -312,5 +313,8 @@ fn deep_command_batches_are_watched_until_they_stop() {
                 && m.starts_with("I/O thread test 0 (client): command batches back under 1024")
         })
         .count();
-    assert_eq!(over, 2);
+    assert_eq!(
+        over, 1,
+        "the second episode's summary came within 10 s: held back"
+    );
 }
