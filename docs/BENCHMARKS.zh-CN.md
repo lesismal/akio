@@ -2664,6 +2664,47 @@ TIME_WAIT 复用回环端口的速率。每轮第四个服务端（总是 io_uri
 io_uring）、33,419（new epoll）和 33,422（base epoll）。已接受连接的检查是每次 accept 一次减法加一次比较，
 这套工具分辨不出来。
 
+### WebAssembly guest 调用（akit A180，ADR-125 W5，同轮 A/B，2026-11-26）
+
+一次 WebAssembly 插件调用本身的开销，不含外围网关：fit 的 `headers` 插件（Go `wasip1` guest，
+`crates/akio-wasm/tests/guests/headers-go.wasm.gz`）在一个已热的实例上按 fit 的 ABI 调用，
+`fit_on_request` 处理 `/a`，设置并删除请求字段、加三个响应字段：每次调用 8,193 条 WebAssembly 指令（Go 运行时
+多做一些工作时为 8,815 条）和 9 次宿主调用。`cargo run --release -p akio-wasm --example wasm-bench`
+（`crates/akio-wasm/examples/wasm-bench.rs`）测它及其各部分：`entry`（返回常量的导出函数）、`host`（每次调用
+1,000 次类型化宿主函数，扣除循环本身）、`loop`（六条指令的循环 1,000 次：只有分派）、`pool`（同一调用经一个
+实例的 `InstancePool`，从 `submit` 到完成，一次一个作业，因此实例线程每次都要睡眠并被唤醒）。wazero 一行是
+fit 的 `BenchmarkGuestCall`（`plugin/wasm`，fit `b6c5cebf`，wazero 1.12，Go 1.27.4），同一个 `.wasm`，
+分别用编译器（fit 的设置）和解释器。gpu51，`quiet.sh` 下，CPU 2–3，每个场景 5 轮各 2 s，`base` 与 `new`
+轮流先跑；取中位数，并给出每轮 `new / base` 比值的范围。`base` 是 `main` 的 `fdd95418`（代码与 `6bcd8ad6` 相同），`new` 是分支
+`claude/a180-wasm-call-a00702`。
+
+| 场景 | base | new | new / base | 每轮 |
+|---|---:|---:|---:|---|
+| `headers`：调用一次 Go guest | 9,089 ns | **5,068 ns** | **0.558** | 0.536–0.565 |
+| `entry`：进入并离开 guest | 75 ns | 75 ns | 1.000 | 0.987–1.000 |
+| `loop`：12,001 条指令 | 7,085 ns | 5,643 ns | 0.796 | 0.704–0.813 |
+| 一次宿主调用（`host` 减去 `loop`，按次） | 27.8 ns | 17.5 ns | 0.629 | 0.627–0.651 |
+| `pool`：提交 `headers` 到其完成 | 15,672 ns | 11,782 ns | 0.752 | 0.724–0.756 |
+| wazero，编译器（fit 的运行时） | 3,520 ns | | | |
+| wazero，解释器 | 41,700 ns | | | |
+
+**调用的时间花在哪里（`base`，CPU 2 上的 perf）。** 89% 的周期在解释器循环（`Runtime::run`）里；每次调用分派约
+3,000 条寄存器指令，每条约 15 个周期、35 条 x86 指令，每次调用 440 次分支预测失败。进入并离开 guest 为 75 ns；
+9 次宿主调用约 250 ns；Go 的 `c-shared` 导出函数每次调用不启动运行时（请求期间没有 WASI 调用），除宿主函数读写
+的部分外也不复制 guest 内存。所以开销在于分派，而 Go 的代码产生了许多解释器并不需要的分派：`i64.extend_i32_u`
+（每次调用 184 条）、load/store 之前的 `i32.wrap_i64`（约 230 条）、为了存储、返回或作为调用第一个参数而物化的
+常量（约 160 条）、每个被采纳分支之后的 `Fuel`（共 423 条 `Fuel`，占分派的 14%）、`br_if` 之前的两次
+`i64.eqz`，以及刚移动过的栈指针的 `global.set`（126 条）。
+
+**改了什么**（ADR-125“实现记录：W5”）：这些序列在翻译时折叠或融合，分支自己收取目标块的燃料，类型化宿主函数
+直接操作槽而不经 `Value`。现在每次调用分派约 2,000 条指令；2 秒运行中的分支预测失败从 1.11 亿次降到 1,700 万次。
+`pool` 一行的交接开销（`pool` 减 `headers`，之前 6.6 µs，之后 6.7 µs）是空闲线程的唤醒，没有变化：在 akit 的
+负载下，实例线程多半会发现下一个作业已经在排队。
+
+**与 wazero 对比**：调用曾是 wazero 编译器的 2.58 倍，现在是 1.44 倍（差距缩小 72%），比 wazero 的解释器快
+8.2 倍。akit 测得插件每个请求花 14.7 µs CPU，fit 为 6.8 µs（M5）；单是调用就便宜了 4.0 µs。不提议编译器层：
+剩下的就是解释器分派本身。
+
 ### monoio（2026-11-21，同一次运行，`tools/bench-ref/monoio-ref`）
 
 单独的一次运行，不属于 2026-11-15 那一轮：同一台主机、同一套脚本、同样的绑核和轮数（5 秒一轮取 3 轮

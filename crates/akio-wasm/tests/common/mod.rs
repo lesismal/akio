@@ -96,6 +96,7 @@ pub(crate) struct Builder {
     funcs: Vec<u32>,
     tables: Vec<Vec<u8>>,
     memory: Option<Vec<u8>>,
+    globals: Vec<Vec<u8>>,
     exports: Vec<Vec<u8>>,
     codes: Vec<Vec<u8>>,
 }
@@ -176,6 +177,22 @@ impl Builder {
         self.memory = Some(m);
     }
 
+    /// A mutable `i32` global holding `v`; its index.
+    pub(crate) fn global_i32(&mut self, v: i32) -> u32 {
+        let mut g = vec![I32, 1, 0x41];
+        sleb(i64::from(v), &mut g);
+        g.push(0x0b);
+        self.globals.push(g);
+        (self.globals.len() - 1) as u32
+    }
+
+    pub(crate) fn export_global(&mut self, n: &str, g: u32) {
+        let mut e = name(n);
+        e.push(3);
+        leb(u64::from(g), &mut e);
+        self.exports.push(e);
+    }
+
     pub(crate) fn table(&mut self, min: u32, max: Option<u32>) {
         let mut t = vec![0x70, u8::from(max.is_some())];
         leb(u64::from(min), &mut t);
@@ -211,6 +228,9 @@ impl Builder {
         }
         if let Some(m) = &self.memory {
             section(5, vec_of(std::slice::from_ref(m)));
+        }
+        if !self.globals.is_empty() {
+            section(6, vec_of(&self.globals));
         }
         section(7, vec_of(&self.exports));
         section(10, vec_of(&self.codes));

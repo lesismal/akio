@@ -3162,6 +3162,57 @@ four held 33,403 (new io_uring), 33,440 (base io_uring), 33,419 (new epoll) and 
 epoll). The accepted-connection check is one subtraction and one comparison per accept; this
 harness cannot resolve it.
 
+### WebAssembly guest call (akit A180, ADR-125 W5, same-run A/B, 2026-11-26)
+
+What one call of a WebAssembly plugin costs, apart from the gateway around it: fit's `headers`
+plugin (a Go `wasip1` guest, `crates/akio-wasm/tests/guests/headers-go.wasm.gz`) called on one
+warm instance with fit's ABI, `fit_on_request` for `/a`, which sets and deletes request fields and
+adds three response fields: 8,193 WebAssembly instructions (8,815 on some calls, when Go's
+runtime does more) and 9 host calls a call.
+`cargo run --release -p akio-wasm --example wasm-bench` (`crates/akio-wasm/examples/wasm-bench.rs`)
+times it and its parts: `entry` (an export returning a constant), `host` (a typed host function
+called 1,000 times a call, the loop's cost taken off), `loop` (1,000 iterations of a
+six-instruction loop: dispatch alone), and `pool` (the same call through an `InstancePool` of one
+instance, `submit` to completion, one job at a time, so the instance's thread sleeps and is woken
+every time). wazero is fit's `BenchmarkGuestCall` (`plugin/wasm`, fit at `b6c5cebf`, wazero 1.12,
+Go 1.27.4) on the same `.wasm`, with its compiler (fit's setting) and its interpreter. gpu51 under
+`quiet.sh`, CPUs 2–3, 5 rounds of 2 s per scenario with `base` and `new` alternating first;
+medians, and the range of the per-round `new / base` ratios. `base` is `main` at `fdd95418` (its
+code as at `6bcd8ad6`), `new` the branch `claude/a180-wasm-call-a00702`.
+
+| Scenario | base | new | new / base | per round |
+|---|---:|---:|---:|---|
+| `headers`: a call of the Go guest | 9,089 ns | **5,068 ns** | **0.558** | 0.536–0.565 |
+| `entry`: into the guest and out | 75 ns | 75 ns | 1.000 | 0.987–1.000 |
+| `loop`: 12,001 instructions | 7,085 ns | 5,643 ns | 0.796 | 0.704–0.813 |
+| a host call (`host` less `loop`, per call) | 27.8 ns | 17.5 ns | 0.629 | 0.627–0.651 |
+| `pool`: `headers` submitted, to its completion | 15,672 ns | 11,782 ns | 0.752 | 0.724–0.756 |
+| wazero, compiler (fit's runtime) | 3,520 ns | | | |
+| wazero, interpreter | 41,700 ns | | | |
+
+**Where the call went (`base`, perf on CPU 2).** 89% of the cycles in the interpreter's loop
+(`Runtime::run`); about 3,000 register instructions dispatched a call, at about 15 cycles and 35
+x86 instructions each, 440 branch mispredictions a call. Entering and leaving the guest is 75 ns;
+the 9 host calls about 250 ns; a Go `c-shared` export starts no runtime per call (no WASI call
+during a request) and no guest memory is copied but what the host functions read and write. So the
+cost is the dispatches, and Go's code made many that did nothing an interpreter needs:
+`i64.extend_i32_u` (184 a call), `i32.wrap_i64` before a load or store (about 230), a constant
+materialized to be stored, returned or passed as a call's first argument (about 160), `Fuel` after every
+taken branch (423 `Fuel` in all, 14% of the dispatches), `i64.eqz` twice before a `br_if`, and
+`global.set` of a stack pointer just moved (126).
+
+**What changed** (ADR-125, "As built: W5"): those sequences are folded or fused at translation,
+branches take their target's fuel, and typed host functions run over slots, not `Value`s. A call
+now dispatches about 2,000 instructions; branch mispredictions fell from 111 M to 17 M over a
+2-second run. The `pool` row's hand-off (`pool` less `headers`, 6.6 µs before, 6.7 µs after) is
+the idle thread's wake-up, unchanged: under akit's load an instance's thread mostly finds the next
+job queued.
+
+**Against wazero**: the call was 2.58 times wazero's compiler and is 1.44 times it now (72% of the
+gap closed), and 8.2 times faster than wazero's interpreter. akit measured the plugin at 14.7 µs
+of CPU a request against fit's 6.8 (M5); the call alone is 4.0 µs cheaper. A compiler tier is not
+proposed: what is left is the interpreter's dispatch itself.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

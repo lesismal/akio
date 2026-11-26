@@ -549,3 +549,94 @@ fn a_host_function_called_by_the_host_has_no_memory() {
     assert_eq!(f.call(&mut s, (), &Budget::unlimited()), Ok(-1));
     assert_eq!(*s.state(), 1);
 }
+
+#[test]
+fn typed_host_functions_pass_every_type_by_its_bits() {
+    // run(a: i32, b: i64, c: f32, d: f64) -> (i64, i32, f32, f64, i64): the host function's
+    // results, its `i32` one widened by the guest with `i64.extend_i32_u` (a slot holds an
+    // `i32` zero-extended, so that the widening is free).
+    let mut b = Builder::default();
+    const F32: u8 = 0x7d;
+    const F64: u8 = 0x7c;
+    let th = b.ty(&[I32, I64, F32, F64], &[I32, I64, F32, F64]);
+    let f = b.import_func("host", "f", th);
+    let tr = b.ty(&[I32, I64, F32, F64], &[I64, I32, F32, F64, I64]);
+    let run = b.func(
+        tr,
+        &[(1, I32), (1, I64), (1, F32), (1, F64)],
+        Code::default()
+            .get(0)
+            .get(1)
+            .get(2)
+            .get(3)
+            .call(f)
+            .set(7)
+            .set(6)
+            .set(5)
+            .set(4)
+            .get(4)
+            .op(&[0xad]) // i64.extend_i32_u
+            .get(4)
+            .get(6)
+            .get(7)
+            .get(5)
+            .end(),
+    );
+    b.export("run", run);
+    let m = b.load();
+    let mut l = Linker::<()>::new();
+    l.func_wrap(
+        "host",
+        "f",
+        |_: &mut Caller<'_, ()>, (a, b, c, d): (i32, u64, f32, f64)| {
+            Ok((a.wrapping_neg(), b.wrapping_neg(), -c, -d))
+        },
+    )
+    .unwrap();
+    let mut s = Store::new((), InstanceLimits::default());
+    let inst = l.instantiate(&mut s, &m, &Budget::unlimited()).unwrap();
+    let nan = f32::from_bits(0x7fa0_0001);
+    let r = call_run(
+        &mut s,
+        inst,
+        &[
+            Value::I32(1),
+            Value::I64(5),
+            Value::F32(nan),
+            Value::F64(2.5),
+        ],
+    )
+    .unwrap();
+    assert_eq!(r[0], Value::I64(0xffff_ffff));
+    assert_eq!(r[1], Value::I32(-1));
+    match r[2] {
+        Value::F32(x) => assert_eq!(x.to_bits(), 0xffa0_0001),
+        v => panic!("{v:?}"),
+    }
+    assert_eq!(r[3], Value::F64(-2.5));
+    assert_eq!(r[4], Value::I64(-5));
+
+    // A typed host function called by the host, not the guest.
+    let mut l = Linker::<()>::new();
+    l.func_wrap("host", "g", |_: &mut Caller<'_, ()>, (a, b): (u32, i32)| {
+        Ok((b, a))
+    })
+    .unwrap();
+    let mut s = Store::new((), InstanceLimits::default());
+    let mut b = Builder::default();
+    let t = b.ty(&[I32, I32], &[I32, I32]);
+    let g = b.import_func("host", "g", t);
+    b.export("g", g);
+    let m = b.load();
+    let inst = l.instantiate(&mut s, &m, &Budget::unlimited()).unwrap();
+    let g = s.export_func(inst, "g").unwrap();
+    let mut out = [Value::I32(0), Value::I32(0)];
+    s.call(
+        g,
+        &[Value::I32(-7), Value::I32(3)],
+        &mut out,
+        &Budget::unlimited(),
+    )
+    .unwrap();
+    assert_eq!(out, [Value::I32(3), Value::I32(-7)]);
+}

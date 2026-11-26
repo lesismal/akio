@@ -29,10 +29,33 @@ pub(crate) const PAGE: usize = 65_536;
 /// native call of the interpreter's loop, so this bounds the native stack.
 pub(crate) const MAX_REENTRY: u32 = 64;
 
-/// A host function: called with the caller, its arguments, and its results to fill (each
-/// already holding its type's zero).
-pub(crate) type HostFn<S> =
+/// A host function over values: called with the caller, its arguments, and its results to fill
+/// (each already holding its type's zero).
+pub(crate) type ValuesFn<S> =
     Arc<dyn Fn(&mut Caller<'_, S>, &[Value], &mut [Value]) -> Result<(), Trap> + Send + Sync>;
+
+/// A typed host function (`Linker::func_wrap`) over slots: its arguments in the first slots,
+/// replaced by its results, each of its type by construction (checked when it was linked).
+pub(crate) type SlotsFn<S> =
+    Arc<dyn Fn(&mut Caller<'_, S>, &mut [u64]) -> Result<(), Trap> + Send + Sync>;
+
+/// The most arguments or results a typed host function has (`WasmParams`' tuples).
+const MAX_TYPED: usize = 12;
+
+/// A host function.
+pub(crate) enum HostFn<S> {
+    Values(ValuesFn<S>),
+    Slots(SlotsFn<S>),
+}
+
+impl<S> Clone for HostFn<S> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Values(f) => Self::Values(Arc::clone(f)),
+            Self::Slots(f) => Self::Slots(Arc::clone(f)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FuncKind {
@@ -577,7 +600,7 @@ impl<S> Store<S> {
         + Sync
         + 'static,
     ) -> Func {
-        self.func_arc(&ty, Arc::new(f))
+        self.func_arc(&ty, HostFn::Values(Arc::new(f)))
     }
 
     /// A host function of type `ty`, shared (a [`Linker`](crate::Linker)'s).
@@ -1122,16 +1145,32 @@ impl<S> Store<S> {
         }
         match fe.kind {
             FuncKind::Host(h) => {
-                let host = Arc::clone(&self.hosts[h as usize]);
+                let host = self.hosts[h as usize].clone();
                 for (r, &t) in results.iter_mut().zip(ty.results()) {
                     *r = Value::default_of(t);
                 }
+                let id = self.rt.id;
                 let mut caller = Caller {
                     store: self,
                     instance: None,
                     meter,
                 };
-                let r = host(&mut caller, args, results);
+                let r = match host {
+                    HostFn::Values(f) => f(&mut caller, args, results),
+                    HostFn::Slots(f) => {
+                        let mut slots = [0u64; MAX_TYPED];
+                        let n = args.len().max(results.len()).min(MAX_TYPED);
+                        for (s, a) in slots.iter_mut().zip(args) {
+                            *s = a.to_slot(id).unwrap_or(0);
+                        }
+                        let r = f(&mut caller, &mut slots[..n]);
+                        let ty = &caller.store.rt.types[fe.ty as usize];
+                        for ((r, &s), &t) in results.iter_mut().zip(&slots).zip(ty.results()) {
+                            *r = Value::from_slot(s, t, id);
+                        }
+                        r
+                    }
+                };
                 if let Some(t) = self.pending.take() {
                     return Err(t);
                 }
@@ -1208,20 +1247,62 @@ impl<S> Store<S> {
         inst: u32,
         meter: &mut Meter,
     ) -> Result<(), Trap> {
-        let ty = self.rt.types[ty as usize].clone();
-        let host = Arc::clone(&self.hosts[host as usize]);
+        let f = match &self.hosts[host as usize] {
+            HostFn::Slots(f) => Arc::clone(f),
+            HostFn::Values(f) => {
+                let f = Arc::clone(f);
+                return self.call_host_values(&f, ty, base, inst, meter);
+            }
+        };
+        // A typed host function: its arguments' slots in, its results' slots out, no values.
+        let (np, nr) = {
+            let t = &self.rt.types[ty as usize];
+            (t.params().len(), t.results().len())
+        };
+        let n = np.max(nr);
+        if n > MAX_TYPED {
+            return Err(Trap::Host(
+                "a typed host function of too many values".into(),
+            ));
+        }
+        let mut slots = [0u64; MAX_TYPED];
+        slots[..np].copy_from_slice(&self.rt.stack[base..base + np]);
+        let mut caller = Caller {
+            store: self,
+            instance: Some(inst),
+            meter,
+        };
+        let r = f(&mut caller, &mut slots[..n]);
+        if let Some(t) = self.pending.take() {
+            return Err(t);
+        }
+        r?;
+        self.rt.stack[base..base + nr].copy_from_slice(&slots[..nr]);
+        Ok(())
+    }
+
+    /// `call_host` for a host function over values.
+    fn call_host_values(
+        &mut self,
+        host: &ValuesFn<S>,
+        ty: u32,
+        base: usize,
+        inst: u32,
+        meter: &mut Meter,
+    ) -> Result<(), Trap> {
         let mut args = std::mem::take(&mut self.args);
         let mut results = std::mem::take(&mut self.results);
         args.clear();
         results.clear();
         let id = self.rt.id;
+        let t = &self.rt.types[ty as usize];
         args.extend(
-            ty.params()
+            t.params()
                 .iter()
                 .enumerate()
                 .map(|(k, &t)| Value::from_slot(self.rt.stack[base + k], t, id)),
         );
-        results.extend(ty.results().iter().map(|&t| Value::default_of(t)));
+        results.extend(t.results().iter().map(|&t| Value::default_of(t)));
         let mut caller = Caller {
             store: self,
             instance: Some(inst),
@@ -1233,6 +1314,7 @@ impl<S> Store<S> {
             None => r,
         };
         let r = r.and_then(|()| {
+            let ty = &self.rt.types[ty as usize];
             for (k, (v, &t)) in results.iter().zip(ty.results()).enumerate() {
                 if v.ty() != t {
                     return Err(Trap::Host(

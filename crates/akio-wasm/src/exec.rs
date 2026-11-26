@@ -381,10 +381,19 @@ impl Runtime {
                                 stack.resize(grown, 0);
                             }
                             stack[at + c.params as usize..at + c.locals as usize].fill(0);
+                            // The callee's first block's fuel, taken here: its `Fuel` is
+                            // skipped (the first instruction of every function).
+                            let entry = match c.code.first() {
+                                Some(&Instr::Fuel { n }) => {
+                                    meter.take(u64::from(n))?;
+                                    1
+                                }
+                                _ => 0,
+                            };
                             frames.push(Frame {
                                 inst: ci,
                                 func: def,
-                                pc: 0,
+                                pc: entry,
                                 base: at as u32,
                             });
                             continue 'frame;
@@ -407,39 +416,62 @@ impl Runtime {
                 match i {
                     Instr::Fuel { n } => meter.take(u64::from(n))?,
                     Instr::Unreachable => return Err(Trap::Unreachable),
-                    Instr::Br { t } => pc = t as usize,
-                    Instr::BrIfNz { c, t } => {
+                    Instr::Br { t, n } => {
+                        meter.take(u64::from(n))?;
+                        pc = t as usize;
+                    }
+                    Instr::BrIfNz { c, t, n, f } => {
                         if r[c as usize] as u32 != 0 {
+                            meter.take(u64::from(n))?;
                             pc = t as usize;
+                        } else if f != 0 {
+                            meter.take(u64::from(f - 1))?;
+                            pc += 1;
                         }
                     }
-                    Instr::BrIfZ { c, t } => {
+                    Instr::BrIfZ { c, t, n, f } => {
                         if r[c as usize] as u32 == 0 {
+                            meter.take(u64::from(n))?;
                             pc = t as usize;
+                        } else if f != 0 {
+                            meter.take(u64::from(f - 1))?;
+                            pc += 1;
                         }
                     }
-                    Instr::BrCmp32 { op, a, b, t } => {
+                    Instr::BrCmp32 { op, n, a, b, t } => {
                         if op.i32(r[a as usize] as i32, r[b as usize] as i32) {
+                            meter.take(u64::from(n))?;
                             pc = t as usize;
                         }
                     }
-                    Instr::BrCmp32I { op, a, imm, t } => {
+                    Instr::BrCmp32I { op, n, a, imm, t } => {
                         if op.i32(r[a as usize] as i32, imm) {
+                            meter.take(u64::from(n))?;
                             pc = t as usize;
                         }
                     }
-                    Instr::BrCmp64 { op, a, b, t } => {
+                    Instr::BrCmp64 { op, n, a, b, t } => {
                         if op.i64(r[a as usize] as i64, r[b as usize] as i64) {
+                            meter.take(u64::from(n))?;
                             pc = t as usize;
                         }
                     }
-                    Instr::BrCmp64I { op, a, imm, t } => {
+                    Instr::BrCmp64I { op, n, a, imm, t } => {
                         if op.i64(r[a as usize] as i64, i64::from(imm)) {
+                            meter.take(u64::from(n))?;
                             pc = t as usize;
                         }
                     }
                     Instr::BrTable { s, n } => {
-                        pc += (r[s as usize] as u32).min(n) as usize;
+                        // The chosen `Br` taken here, not dispatched.
+                        let k = pc + (r[s as usize] as u32).min(n) as usize;
+                        match code[k] {
+                            Instr::Br { t, n } => {
+                                meter.take(u64::from(n))?;
+                                pc = t as usize;
+                            }
+                            _ => pc = k,
+                        }
                     }
                     Instr::Copy { d, s } => r[d as usize] = r[s as usize],
                     Instr::CopyRange { d, s, n } => {
@@ -459,12 +491,20 @@ impl Runtime {
                         r[0] = r[s as usize];
                         ret!()
                     }
+                    Instr::Return1C { v } => {
+                        r[0] = v;
+                        ret!()
+                    }
                     Instr::ReturnN { s, n } => {
                         let s = s as usize;
                         r.copy_within(s..s + n as usize, 0);
                         ret!()
                     }
                     Instr::Call { f, base: at } => {
+                        enter!(inst.funcs[module.imported_funcs as usize + f as usize], at);
+                    }
+                    Instr::CallC { f, base: at, v } => {
+                        r[at as usize] = u64::from(v);
                         enter!(inst.funcs[module.imported_funcs as usize + f as usize], at);
                     }
                     Instr::CallImport { f, base: at } => enter!(inst.funcs[f as usize], at),
@@ -493,6 +533,11 @@ impl Runtime {
                     }
                     Instr::GlobalSet { s, g } => {
                         globals[inst.globals[g as usize] as usize].value = r[s as usize];
+                    }
+                    Instr::I32AddGlobal { g, d, a, imm } => {
+                        let v = u64::from((r[a as usize] as u32).wrapping_add(imm as u32));
+                        r[d as usize] = v;
+                        globals[inst.globals[g as usize] as usize].value = v;
                     }
                     Instr::TableGet { d, a, t } => {
                         let t = &tables[inst.tables[t as usize] as usize];
@@ -682,6 +727,15 @@ impl Runtime {
                     }
                     Instr::I64Store32(m) => {
                         let v = r[m.x as usize] as u32;
+                        store(&mut mem.data, r, m, v.to_le_bytes())?;
+                    }
+                    Instr::Store8I(m) => store(&mut mem.data, r, m, [m.x as u8])?,
+                    Instr::Store16I(m) => {
+                        store(&mut mem.data, r, m, (m.x as u16).to_le_bytes())?;
+                    }
+                    Instr::Store32I(m) => store(&mut mem.data, r, m, m.x.to_le_bytes())?,
+                    Instr::Store64I(m) => {
+                        let v = i64::from(m.x as i32);
                         store(&mut mem.data, r, m, v.to_le_bytes())?;
                     }
 

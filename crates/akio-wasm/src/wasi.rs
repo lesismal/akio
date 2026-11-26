@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     linker::{LinkError, Linker},
-    store::Caller,
+    store::{Caller, HostFn},
     trap::Trap,
     types::{FuncType, ValType},
     value::Value,
@@ -516,34 +516,40 @@ impl<S> Linker<S> {
                 MODULE,
                 name,
                 FuncType::new(params, &[A]),
-                Arc::new(move |c: &mut Caller<'_, S>, a: &[Value], r: &mut [Value]| {
-                    // A fault in the guest's memory is its error, not a trap.
-                    r[0] = Value::I32(match body(c, &cfg, a) {
-                        Ok(e) => e,
-                        Err(Trap::MemoryOutOfBounds) => EFAULT,
-                        Err(t) => return Err(t),
-                    });
-                    Ok(())
-                }),
+                HostFn::Values(Arc::new(
+                    move |c: &mut Caller<'_, S>, a: &[Value], r: &mut [Value]| {
+                        // A fault in the guest's memory is its error, not a trap.
+                        r[0] = Value::I32(match body(c, &cfg, a) {
+                            Ok(e) => e,
+                            Err(Trap::MemoryOutOfBounds) => EFAULT,
+                            Err(t) => return Err(t),
+                        });
+                        Ok(())
+                    },
+                )),
             )?;
         }
         self.define(
             MODULE,
             "proc_exit",
             FuncType::new(&[A], &[]),
-            Arc::new(|_: &mut Caller<'_, S>, a: &[Value], _: &mut [Value]| {
-                Err(Trap::Exit(a.first().and_then(Value::i32).unwrap_or(0)))
-            }),
+            HostFn::Values(Arc::new(
+                |_: &mut Caller<'_, S>, a: &[Value], _: &mut [Value]| {
+                    Err(Trap::Exit(a.first().and_then(Value::i32).unwrap_or(0)))
+                },
+            )),
         )?;
         for &(name, params, errno) in STUBS {
             self.define(
                 MODULE,
                 name,
                 FuncType::new(params, &[A]),
-                Arc::new(move |_: &mut Caller<'_, S>, _: &[Value], r: &mut [Value]| {
-                    r[0] = Value::I32(errno);
-                    Ok(())
-                }),
+                HostFn::Values(Arc::new(
+                    move |_: &mut Caller<'_, S>, _: &[Value], r: &mut [Value]| {
+                        r[0] = Value::I32(errno);
+                        Ok(())
+                    },
+                )),
             )?;
         }
         Ok(self)

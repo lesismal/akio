@@ -37,6 +37,14 @@ ADR-104 的 2026-11-26 更新。`Scheduling::Rounds(RoundsConfig)` 现在是
 
 ADR-177。目标为绝对形式的 HTTP/1 请求（`GET http://a.example/admin/x?q HTTP/1.1`）按 RFC 9112 §3.2.2 对源服务器的要求处理：`Request::target` 为其 origin 形式（`/admin/x?q`，path 为空时为 `/`），目标的 authority（去掉用户信息）替换 `Host`。此前目标原样保留，路由器认不出这个路径，而代理向上游请求的是该 path：akit 的模糊测试发现这样的请求绕过了保护 `/admin/*` 的路由。`Request::raw_target()` 给出发送时的目标，访问日志记录它。HTTP/1.1 仍要求恰好一个 `Host`。不属于 RFC 9112 给源服务器的任何形式的目标（`CONNECT` 以外的 authority 形式、相对路径、`OPTIONS` 以外的 `*`、没有 host 的绝对形式）以 400 应答。在 HTTP/2 和 HTTP/3 上，`:path` 不是 origin 形式（或 `OPTIONS` 的 `*`）的请求（包括绝对 URI）是畸形请求（RFC 9113 §8.3.1、RFC 9114 §4.3.1）。
 
+### 变更：WebAssembly guest 调用便宜 44%（akio-wasm；akit A180）
+
+ADR-125 的 W5。在基准机上，于热实例上调用一次 fit 的 Go `headers` guest 由 9.1 µs 降到 5.1 µs（wazero 编译器
+3.5 µs，其解释器 42 µs），一次类型化宿主调用由 28 ns 降到 17.5 ns。翻译器折叠并融合 Go 的 `wasm` 代码中不必要
+的部分（`i64.extend_i32_u`、地址的 wrap、存储/返回/传递的常量、两次 `eqz` 的测试、栈指针的更新），分支收取目标
+块的燃料，类型化宿主函数（`Linker::func_wrap`）直接操作槽而不经 `Value`。燃料计量与之前完全相同。公开 API 不变；
+`examples/wasm-bench.rs` 测量一次调用及其各部分。
+
 ### 新增：每次拨号自己的连接超时，`Engine::dial_with`（akio、akio-core、各后端、akio-http；akit A12、A79）
 
 ADR-154。`Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)` 用自己的

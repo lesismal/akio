@@ -133,6 +133,10 @@
 //! dropped and made again before its thread's next job; one that will not start fails the pool.
 //! [`InstancePool::stats`] counts calls, traps by kind, remakes, expiries and refusals.
 
+// The unit tests build modules with the integration tests' builder, which names the crate.
+#[cfg(test)]
+extern crate self as akio_wasm;
+
 mod budget;
 mod error;
 mod exec;
