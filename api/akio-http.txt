@@ -1100,6 +1100,7 @@ pub fn akio_http::Context::after(&mut self, core::time::Duration, impl core::ops
 pub fn akio_http::Context::body(&self) -> &[u8]
 pub fn akio_http::Context::body_reads(&mut self) -> core::option::Option<akio_http::BodyReads>
 pub fn akio_http::Context::bytes(&mut self, u16, &str, alloc::vec::Vec<u8>)
+pub fn akio_http::Context::connection(&self) -> core::option::Option<akio_core::conn::ConnHandle>
 pub fn akio_http::Context::detach(&mut self) -> core::option::Option<akio_http::Detached>
 pub fn akio_http::Context::header(&self, &str) -> core::option::Option<&str>
 pub fn akio_http::Context::hold_response_head(&mut self, core::time::Duration, impl core::ops::function::FnOnce(akio_http::HeldHead, &akio_http::message::Request) + core::marker::Send + 'static)
