@@ -10,6 +10,30 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: connections reset when the thread count shrinks again soon after growing (akio-epoll, akio-uring)
+
+Growing the I/O threads asks the loop holding an `SO_REUSEPORT` socket handed on by an earlier
+shrink to give it back, and it was posted straight to the loop of that index named at the time.
+When the group shrank again before that command was handled, that loop could already have retired
+and exited: the socket sat in a queue nobody read, stayed in the kernel's `SO_REUSEPORT` group
+taking its share of new connections, and was dropped, resetting them all, when the next growth
+replaced the loop. The socket now goes back through the roster, posted under its read lock like
+every other hand-over, so it reaches its home loop, or an active one, before any `Retire`. The
+same race could drop a connection handed over by accept-time balancing (ADR-105): the target loop
+was picked under the lock and posted to after it; both now happen under it. Seen as
+`balancing_survives_resizing` failing about one run in eight (all four clients reset at once);
+0 in 60 runs each on epoll and io_uring since.
+
+### Changed: fewer wake-ups in the logical pool (akio-pool, akio-core, akio-http)
+
+A job queued on the logical pool wakes a sleeping thread only when no thread is free to take it
+(it used to wake one for every job, a futex call even with every thread busy); new
+`Pool::try_execute_batch` and `ConnInner::execute_batch` queue several jobs under one lock, and
+HTTP/2 hands the requests of one read to the pool that way; before sleeping, one thread at a time
+looks for work for 10 µs, yielding the CPU between looks, but only while looking has lately found
+work. h2c through the pool on gpu51 (4 CPUs): +12% on epoll, +16% on io_uring and +20% with work stealing (0.68M to 0.76M–0.81M requests/s), and the same CPU as before at light load (docs/BENCHMARKS.md, which also records
+the variants tried: a busy-spinning thread cost 4–12% by taking a CPU from the I/O threads).
+
 ### Fixed: a request head of many fields read in pieces is answered as in one piece (akio-http, akio-ws)
 
 A head of more than 32 fields is parsed again with room for the limit (100); arriving in pieces,

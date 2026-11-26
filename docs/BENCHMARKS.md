@@ -816,6 +816,45 @@ in `try_execute` (its one mutex, contended by 4 I/O and 32 pool threads, and an 
 `notify_one`, a futex wake per job), against 22% of HTTP/2 work (parsing, the batched encode and
 write, the handler). 3.0M context switches per 5 s, about one per request.
 
+**The logical pool's hand-off** (2026-11-26, `akio-pool`; same setup, h2c through the pool on 3
+listeners sharing 4 threads on 4 CPUs, builds alternating in each of 5 rounds; light load: 3
+listeners × 4 connections, one stream each, at a fixed rate for 10 s, server CPU of the whole run).
+Three changes: a job wakes a sleeping thread only when no thread is free to take it
+(`try_execute` used to `notify_one` for every job, a futex call even with every thread busy);
+the requests of one HTTP/2 read go to the pool in one batch (`Pool::try_execute_batch`, one
+lock); and before sleeping one thread at a time looks for work for 10 µs, yielding the CPU
+between looks, but only while looking has lately found work. The steps measured on the way:
+
+| h2c through the pool, requests/s (median of 5) | epoll | io_uring | work stealing |
+|---|---:|---:|---:|
+| before (`de638baf`) | 676,819 | 661,138 | 677,475 |
+| + 1 thread busy-spinning for 50 µs | 636,622 | 584,759 | 650,683 |
+| no spinning | 696,195 | 685,413 | 713,096 |
+| spinning that yields the CPU, 50 µs | 699,821 | 716,419 | 782,173 |
+| the same, only while it finds work, 10 µs | 693,649 | 710,853 | 750,714 |
+| final (wake-ups counted per new job) | 755,413 (+12%) | 765,817 (+16%) | 810,185 (+20%) |
+
+Busy-spinning took a whole CPU from the I/O threads (25% of the samples, profiled): the pool has
+32 threads on these 4 CPUs, and every CPU was busy. Yielding keeps the saving without that. At
+light load every variant first used about 10% more CPU than before (2k requests/s: 760–820 against
+640–690 ms per 10 s; the same with no spinning at all, and the same when the old build ran twice
+in a round, so not the run order): the wake-up count was taken from the queue's length, so with
+jobs waiting every new job woke again the sleepers already woken for them, one more context switch
+and 1.6 more futex calls per request (`perf stat` at 2k requests/s: 28.4k against 18.4k context
+switches and 36.9k against 20.4k futex calls per 5 s, about 10k requests). Counted per new job
+instead:
+
+| Light load, server CPU per 10 s (median of 6) | 2k req/s | 20k req/s |
+|---|---:|---:|
+| before (run twice per round) | 670 ms | 3,235 ms |
+| final | 700 ms (+4%) | 3,300 ms (+2%) |
+
+The final row of the first table comes from its own run, whose `before` gave 675,022, 661,735 and
+674,216 (the percentages are against those); the spread was within ±1%. Under load the per-job
+count also gained most: the over-waking had cost there as well. At light load what is left is
+within the spread of the old build run twice; `perf stat` counts 10% fewer futex calls than
+before and as many context switches.
+
 ### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

@@ -6,6 +6,7 @@ pub fn akio_pool::Pool::new(akio_pool::PoolConfig) -> alloc::rcs::arc::Arc<akio_
 pub fn akio_pool::Pool::shutdown(&self)
 pub fn akio_pool::Pool::stats(&self) -> akio_pool::PoolStats
 pub fn akio_pool::Pool::try_execute(&self, akio_pool::Job) -> core::result::Result<(), akio_pool::Rejected>
+pub fn akio_pool::Pool::try_execute_batch(&self, &mut alloc::vec::Vec<akio_pool::Job>)
 impl core::fmt::Debug for akio_pool::Pool
 pub fn akio_pool::Pool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_pool::Pool

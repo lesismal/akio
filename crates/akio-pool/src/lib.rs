@@ -14,11 +14,28 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+/// How long a thread that finds the queue empty keeps looking (without the lock) before it
+/// sleeps: work arriving meanwhile costs no wake-up. Short, so an idle pool goes quiet at once
+/// (under load the next job comes within microseconds; 10 us gave the same as 50 us on gpu51).
+/// It yields the CPU between looks rather than spinning on it: the pool often has more threads
+/// than the machine has CPUs, and a busy-spinning thread took a whole CPU from the I/O threads
+/// (gpu51, 4 CPUs: h2c through the pool fell 4-12%; with yielding, and wake-ups counted per
+/// new job, it gained 12-20%, docs/BENCHMARKS.md).
+const SPIN: Duration = Duration::from_micros(10);
+
+/// Threads that may look for work at once ([`SPIN`]).
+const MAX_SPINNING: usize = 1;
+
+/// After a look ([`SPIN`]) that found nothing, threads go straight to sleep, except one idle
+/// pass in this many, which looks again: under light load looking costs CPU and saves nothing,
+/// and a look that finds work turns it back on for every pass.
+const SPIN_PROBE: u32 = 16;
 
 /// A unit of work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -96,7 +113,10 @@ pub struct PoolStats {
 struct State {
     queue: VecDeque<Job>,
     threads: usize,
+    /// Threads waiting on the condition variable, plus those just started ([`starting`]).
     idle: usize,
+    /// Threads spawned that have not yet looked at the queue (counted in `idle` meanwhile).
+    starting: usize,
     closed: bool,
     handles: Vec<JoinHandle<()>>,
 }
@@ -107,6 +127,14 @@ pub struct Pool {
     cfg: PoolConfig,
     state: Mutex<State>,
     cv: Condvar,
+    /// The queue's length, readable without the lock (for spinning threads).
+    queued: AtomicUsize,
+    /// Threads spinning for work ([`SPIN`]); a job they will take needs no wake-up.
+    spinning: AtomicUsize,
+    /// The last look for work found some ([`SPIN_PROBE`]).
+    spin_pays: std::sync::atomic::AtomicBool,
+    /// Idle passes that did not look, counted to probe now and then ([`SPIN_PROBE`]).
+    spin_skipped: std::sync::atomic::AtomicU32,
     completed: AtomicU64,
     panicked: AtomicU64,
     rejected: AtomicU64,
@@ -130,10 +158,15 @@ impl Pool {
                 queue: VecDeque::new(),
                 threads: 0,
                 idle: 0,
+                starting: 0,
                 closed: false,
                 handles: Vec::new(),
             }),
             cv: Condvar::new(),
+            queued: AtomicUsize::new(0),
+            spinning: AtomicUsize::new(0),
+            spin_pays: std::sync::atomic::AtomicBool::new(true),
+            spin_skipped: std::sync::atomic::AtomicU32::new(0),
             completed: AtomicU64::new(0),
             panicked: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
@@ -160,13 +193,73 @@ impl Pool {
             return Err(Rejected(job));
         }
         st.queue.push_back(job);
-        // Start a thread only if every live thread is already spoken for by queued work.
-        if st.idle < st.queue.len() && st.threads < self.cfg.max_threads {
-            self.spawn_locked(&mut st);
-        }
+        let wake = self.queued_locked(&mut st, 1);
         drop(st);
-        self.cv.notify_one();
+        for _ in 0..wake {
+            self.cv.notify_one();
+        }
         Ok(())
+    }
+
+    /// Queues the jobs of `jobs` in one go (one lock, the wake-ups they need), as
+    /// [`try_execute`](Self::try_execute) would one by one. What the queue has no room for (or
+    /// everything, once the pool is shut down) is left in `jobs`, in order, unrun.
+    pub fn try_execute_batch(&self, jobs: &mut Vec<Job>) {
+        if jobs.is_empty() {
+            return;
+        }
+        let mut st = self.lock();
+        let room = if st.closed {
+            0
+        } else {
+            self.cfg.queue_capacity.saturating_sub(st.queue.len())
+        };
+        let n = room.min(jobs.len());
+        st.queue.extend(jobs.drain(..n));
+        let wake = if n == 0 {
+            0
+        } else {
+            self.queued_locked(&mut st, n)
+        };
+        drop(st);
+        if !jobs.is_empty() {
+            self.rejected
+                .fetch_add(jobs.len() as u64, Ordering::Relaxed);
+        }
+        for _ in 0..wake {
+            self.cv.notify_one();
+        }
+    }
+
+    /// After `added` jobs were queued (under the lock): starts threads if every live one is
+    /// already spoken for and the maximum allows, and returns how many sleeping threads to wake
+    /// for the new jobs: one each, except those a spinning thread not already claimed by the
+    /// jobs queued before will take, and those a thread started here will. (Counting the whole
+    /// queue instead woke again, for every new job, the sleepers already woken for the earlier
+    /// ones: at 2k requests/s, one more context switch per request, 12% more CPU.) A thread
+    /// busy with a job looks at the queue before it sleeps, so it is never woken.
+    fn queued_locked(&self, st: &mut State, added: usize) -> usize {
+        let len = st.queue.len();
+        self.queued.store(len, Ordering::SeqCst);
+        // Read under the lock: a spinner stops counting itself before it takes the lock to look
+        // at the queue, so either it is counted here or it sees these jobs.
+        let spinning = self.spinning.load(Ordering::SeqCst);
+        let mut started = 0;
+        while st.idle + spinning < len && st.threads < self.cfg.max_threads {
+            let before = st.threads;
+            self.spawn_locked(st);
+            if st.threads == before {
+                break;
+            }
+            // A new thread looks at the queue when it starts: count it as taking a job.
+            st.idle += 1;
+            st.starting += 1;
+            started += 1;
+        }
+        let free_spinners = spinning.saturating_sub(len - added);
+        added
+            .saturating_sub(free_spinners + started)
+            .min(st.idle - st.starting)
     }
 
     fn spawn_locked(&self, st: &mut State) {
@@ -186,23 +279,69 @@ impl Pool {
         }
     }
 
+    /// Whether an idle pass should look for work before sleeping ([`SPIN_PROBE`]).
+    fn worth_spinning(&self) -> bool {
+        self.spin_pays.load(Ordering::Relaxed)
+            || self.spin_skipped.fetch_add(1, Ordering::Relaxed) % SPIN_PROBE == 0
+    }
+
+    /// Counts this thread as spinning if fewer than [`MAX_SPINNING`] do.
+    fn start_spinning(&self) -> bool {
+        if self.spinning.fetch_add(1, Ordering::SeqCst) < MAX_SPINNING {
+            return true;
+        }
+        self.spinning.fetch_sub(1, Ordering::SeqCst);
+        false
+    }
+
     fn worker(self: Arc<Self>) {
         if let Some(h) = &self.cfg.on_start {
             (h.0)();
         }
         let mut st = self.lock();
+        if st.starting > 0 {
+            // Spawned for queued work ([`queued_locked`]): no longer counted as waiting.
+            st.starting -= 1;
+            st.idle -= 1;
+        }
+        let mut spun = false;
         loop {
             if let Some(job) = st.queue.pop_front() {
+                self.queued.store(st.queue.len(), Ordering::SeqCst);
                 drop(st);
                 if catch_unwind(AssertUnwindSafe(job)).is_err() {
                     self.panicked.fetch_add(1, Ordering::Relaxed);
                 }
                 self.completed.fetch_add(1, Ordering::Relaxed);
+                spun = false;
                 st = self.lock();
                 continue;
             }
             if st.closed {
                 break;
+            }
+            // Before sleeping, look for work a little longer without the lock (one thread at a
+            // time): under load the next job usually comes within microseconds, and taking it
+            // here saves the producer's wake-up and this thread's sleep.
+            if !spun && self.worth_spinning() && self.start_spinning() {
+                drop(st);
+                let t0 = Instant::now();
+                let mut n = 0u32;
+                let mut found = true;
+                while self.queued.load(Ordering::SeqCst) == 0 {
+                    thread::yield_now();
+                    n = n.wrapping_add(1);
+                    if n % 8 == 0 && t0.elapsed() >= SPIN {
+                        found = false;
+                        break;
+                    }
+                }
+                self.spin_pays.store(found, Ordering::Relaxed);
+                // Stop counting as a spinner before looking at the queue (see `queued_locked`).
+                self.spinning.fetch_sub(1, Ordering::SeqCst);
+                spun = true;
+                st = self.lock();
+                continue;
             }
             st.idle += 1;
             let (guard, res) = self
@@ -211,6 +350,7 @@ impl Pool {
                 .unwrap_or_else(|p| p.into_inner());
             st = guard;
             st.idle -= 1;
+            spun = false;
             if res.timed_out()
                 && st.queue.is_empty()
                 && st.threads > self.cfg.min_threads
@@ -291,7 +431,7 @@ mod tests {
     }
 
     fn wait_until(mut c: impl FnMut() -> bool) {
-        let t = std::time::Instant::now();
+        let t = Instant::now();
         while !c() {
             assert!(t.elapsed() < Duration::from_secs(10), "timed out");
             thread::sleep(Duration::from_millis(5));
@@ -393,5 +533,97 @@ mod tests {
         assert_eq!(p.stats().threads, 1);
         p.shutdown();
         p.join();
+    }
+
+    #[test]
+    fn a_batch_is_queued_at_once_and_what_does_not_fit_comes_back() {
+        let p = Pool::new(cfg(0, 2, 4));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let done = Arc::new(AtomicUsize::new(0));
+        let mut jobs: Vec<Job> = (0..6)
+            .map(|i| -> Job {
+                let (g, d) = (gate.clone(), done.clone());
+                Box::new(move || {
+                    let (m, cv) = &*g;
+                    drop(cv.wait_while(m.lock().unwrap(), |o| !*o).unwrap());
+                    d.fetch_add(i, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        p.try_execute_batch(&mut jobs);
+        // A queue of 4: the last 2 come back, unrun.
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(p.stats().rejected, 2);
+        // Two threads were started for the 4 (the maximum).
+        wait_until(|| p.stats().threads == 2);
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        wait_until(|| p.stats().completed == 4);
+        assert_eq!(done.load(Ordering::SeqCst), 1 + 2 + 3);
+        // The refused ones still run when given back to a pool with room.
+        p.try_execute_batch(&mut jobs);
+        assert!(jobs.is_empty());
+        wait_until(|| p.stats().completed == 6);
+        p.shutdown();
+        let mut late: Vec<Job> = vec![Box::new(|| {})];
+        p.try_execute_batch(&mut late);
+        assert_eq!(late.len(), 1, "refused after shutdown");
+        p.join();
+    }
+
+    /// Many producers, few threads, jobs that finish at once: every job runs (no wake-up is
+    /// lost between the spinning thread, the sleeping ones and the producers that skip a
+    /// wake-up because a thread is spinning or busy).
+    #[test]
+    fn no_job_is_stranded_under_many_producers() {
+        for max in [1, 2, 4] {
+            let p = Pool::new(cfg(0, max, 1 << 20));
+            let done = Arc::new(AtomicUsize::new(0));
+            let producers: Vec<_> = (0..4)
+                .map(|k| {
+                    let (p, done) = (p.clone(), done.clone());
+                    thread::spawn(move || {
+                        for i in 0..20_000 {
+                            let d = done.clone();
+                            if (i + k) % 7 == 0 {
+                                let mut b: Vec<Job> = (0..3)
+                                    .map(|_| -> Job {
+                                        let d = d.clone();
+                                        Box::new(move || {
+                                            d.fetch_add(1, Ordering::Relaxed);
+                                        })
+                                    })
+                                    .collect();
+                                p.try_execute_batch(&mut b);
+                                assert!(b.is_empty());
+                            } else {
+                                p.try_execute(Box::new(move || {
+                                    d.fetch_add(1, Ordering::Relaxed);
+                                }))
+                                .ok()
+                                .unwrap();
+                            }
+                            if i % 1000 == 0 {
+                                // Let the pool drain and its threads go to sleep now and then.
+                                thread::sleep(Duration::from_micros(300));
+                            }
+                        }
+                    })
+                })
+                .collect();
+            let mut want = 0;
+            for k in 0..4 {
+                want += (0..20_000)
+                    .map(|i| if (i + k) % 7 == 0 { 3 } else { 1 })
+                    .sum::<usize>();
+            }
+            for h in producers {
+                h.join().unwrap();
+            }
+            wait_until(|| done.load(Ordering::SeqCst) == want);
+            assert!(p.stats().threads <= max);
+            p.shutdown();
+            p.join();
+        }
     }
 }

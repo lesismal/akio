@@ -664,13 +664,11 @@ impl UringGroup {
             // Socket `i` of a listener went to another loop when loop `i` retired: whichever
             // active loop holds it now passes it back. The socket stays open on its way, so
             // connections arriving meanwhile queue instead of being refused.
-            let to = st.slots[i].shared.clone();
             for (lid, l) in st.listeners.iter().enumerate() {
                 if had[lid] && !l.unlisted {
                     for s in &st.slots[..i] {
                         s.shared.post(Cmd::GiveListener {
                             sock: Sock { lid, idx: i },
-                            to: to.clone(),
                         });
                     }
                 }
