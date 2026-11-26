@@ -71,7 +71,7 @@ use crate::{
 /// Error text of a call to a method the peer does not serve (the same as Go's).
 pub const METHOD_NOT_FOUND: &str = "method not found";
 
-/// Error text of a call that found the logical pool full ([`Routes::run_on_pool`]).
+/// Error text of a call that found the logical pool full ([`Routes::handlers_on_logical_pool`]).
 pub const SERVER_BUSY: &str = "server busy";
 
 /// Default most streams the peer may have open on one connection
@@ -172,7 +172,7 @@ pub struct Routes {
     max_streams: usize,
     max_pending: usize,
     call_timeout: Option<Duration>,
-    run_on_pool: bool,
+    handlers_on_logical_pool: bool,
 }
 
 impl Default for Routes {
@@ -188,7 +188,7 @@ impl Default for Routes {
             max_streams: DEFAULT_MAX_STREAMS_PER_CONN,
             max_pending: DEFAULT_MAX_PENDING_CALLS,
             call_timeout: Some(DEFAULT_CALL_TIMEOUT),
-            run_on_pool: false,
+            handlers_on_logical_pool: false,
         }
     }
 }
@@ -346,8 +346,8 @@ impl Routes {
     /// I/O thread, in order. When the pool's queue is full a request is answered with the
     /// error [`SERVER_BUSY`] (a notify is dropped). Default `false`.
     #[must_use]
-    pub fn run_on_pool(mut self, on: bool) -> Routes {
-        self.run_on_pool = on;
+    pub fn handlers_on_logical_pool(mut self, on: bool) -> Routes {
+        self.handlers_on_logical_pool = on;
         self
     }
 }
@@ -795,7 +795,7 @@ impl Peer {
                     responded: false,
                     values,
                 };
-                if !self.0.routes.run_on_pool {
+                if !self.0.routes.handlers_on_logical_pool {
                     return serve(&self.0.routes, &mut ctx);
                 }
                 let job: akio_core::Job = Box::new(move || {

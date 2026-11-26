@@ -1205,7 +1205,7 @@ pub akio_http::H2Config::max_header_list: u32
 pub akio_http::H2Config::max_pending_bytes: usize
 pub akio_http::H2Config::max_resets: u32
 pub akio_http::H2Config::reset_window: core::time::Duration
-pub akio_http::H2Config::run_on_pool: bool
+pub akio_http::H2Config::handlers_on_logical_pool: bool
 pub akio_http::H2Config::stats: core::option::Option<akio_http::observe::H2Stats>
 impl core::clone::Clone for akio_http::H2Config
 pub fn akio_http::H2Config::clone(&self) -> Self
@@ -1283,7 +1283,7 @@ pub akio_http::HttpConfig::head_timeout: core::option::Option<core::time::Durati
 pub akio_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::max_body_bytes: usize
 pub akio_http::HttpConfig::max_header_bytes: usize
-pub akio_http::HttpConfig::run_on_pool: bool
+pub akio_http::HttpConfig::handlers_on_logical_pool: bool
 impl core::clone::Clone for akio_http::HttpConfig
 pub fn akio_http::HttpConfig::clone(&self) -> Self
 impl core::default::Default for akio_http::HttpConfig

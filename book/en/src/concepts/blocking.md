@@ -104,20 +104,22 @@ bridge). For raw `Handler`s, `Conn::spawn_blocking` uses the engine's pool.
 
 The HTTP, gRPC and arpc servers can also run **every** request's handler on the pool, so
 handlers may block and the requests of one connection are served at the same time instead of
-one after another. It is set per protocol, and on by default only for HTTP/2, whose streams
-would otherwise be served one at a time on their connection's I/O thread (set
-`h2.run_on_pool = false` to keep non-blocking handlers inline):
+one after another. It is set per protocol and off by default everywhere: each request then
+costs a hand-off to the pool, which for handlers that never block is most of the work (HTTP/2
+streams with trivial handlers: about 0.49M requests/s on the pool against 3.2M–4.0M inline on
+the same 4 CPUs). Turn it on where handlers block, HTTP/2 especially, whose streams are otherwise
+served one at a time on their connection's I/O thread:
 
 ```rust,ignore
 let mut http = HttpConfig::default();
-http.run_on_pool = true;                         // HTTP/1.1
+http.handlers_on_logical_pool = true;                         // HTTP/1.1
 let mut h2 = H2Config::default();
-h2.run_on_pool = true;                           // HTTP/2 streams
+h2.handlers_on_logical_pool = true;                           // HTTP/2 streams
 http.h2 = Some(h2);
 let mut h3 = H3Config::default();
-h3.run_on_pool = true;                           // HTTP/3 (akio-h3)
-let grpc = GrpcServer::new().run_on_pool(true);  // gRPC calls
-let routes = Routes::new().run_on_pool(true);    // arpc requests and notifies
+h3.handlers_on_logical_pool = true;                           // HTTP/3 (akio-h3)
+let grpc = GrpcServer::new().handlers_on_logical_pool(true);  // gRPC calls
+let routes = Routes::new().handlers_on_logical_pool(true);    // arpc requests and notifies
 ```
 
 - **What moves.** The middleware and the handler. Parsing, limits, flow control and (for gRPC)

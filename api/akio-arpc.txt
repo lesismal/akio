@@ -353,7 +353,7 @@ pub fn akio_arpc::Routes::middleware(self, impl core::ops::function::Fn(&mut aki
 pub fn akio_arpc::Routes::new() -> akio_arpc::Routes
 pub fn akio_arpc::Routes::on_connected(self, impl core::ops::function::Fn(&akio_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::on_disconnected(self, impl core::ops::function::Fn(&akio_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
-pub fn akio_arpc::Routes::run_on_pool(self, bool) -> akio_arpc::Routes
+pub fn akio_arpc::Routes::handlers_on_logical_pool(self, bool) -> akio_arpc::Routes
 impl core::default::Default for akio_arpc::Routes
 pub fn akio_arpc::Routes::default() -> Self
 impl core::fmt::Debug for akio_arpc::Routes

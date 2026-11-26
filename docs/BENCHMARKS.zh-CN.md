@@ -599,9 +599,9 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 叠在一起；独占模式的 12 个线程跑在 4 个 CPU 上，无论如何都让每个 CPU 保持忙碌，代价是每个线程只
 分到约三分之一个 CPU。
 
-**为什么绑核的 HTTP/2 下降。** HTTP/2 的 handler 默认在逻辑线程池上执行（`H2Config::run_on_pool`），
+**为什么绑核的 HTTP/2 下降。** HTTP/2 的 handler 当时默认在逻辑线程池上执行（`H2Config::handlers_on_logical_pool`），
 这里线程池的线程也在 CPU 0–3 上；绑核的 I/O 线程无法再离开被线程池线程占满的 CPU。（未单独测量：
-关闭 `run_on_pool` 的 h2c。）
+关闭 `handlers_on_logical_pool` 的 h2c。）
 
 **结论。** 只要 I/O 线程留在各自的 CPU 上，共享就没有可测的代价：共享且绑核用 4 个线程达到或超过
 12 个独占线程。绑核不是默认行为：它有利于 inline 执行的 HTTP/1.1 和流水线负载，但会损害 handler 在
@@ -623,7 +623,7 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 跑在 4 个 CPU 上）。
 
 **后续：HTTP/2 inline，以及为逻辑线程池保留 CPU**（2026-11-26，相同设置，3 个 listener 共享一组，
-5 轮，`shared.sh all,h2`）。`inline` 让 HTTP/2 在 I/O 线程上执行（关闭 `run_on_pool`）；`线程池 N`
+5 轮，`shared.sh all,h2`）。`inline` 让 HTTP/2 在 I/O 线程上执行（关闭 `handlers_on_logical_pool`）；`线程池 N`
 即开启绑核时 `reserve_pool_cpus(N)`：4 个 CPU 中的 N 个给逻辑线程池，其余 CPU 上绑 4 − N 个 I/O
 线程。
 
@@ -637,8 +637,8 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 **结论。**（1）绑核后 h2c 下降来自逻辑线程池：inline 执行时，绑核的 h2c 是最快也最稳定的一列。
 （2）为线程池保留 CPU 并不能让走线程池的 h2c 在 epoll 上回到不绑核的默认水平之上（io_uring 的 2 + 2
 可以，但波动大），还会让 HTTP/1.1 因 I/O 线程变少而下降。（3）对很轻的 HTTP/2 handler 来说，线程池
-交接本身占了大头：同样 4 个 CPU 上，inline 的 h2c 每秒 320 万–400 万请求，走线程池（`H2Config::run_on_pool`，
-自 2026-11-25 起默认开启）约 49 万，给线程池更多 CPU 也提不高这个上限。
+交接本身占了大头：同样 4 个 CPU 上，inline 的 h2c 每秒 320 万–400 万请求，走线程池（`H2Config::handlers_on_logical_pool`，
+2026-11-25 至 2026-11-26 期间默认开启）约 49 万，给线程池更多 CPU 也提不高这个上限。
 
 ### 密码学（`akio-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 

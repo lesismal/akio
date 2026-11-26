@@ -1,5 +1,5 @@
-//! `H3Config::run_on_pool`: the requests of one connection served at the same time on the
-//! logical pool.
+//! `H3Config::handlers_on_logical_pool`: the requests of one connection served at the same time
+//! on the logical pool.
 #![allow(missing_docs)]
 
 use std::{
@@ -26,7 +26,7 @@ fn setup(on: bool) -> (Arc<Engine>, H3Client) {
         ctx.text(200, format!("{ms} pool={pooled}"));
     });
     let mut cfg = H3Config::default();
-    cfg.run_on_pool = on;
+    cfg.handlers_on_logical_pool = on;
     let quic = akio_h3::server_config(vec![cert], key).unwrap();
     let e = Engine::builder()
         .listen(

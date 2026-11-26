@@ -51,11 +51,11 @@ pub struct HttpConfig {
     /// requests whose body the service takes as a stream stay on the I/O thread; a pooled
     /// handler's `upgrade_websocket` / `upgrade_raw` return `false`. When the pool's queue is
     /// full the request is answered `503`. HTTP/2 has its own switch,
-    /// [`H2Config::run_on_pool`], on by default. Default `false`: handlers run inline and must
+    /// [`H2Config::handlers_on_logical_pool`]. Default `false`: handlers run inline and must
     /// not block (a single request can still go to the pool with [`Context::detach_to_pool`]).
     ///
     /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
-    pub run_on_pool: bool,
+    pub handlers_on_logical_pool: bool,
 }
 
 impl Default for HttpConfig {
@@ -67,7 +67,7 @@ impl Default for HttpConfig {
             head_timeout: Some(Duration::from_secs(10)),
             keep_alive_timeout: Some(Duration::from_secs(75)),
             body_timeout: Some(Duration::from_secs(60)),
-            run_on_pool: false,
+            handlers_on_logical_pool: false,
         }
     }
 }
@@ -837,7 +837,7 @@ impl<S: Service> Session<S> {
                 return;
             }
         }
-        let pooled = self.cfg.run_on_pool && !may_take_over(&req);
+        let pooled = self.cfg.handlers_on_logical_pool && !may_take_over(&req);
         let Ok(slot) = c.reserve_response() else {
             self.state = State::Closed;
             return;
@@ -893,7 +893,7 @@ impl<S: Service> Session<S> {
 }
 
 /// Whether the handler of `req` may take the connection over (`upgrade_raw`,
-/// `upgrade_websocket`): such requests run on the I/O thread even with `run_on_pool`.
+/// `upgrade_websocket`): such requests run on the I/O thread even with `handlers_on_logical_pool`.
 fn may_take_over(req: &Request) -> bool {
     req.method == crate::message::Method::Connect || req.headers.get("upgrade").is_some()
 }

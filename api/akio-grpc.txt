@@ -592,7 +592,7 @@ pub fn akio_grpc::GrpcServer::max_collect_bytes(self, usize) -> akio_grpc::GrpcS
 pub fn akio_grpc::GrpcServer::max_deadline(self, core::time::Duration) -> akio_grpc::GrpcServer
 pub fn akio_grpc::GrpcServer::max_message_bytes(self, usize) -> akio_grpc::GrpcServer
 pub fn akio_grpc::GrpcServer::new() -> akio_grpc::GrpcServer
-pub fn akio_grpc::GrpcServer::run_on_pool(self, bool) -> akio_grpc::GrpcServer
+pub fn akio_grpc::GrpcServer::handlers_on_logical_pool(self, bool) -> akio_grpc::GrpcServer
 pub fn akio_grpc::GrpcServer::server_stream(self, &str, impl core::ops::function::Fn(&akio_grpc::Metadata, alloc::vec::Vec<u8>, akio_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
 pub fn akio_grpc::GrpcServer::unary(self, &str, impl core::ops::function::Fn(&akio_grpc::Metadata, alloc::vec::Vec<u8>, akio_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> akio_grpc::GrpcServer
 impl akio_http::context::Service for akio_grpc::GrpcServer

@@ -1,5 +1,5 @@
 //! Requests run on the engine's logical pool instead of the connection's I/O thread: the
-//! `run_on_pool` options of HTTP/1.1 ([`HttpConfig`](crate::HttpConfig)) and HTTP/2
+//! `handlers_on_logical_pool` options of HTTP/1.1 ([`HttpConfig`](crate::HttpConfig)) and HTTP/2
 //! ([`H2Config`](crate::H2Config)) (and HTTP/3's, through
 //! [`dispatch_conn_on_pool`](crate::transport::dispatch_conn_on_pool)), and
 //! [`Context::executor`] / [`Context::detach_to_pool`] for single requests.

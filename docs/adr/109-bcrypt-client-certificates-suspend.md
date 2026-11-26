@@ -18,7 +18,7 @@ iteration I42, requests A63, A64 and A65):
   thread. fit runs it on a small pool while the request waits, then goes on to the next
   middleware and the handler. With akio a middleware could detach the response and answer from
   the pool, but not go on with the chain: the next handler takes a `Context`, and a detached
-  request has none. `run_on_pool` moves every request of a listener to the pool, which costs
+  request has none. `handlers_on_logical_pool` moves every request of a listener to the pool, which costs
   every request a hop to save one in many a bcrypt check (A65). ForwardAuth (an authorization
   server asked before the request goes on) needs the same.
 
@@ -51,7 +51,7 @@ iteration I42, requests A63, A64 and A65):
   pool is full, as `detach_to_pool` does.
 - A request whose body is **streamed** (`BodyMode::Stream`) cannot be suspended (`None`): the
   server feeds its body to the context after `call`. A service that wants to suspend a request
-  with a body asks for it whole (`Service::body_mode`); `run_on_pool` draws the same line.
+  with a body asks for it whole (`Service::body_mode`); `handlers_on_logical_pool` draws the same line.
 
 ## Consequences
 
@@ -71,6 +71,6 @@ suspended request hold its body's reads instead.
   over HTTP/3.
 - `akio-http/tests/suspend.rs`: suspended requests resumed from the pool and other threads, a
   request suspended twice, locals, filters and headers kept, pipelined HTTP/1.1 answers in order
-  (with and without `run_on_pool`), `500` for one dropped or left unanswered, `503` from a full
+  (with and without `handlers_on_logical_pool`), `500` for one dropped or left unanswered, `503` from a full
   pool, a body read whole kept, a streamed body refused, and HTTP/2 streams. On epoll and
   io_uring.

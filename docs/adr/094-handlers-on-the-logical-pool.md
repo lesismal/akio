@@ -2,8 +2,9 @@
 
 English | [简体中文](094-handlers-on-the-logical-pool.zh-CN.md)
 
-Status: accepted (2026-11-23; updated 2026-11-25: `H2Config::run_on_pool` is on by default, see
-[Update](#update-2026-11-25-http2-on-the-pool-by-default))
+Status: accepted (2026-11-23; updated 2026-11-25: `H2Config::handlers_on_logical_pool` on by default;
+updated 2026-11-26: off again, and the switches renamed from `run_on_pool`, see
+[Update 2026-11-26](#update-2026-11-26-http2-inline-again-and-the-rename))
 
 ## Context
 
@@ -32,7 +33,7 @@ ordered.
   applications. It differs from `spawn_blocking` in having no completion.
   `akio_quic::Connection::execute` does the same for QUIC connections.
 - **akio-http.**
-  - `HttpConfig::run_on_pool` (HTTP/1.1) and `H2Config::run_on_pool` (HTTP/2), both `false` by
+  - `HttpConfig::handlers_on_logical_pool` (HTTP/1.1) and `H2Config::handlers_on_logical_pool` (HTTP/2), both `false` by
     default.
   - When on, a complete request runs its middleware and handler on the pool. Then comes the `500`
     for a handler that neither answered nor detached.
@@ -44,15 +45,15 @@ ordered.
     `Context::detach_to_pool(f)` detaches and runs `f` on the pool.
   - `ConnSink::execute` (default: no pool) and `transport::dispatch_conn_on_pool` let a transport
     outside the crate do the same.
-- **akio-h3.** `H3Config::run_on_pool`, through `dispatch_conn_on_pool`.
+- **akio-h3.** `H3Config::handlers_on_logical_pool`, through `dispatch_conn_on_pool`.
 - **akio-grpc.**
-  - `GrpcServer::run_on_pool(bool)`. gRPC takes bodies as streams, so the HTTP switch does not
+  - `GrpcServer::handlers_on_logical_pool(bool)`. gRPC takes bodies as streams, so the HTTP switch does not
     reach it.
   - Each call gets a queue. One pool job at a time opens the call and hands over its messages in
     order, so a handler sees exactly what it would inline, while different calls run at once.
   - Messages waiting for a busy handler count against `max_collect_bytes`.
   - A handler that panics ends its call with `INTERNAL`.
-- **akio-arpc.** `Routes::run_on_pool(bool)` covers requests and notifies; streams stay inline.
+- **akio-arpc.** `Routes::handlers_on_logical_pool(bool)` covers requests and notifies; streams stay inline.
   `SERVER_BUSY` is the error text when the pool refuses.
 - **A full pool** answers at once: HTTP `503` with `Retry-After: 1`, gRPC `RESOURCE_EXHAUSTED`,
   arpc `SERVER_BUSY`.
@@ -75,10 +76,10 @@ ordered.
 - Pool dispatch for streamed request bodies: the body sink would have to be fed across threads.
 - A per-route switch on `Router`. `detach_to_pool` covers a single route.
 
-## Update 2026-11-25: HTTP/2 on the pool by default
+## Update 2026-11-25: HTTP/2 on the pool by default (reverted 2026-11-26)
 
-`H2Config::run_on_pool` now defaults to `true`; the other switches (`HttpConfig::run_on_pool`,
-`H3Config::run_on_pool`, `GrpcServer::run_on_pool`, `Routes::run_on_pool`) stay off.
+`H2Config::handlers_on_logical_pool` now defaults to `true`; the other switches (`HttpConfig::handlers_on_logical_pool`,
+`H3Config::handlers_on_logical_pool`, `GrpcServer::handlers_on_logical_pool`, `Routes::handlers_on_logical_pool`) stay off.
 
 - Inline, the streams of one HTTP/2 connection are served one at a time on its I/O thread, in the
   order their requests complete: a slow handler holds up the other streams of its connection and
@@ -92,4 +93,20 @@ ordered.
   `Retry-After: 1`; request spans are entered on the pool thread; thread-local spare buffers are
   not recycled for pooled requests; `Context::after` called from a pooled handler runs on the
   crate's shared timer thread instead of the I/O thread.
-- Services whose handlers never block can set `run_on_pool: false` to get the inline path back.
+- Services whose handlers never block can set `handlers_on_logical_pool: false` to get the inline path back.
+
+## Update 2026-11-26: HTTP/2 inline again, and the rename
+
+`H2Config::handlers_on_logical_pool` defaults to `false` again, like every other switch.
+Measured on gpu51 (docs/BENCHMARKS.md, shared I/O groups): with 4 I/O threads on 4 CPUs, h2c
+with trivial handlers served about 0.49M requests/s through the pool against 3.2M–4.0M inline,
+and more CPUs for the pool did not lift that ceiling. A default that costs every non-blocking
+HTTP/2 service most of its throughput is the wrong trade; a service whose handlers block turns
+the switch on (or detaches single requests with `Context::detach_to_pool`), and the reasons of
+the 2026-11-25 update remain its documentation.
+
+The switches were called `run_on_pool`, which did not say what runs there nor which pool (a
+Rounds group is a pool of workers too). They are now `handlers_on_logical_pool` on every
+protocol (`HttpConfig`, `H2Config`, `H3Config`, `GrpcServer`, `Routes`): the middleware and
+handler of each request, on the engine's logical pool. No release had the old name, so it is not
+kept as an alias.

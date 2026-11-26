@@ -14,14 +14,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 `EngineBuilder::reserve_pool_cpus(n)`（或 `AKIO_POOL_CPUS=n`），配合 `pin_io_threads`：进程可用
 CPU 中的最后 `n` 个运行逻辑线程池的线程，I/O 线程绑到其余 CPU 上。未开启绑核、NUMA 放置时以及
-线程池已有启动钩子时忽略。仅 Linux。`http-bench` 新增 `AKIO_BENCH_H2_INLINE=1`（HTTP/2 在 I/O
-线程上执行），`tools/bench/shared.sh` 新增 `-inline` 和 `-pool<N>` 模式。
+线程池已有启动钩子时忽略。仅 Linux。`http-bench` 新增 `AKIO_BENCH_H2_POOL=1`（HTTP/2 handler
+在逻辑线程池上执行）、`AKIO_BENCH_POOL_MAX=n`（线程池线程数上限）和 `rounds` 后端参数，
+`tools/bench/shared.sh` 新增 `-h2pool`、`-cap<N>` 和 `-pool<N>` 模式。
 
 实测（docs/BENCHMARKS.zh-CN.md）：绑核后 h2c 的下降来自逻辑线程池（inline 执行时，绑核的 h2c
 最快，每秒 400 万请求 ±1%）；4 个 CPU 中保留 2 个给线程池对 io_uring 有帮助（49.6 万到 84 万），
 对 epoll 没有（48.5 万到 33.7 万），并且让 HTTP/1.1 下降。同一批测量还表明，对很轻的 HTTP/2 handler
-来说线程池交接占了大头：inline 每秒 320 万–400 万请求，`H2Config::run_on_pool`（自 2026-11-25
-起默认开启）约 49 万。
+来说线程池交接占了大头：inline 每秒 320 万–400 万请求，`H2Config::handlers_on_logical_pool` 开启（曾默认开启一天，见下文）约 49 万。
 
 ### 新增：I/O 线程绑核，以及共享线程组基准（akio、tools/bench）
 
@@ -118,15 +118,16 @@ HTTP/1.1 客户端（复用 keep-alive 连接时）和 HTTP/2 客户端（每个
 - docs/rules.zh-CN.md 规则 2：线程池任务从不等待同一线程池中的其他任务，线程池任务中的阻塞调用都带
   超时，进入事件循环使用 `run_on_loop`。
 
-### 变更：HTTP/2 stream 默认在逻辑线程池上执行（akio-http）
+### 变更：`run_on_pool` 改名为 `handlers_on_logical_pool`，所有协议默认关闭（akio-http、akio-h3、akio-grpc、akio-arpc）
 
-`H2Config::run_on_pool` 的默认值改为 `true`（ADR-094 的 2026-11-25 更新）。过去一个 HTTP/2 连接的
-各个 stream 在它的 I/O 线程上逐个处理，慢 handler 会拖住同一连接的其他 stream 以及该线程上的所有
-其他连接；现在每个完整请求的中间件和 handler 在引擎的逻辑线程池上执行，同一连接的各个 stream 同时
-处理。流式请求体和 CONNECT（包括 HTTP/2 上的 WebSocket）仍在 I/O 线程上执行。使用默认配置的服务会
-看到的变化：同一连接的响应可能以任意顺序完成；线程池满时回 `503` 并带 `Retry-After: 1`；handler 中
-调用 `Context::after` 时，回调在共享的定时器线程上执行。handler 从不阻塞的服务可设置
-`run_on_pool: false` 保留 inline 路径。HTTP/1.1、HTTP/3、gRPC 和 arpc 的开关仍默认关闭。
+把每个请求的中间件和 handler 放到引擎逻辑线程池上执行的开关，按它实际移动的内容改名：
+`HttpConfig::handlers_on_logical_pool`、`H2Config::handlers_on_logical_pool`、
+`H3Config::handlers_on_logical_pool`、`GrpcServer::handlers_on_logical_pool(bool)` 和
+`Routes::handlers_on_logical_pool(bool)`（arpc），原名都是 `run_on_pool`（尚未随任何版本发布，所以不保留
+deprecated 别名）。`H2Config` 的开关自 2026-11-25 起默认开启，现在改回关闭（ADR-094 的 2026-11-26
+更新）：同样 4 个 CPU 上，线程池交接让很轻的 HTTP/2 handler 从每秒 320 万–400 万请求降到约 49 万
+（docs/BENCHMARKS.zh-CN.md）。除非服务自己打开开关，HTTP/2 stream 重新在 I/O 线程上 inline 执行；
+单个请求仍可用 `Context::detach_to_pool` 放到线程池。
 
 ### 修复：四处引擎挂起（akio-epoll、akio-uring、akio-http、akio-ws、akio-h3、akio-quic、akio-webrtc、akio-turn、akio-kcp）
 
@@ -768,14 +769,14 @@ ADR-098，均为新增（akit 的 A2：服务期间续期证书，以及按需 T
 
 ADR-094，均为新增：
 
-- `HttpConfig::run_on_pool`（HTTP/1.1）、`H2Config::run_on_pool`（HTTP/2）和 `H3Config::run_on_pool`
+- `HttpConfig::handlers_on_logical_pool`（HTTP/1.1）、`H2Config::handlers_on_logical_pool`（HTTP/2）和 `H3Config::handlers_on_logical_pool`
   （HTTP/3）让每个完整请求的中间件和 handler 在 engine 的逻辑线程池上执行。handler 可以阻塞，同一连接上
   的多个请求同时处理。
   - 不论 inline、线程池和 detach 的请求如何交错，HTTP/1.1 的响应仍按请求顺序发出。
   - 可能接管连接的请求和流式请求体仍在 I/O 线程上执行。
-- `GrpcServer::run_on_pool(bool)`：每个调用的 handler 在线程池上执行，消息逐条、按顺序交付；不同调用
+- `GrpcServer::handlers_on_logical_pool(bool)`：每个调用的 handler 在线程池上执行，消息逐条、按顺序交付；不同调用
   同时执行。
-- `Routes::run_on_pool(bool)`（arpc）：请求和通知在线程池上执行；stream 仍 inline。新常量 `SERVER_BUSY`
+- `Routes::handlers_on_logical_pool(bool)`（arpc）：请求和通知在线程池上执行；stream 仍 inline。新常量 `SERVER_BUSY`
   是线程池拒绝请求时的错误文本。
 - 线程池满时立即答复：HTTP 返回 `503`，gRPC 返回 `RESOURCE_EXHAUSTED`，arpc 返回 `SERVER_BUSY`。
 - `Context::detach_to_pool(f)` 和 `Context::executor()`（akio-http，配合新的 `Executor`）把单个请求送到

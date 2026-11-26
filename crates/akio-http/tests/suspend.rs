@@ -212,14 +212,17 @@ fn http1_suspended_requests_go_on_in_request_order() {
         "thread 0",
         "answered",
     ];
-    for run_on_pool in [false, true] {
+    for handlers_on_logical_pool in [false, true] {
         let mut cfg = HttpConfig::default();
-        cfg.run_on_pool = run_on_pool;
+        cfg.handlers_on_logical_pool = handlers_on_logical_pool;
         let e = start(app(), cfg, None);
         for _ in 0..3 {
             let got = pipeline(e.local_addrs()[0], &paths);
             let bodies: Vec<&str> = got.iter().map(|(_, _, b)| b.as_str()).collect();
-            assert_eq!(bodies, want, "run_on_pool={run_on_pool}");
+            assert_eq!(
+                bodies, want,
+                "handlers_on_logical_pool={handlers_on_logical_pool}"
+            );
             let (status, head, _) = &got[0];
             assert_eq!(*status, 200);
             let head = head.to_ascii_lowercase();

@@ -180,8 +180,8 @@ pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &Shar
 /// on a pool thread through [`ConnSink::execute`], so a slow handler holds up neither the I/O
 /// thread nor the connection's other requests. When the pool cannot take the request it is
 /// answered `503` here. For transports that let the application choose (HTTP/3's
-/// `run_on_pool`); requests that may take the stream over (extended CONNECT) belong on the
-/// I/O thread with [`start_conn`].
+/// `handlers_on_logical_pool`); requests that may take the stream over (extended CONNECT) belong
+/// on the I/O thread with [`start_conn`].
 pub fn dispatch_conn_on_pool<S: Service>(
     service: &Arc<S>,
     req: Request,

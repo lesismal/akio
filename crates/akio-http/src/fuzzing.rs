@@ -289,13 +289,13 @@ fn session_config() -> HttpConfig {
             reset_window: std::time::Duration::from_secs(30),
             stats: None,
             enable_connect_protocol: true,
-            run_on_pool: false,
+            handlers_on_logical_pool: false,
         }),
         // No deadline thread in fuzz runs: every read is driven by the harness.
         head_timeout: None,
         keep_alive_timeout: None,
         body_timeout: None,
-        run_on_pool: false,
+        handlers_on_logical_pool: false,
     }
 }
 

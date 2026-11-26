@@ -22,7 +22,7 @@ use akio_log::span::Span;
 ///
 /// `call` runs on the connection's I/O thread, so it must not block. To do slow work, call
 /// [`Context::detach_to_pool`] (or [`Context::detach`] and finish the response later from any
-/// thread), or run every request on the logical pool with `run_on_pool`
+/// thread), or run every request on the logical pool with `handlers_on_logical_pool`
 /// ([`HttpConfig`](crate::HttpConfig), [`H2Config`](crate::H2Config)).
 pub trait Service: Send + Sync + 'static {
     /// Handles `ctx`. It must either respond, or detach the context and respond later; if it
@@ -775,7 +775,8 @@ pub struct Context {
     responder: Option<Out>,
     status: Option<u16>,
     detached: bool,
-    /// Running on the logical pool (`run_on_pool`): the connection cannot be taken over.
+    /// Running on the logical pool (`handlers_on_logical_pool`): the connection cannot be taken
+    /// over.
     pooled: bool,
     upgrade: Option<PendingUpgrade>,
     raw: Option<Box<dyn crate::raw::RawHandler>>,

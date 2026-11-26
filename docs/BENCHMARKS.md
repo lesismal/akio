@@ -700,9 +700,9 @@ fell to 558k–641k; with the 4 threads pinned one per CPU, 0 of 20, 95–99% ea
 as many busy I/O threads as CPUs the scheduler sometimes stacks two of them; 12 dedicated
 threads on 4 CPUs keep every CPU busy anyway, at a third of a CPU each.
 
-**Why pinned HTTP/2 falls.** HTTP/2 handlers run on the logical pool by default
-(`H2Config::run_on_pool`), whose threads share CPUs 0–3 here; a pinned I/O thread can no longer
-move off a CPU a pool thread keeps busy. (Not measured separately: h2c with `run_on_pool` off.)
+**Why pinned HTTP/2 falls.** HTTP/2 handlers ran on the logical pool (`H2Config::handlers_on_logical_pool`,
+then on by default), whose threads share CPUs 0–3 here; a pinned I/O thread can no longer
+move off a CPU a pool thread keeps busy. (Not measured separately: h2c with `handlers_on_logical_pool` off.)
 
 **Answer.** Sharing costs nothing measurable once the I/O threads stay on their own CPUs: shared
 and pinned matches or beats 12 dedicated threads with 4. Pinning is not the default: it helps
@@ -726,7 +726,7 @@ for the reason above: 4 unpinned threads on 4 CPUs).
 
 **Follow-up: HTTP/2 inline, and CPUs kept for the logical pool** (2026-11-26, same setup, the
 3 listeners sharing one group, 5 rounds, `shared.sh all,h2`). `inline` serves HTTP/2 on the I/O
-threads (`run_on_pool` off); `pool N` is `reserve_pool_cpus(N)` with pinning: N of the 4 CPUs
+threads (`handlers_on_logical_pool` off); `pool N` is `reserve_pool_cpus(N)` with pinning: N of the 4 CPUs
 for the logical pool, 4 − N pinned I/O threads on the others.
 
 | Load | backend | shared | pinned | inline | inline pinned | pool 2 | pool 1 |
@@ -741,7 +741,7 @@ fastest and steadiest column. (2) Keeping CPUs for the pool does not get pooled 
 the unpinned default on epoll (it does on io_uring with 2 + 2, with a wide spread), and costs
 HTTP/1.1, which runs on fewer I/O threads. (3) The pool hand-off itself dominates trivial HTTP/2
 handlers: on the same 4 CPUs, inline h2c serves 3.2M–4.0M requests/s against about 0.49M on the
-pool (`H2Config::run_on_pool`, on by default since 2026-11-25), a ceiling that more CPUs for the
+pool (`H2Config::handlers_on_logical_pool`, on by default from 2026-11-25 to 2026-11-26), a ceiling that more CPUs for the
 pool do not raise.
 
 ### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)

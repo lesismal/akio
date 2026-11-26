@@ -1,6 +1,6 @@
-//! Requests on the logical pool: `HttpConfig::run_on_pool` (HTTP/1.1), `H2Config::run_on_pool`
-//! (HTTP/2) and `Context::detach_to_pool`, and HTTP/1.1 response order however inline and
-//! pooled requests interleave.
+//! Requests on the logical pool: `HttpConfig::handlers_on_logical_pool` (HTTP/1.1),
+//! `H2Config::handlers_on_logical_pool` (HTTP/2) and `Context::detach_to_pool`, and HTTP/1.1
+//! response order however inline and pooled requests interleave.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -61,7 +61,7 @@ fn stop(e: &Engine) {
 
 fn pooled_h1() -> HttpConfig {
     let mut c = HttpConfig::default();
-    c.run_on_pool = true;
+    c.handlers_on_logical_pool = true;
     c
 }
 
@@ -178,18 +178,22 @@ fn http1_inline_pooled_and_detached_answers_go_out_in_request_order() {
     ];
     let want: Vec<String> = paths.iter().map(|p| p[1..].replacen('/', " ", 1)).collect();
     for cfg in [HttpConfig::default(), pooled_h1()] {
-        let run_on_pool = cfg.run_on_pool;
+        let handlers_on_logical_pool = cfg.handlers_on_logical_pool;
         let e = start(mixed_app(), cfg, None);
         let a = e.local_addrs()[0];
         for _ in 0..3 {
-            assert_eq!(pipeline(a, &paths), want, "run_on_pool={run_on_pool}");
+            assert_eq!(
+                pipeline(a, &paths),
+                want,
+                "handlers_on_logical_pool={handlers_on_logical_pool}"
+            );
         }
         stop(&e);
     }
 }
 
 #[test]
-fn http1_run_on_pool_serves_pipelined_blocking_handlers_at_once_and_in_order() {
+fn http1_handlers_on_logical_pool_serves_pipelined_blocking_handlers_at_once_and_in_order() {
     let e = start(mixed_app(), pooled_h1(), None);
     let a = e.local_addrs()[0];
     let paths = ["/block/300", "/block/200", "/block/100", "/block/0"];
@@ -220,7 +224,7 @@ impl WsHandler for Silent {
 }
 
 #[test]
-fn http1_run_on_pool_keeps_upgrades_on_the_io_thread() {
+fn http1_handlers_on_logical_pool_keeps_upgrades_on_the_io_thread() {
     let ran_on_pool = Arc::new(Mutex::new(Vec::new()));
     let seen = ran_on_pool.clone();
     let app = Router::new().get("/ws", move |ctx: &mut Context| {
@@ -250,7 +254,7 @@ fn http1_run_on_pool_keeps_upgrades_on_the_io_thread() {
 }
 
 #[test]
-fn http1_run_on_pool_answers_503_in_order_when_the_pool_is_full() {
+fn http1_handlers_on_logical_pool_answers_503_in_order_when_the_pool_is_full() {
     let mut pool = PoolConfig::default();
     pool.min_threads = 1;
     pool.max_threads = 1;
@@ -285,11 +289,11 @@ fn http1_run_on_pool_answers_503_in_order_when_the_pool_is_full() {
 }
 
 #[test]
-fn h2_run_on_pool_serves_one_connections_blocking_streams_at_once() {
+fn h2_handlers_on_logical_pool_serves_one_connections_blocking_streams_at_once() {
     for on in [true, false] {
         let mut cfg = HttpConfig::default();
         let mut h2 = H2Config::default();
-        h2.run_on_pool = on;
+        h2.handlers_on_logical_pool = on;
         cfg.h2 = Some(h2);
         let e = start(mixed_app(), cfg, None);
         let addr = e.local_addrs()[0];
@@ -327,11 +331,13 @@ fn clients_called_from_a_full_pool_do_not_wait_for_it() {
     // The leaf answers inline on both versions, so it needs no pool thread either.
     let leaf = Router::new().get("/leaf", |ctx: &mut Context| ctx.text(200, "leaf"));
     let mut inline = HttpConfig::default();
-    inline.h2.as_mut().unwrap().run_on_pool = false;
+    inline.h2.as_mut().unwrap().handlers_on_logical_pool = false;
+    let mut pooled = HttpConfig::default();
+    pooled.h2.as_mut().unwrap().handlers_on_logical_pool = true;
     type Clients = (H2Client, Client, SocketAddr);
     let clients: Arc<OnceLock<Clients>> = Arc::new(OnceLock::new());
     let cl = clients.clone();
-    // HTTP/2 streams run on the pool by default.
+    // The proxy's HTTP/2 streams run on the pool.
     let proxy = Router::new().get("/proxy", move |ctx: &mut Context| {
         let (h2, h1, leaf) = cl.get().unwrap();
         let url = format!("http://{leaf}/leaf");
@@ -370,7 +376,7 @@ fn clients_called_from_a_full_pool_do_not_wait_for_it() {
                 Listener::tcp("127.0.0.1:0".parse().unwrap())
                     .backend(backend())
                     .threads(1)
-                    .serve(serve_with(HttpConfig::default(), proxy)),
+                    .serve(serve_with(pooled, proxy)),
             )
             .client_threads(1)
             .build()

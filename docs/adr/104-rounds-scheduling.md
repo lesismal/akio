@@ -87,7 +87,7 @@ handler, write) runs on whichever worker is idle.
      wake anyone while a worker spins) before it blocks in a driver. Workers take the drivers in
      turn, and while another driver has nobody blocked in it (fewer idle workers than drivers),
      a blocking wait lasts at most 10 ms, so that every driver is polled.
-   - Blocking work still belongs on the logical pool (`spawn_blocking`, `run_on_pool`): a
+   - Blocking work still belongs on the logical pool (`spawn_blocking`, `handlers_on_logical_pool`): a
      blocked worker delays the connections queued behind it, though the others steal them.
 3. **What is the same**: `Conn` and `ConnInner` (already thread-safe, ADR-002), the cork and
    flush protocol, backpressure, `hold_reads`, ordered responses, `close_after_send`, idle /
