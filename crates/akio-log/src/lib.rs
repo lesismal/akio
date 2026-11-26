@@ -7,7 +7,7 @@
 //! Records carry a [`Level`], a target (the module path unless given), the formatted message
 //! and structured key-values:
 //!
-//! ```
+//! ```standalone_crate
 //! use akio_log::{info, warn, LevelFilter};
 //!
 //! akio_log::init(LevelFilter::Info).unwrap(); // `2026-11-14T08:00:00.000123Z INFO  ...` on stderr
