@@ -10,7 +10,7 @@
 |---|---|
 | `build.sh` | 以 release 模式把所有服务端和压测客户端编译到 `$CARGO_TARGET_DIR`（默认 `/tmp/t`）；fib-ref 需要 Go 和 fib 源码（`FIB_SRC`，默认 `/fib`） |
 | `http.sh [cases]` | HTTP/1.1 与 HTTP/2：`plaintext`、`pipelined`（每连接 16 个请求在途）、`json`、`h2`（h2c，64 连接 × 16 流）、`h2many`（h2c，16 × 128）、`h2tls`（TLS 1.3 + ALPN 上的 HTTP/2，64 × 16）、`ws`（WebSocket echo）、`wsz`（同上但启用 permessage-deflate，不在默认集合中） |
-| `echo.sh [cases]` | TCP / UDP / TLS echo，以及每秒 TLS 握手数；`connect`（不在默认集合中）：每秒新建 TCP 连接数，即 accept 路径 |
+| `echo.sh [cases]` | TCP / UDP / TLS echo，以及每秒 TLS 握手数；`connect`（不在默认集合中）：每秒新建 TCP 连接数；在回环上它受客户端从 TIME_WAIT 复用端口的限制（gpu51 上约 33k/秒），直到 TIME_WAIT 表溢出，所以只在各自单独的运行中比较服务端 |
 | `ktls.sh` | 内核 TLS 对比 akio-tls 自己的记录层（TLS 上的 HTTP/1.1，`ktls-bench` 示例，`ktls` feature；`VETH=1` 让客户端位于 veth 对的另一端） |
 | `ktls-engine.sh` | 引擎中的内核 TLS（ADR-067）：两个构建与不同 `AKIO_KTLS` 模式之间交错进行的 TLS 回显、握手与 HTTPS A/B，每次运行前等待主机空闲 |
 | `uring-eval.sh` | 在裸 ring 上比较 io_uring 的发送方式：`write(2)`、`IORING_OP_SEND` 与 `SEND_ZC`，有无注册文件，按响应大小（akio-uring 中被忽略的 `eval_server` 测试；每请求服务器 CPU 取自 `/proc`） |
