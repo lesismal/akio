@@ -19,6 +19,9 @@
 //! `AKIO_BENCH_H2_POOL=1` runs HTTP/2 handlers on the logical pool
 //! (`H2Config::handlers_on_logical_pool`) instead of the I/O threads, and
 //! `AKIO_BENCH_POOL_MAX=n` caps the logical pool at `n` threads (`PoolConfig::max_threads`).
+//!
+//! `AKIO_BENCH_MAX_PENDING_BYTES` and `AKIO_BENCH_MAX_ACCEPTED` turn on the engine's budget of
+//! queued bytes and its limit on accepted connections (ADR-172, ADR-173).
 
 use akio::{
     Backend, Engine, Listener, PoolConfig, RoundsConfig, Scheduling,
@@ -83,7 +86,7 @@ fn main() -> std::io::Result<()> {
         }
     };
     let builder = || {
-        let mut b = Engine::builder();
+        let mut b = Engine::builder().config(bench_config());
         if let Some(n) = std::env::var("AKIO_BENCH_POOL_MAX")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -164,4 +167,17 @@ fn main() -> std::io::Result<()> {
     let engine = builder().listen(l).build()?;
     println!("listening on {:?}", engine.local_addrs());
     engine.run()
+}
+
+/// `AKIO_BENCH_MAX_PENDING_BYTES=n` and `AKIO_BENCH_MAX_ACCEPTED=n` set the engine's
+/// `Config::max_pending_bytes` and `max_accepted_connections` (ADR-172, ADR-173), to measure what
+/// they cost (akit's A214 and A215).
+fn bench_config() -> akio::Config {
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let mut cfg = akio::Config::default();
+    cfg.max_pending_bytes = env("AKIO_BENCH_MAX_PENDING_BYTES");
+    if let Some(n) = env("AKIO_BENCH_MAX_ACCEPTED") {
+        cfg.max_accepted_connections = n;
+    }
+    cfg
 }

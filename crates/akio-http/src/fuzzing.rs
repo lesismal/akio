@@ -305,6 +305,7 @@ fn session_config() -> HttpConfig {
             enable_connect_protocol: true,
             handlers_on_logical_pool: false,
         }),
+        http1: true,
         // No deadline thread in fuzz runs: every read is driven by the harness.
         head_timeout: None,
         keep_alive_timeout: None,

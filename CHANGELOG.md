@@ -193,6 +193,33 @@ to 840k) but not epoll (485k to 337k) and cost HTTP/1.1. The same runs show that
 hand-off dominates trivial HTTP/2 handlers: 3.2M–4.0M requests/s inline against about 0.49M with
 `H2Config::handlers_on_logical_pool` on, the default for a day (see below).
 
+### Added: a budget of the bytes queued across an engine, an accepted-connection limit, and an HTTP server of HTTP/2 alone (akio-core, the backends, akio-http)
+
+akit's A214, A215 and A168, for fit's `limits.max_pending_bytes`, `limits.max_conns` and a listener
+of `h2c` alone:
+
+- `Config::max_pending_bytes: Option<usize>` (ADR-172; default `None`, reloadable,
+  `Live::set_max_pending_bytes`): while the bytes queued for sending across every connection of
+  the engine reach it, every connection's reads pause after its current read, as the write
+  watermark pauses one connection's, and resume once they are back at three quarters of it. A
+  watcher thread (`akio-budget`, only while a budget is set) sums the I/O threads' existing
+  `queued_bytes` gauges every millisecond (10 ms while under half the budget); the write path is
+  unchanged, and a read checks one relaxed load. Connections are paused through
+  `ConnInner::read_held`, which every backend asks, parked once per episode and woken as
+  `hold_reads(false)` wakes them. New: `LoopCounters::budget_pauses`
+  (`akio_budget_pauses_total`), `Telemetry::pending_bytes`, `Telemetry::over_budget`.
+- `Config::max_accepted_connections: usize` (ADR-173; 0, no limit, by default; reloadable,
+  `Live::set_max_accepted_connections`): accepted TCP connections past it are closed right after
+  `accept` and counted as `rejected`, whatever the engine dials; `max_connections` still counts
+  every connection. It reads the counters of akit's A30 (`Telemetry::open_accepted`, taken here
+  as they are on `claude/akit-open-requests`).
+- `HttpConfig::http1: bool` (ADR-174; default `true`): with `false` the server speaks HTTP/2 alone,
+  as a listener of `h2c` with prior knowledge and nothing else: a connection whose first bytes
+  leave the client preface gets a `GOAWAY` (`PROTOCOL_ERROR`) and is closed; no `Upgrade: h2c`.
+- `tools/bench/echo.sh connect` (new TCP connections per second, the accept path) and
+  `AKIO_BENCH_MAX_PENDING_BYTES` / `AKIO_BENCH_MAX_ACCEPTED` in the bench servers, for the A/B
+  in docs/BENCHMARKS.md ("Engine budget and accepted-connection limit").
+
 ### Added: pinning I/O threads to CPUs, and a shared-group benchmark (akio, tools/bench)
 
 `EngineBuilder::pin_io_threads(bool)` (or `AKIO_PIN_IO_THREADS=1`), off by default, pins each I/O

@@ -136,4 +136,7 @@
 - [ADR-157：关闭连接或带长度的响应，由中间件限制的请求 body](157-http1-close-length-body-limit.zh-CN.md)（2026-11-26 采纳；akit A24、A49、A35、A148）
 - [ADR-158：监听器的响应观察者，每个请求不分配内存](158-response-observer.zh-CN.md)（2026-11-26 采纳；akit A29）
 - [ADR-159：挂起 body 流式到达的请求，并扣住其读取](159-suspended-streamed-bodies.zh-CN.md)（2026-11-26 采纳；akit A75）
+- [ADR-172：engine 所有连接排队字节的预算](172-engine-budget-of-queued-bytes.zh-CN.md)（2026-11-26 采纳；akit A214）
+- [ADR-173：只统计接受的连接的连接数上限](173-accepted-connection-limit.zh-CN.md)（2026-11-26 采纳；akit A215）
+- [ADR-174：只服务 HTTP/2 的 HTTP 服务端](174-http2-alone.zh-CN.md)（2026-11-26 采纳；akit A168）
 - [ADR-176：HTTP/2 handler 默认重新 inline 执行](176-http2-handlers-inline-by-default.zh-CN.md)（2026-11-26 采纳；撤销 ADR-094 在 2026-11-25 设的默认值）

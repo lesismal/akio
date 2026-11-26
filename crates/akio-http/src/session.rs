@@ -28,6 +28,12 @@ pub struct HttpConfig {
     /// HTTP/2 settings, or `None` to serve HTTP/1 only. HTTP/2 is detected from the client
     /// preface (prior knowledge, and TLS with ALPN `h2`) or an `Upgrade: h2c` request.
     pub h2: Option<H2Config>,
+    /// Serve HTTP/1 (default `true`). With `false` the server speaks HTTP/2 alone (ADR-174), as
+    /// a listener of `h2c` with prior knowledge and nothing else: a connection whose first
+    /// bytes are not the HTTP/2 client preface gets a `GOAWAY` (`PROTOCOL_ERROR`) and is
+    /// closed, and no HTTP/1 request is read, so no `Upgrade: h2c` either. With `h2` also
+    /// `None` nothing is served: every connection is closed at once.
+    pub http1: bool,
     /// Longest time a request head may take to arrive, measured from its first byte to its
     /// end, so a peer trickling a byte at a time cannot keep a half-received head alive
     /// (slowloris). When it passes the request is answered `408` and the connection closed.
@@ -77,6 +83,7 @@ impl Default for HttpConfig {
             max_header_bytes: 64 << 10,
             max_body_bytes: 1 << 20,
             h2: Some(H2Config::default()),
+            http1: true,
             head_timeout: Some(Duration::from_secs(10)),
             keep_alive_timeout: Some(Duration::from_secs(75)),
             body_timeout: Some(Duration::from_secs(60)),
@@ -470,6 +477,13 @@ impl<S: Service> Session<S> {
             return h.on_data(rc, data);
         }
         if !self.started {
+            if !self.cfg.http1 && self.cfg.h2.is_none() {
+                // Neither protocol is served.
+                c.close();
+                self.state = State::Closed;
+                self.started = true;
+                return;
+            }
             // HTTP/2 with prior knowledge starts with a fixed 24-byte preface.
             if let Some(cfg) = self.cfg.h2.clone() {
                 let mut seen = std::mem::take(&mut self.buf);
@@ -497,8 +511,11 @@ impl<S: Service> Session<S> {
                 }
                 // Neither the HTTP/2 preface nor the start of a known HTTP/1 method after a whole
                 // preface's worth of bytes: a client that meant HTTP/2 and got it wrong. Say so in
-                // HTTP/2 terms (GOAWAY PROTOCOL_ERROR) and hang up.
-                if seen.len() >= PREFACE.len() && !starts_with_http1_method(&seen) {
+                // HTTP/2 terms (GOAWAY PROTOCOL_ERROR) and hang up. So is any client of a server
+                // of HTTP/2 alone (`http1: false`) as soon as its bytes leave the preface.
+                if !self.cfg.http1
+                    || (seen.len() >= PREFACE.len() && !starts_with_http1_method(&seen))
+                {
                     let goaway = [
                         0, 0, 8, 7, 0, 0, 0, 0, 0, // GOAWAY on stream 0, 8 bytes
                         0, 0, 0, 0, 0, 0, 0, 1, // last stream 0, PROTOCOL_ERROR

@@ -584,3 +584,91 @@ fn graceful_shutdown_sends_goaway_and_lets_streams_finish() {
         "no new streams after GOAWAY"
     );
 }
+
+/// What a server of HTTP/2 alone (`HttpConfig::http1 = false`, ADR-174) answers `first`: the
+/// bytes it sent before it closed the connection.
+fn h2_only_answer(e: &Engine, first: &[u8]) -> Vec<u8> {
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(first).unwrap();
+    let mut got = Vec::new();
+    let mut b = [0u8; 256];
+    loop {
+        match s.read(&mut b) {
+            Ok(0) => return got,
+            Ok(n) => got.extend_from_slice(&b[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return got,
+            Err(e) => panic!("read: {e} after {got:?}"),
+        }
+    }
+}
+
+/// `GOAWAY` on stream 0 with last stream 0 and `PROTOCOL_ERROR`.
+const GOAWAY_PROTOCOL_ERROR: [u8; 17] = [0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+
+#[test]
+fn h2_only_serves_prior_knowledge_and_refuses_http1() {
+    let mut cfg = akio_http::HttpConfig::default();
+    cfg.http1 = false;
+    let e = start(akio_http::serve_with(cfg, app()));
+    // HTTP/2 with prior knowledge is served, many streams on one connection.
+    let (c, base) = connect(&e, H2Options::default());
+    for _ in 0..3 {
+        let r = c
+            .send(ClientRequest::get(&format!("{base}/hello")))
+            .wait()
+            .unwrap();
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body, b"hello h2");
+    }
+    // An HTTP/1.1 request: GOAWAY, then closed; no HTTP/1 answer.
+    let got = h2_only_answer(&e, b"GET /hello HTTP/1.1\r\nHost: x\r\n\r\n");
+    assert_eq!(got, GOAWAY_PROTOCOL_ERROR);
+    // An h2c upgrade is an HTTP/1.1 request too: no 101.
+    let got = h2_only_answer(
+        &e,
+        b"GET /hello HTTP/1.1\r\nHost: x\r\nConnection: Upgrade, HTTP2-Settings\r\nUpgrade: h2c\r\nHTTP2-Settings: \r\n\r\n",
+    );
+    assert_eq!(got, GOAWAY_PROTOCOL_ERROR);
+    // A byte off the preface at once, before a whole preface's worth arrived.
+    let got = h2_only_answer(&e, b"PRI * HTTP/1.1");
+    assert_eq!(got, GOAWAY_PROTOCOL_ERROR);
+    // The preface split over writes still starts HTTP/2.
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(b"PRI * HTTP/2.0\r\n").unwrap();
+    thread::sleep(Duration::from_millis(50));
+    s.write_all(b"\r\nSM\r\n\r\n").unwrap();
+    s.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).unwrap(); // empty SETTINGS
+    let (ty, _, sid, _) = read_frame(&mut s);
+    assert_eq!((ty, sid), (4, 0), "the server's SETTINGS");
+    drop(s);
+    stop(&e);
+}
+
+#[test]
+fn h2_only_without_h2_serves_nothing_and_http1_stays_the_default() {
+    assert!(akio_http::HttpConfig::default().http1);
+    let mut cfg = akio_http::HttpConfig::default();
+    cfg.http1 = false;
+    cfg.h2 = None;
+    let e = start(akio_http::serve_with(cfg, app()));
+    assert!(h2_only_answer(&e, b"GET /hello HTTP/1.1\r\nHost: x\r\n\r\n").is_empty());
+    assert!(h2_only_answer(&e, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").is_empty());
+    stop(&e);
+    // The default serves both.
+    let e = start(serve(app()));
+    let got = h2_only_answer(
+        &e,
+        b"GET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(got.starts_with(b"HTTP/1.1 200"), "{got:?}");
+    let (c, base) = connect(&e, H2Options::default());
+    let r = c
+        .send(ClientRequest::get(&format!("{base}/hello")))
+        .wait()
+        .unwrap();
+    assert_eq!(r.status, 200);
+    stop(&e);
+}

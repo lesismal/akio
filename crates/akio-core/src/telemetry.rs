@@ -150,8 +150,8 @@ loop_counters! {
     dialed: "counter", "akio_connections_dialed_total", "Connections established by dialing.";
     /// Connections closed (after `on_close`).
     closed: "counter", "akio_connections_closed_total", "Connections closed.";
-    /// Connections refused because `max_connections` was reached.
-    rejected: "counter", "akio_connections_rejected_total", "Connections refused by max_connections.";
+    /// Connections refused because `max_connections` or `max_accepted_connections` was reached.
+    rejected: "counter", "akio_connections_rejected_total", "Connections refused by max_connections or max_accepted_connections.";
     /// Connections refused by the listener's accept filter (`Listener::filter`).
     filtered: "counter", "akio_connections_filtered_total", "Connections refused by the listener's accept filter.";
     /// `accept(2)` failures (EMFILE...).
@@ -176,6 +176,9 @@ loop_counters! {
     queued_bytes: "gauge", "akio_send_queue_bytes", "Bytes queued for sending.";
     /// Times a connection's reads were paused because its send queue reached the high watermark.
     backpressure: "counter", "akio_backpressure_events_total", "Reads paused by send-queue backpressure.";
+    /// Times a connection's reads were paused because the bytes queued across the engine
+    /// reached `max_pending_bytes` (once per connection and episode).
+    budget_pauses: "counter", "akio_budget_pauses_total", "Reads paused by the engine's max_pending_bytes.";
     /// Sends refused with `Error::Overloaded` (`max_queued_bytes`).
     overloaded: "counter", "akio_overloaded_total", "Sends refused because the queue was full.";
     /// Connections whose transport (TLS) failed during its handshake.
@@ -384,6 +387,9 @@ pub struct SlowRecord {
 /// * `backlog`: every listening socket is `listen(2)`ed again with the new value.
 ///
 /// * `write_timeout` (ADR-108): see [`set_write_timeout`](Self::set_write_timeout).
+/// * `max_pending_bytes` (ADR-172): applies at once; setting one starts the watcher that sums
+///   the threads' queues, removing it resumes every connection it paused.
+/// * `max_accepted_connections` (ADR-173): applies to the next accepted connection.
 ///
 /// Not reloadable (fixed when the engine is built): `max_pending_responses`,
 /// `connect_timeout`, `udp_max_peers`, `udp_gro`, listeners, backends and pool sizes. Thread
@@ -401,6 +407,8 @@ pub struct Live {
     backlog: AtomicI32,
     udp_idle_ms: AtomicU64,
     retire_ms: AtomicU64,
+    max_accepted: AtomicUsize,
+    budget: Arc<crate::budget::Budget>,
 }
 
 fn opt_ms(d: Option<Duration>) -> u64 {
@@ -424,6 +432,8 @@ impl Default for Live {
             backlog: AtomicI32::new(DEFAULT_BACKLOG),
             udp_idle_ms: AtomicU64::new(DEFAULT_UDP_IDLE_TIMEOUT.as_millis() as u64),
             retire_ms: AtomicU64::new(0),
+            max_accepted: AtomicUsize::new(0),
+            budget: Arc::default(),
         }
     }
 }
@@ -442,6 +452,8 @@ impl Live {
         self.set_backlog(c.backlog);
         self.set_udp_idle_timeout(c.udp_idle_timeout);
         self.set_retire_timeout(c.retire_timeout);
+        self.set_max_accepted_connections(c.max_accepted_connections);
+        self.set_max_pending_bytes(c.max_pending_bytes);
     }
 
     /// Current `Config::idle_timeout`.
@@ -550,6 +562,32 @@ impl Live {
         self.max_conns.store(n, Ordering::Relaxed);
     }
 
+    /// Current `Config::max_accepted_connections` (0 = unlimited).
+    #[inline]
+    pub fn max_accepted_connections(&self) -> usize {
+        self.max_accepted.load(Ordering::Relaxed)
+    }
+
+    /// Sets the limit on open accepted connections (ADR-173); existing connections are never
+    /// closed by lowering it.
+    pub fn set_max_accepted_connections(&self, n: usize) {
+        self.max_accepted.store(n, Ordering::Relaxed);
+    }
+
+    /// Current `Config::max_pending_bytes` (`None`: no budget).
+    pub fn max_pending_bytes(&self) -> Option<usize> {
+        self.budget.max()
+    }
+
+    /// Sets the budget of bytes queued across the engine's connections (ADR-172): while they
+    /// reach it, every connection's reads pause after its current read, until they are back
+    /// under three quarters of it. Setting one starts a watcher thread (`akio-budget`) that sums
+    /// the I/O threads' queues; `None` (or `Some(0)`) removes it and resumes the paused
+    /// connections.
+    pub fn set_max_pending_bytes(&self, n: Option<usize>) {
+        crate::budget::Budget::set_max(&self.budget, n);
+    }
+
     /// Current `Config::shutdown_timeout`.
     pub fn shutdown_timeout(&self) -> Duration {
         Duration::from_millis(self.shutdown_ms.load(Ordering::Relaxed))
@@ -630,6 +668,8 @@ impl std::fmt::Debug for Live {
             .field("max_queued_bytes", &self.max_queued_bytes())
             .field("write_high_watermark", &self.write_high_watermark())
             .field("max_connections", &self.max_connections())
+            .field("max_accepted_connections", &self.max_accepted_connections())
+            .field("max_pending_bytes", &self.max_pending_bytes())
             .field("shutdown_timeout", &self.shutdown_timeout())
             .field("read_buffer", &self.read_buffer())
             .field("backlog", &self.backlog())
@@ -762,6 +802,7 @@ impl Telemetry {
     /// Backend-facing.
     #[doc(hidden)]
     pub fn register_loop(&self, stats: Arc<LoopStats>, post: Box<dyn Fn(LoopCmd) + Send + Sync>) {
+        self.live.budget.add_loop(&stats);
         let mut loops = lock(&self.loops);
         match loops.iter_mut().find(|l| Arc::ptr_eq(&l.stats, &stats)) {
             Some(l) => l.post = post,
@@ -774,6 +815,7 @@ impl Telemetry {
     /// never go back. Backend-facing.
     #[doc(hidden)]
     pub fn unregister_loops(&self, stats: &[Arc<LoopStats>]) {
+        self.live.budget.remove_loops(stats);
         let mut loops = lock(&self.loops);
         let mut gone = lock(&self.gone);
         loops.retain(|l| {
@@ -837,6 +879,14 @@ impl Telemetry {
         note(
             l.max_connections() != cfg.max_connections,
             "max_connections",
+        );
+        note(
+            l.max_accepted_connections() != cfg.max_accepted_connections,
+            "max_accepted_connections",
+        );
+        note(
+            l.max_pending_bytes() != cfg.max_pending_bytes.filter(|&n| n != 0),
+            "max_pending_bytes",
         );
         note(
             l.shutdown_timeout() != Duration::from_millis(cfg.shutdown_timeout.as_millis() as u64),
@@ -905,9 +955,10 @@ impl Telemetry {
     // ---- connection accounting --------------------------------------------------------------
 
     /// Counts a new connection. `limited`: an accepted TCP connection (the only kind
-    /// `max_connections` refuses, and the kind [`open_accepted`](Self::open_accepted) counts);
-    /// refused (`false` returned, nothing counted) when `max_connections` is reached. Every
-    /// other kind (dialed, UDP peer, TUN device) passes `false`. Backend-facing.
+    /// `max_connections` and `max_accepted_connections` refuse, and the kind
+    /// [`open_accepted`](Self::open_accepted) counts); refused (`false` returned, nothing
+    /// counted) when either is reached. Every other kind (dialed, UDP peer, TUN device) passes
+    /// `false`. Backend-facing.
     #[doc(hidden)]
     #[inline]
     pub fn conn_opened(&self, limited: bool) -> bool {
@@ -919,6 +970,12 @@ impl Telemetry {
         let n = self.open.fetch_add(1, Ordering::Relaxed);
         let max = self.live.max_connections();
         if max != 0 && n >= max {
+            self.open.fetch_sub(1, Ordering::Relaxed);
+            return false;
+        }
+        // ADR-173: the accepted ones alone, `open` without the other kinds (on the same line).
+        let max = self.live.max_accepted_connections();
+        if max != 0 && n.saturating_sub(self.open_other.load(Ordering::Relaxed)) >= max {
             self.open.fetch_sub(1, Ordering::Relaxed);
             return false;
         }
@@ -951,6 +1008,23 @@ impl Telemetry {
     pub fn open_accepted(&self) -> usize {
         let other = self.open_other.load(Ordering::Relaxed);
         self.open.load(Ordering::Relaxed).saturating_sub(other)
+    }
+
+    /// Bytes queued for sending across the engine's I/O threads (the sum of their
+    /// `queued_bytes`), what `max_pending_bytes` bounds.
+    pub fn pending_bytes(&self) -> usize {
+        self.live.budget.total()
+    }
+
+    /// Whether the engine's reads are paused by `max_pending_bytes` right now (ADR-172).
+    pub fn over_budget(&self) -> bool {
+        self.live.budget.is_over()
+    }
+
+    /// The budget of queued bytes, which connections consult in `read_held` (ADR-172).
+    #[inline]
+    pub(crate) fn budget(&self) -> &crate::budget::Budget {
+        &self.live.budget
     }
 
     // ---- slow callbacks ---------------------------------------------------------------------

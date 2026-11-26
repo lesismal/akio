@@ -3080,6 +3080,43 @@ default since ADR-176). `B slower` counts the rounds where `B` lost.
   deadlock fix does not depend on it, no release had it on, and every other protocol serves
   inline by default.
 
+### Engine budget and accepted-connection limit (ADR-172, ADR-173, same-run A/B, 2026-11-26)
+
+Measured on gpu51 under `quiet.sh`: `tools/bench/http.sh plaintext,pipelined,h2` and
+`tools/bench/echo.sh tcp,connect`, the server on CPUs 0–3 (4 threads), the client on 4–7,12–15
+(8 threads), 8 s × 5 rounds with the servers alternating; medians of the rounds, requests/s
+(echo: messages/s). `base` is `main` at `1b85fd83`, `new` the branch `claude/i79b-akio` at
+`76a010c1`. *Off* runs `new` with neither setting (the default). *On* sets
+`AKIO_BENCH_MAX_PENDING_BYTES=8589934592` and `AKIO_BENCH_MAX_ACCEPTED=1000000` on `new`, a
+budget and a limit never reached, so what is measured is their bookkeeping: the watcher thread
+summing the threads' gauges every 10 ms, the budget flag read on each read check and the count
+compared on each accept. `base` has neither in both halves.
+
+| Case | epoll base | epoll new | | io_uring base | io_uring new | |
+|---|---:|---:|---:|---:|---:|---:|
+| off: h1 plaintext × 256 | 730,820 | 732,822 | +0.3% | 872,490 | 872,535 | +0.0% |
+| off: h1 pipelined 16 × 256 | 4,561,620 | 4,545,948 | −0.3% | 5,118,432 | 5,108,526 | −0.2% |
+| off: h2c 64 conns × 16 streams | 482,181 | 481,695 | −0.1% | 494,126 | 492,523 | −0.3% |
+| off: tcp echo 64 B × 256 | 780,722 | 782,371 | +0.2% | 911,222 | 908,218 | −0.3% |
+| on: h1 plaintext × 256 | 731,749 | 732,286 | +0.1% | 866,911 | 871,013 | +0.5% |
+| on: h1 pipelined 16 × 256 | 4,569,308 | 4,544,688 | −0.5% | 5,092,414 | 5,103,440 | +0.2% |
+| on: h2c 64 conns × 16 streams | 482,820 | 481,642 | −0.2% | 494,193 | 493,351 | −0.2% |
+| on: tcp echo 64 B × 256 | 771,930 | 779,771 | +1.0% | 907,883 | 899,778 | −0.9% |
+
+No measurable change, off or on: every case is within 1%, inside the spread of its rounds (tcp
+echo on io_uring, on: base 888,626–921,647, new 878,027–909,660).
+
+The `connect` case (64 workers, each connecting, echoing 64 bytes and closing, in a loop) does
+not measure the accept path on this host. Every server held 33.4k connections/s (base epoll
+33,393, new epoll 33,407, base io_uring 33,417 off), the rate at which the client can reuse its
+loopback ports from TIME_WAIT. The fourth server of each round (always new on io_uring) read
+179k: each server listens on its own port, so by then the TIME_WAIT table is full
+(`tcp_max_tw_buckets` 131072, `TcpExtTCPTimeWaitOverflow` 1.36 million in a replay), the kernel
+stops keeping TIME_WAIT and the ports come back at once. Run on their own in reverse order the
+four held 33,403 (new io_uring), 33,440 (base io_uring), 33,419 (new epoll) and 33,422 (base
+epoll). The accepted-connection check is one subtraction and one comparison per accept; this
+harness cannot resolve it.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

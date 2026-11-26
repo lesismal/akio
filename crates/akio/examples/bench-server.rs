@@ -19,6 +19,9 @@
 //!
 //! `AKIO_KTLS=off|hardware|software|software-tx` sets `tls`'s kernel TLS mode (`Ktls`; takes
 //! effect with the `ktls` feature on Linux), for the kernel TLS benchmark.
+//!
+//! `AKIO_BENCH_MAX_PENDING_BYTES` and `AKIO_BENCH_MAX_ACCEPTED` turn on the engine's budget of
+//! queued bytes and its limit on accepted connections (ADR-172, ADR-173).
 
 use std::{thread, time::Duration};
 
@@ -90,6 +93,7 @@ fn serve<A: Acceptor>(
         None => l.serve(a),
     };
     let engine = Engine::builder()
+        .config(bench_config())
         .pool({
             let mut v = PoolConfig::default();
             v.max_threads = pool_threads;
@@ -184,4 +188,17 @@ fn main() -> std::io::Result<()> {
             std::process::exit(2)
         }
     }
+}
+
+/// `AKIO_BENCH_MAX_PENDING_BYTES=n` and `AKIO_BENCH_MAX_ACCEPTED=n` set the engine's
+/// `Config::max_pending_bytes` and `max_accepted_connections` (ADR-172, ADR-173), to measure what
+/// they cost (akit's A214 and A215).
+fn bench_config() -> akio::Config {
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let mut cfg = akio::Config::default();
+    cfg.max_pending_bytes = env("AKIO_BENCH_MAX_PENDING_BYTES");
+    if let Some(n) = env("AKIO_BENCH_MAX_ACCEPTED") {
+        cfg.max_accepted_connections = n;
+    }
+    cfg
 }

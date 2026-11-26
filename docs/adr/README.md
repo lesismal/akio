@@ -136,4 +136,7 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-157: Responses that close their connection or carry their length, request bodies a middleware bounds](157-http1-close-length-body-limit.md) (accepted 2026-11-26; akit A24, A49, A35, A148)
 - [ADR-158: A listener's response observer, without an allocation per request](158-response-observer.md) (accepted 2026-11-26; akit A29)
 - [ADR-159: A request whose body streams, suspended with its reads held](159-suspended-streamed-bodies.md) (accepted 2026-11-26; akit A75)
+- [ADR-172: A budget of the bytes queued across an engine's connections](172-engine-budget-of-queued-bytes.md) (accepted 2026-11-26; akit A214)
+- [ADR-173: A connection limit that counts only accepted connections](173-accepted-connection-limit.md) (accepted 2026-11-26; akit A215)
+- [ADR-174: An HTTP server of HTTP/2 alone](174-http2-alone.md) (accepted 2026-11-26; akit A168)
 - [ADR-176: HTTP/2 handlers inline by default again](176-http2-handlers-inline-by-default.md) (accepted 2026-11-26; reverses the 2026-11-25 default of ADR-094)

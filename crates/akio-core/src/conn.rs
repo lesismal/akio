@@ -913,6 +913,9 @@ pub struct ConnInner {
     /// Reads paused because too many ordered responses are pending (see
     /// `Config::max_pending_responses`); separate from `hold`, which is the application's.
     ordered_hold: AtomicBool,
+    /// The episode of `Config::max_pending_bytes` in which this connection was parked (ADR-172);
+    /// 0: none yet.
+    budget_epoch: std::sync::atomic::AtomicU64,
     /// The loop corked the connection around a callback ([`set_corked`](Self::set_corked)):
     /// an atomic, so corking costs no lock. Read together with `WriteState::corked` (the
     /// application's [`cork`](Self::cork)) under the write lock; cleared under it too.
@@ -976,6 +979,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             ordered_hold: AtomicBool::new(false),
+            budget_epoch: std::sync::atomic::AtomicU64::new(0),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
@@ -1018,6 +1022,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             ordered_hold: AtomicBool::new(false),
+            budget_epoch: std::sync::atomic::AtomicU64::new(0),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
@@ -1065,6 +1070,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             ordered_hold: AtomicBool::new(false),
+            budget_epoch: std::sync::atomic::AtomicU64::new(0),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
@@ -1240,10 +1246,35 @@ impl ConnInner {
         self.state.load(Ordering::Acquire) == OPEN
     }
 
-    /// Reads are paused: by the application ([`hold_reads`](Self::hold_reads)) or because too
-    /// many ordered responses are pending (`Config::max_pending_responses`).
+    /// Reads are paused: by the application ([`hold_reads`](Self::hold_reads)), because too
+    /// many ordered responses are pending (`Config::max_pending_responses`), or because the
+    /// bytes queued across the engine reached `Config::max_pending_bytes` (ADR-172). In the
+    /// last case the connection is woken (as by `hold_reads(false)`) once they are back under
+    /// the budget.
+    #[inline]
     pub fn read_held(&self) -> bool {
-        self.hold.load(Ordering::Acquire) || self.ordered_hold.load(Ordering::Acquire)
+        self.hold.load(Ordering::Acquire)
+            || self.ordered_hold.load(Ordering::Acquire)
+            || self.budget_held()
+    }
+
+    /// The engine is over its budget of queued bytes: parks this connection (once per
+    /// episode) so it is woken when the budget is back under.
+    #[inline]
+    fn budget_held(&self) -> bool {
+        let b = self.cfg.telemetry.budget();
+        b.is_over()
+            && b.park(
+                self.id,
+                &self.budget_epoch,
+                &self.link,
+                self.stats().as_deref(),
+            )
+    }
+
+    /// The owning I/O thread's counters (cold paths only: it clones an `Arc`).
+    fn stats(&self) -> Option<Arc<LoopStats>> {
+        self.link.stats()
     }
 
     /// Marks the connection as one end of a relay: what it reads is sent on *another*
@@ -1798,6 +1829,10 @@ impl ConnInner {
     /// Loop side: the connection is gone; drop queued output.
     pub fn mark_closed(&self) {
         self.state.store(CLOSED, Ordering::Release);
+        self.cfg
+            .telemetry
+            .budget()
+            .forget(self.id, &self.budget_epoch);
         let waiter = {
             let mut w = self.lock();
             w.clear();

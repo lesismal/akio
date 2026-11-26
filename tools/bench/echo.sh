@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Echo benchmarks: TCP (sizes x connections), UDP, TLS echo and TLS handshake rate.
 #
-#   tools/bench/echo.sh [tcp,udp,tls,tlshs]      (default: all)
+#   tools/bench/echo.sh [tcp,udp,tls,tlshs,connect]      (default: all but connect)
+#
+# connect: new TCP connections per second (the accept path): each of 64 workers connects,
+# echoes 64 bytes and closes, in a loop (echo-bench's `connect` mode).
 #
 # See lib.sh for the knobs (CPUs, threads, seconds, rounds). Raw rows go to $OUT, summarise them
 # with tools/bench/summarize.py. Built by tools/bench/build.sh.
@@ -20,7 +23,7 @@ one() {
   for kind in $(kinds_for "$proto"); do
     start_server "$kind" "$proto"
     cli "$ECHO_BENCH" "127.0.0.1:$PORT" 8 64 1 4 "$([ "$proto" = tlshs ] && echo tls || echo "$proto")" >/dev/null 2>&1 # warm-up
-    v=$(cli "$ECHO_BENCH" "127.0.0.1:$PORT" "$@" 2>/dev/null | field "$([ "${*: -1}" = tlshs ] && echo handshakes/s || echo req/s)")
+    v=$(cli "$ECHO_BENCH" "127.0.0.1:$PORT" "$@" 2>/dev/null | field "$(case "${*: -1}" in tlshs) echo handshakes/s ;; connect) echo connections/s ;; *) echo req/s ;; esac)")
     stop_server
     record "$suite" "$case" "$kind" "$round" "${v:-FAILED}"
   done
@@ -35,6 +38,7 @@ for r in $(seq "$RUNS"); do
   fi
   want udp && one udp udp "64B x 64" "$r" 64 64 "$SECS" "$CLI_THREADS" udp
   want tls && one tls tls "1KiB x 64" "$r" 64 1024 "$SECS" "$CLI_THREADS" tls
+  want connect && one connect tcp "connect 64B x 64 workers" "$r" 64 64 "$SECS" "$CLI_THREADS" connect
   if want tlshs; then
     # Full handshakes (no resumption), TLS 1.3, ECDSA P-256 certificate; 32 client workers.
     for kind in $(kinds_for tls); do
