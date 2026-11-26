@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：TLS 客户端的固定服务端证书（akio-tls、akio-quic）
+
+akit 的 A235，用于其隧道和 LLM 网格到自签名 hub 的链路；ADR-182。
+`ClientConfigBuilder::pin_sha256(pins)`：服务端叶子证书的 SHA-256 必须是 `pins` 之一（常数时间
+比较），代替证书链、名称和有效期检查，与 Go 在 `InsecureSkipVerify` 下的 `VerifyPeerCertificate`
+相同；否则握手以 `bad_certificate` 失败。叶子证书的公钥仍要验证服务端的握手签名。由这样的配置得到的
+QUIC 客户端（`akio_quic::client_config_from`）同样固定；空列表使 `build` 失败。
+
 ### 新增：连接自己的发送队列上限（akio-core、akio）
 
 akit 的 A234，用于其隧道和 LLM 网格的链路，这些链路的队列要容纳各个流的窗口；ADR-181。

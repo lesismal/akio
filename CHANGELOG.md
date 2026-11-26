@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a pinned server certificate in the TLS client (akio-tls, akio-quic)
+
+akit's A235, for its tunnel's and LLM mesh's links to self-signed hubs; ADR-182.
+`ClientConfigBuilder::pin_sha256(pins)`: the SHA-256 of the server's leaf certificate must be one of
+`pins` (compared in constant time), in place of the chain, the name and the dates, as Go's
+`VerifyPeerCertificate` under `InsecureSkipVerify`; otherwise the handshake fails with
+`bad_certificate`. The leaf's key still verifies the server's handshake signature. QUIC clients
+built from such a configuration (`akio_quic::client_config_from`) are pinned too; an empty list
+fails `build`.
+
 ### Added: a connection's own bound of its send queue (akio-core, akio)
 
 akit's A234, for its tunnel's and LLM mesh's links, whose queues hold their streams' windows;

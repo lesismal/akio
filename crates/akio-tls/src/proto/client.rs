@@ -11,8 +11,8 @@ use super::alert::{Alert, Fatal, fatal};
 use super::codec::{Reader, put_u8, put_u16, put_vec, put_vec8, put_vec16};
 use super::common::{
     Action, CertKey, ClientSettings, EarlyData, Keys, Level, Schedule, Transcript,
-    check_stapled_ocsp, finished_mac, leaf_key, next_secret, now_millis, now_secs, random,
-    verify_chain,
+    check_stapled_ocsp, finished_mac, leaf_key, next_secret, now_millis, now_secs, pinned_leaf_key,
+    random, verify_chain,
 };
 use super::conn::MAX_HANDSHAKE;
 use super::kx::{Group, KeyShare};
@@ -843,7 +843,9 @@ impl Client {
         if chain.is_empty() {
             return fatal(Alert::DecodeError, "server sent no certificate");
         }
-        let key = if self.cfg.insecure {
+        let key = if !self.cfg.pins.is_empty() {
+            pinned_leaf_key(&self.cfg.pins, &chain)?
+        } else if self.cfg.insecure {
             leaf_key(&chain)?
         } else {
             let v = verify_chain(
