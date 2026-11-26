@@ -477,10 +477,13 @@ pub(crate) enum Cmd {
     /// Accept on listening socket `.0` from now on (a new listener's, one passed on by thread
     /// resizing, ADR-028, or given back to a loop the group grew again).
     AddListener(Sock, TcpListener),
-    /// Thread resizing: if this loop holds socket `sock`, hand it to `to`.
+    /// Thread resizing: if this loop holds socket `sock`, hand it back to its home loop
+    /// through the roster (active loop `sock.idx % active`, the loop the group just grew).
+    /// Not to a loop named when this was posted: that one may have retired and exited since
+    /// (the group shrank again), and a socket posted to an exited loop was dropped, resetting
+    /// the connections queued on it.
     GiveListener {
         sock: Sock,
-        to: Arc<LoopShared>,
     },
     /// Thread resizing: stop taking new connections, hand the `SO_REUSEPORT` listening sockets
     /// to the active loops (clones the others hold too are just closed), exit once the
@@ -644,14 +647,21 @@ impl Roster {
     /// Accept-time balancing (ADR-105): the active loop a connection just accepted by `me`
     /// should go to instead, if `me` holds more than its share (`akio_core::balance`). The
     /// target's load already counts the connection when this returns.
-    fn handoff_target(&self, me: &LoopShared) -> Option<Arc<LoopShared>> {
+    fn hand_off(&self, me: &LoopShared, cmd: Cmd) -> Result<(), Cmd> {
         if !self.balance.load(Ordering::Relaxed) {
-            return None;
+            return Err(cmd);
         }
         let g = self.active.read().unwrap_or_else(|p| p.into_inner());
-        let t = akio_core::balance::pick(&me.stats, &g, |l| &l.stats)?.clone();
+        let Some(t) = akio_core::balance::pick(&me.stats, &g, |l| &l.stats) else {
+            return Err(cmd);
+        };
         t.stats.handoff_begin();
-        Some(t)
+        // Posted under the read lock, as `post_next` does: a loop that `set_threads` retires
+        // right after gets the connection before its `Retire` and passes it on. Posted after
+        // the lock was let go, it could reach a loop that had retired and exited meanwhile,
+        // and be dropped there (a reset connection).
+        t.post(cmd);
+        Ok(())
     }
 
     /// Passes on a handed-over connection that reached a loop which is leaving: to the next
@@ -1543,17 +1553,26 @@ impl Loop {
         // Accept-time balancing (ADR-105): a loop holding more than its share hands the
         // connection over before reading from it. A Unix-domain connection (ADR-121) stays:
         // `Adopt` opens with TCP addresses.
-        if !self.retiring && !unix {
-            if let Some(to) = self.roster.handoff_target(&self.shared) {
-                to.post(Cmd::Adopt {
+        let (stream, peer, acceptor) = if !self.retiring && !unix {
+            let adopt = Cmd::Adopt {
+                stream,
+                peer,
+                acceptor,
+                lid: sock.lid,
+            };
+            match self.roster.hand_off(&self.shared, adopt) {
+                Ok(()) => return,
+                Err(Cmd::Adopt {
                     stream,
                     peer,
                     acceptor,
-                    lid: sock.lid,
-                });
-                return;
+                    ..
+                }) => (stream, peer, acceptor),
+                Err(_) => unreachable!("hand_off gives back what it was given"),
             }
-        }
+        } else {
+            (stream, peer, acceptor)
+        };
         self.open(stream, peer, acceptor, false, unix_local, sock.lid);
     }
 
@@ -2223,9 +2242,9 @@ impl Loop {
                         self.ears[lid] = Some(LoopEar::new(ear));
                     }
                     Cmd::AddListener(sock, l) => self.add_listener(sock, l),
-                    Cmd::GiveListener { sock, to } => {
+                    Cmd::GiveListener { sock } => {
                         if let Some(l) = self.drop_listener(sock) {
-                            to.post(Cmd::AddListener(sock, l));
+                            self.roster.forward_listener(sock, l);
                         }
                     }
                     Cmd::Retire => self.retire(),
