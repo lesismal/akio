@@ -381,6 +381,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 内核 TLS | akio-tls、akio-uring（ADR-067） | 是（“内核 TLS 评估”“引擎中的内核 TLS”） | 是（软件 kTLS 更慢，未采用） | TLS 卸载网卡没有测过（没有这类网卡）。 |
 | 加密：AEAD、哈希、CRC（TLS/QUIC 批量数据） | akio-crypto | 是（“密码学”“AES-GCM”“ChaCha20-Poly1305”各节） | 是（VAES/AVX-512/AVX2 内核、SHA-NI、CRC 折叠、Poly1305 IFMA/AVX2） | – |
 | 加密：公钥（P-256、X25519、Ed25519、RSA、P-384、P-521、Ed448） | akio-crypto | 是（`pk_bench`、`tls-bench handshakes`） | 是（x86-64 汇编、IFMA RSA；P-256 为 ring 的 1.12–1.57x，RSA 最高 3.7x） | P-384 / P-521 / Ed448 没有专门优化过。 |
+| 加密：Argon2id、BLAKE2b、XChaCha20-Poly1305（fit 的存储） | akio-crypto（akit A230、A231；ADR-178） | 否 | 否 | 测量 Argon2id 在 fit 的设置（time 3、64 MiB、4 个 lane）和单 lane 下与 Go 的 `argon2.IDKey`、RustCrypto 的 `argon2` 的对比（压缩函数为可移植实现，尚无 SIMD；每个 slice 启动作用域线程的开销）；BLAKE2b-512 与 `blake2` crate 对比（64 B 到 16 KiB）；XChaCha20-Poly1305 加解密与 ChaCha20-Poly1305 在 64 B 和 16 KiB 下的对比（每条消息一次 HChaCha20 子密钥）。 |
 | 加密：其他原语（AES-CTR / 单块、SHA-512、MD5、base64、PBKDF2、HMAC-SHA1） | akio-crypto（KCP、SRTP、STUN、kcptun 密钥） | 是（“密码学”表） | 否 | 落后于 RustCrypto：AES-128-CTR 16 KiB 0.73x、SHA-512 0.66x、base64 0.75x、MD5 0.84x、HMAC-SHA1 100 B 0.94x、PBKDF2 0.83 对 0.57 ms。 |
 | aarch64 上的加密 | akio-crypto（性能优化第二轮） | 部分（P-256 / X25519 在共享的 Apple M4 Pro 上测过一次） | 部分（汇编有测试，未调优） | 没有 ARM 基准主机；aarch64 上的 AES-GCM / ChaCha / RSA 未测。 |
 | HTTP/1.1 服务端 | akio-http（M3） | 是（测评，对比 hyper / fib / monoio） | 是（请求头先用 32 个槽位解析，ADR-081 每请求分配） | keep-alive 受内核限制。 |

@@ -1,6 +1,7 @@
 #![no_main]
-//! akio-crypto's AES (block, CTR), AES-GCM and ChaCha20-Poly1305 against the RustCrypto crates
-//! they replaced: same ciphertexts, and the same verdict when opening arbitrary bytes.
+//! akio-crypto's AES (block, CTR), AES-GCM, ChaCha20-Poly1305 and XChaCha20-Poly1305 against the
+//! RustCrypto crates they replaced: same ciphertexts, and the same verdict when opening arbitrary
+//! bytes.
 
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, KeyIvInit, StreamCipher};
 use aes_gcm::aead::{Aead, Payload};
@@ -224,6 +225,21 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
                     chacha20poly1305::aead::Payload { msg, aad }
                 )
                 .ok()
+        );
+
+        // XChaCha20-Poly1305: a 24-byte nonce of the 12-byte one and the key's first 12 bytes.
+        let mut xn = [0u8; 24];
+        xn[..12].copy_from_slice(&nonce);
+        xn[12..].copy_from_slice(&k[..12]);
+        let ours = akio_crypto::chacha::XChaCha20Poly1305::new(&k);
+        let theirs = chacha20poly1305::XChaCha20Poly1305::new((&k).into());
+        let payload = || chacha20poly1305::aead::Payload { msg, aad };
+        let sealed = ours.encrypt(&xn, aad, msg);
+        assert_eq!(sealed, theirs.encrypt((&xn).into(), payload()).unwrap());
+        assert_eq!(ours.decrypt(&xn, aad, &sealed).unwrap(), msg);
+        assert_eq!(
+            ours.decrypt(&xn, aad, msg).ok(),
+            theirs.decrypt((&xn).into(), payload()).ok()
         );
     }
 });

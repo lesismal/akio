@@ -54,6 +54,8 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/akio-cr
 | `aes128-gcm-open-tag` | AES-128-GCM 解密，256 字节：只有最后一字节错误的标签对随机标签（标签匹配了多少） |
 | `chacha20poly1305-open-tag` | ChaCha20-Poly1305，同上 |
 | `chacha20poly1305-open-tag-64` | 同上，64 字节：短消息的密钥流头（AVX-512 上一次行内核调用，并经寄存器交出 Poly1305 密钥，最长 192 字节） |
+| `xchacha20poly1305-open-tag` | 同上，XChaCha20-Poly1305，256 字节（每次调用都由 HChaCha20 派生子密钥） |
+| `blake2b-key` | 带密钥的 BLAKE2b-256，256 字节（Argon2id 处理口令的方式）：全零密钥对随机密钥（只有可移植实现：没有硬件路径，只在第一遍） |
 | `hmac-sha256-verify-tag` | `Hmac::verify`：只有最后一字节错误的标签对随机标签 |
 | `hmac-sha256-verify-valid` | `Hmac::verify`：有效标签对随机标签（两者都计算完整 MAC 并完整比较） |
 | `aes128-gcm-open-valid`、`chacha20poly1305-open-valid` | 有效标签对随机标签；**公开**：调用方本来就知道标签是否通过，两种情况的工作量按设计不同（ChaCha20-Poly1305 只在标签有效后解密；融合的 AES-GCM 在失败时撤销解密）。只报告，不算泄漏 |
@@ -62,6 +64,12 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/akio-cr
 | `ct-eq` | `akio_crypto::ct_eq`，32 字节：仅最后一字节不同对随机 |
 | `ct-word` | `ct.rs` 的 `mask`、`is_zero`、`eq`、`select`，64 个字：全零对随机 |
 | `ct-limbs` | `ct.rs` 的 `add_limbs`、`sub_limbs`、`lt_limbs`、`is_zero_limbs`、`assign`、`swap`，2048 位 limb 数组：全零对随机 |
+
+Argon2id（`kdf::argon2id`，ADR-178）故意没有目标：从第一遍的后半部分起，它按由口令派生的下标读取内存，
+这是 RFC 9106 的设计（Argon2d 抵御时间-内存折中的方式），因此其耗时和缓存占用按构造就依赖口令。其组成部分是
+常数时间的：BLAKE2b（`blake2b-key`）和压缩函数（64 位加法、32×32 位乘法、循环移位和异或）。
+`xchacha20poly1305-open-tag` 和 `blake2b-key` 于 2026-11-26 加入，尚未在安静主机上运行（在 macOS 上 2 秒的
+冒烟运行没有发现问题；不算结果）。
 
 `ct.rs` 是 `akio-crypto` 的私有模块；工具通过 `#[path]` 编译同一个源文件，因此测量的是原样的原语，
 它们内联进测试工具，正如在 `akio-crypto` 中内联进调用方。

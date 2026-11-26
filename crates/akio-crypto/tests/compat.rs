@@ -177,6 +177,22 @@ fn chacha20_poly1305_matches() {
 }
 
 #[test]
+fn xchacha20_poly1305_matches() {
+    use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+    let ins = inputs();
+    for (i, m) in ins.iter().enumerate() {
+        let key: [u8; 32] = ins[299][i % 200..i % 200 + 32].try_into().unwrap();
+        let nonce: [u8; 24] = ins[298][i % 200..i % 200 + 24].try_into().unwrap();
+        let aad = &ins[(i * 3) % 50];
+        let ours = akio_crypto::chacha::XChaCha20Poly1305::new(&key).encrypt(&nonce, aad, m);
+        let theirs = chacha20poly1305::XChaCha20Poly1305::new((&key).into())
+            .encrypt((&nonce).into(), Payload { msg: m, aad })
+            .unwrap();
+        assert_eq!(ours, theirs);
+    }
+}
+
+#[test]
 fn base64_matches() {
     use base64::Engine as _;
     use base64::engine::general_purpose as gp;

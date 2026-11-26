@@ -1,13 +1,15 @@
-//! Known-answer tests from NIST CAVP (SHA, HMAC, AES, GCM) and Wycheproof (AES-GCM,
-//! ChaCha20-Poly1305, HMAC, HKDF), vendored under `tests/data/`.
+//! Known-answer tests from NIST CAVP (SHA, HMAC, AES, GCM), Wycheproof (AES-GCM,
+//! ChaCha20-Poly1305, XChaCha20-Poly1305, HMAC, HKDF) and Go's `golang.org/x/crypto` (Argon2id,
+//! BLAKE2b, XChaCha20-Poly1305: `go_x_crypto.txt`, printed by `go_x_crypto.go`), vendored under
+//! `tests/data/`.
 
 mod common;
 
 use akio_crypto::Error;
 use akio_crypto::aes::Aes;
-use akio_crypto::chacha::ChaCha20Poly1305;
+use akio_crypto::chacha::{ChaCha20Poly1305, XChaCha20Poly1305};
 use akio_crypto::gcm::AesGcm;
-use akio_crypto::hash::{Hash, Sha1, Sha224, Sha256, Sha384, Sha512};
+use akio_crypto::hash::{Blake2b, Hash, Sha1, Sha224, Sha256, Sha384, Sha512};
 use akio_crypto::kdf;
 use akio_crypto::mac::Hmac;
 use common::{lines, unhex, wycheproof};
@@ -195,6 +197,77 @@ fn wycheproof_chacha20_poly1305() {
         |k, iv, aad, m| Some(ChaCha20Poly1305::new(k.try_into().ok()?).encrypt(iv, aad, m)),
         |k, iv, aad, c| Some(ChaCha20Poly1305::new(k.try_into().ok()?).decrypt(iv, aad, c)),
     );
+}
+
+/// Wycheproof's `xchacha20_poly1305_test.json` (280 tests), as the `chacha20poly1305` crate
+/// (0.10.1) vendors it in its `blobby` format, decoded into text: key, nonce, aad, message,
+/// ciphertext with the tag, and 1 for a valid test.
+#[test]
+fn wycheproof_xchacha20_poly1305() {
+    let (mut valid, mut invalid) = (0, 0);
+    for l in lines("wycheproof_xchacha20_poly1305.txt") {
+        let key: [u8; 32] = unhex(&l[0]).try_into().unwrap();
+        let nonce: [u8; 24] = unhex(&l[1]).try_into().unwrap();
+        let (aad, msg, ct) = (unhex(&l[2]), unhex(&l[3]), unhex(&l[4]));
+        let aead = XChaCha20Poly1305::new(&key);
+        if l[5] == "1" {
+            assert_eq!(aead.encrypt(&nonce, &aad, &msg), ct, "{}", l[4]);
+            assert_eq!(aead.decrypt(&nonce, &aad, &ct).unwrap(), msg);
+            valid += 1;
+        } else {
+            assert!(aead.decrypt(&nonce, &aad, &ct).is_err(), "{}", l[4]);
+            invalid += 1;
+        }
+    }
+    assert!(valid > 200 && invalid > 50, "{valid} {invalid}");
+}
+
+#[test]
+fn go_x_crypto() {
+    let (mut argon, mut blake, mut xchacha) = (0, 0, 0);
+    for l in lines("go_x_crypto.txt") {
+        match l[0].as_str() {
+            "argon2id" => {
+                let want = unhex(&l[6]);
+                let mut out = vec![0u8; want.len()];
+                let n = |i: usize| l[i].parse::<u32>().unwrap();
+                kdf::argon2id(
+                    &unhex(&l[1]),
+                    &unhex(&l[2]),
+                    n(3),
+                    n(4),
+                    n(5) as u8,
+                    &mut out,
+                )
+                .unwrap();
+                assert_eq!(out, want, "{l:?}");
+                argon += 1;
+            }
+            "blake2b" => {
+                let want = unhex(&l[3]);
+                let mut h = Blake2b::new_keyed(&unhex(&l[1]), want.len()).unwrap();
+                let msg = unhex(&l[2]);
+                for c in msg.chunks(61) {
+                    h.update(c);
+                }
+                let mut out = vec![0u8; want.len()];
+                h.finalize_into(&mut out).unwrap();
+                assert_eq!(out, want, "{l:?}");
+                blake += 1;
+            }
+            "xchacha" => {
+                let key: [u8; 32] = unhex(&l[1]).try_into().unwrap();
+                let nonce: [u8; 24] = unhex(&l[2]).try_into().unwrap();
+                let (aad, msg, ct) = (unhex(&l[3]), unhex(&l[4]), unhex(&l[5]));
+                let aead = XChaCha20Poly1305::new(&key);
+                assert_eq!(aead.encrypt(&nonce, &aad, &msg), ct);
+                assert_eq!(aead.decrypt(&nonce, &aad, &ct).unwrap(), msg);
+                xchacha += 1;
+            }
+            k => panic!("unknown kind {k}"),
+        }
+    }
+    assert_eq!((argon, blake, xchacha), (8, 100, 9));
 }
 
 fn hmac_vectors<H: Hash>(name: &str) {

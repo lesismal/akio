@@ -1,6 +1,8 @@
-//! Hash functions: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4) and MD5 (RFC 1321),
-//! and the extendable-output functions SHAKE128 and SHAKE256 (FIPS 202; [`Shake256`] has its own
-//! `squeeze` interface instead of the [`Hash`] trait).
+//! Hash functions: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (FIPS 180-4), MD5 (RFC 1321) and
+//! BLAKE2b (RFC 7693; [`Blake2b`] with any digest length from 1 to 64 bytes and an optional key,
+//! [`Blake2b512`] behind the [`Hash`] trait), and the extendable-output functions SHAKE128 and
+//! SHAKE256 (FIPS 202; [`Shake256`] has its own `squeeze` interface instead of the [`Hash`]
+//! trait).
 //!
 //! Each type hashes incrementally ([`update`](Hash::update) any number of times, then
 //! [`finalize`](Hash::finalize)) or in one call ([`digest`](Hash::digest)). The same methods
@@ -20,6 +22,7 @@
 //! still use them (WebSocket handshakes, BitTorrent info hashes, STUN, HMAC-SHA1, RTSP digest
 //! authentication).
 
+mod blake2b;
 mod hw;
 mod md5;
 mod sha1;
@@ -27,6 +30,7 @@ mod sha256;
 mod sha3;
 mod sha512;
 
+pub use blake2b::{Blake2b, Blake2b512};
 pub use md5::Md5;
 pub use sha1::Sha1;
 pub use sha3::{Shake128, Shake256};

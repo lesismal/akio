@@ -22,10 +22,11 @@
 //! | Poly1305 | AVX-512 IFMA (8 blocks per step, runs of 256 bytes and more), else radix 2⁶⁴ scalar | radix 2⁶⁴ scalar |
 //! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (every ARMv8.0 CPU) |
 //!
-//! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 and MD5, streaming or one-shot, behind
-//!   the [`Hash`](hash::Hash) trait; SHAKE128 and SHAKE256.
+//! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5 and BLAKE2b-512, streaming or
+//!   one-shot, behind the [`Hash`](hash::Hash) trait; BLAKE2b of any length up to 64 bytes,
+//!   keyed or not; SHAKE128 and SHAKE256.
 //! - [`mac`]: HMAC over any [`Hash`](hash::Hash).
-//! - [`kdf`]: HKDF (RFC 5869) and PBKDF2-HMAC (RFC 8018).
+//! - [`kdf`]: HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) and Argon2id (RFC 9106).
 //! - [`bcrypt`]: bcrypt password hashes (`$2a$`, `$2b$`, `$2y$`), made and checked.
 //! - [`crc`]: CRC-32 (IEEE 802.3, as zlib / `crc32fast`) and CRC-32C (Castagnoli).
 //! - [`aes`]: AES-128/192/256 on the CPU's AES instructions (AES-NI, ARMv8 AES) when present,
@@ -34,7 +35,8 @@
 //! - [`gcm`]: AES-GCM with a constant-time GHASH.
 //! - [`seed`]: SEED (RFC 4269) with CTR, CCM and GCM (RFC 5669, for SRTP), bitsliced S-boxes,
 //!   no tables.
-//! - [`chacha`]: ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439).
+//! - [`chacha`]: ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439); HChaCha20 and
+//!   XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha).
 //! - [`base64`]: standard and URL-safe alphabets, padded or not, strict decoding.
 //! - [`rand`]: the operating system's randomness ([`fill_random`](rand::fill_random)) and a
 //!   ChaCha20-based generator seeded from it.

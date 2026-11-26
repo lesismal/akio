@@ -66,6 +66,8 @@ DATE 2017), written from scratch in the tool (no dependency besides `akio-crypto
 | `aes128-gcm-open-tag` | AES-128-GCM open, 256 bytes: tag wrong in the last byte vs random tag (how much of the tag matches) |
 | `chacha20poly1305-open-tag` | the same for ChaCha20-Poly1305 |
 | `chacha20poly1305-open-tag-64` | the same at 64 bytes: the short-message head (one row-kernel call on AVX-512 that hands the Poly1305 key over in registers, up to 192 bytes) |
+| `xchacha20poly1305-open-tag` | the same for XChaCha20-Poly1305, 256 bytes (HChaCha20 derives the subkey in every call) |
+| `blake2b-key` | keyed BLAKE2b-256 over 256 bytes (what Argon2id does with the password): all-zero key vs random key (portable only: no hardware path, first pass) |
 | `hmac-sha256-verify-tag` | `Hmac::verify`: tag wrong in the last byte vs random tag |
 | `hmac-sha256-verify-valid` | `Hmac::verify`: valid tag vs random tag (both compute the MAC and compare in full) |
 | `aes128-gcm-open-valid`, `chacha20poly1305-open-valid` | valid tag vs random tag; **public**: the caller learns anyway whether the tag verified, and the work differs by design (ChaCha20-Poly1305 decrypts only after a valid tag; the fused AES-GCM pass undoes the decryption on failure). Reported, never a leak |
@@ -74,6 +76,14 @@ DATE 2017), written from scratch in the tool (no dependency besides `akio-crypto
 | `ct-eq` | `akio_crypto::ct_eq`, 32 bytes: equal but the last byte vs random |
 | `ct-word` | `ct.rs` `mask`, `is_zero`, `eq`, `select` over 64 words: zeros vs random |
 | `ct-limbs` | `ct.rs` `add_limbs`, `sub_limbs`, `lt_limbs`, `is_zero_limbs`, `assign`, `swap` on 2048-bit limb arrays: zeros vs random |
+
+Argon2id (`kdf::argon2id`, ADR-178) has no target, on purpose: after the first half of its first
+pass it reads memory at indices derived from the password, as RFC 9106 designs it (Argon2d's
+defence against time-memory trade-offs), so its timing and cache footprint depend on the password
+by construction. Its parts are constant time: BLAKE2b (`blake2b-key`) and the compression
+function (64-bit additions, 32×32-bit multiplications, rotations and XORs). `xchacha20poly1305-open-tag`
+and `blake2b-key` were added on 2026-11-26 and have not yet run on the quiet host (a 2-second
+smoke run on macOS found nothing; not a result).
 
 `ct.rs` is private to `akio-crypto`; the tool compiles the same source file (`#[path]`), so
 the primitives are measured as written, inlined into the harness as they are inlined into

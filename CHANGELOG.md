@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: Argon2id, BLAKE2b and XChaCha20-Poly1305 (akio-crypto)
+
+akit's A230 and A231, for fit's encrypted store; ADR-178. `kdf::argon2id(password, salt, time,
+memory_kib, lanes, out)` is Argon2id (RFC 9106, version 0x13) as Go's `argon2.IDKey`: RFC 9106's
+bounds are errors (`Error::InvalidLength`, the new `Error::InvalidParameter`), the memory is one
+fallible allocation (the new `Error::OutOfMemory`), and the lanes run on scoped threads (up to one
+per lane and per CPU) with the same result as on one. It blocks for a time in proportion to
+`time × memory_kib`: call it off the I/O threads. `hash::Blake2b` (RFC 7693: digests of 1 to 64
+bytes, keyed or not) and `hash::Blake2b512` (the `Hash` trait) come with it. `chacha::hchacha20`
+and `chacha::XChaCha20Poly1305` (`XNONCE_LEN = 24`; draft-irtf-cfrg-xchacha, as Go's
+`chacha20poly1305.NewX`) have `ChaCha20Poly1305`'s `encrypt`, `decrypt` and in-place methods.
+Tested against RFC 9106, RFC 7693, the XChaCha draft, Wycheproof's XChaCha20-Poly1305 vectors and
+Go's golang.org/x/crypto output (fit's Argon2id setting among them); `ct-dudect` has two new
+targets, `xchacha20poly1305-open-tag` and `blake2b-key`. Argon2id reads memory at
+password-dependent indices after its first half pass, by design (docs/constant-time.md).
+
 ### Changed: fewer wake-ups in the logical pool (akio-pool, akio-core, akio-http)
 
 A job queued on the logical pool wakes a sleeping thread only when no thread is free to take it

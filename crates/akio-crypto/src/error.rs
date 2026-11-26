@@ -20,6 +20,11 @@ pub enum Error {
     Random,
     /// A key agreement produced the all-zero shared secret (a low-order peer key).
     ZeroSharedSecret,
+    /// A cost or size parameter is outside the algorithm's range (Argon2's time, memory or
+    /// lanes).
+    InvalidParameter,
+    /// The memory an operation needs (Argon2's) could not be allocated.
+    OutOfMemory,
 }
 
 impl std::fmt::Display for Error {
@@ -32,6 +37,8 @@ impl std::fmt::Display for Error {
             Error::Unsupported => "unsupported algorithm or key type",
             Error::Random => "random number generator failed",
             Error::ZeroSharedSecret => "all-zero shared secret",
+            Error::InvalidParameter => "parameter out of range",
+            Error::OutOfMemory => "out of memory",
         })
     }
 }

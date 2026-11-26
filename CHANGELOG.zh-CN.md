@@ -10,6 +10,21 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：Argon2id、BLAKE2b 和 XChaCha20-Poly1305（akio-crypto）
+
+akit 的 A230 和 A231，用于 fit 的加密存储；ADR-178。`kdf::argon2id(password, salt, time,
+memory_kib, lanes, out)` 是与 Go 的 `argon2.IDKey` 相同的 Argon2id（RFC 9106，0x13 版）：违反 RFC
+9106 界限的参数返回错误（`Error::InvalidLength`、新增的 `Error::InvalidParameter`），内存一次性
+可失败地分配（新增的 `Error::OutOfMemory`），lane 在作用域线程上运行（每个 lane、每个 CPU 至多一个
+线程），结果与单线程相同。它会阻塞，耗时与 `time × memory_kib` 成正比：不要在 I/O 线程上调用。
+随之新增 `hash::Blake2b`（RFC 7693：1 到 64 字节的摘要，可带密钥）和 `hash::Blake2b512`（`Hash`
+trait）。`chacha::hchacha20` 和 `chacha::XChaCha20Poly1305`（`XNONCE_LEN = 24`；
+draft-irtf-cfrg-xchacha，与 Go 的 `chacha20poly1305.NewX` 相同）提供与 `ChaCha20Poly1305` 相同的
+`encrypt`、`decrypt` 和原地方法。测试覆盖 RFC 9106、RFC 7693、XChaCha 草案、Wycheproof 的
+XChaCha20-Poly1305 向量以及 Go 的 golang.org/x/crypto 输出（含 fit 的 Argon2id 设置）；`ct-dudect`
+新增两个目标 `xchacha20poly1305-open-tag` 和 `blake2b-key`。Argon2id 在第一遍的前半之后按依赖口令的
+下标读取内存，这是设计使然（docs/constant-time.md）。
+
 ### 变更：逻辑线程池减少唤醒（akio-pool、akio-core、akio-http）
 
 放进逻辑线程池的任务，只有在没有空闲线程能接走它时才唤醒一个睡眠线程（原先每个任务都唤醒一次，即使
