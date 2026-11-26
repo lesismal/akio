@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：关闭终端回显与 raw 模式（akio-sys）
+
+akit 的 A233，供在终端中运行的 `akit hash-password` 使用。`akio_sys::terminal::no_echo(fd)` 关闭
+`ECHO`（保留行编辑和 Ctrl-C，与 Go 的 `term.ReadPassword` 相同），`terminal::raw(fd)` 把终端置于
+raw 模式（与 `cfmakeraw` 和 Go 的 `term.MakeRaw` 相同：逐键读取、不回显、按键不产生信号）；两者都返回
+`TerminalGuard`，在 drop 或 `restore` 时恢复它看到的原有模式；对不是终端的描述符两者都返回错误
+（`ENOTTY`）。`terminal::echo_enabled(fd)` 读取回显位。支持 Linux 和 macOS，通过自有的 `ffi` 绑定
+（`termios`、`tcgetattr`、`tcsetattr`，与 `libc` 对照检查）；在伪终端上测试。
+
 ### 新增：Argon2id、BLAKE2b 和 XChaCha20-Poly1305（akio-crypto）
 
 akit 的 A230 和 A231，用于 fit 的加密存储；ADR-178。`kdf::argon2id(password, salt, time,

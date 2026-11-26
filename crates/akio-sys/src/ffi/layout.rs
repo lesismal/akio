@@ -542,6 +542,39 @@ fn macos_constants() {
 
 /// The declared functions link and behave: errno is the C library's.
 #[test]
+fn termios_matches_libc() {
+    #[cfg(target_os = "linux")]
+    same_layout!(
+        super::termios,
+        libc::termios,
+        c_iflag,
+        c_oflag,
+        c_cflag,
+        c_lflag,
+        c_line,
+        c_cc,
+        c_ispeed,
+        c_ospeed
+    );
+    #[cfg(target_os = "macos")]
+    same_layout!(
+        super::termios,
+        libc::termios,
+        c_iflag,
+        c_oflag,
+        c_cflag,
+        c_lflag,
+        c_cc,
+        c_ispeed,
+        c_ospeed
+    );
+    same_value!(
+        NCCS, VMIN, VTIME, IGNBRK, BRKINT, PARMRK, ISTRIP, INLCR, IGNCR, ICRNL, IXON, OPOST, CSIZE,
+        CS8, PARENB, ISIG, ICANON, ECHO, ECHONL, IEXTEN, TCSANOW,
+    );
+}
+
+#[test]
 fn errno_is_the_c_librarys() {
     // SAFETY: fcntl on an invalid descriptor only fails and sets errno.
     let r = unsafe { super::fcntl(-1, super::F_GETFD) };

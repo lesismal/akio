@@ -207,6 +207,53 @@ const _: () = assert!(size_of::<msghdr>() == 48 && align_of::<msghdr>() == 8);
 const _: () = assert!(size_of::<cmsghdr>() == 12);
 const _: () = assert!(size_of::<sigaction>() == 16);
 
+// ---- terminals (termios) --------------------------------------------------------------------
+
+/// `tcflag_t`.
+pub type tcflag_t = c_ulong;
+/// `cc_t`.
+pub type cc_t = u8;
+/// `speed_t`.
+pub type speed_t = c_ulong;
+/// Control characters in `termios::c_cc`.
+pub const NCCS: usize = 20;
+
+/// `struct termios`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct termios {
+    pub c_iflag: tcflag_t,
+    pub c_oflag: tcflag_t,
+    pub c_cflag: tcflag_t,
+    pub c_lflag: tcflag_t,
+    pub c_cc: [cc_t; NCCS],
+    pub c_ispeed: speed_t,
+    pub c_ospeed: speed_t,
+}
+
+const _: () = assert!(size_of::<termios>() == 72);
+
+pub const IGNBRK: tcflag_t = 0x1;
+pub const BRKINT: tcflag_t = 0x2;
+pub const PARMRK: tcflag_t = 0x8;
+pub const ISTRIP: tcflag_t = 0x20;
+pub const INLCR: tcflag_t = 0x40;
+pub const IGNCR: tcflag_t = 0x80;
+pub const ICRNL: tcflag_t = 0x100;
+pub const IXON: tcflag_t = 0x200;
+pub const OPOST: tcflag_t = 0x1;
+pub const CSIZE: tcflag_t = 0x300;
+pub const CS8: tcflag_t = 0x300;
+pub const PARENB: tcflag_t = 0x1000;
+pub const ISIG: tcflag_t = 0x80;
+pub const ICANON: tcflag_t = 0x100;
+pub const ECHO: tcflag_t = 0x8;
+pub const ECHONL: tcflag_t = 0x10;
+pub const IEXTEN: tcflag_t = 0x400;
+pub const VMIN: usize = 16;
+pub const VTIME: usize = 17;
+pub const TCSANOW: c_int = 0;
+
 // ---- libSystem functions -------------------------------------------------------------------
 
 // Soundness of the declarations: each matches the prototype in the macOS SDK headers (types as laid out
@@ -270,4 +317,7 @@ unsafe extern "C" {
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction, old: *mut sigaction) -> c_int;
+
+    pub fn tcgetattr(fd: c_int, t: *mut termios) -> c_int;
+    pub fn tcsetattr(fd: c_int, action: c_int, t: *const termios) -> c_int;
 }

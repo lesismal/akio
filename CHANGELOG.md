@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a terminal's echo turned off, and raw mode (akio-sys)
+
+akit's A233, for `akit hash-password` at a terminal. `akio_sys::terminal::no_echo(fd)` turns
+`ECHO` off (line editing and Ctrl-C kept, as Go's `term.ReadPassword`), `terminal::raw(fd)` puts
+the terminal in raw mode (as `cfmakeraw` and Go's `term.MakeRaw`: a key at a time, no echo, no
+signals from keys); both return a `TerminalGuard` that puts back the modes it found when dropped
+or `restore`d, and both fail (`ENOTTY`) for a descriptor that is not a terminal.
+`terminal::echo_enabled(fd)` reads the echo bit. Linux and macOS, through the own `ffi`
+bindings (`termios`, `tcgetattr`, `tcsetattr`, checked against `libc`); tested on a
+pseudo-terminal.
+
 ### Added: Argon2id, BLAKE2b and XChaCha20-Poly1305 (akio-crypto)
 
 akit's A230 and A231, for fit's encrypted store; ADR-178. `kdf::argon2id(password, salt, time,
