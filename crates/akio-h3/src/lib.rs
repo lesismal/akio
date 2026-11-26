@@ -1875,27 +1875,18 @@ fn run(c: &Connection, outs: &Arc<Outs>, id: StreamId) {
                     }
                 }
                 // Off the I/O thread; the read's completion goes on pumping from the pool.
-                return read_on_pool(
-                    FileRead {
-                        c: c.clone(),
-                        outs: outs.clone(),
-                        id,
-                        file,
-                        off,
-                        n,
-                    },
-                    0,
-                );
+                return read_on_pool(FileRead {
+                    c: c.clone(),
+                    outs: outs.clone(),
+                    id,
+                    file,
+                    off,
+                    n,
+                });
             }
         }
     }
 }
-
-/// How long the pump waits before asking a full pool again for a file read, and how many
-/// times: past that (a second of a pool that stays full), the stream is reset. As
-/// `akio-http`'s file pump does.
-const READ_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
-const READ_RETRIES: u32 = 200;
 
 /// A piece of a file to read for a stream whose pump is parked on it (its `busy` held).
 struct FileRead {
@@ -1907,41 +1898,25 @@ struct FileRead {
     n: usize,
 }
 
-/// Reads the piece on the logical pool, then goes on pumping from there. A full pool is asked
-/// again a little later from the HTTP layer's timer thread: the read never happens on the
-/// thread that found the pool full, which may be the connection's I/O thread (rule 1).
-fn read_on_pool(r: FileRead, refused: u32) {
-    let c = r.c.clone();
-    let cell = Arc::new(Mutex::new(Some(r)));
-    let job_cell = cell.clone();
-    let queued = c.spawn_blocking(move || {
-        let r = lock(&job_cell).take();
-        if let Some(r) = r {
-            let got = read_chunk(&r.file, r.off, r.n);
-            if read_done(&r.c, &r.outs, r.id, got) {
-                run(&r.c, &r.outs, r.id);
-            }
+/// Reads the piece on the logical pool, then goes on pumping from there. The response is
+/// under way, so the read is resumed work, which a full pool does not refuse (`Pool::resume`);
+/// the stream's pump has one read queued or running at a time (its `busy` held). The read never
+/// happens on the thread that found the pool busy, which may be the connection's I/O thread
+/// (rule 1).
+fn read_on_pool(r: FileRead) {
+    let (c, outs, id) = (r.c.clone(), r.outs.clone(), r.id);
+    let job: akio_core::Job = Box::new(move || {
+        let got = read_chunk(&r.file, r.off, r.n);
+        if read_done(&r.c, &r.outs, r.id, got) {
+            run(&r.c, &r.outs, r.id);
         }
     });
-    let Err(e) = queued else { return };
-    let Some(r) = lock(&cell).take() else { return };
-    match e {
-        akio_quic::Error::Overloaded if refused < READ_RETRIES => {
-            #[cfg(test)]
-            READS_REFUSED.fetch_add(1, Ordering::Relaxed);
-            akio_http::transport::after(READ_RETRY, move || read_on_pool(r, refused + 1));
-        }
-        _ => {
-            // The connection is gone, or the pool stayed full: the response cannot go on.
-            lock(&r.outs).remove(&r.id);
-            let _ = r.c.reset(r.id, code::INTERNAL_ERROR);
-        }
+    if c.resume(job).is_err() {
+        // The connection's socket or the pool is gone: the response cannot go on.
+        lock(&outs).remove(&id);
+        let _ = c.reset(id, code::INTERNAL_ERROR);
     }
 }
-
-/// File reads the pool refused, asked again later (tests).
-#[cfg(test)]
-static READS_REFUSED: AtomicUsize = AtomicUsize::new(0);
 
 /// File bytes read off the logical pool (tests): there should be none.
 #[cfg(test)]
@@ -2057,6 +2032,10 @@ impl ConnSink for H3Out {
 
     fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
         self.c.execute(job)
+    }
+
+    fn resume(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
+        self.c.resume(job)
     }
 
     /// Holds the request stream: what arrives stays in its receive buffer and its window is not
@@ -2455,9 +2434,9 @@ mod tests {
         s.shutdown();
     }
 
-    /// A file read the pool refuses is asked again a little later, never done on the thread
-    /// that found the pool full (the connection's I/O thread): the response goes on once the
-    /// pool has room.
+    /// A file read finds the pool's thread busy and its queue for new work full: it waits as
+    /// resumed work, which is not turned away, never done on the thread that found the pool
+    /// busy (the connection's I/O thread), and the response goes on once the thread is free.
     #[test]
     fn file_reads_wait_for_a_full_pool() {
         use std::sync::atomic::AtomicU64;
@@ -2512,14 +2491,16 @@ mod tests {
             .unwrap();
         e.start().unwrap();
         let got = Arc::new(AtomicU64::new(0));
-        let refused = READS_REFUSED.load(Ordering::Relaxed);
         let cc = akio_quic::client_config_insecure(&[b"h3"]).unwrap();
         let _c = akio_quic::dial(&e, addr, "localhost", cc, Fetch { got: got.clone() }).unwrap();
         let end = Instant::now() + Duration::from_secs(10);
-        while READS_REFUSED.load(Ordering::Relaxed) < refused + 3 {
-            assert!(Instant::now() < end, "no refused read");
+        // The read waits in the pool's lane for resumed work, behind the busy thread, where
+        // the full queue of new work does not turn it away.
+        while s.pool_stats().resumes == 0 {
+            assert!(Instant::now() < end, "no read waiting for the pool");
             std::thread::sleep(Duration::from_millis(1));
         }
+        assert_eq!(s.pool_stats().rejected, 0, "a read was turned away");
         assert_eq!(FILE_READ_OFF_POOL.load(Ordering::Relaxed), 0);
         assert!(
             got.load(Ordering::Relaxed) < LEN,

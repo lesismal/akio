@@ -79,6 +79,16 @@ panic 和被拒绝的任务数。
 任何好处。`queue_capacity` 按你能接受多少排队延迟来定：`Overloaded` 是该回复"忙"（HTTP 503）
 而不是继续排队的信号。
 
+### 新工作与续投
+
+队列上限是拒绝新工作的地方。已接受工作的下一步（正在发送的文件的下一段、handler 空闲的 gRPC 调用的
+下一条消息）不是新工作：切断它会丢掉已经做完的部分，稍后重试又需要定时器。`Pool::resume`（以及
+`ConnInner::resume`、`Executor::resume`、`akio_quic::Connection::resume`）把这样的一步放进单独的
+车道：线程池运行期间从不拒绝；线程先取它再取新工作，已接受的工作先完成；它计入新工作剩余的空间，
+忙于收尾的线程池会更早拒绝新工作。它的上限由所有者保证：每个所有者（一个 pump、一个调用、一个
+piece）同一时刻最多有一步在排队或执行。`PoolStats` 报告这条车道（`resumes`）以及两条车道合计的
+历史最大深度（`max_queued`）。
+
 ## 自己的线程池
 
 某一类不能拖住其他任何事情的阻塞任务（例如缓存的磁盘层，其磁盘可能卡住）应有一个自己的线程池，
@@ -96,7 +106,8 @@ match disk.try_execute(Box::new(move || { /* 读文件，然后 conn.run_on_loop
 // 结束时：disk.shutdown(); disk.join();
 ```
 
-`try_execute` 从不阻塞；队列已满或线程池已关闭时，`Rejected` 把任务交还。`Pool::stats()` 报告它的
+`try_execute` 从不阻塞；队列已满或线程池已关闭时，`Rejected` 把任务交还。`resume` 投递线程池
+之前接受的工作的下一步，只在线程池关闭后被拒绝（见上文）。`Pool::stats()` 报告它的
 状态，就像 `Engine::pool_stats()` 报告 engine 的线程池一样。
 
 ## 在协议 crate 中

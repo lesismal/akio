@@ -10,6 +10,19 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：已接受的工作在线程池满时继续进行，不再被切断或重试（akio-pool、akio-core、akio-http、akio-h3、akio-grpc、akio-quic、akio-bittorrent）
+
+`Pool::resume` 把线程池之前接受的工作的下一步放进单独的车道：先于新工作被取走，线程池运行期间
+从不拒绝，并计入 `try_execute` 留给新工作的空间。`ConnInner::resume`、`akio_http::Executor::resume`、
+`ConnSink::resume` 和 `akio_quic::Connection::resume` 都通向它。`PoolStats` 新增 `resumes` 和
+`max_queued`；线程池丢弃已退出线程的句柄，不再为每个启动过的线程保留一个。
+
+- 经过编码的文件响应体（`FilePump`）和 HTTP/3 文件响应体，以前每 5 ms 由定时器重新投递一次，
+  一秒后切断响应；现在改为续投，等待线程。
+- 在线程池上运行的 gRPC 调用（`handlers_on_logical_pool`），handler 空闲时下一条消息遇到队列满，
+  以前会以 `RESOURCE_EXHAUSTED` 结束；现在改为续投。打开调用仍是新工作，忙时被拒绝。
+- 已下载完整的 BitTorrent piece 在磁盘线程池队列满时被丢弃并重新下载；现在改为续投。
+
 ### 修复：macOS 上从指定接口发送 IPv4 组播（akio-sys、akio-core）
 
 `UdpBinding::send_to_on`（以及 `akio_sys::send_to_on`）用 `IP_PKTINFO` 控制消息指定接口，而 macOS 会把它

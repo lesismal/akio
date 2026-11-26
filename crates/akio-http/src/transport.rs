@@ -35,6 +35,12 @@ pub trait ConnSink: Send + Sync + 'static {
     fn execute(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
         Err(job)
     }
+    /// [`execute`](Self::execute) for the next step of work admitted before (the next message
+    /// of an open call): queued ahead of new work, and not refused for a full queue, where the
+    /// transport's pool allows (`Pool::resume`). The default is `execute`.
+    fn resume(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
+        self.execute(job)
+    }
     /// Stops (`true`) or resumes (`false`) taking the body of the streamed request tagged
     /// `tag` ([`BodyReads::hold`](crate::BodyReads::hold), ADR-101): stop extending its
     /// flow-control window, say. The default does nothing.

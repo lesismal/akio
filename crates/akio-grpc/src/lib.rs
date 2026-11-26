@@ -883,7 +883,7 @@ impl OnPool {
                 running: true,
             }),
         });
-        call.start();
+        call.start(false);
         call
     }
 
@@ -910,19 +910,31 @@ impl OnPool {
             !std::mem::replace(&mut st.running, true)
         };
         if start {
-            self.start();
+            self.start(true);
         }
     }
 
-    /// Queues the job that runs the handler.
-    fn start(self: &Arc<Self>) {
+    /// Queues the job that runs the handler. Opening the call is new work, which a busy pool
+    /// turns away (`RESOURCE_EXHAUSTED`); once open, a message that finds no job running is
+    /// the next step of a call admitted already: resumed work, which a full pool does not
+    /// refuse (`Pool::resume`). `running` keeps one job per call queued or running.
+    fn start(self: &Arc<Self>, resumed: bool) {
         let me = self.clone();
-        if self.exec.execute(move || me.run()).is_err() {
-            // `running` stays set: nothing more is queued for a call that has ended.
-            self.state().queue.clear();
-            self.sink
-                .finish(Status::new(Code::ResourceExhausted, "server busy"));
-        }
+        let job: Box<dyn FnOnce() + Send> = Box::new(move || me.run());
+        let status = if resumed {
+            match self.exec.resume(job) {
+                Ok(()) => return,
+                Err(_) => Status::new(Code::Unavailable, "server shutting down"),
+            }
+        } else {
+            match self.exec.execute(job) {
+                Ok(()) => return,
+                Err(_) => Status::new(Code::ResourceExhausted, "server busy"),
+            }
+        };
+        // `running` stays set: nothing more is queued for a call that has ended.
+        self.state().queue.clear();
+        self.sink.finish(status);
     }
 
     /// The pool job: opens the call the first time, then hands over what has queued.

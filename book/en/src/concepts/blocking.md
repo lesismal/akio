@@ -83,6 +83,18 @@ Choose `max_threads` by what the blocking work waits on: a database pool of 50 c
 nothing from 200 pool threads. Choose `queue_capacity` by how much latency you accept before
 shedding load: `Overloaded` is the signal to answer "busy" (HTTP 503) instead of queueing more.
 
+### New work and resumed work
+
+The queue limit is where new work is turned away. The next step of work admitted already (the
+next piece of a file being sent, the next message of a gRPC call whose handler is idle) is not
+new work: cutting it would throw away what was done, and trying again later would need a timer.
+`Pool::resume` (and `ConnInner::resume`, `Executor::resume`, `akio_quic::Connection::resume`)
+queues such a step in a lane of its own: never refused while the pool runs, taken by the threads
+before new work, so admitted work finishes first, and counted against the room left for new
+work, so a pool busy finishing turns new work away sooner. What bounds it is its owners: each
+keeps at most one step queued or running (a pump, a call, a piece). `PoolStats` reports the lane
+(`resumes`) and the deepest both have been (`max_queued`).
+
 ## A pool of your own
 
 Blocking work of one kind that must hold up nothing else (a cache's disk tier, whose disk may
@@ -101,7 +113,8 @@ match disk.try_execute(Box::new(move || { /* read the file, then conn.run_on_loo
 ```
 
 `try_execute` never blocks; `Rejected` gives the job back when the queue is full or the pool is
-shut down. `Pool::stats()` reports it as `Engine::pool_stats()` does the engine's.
+shut down. `resume` queues the next step of work the pool admitted before and is refused only
+once the pool is shut down (see above). `Pool::stats()` reports it as `Engine::pool_stats()` does the engine's.
 
 ## In protocol crates
 

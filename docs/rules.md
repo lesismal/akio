@@ -31,6 +31,12 @@ for a proxy built on an event-loop library.
    since each one holds a pool thread while it waits. Code that only needs to reach a
    connection's loop (to start a client request, fire a deadline) uses `Conn::run_on_loop`,
    never an empty `spawn_blocking`, so it needs no pool thread.
+   Only new work is refused by a full pool. The next step of work admitted already (the next
+   piece of a response under way, the next message of an open call, a piece downloaded whole)
+   goes through `resume` (`Pool::resume`, `ConnInner::resume`, `Executor::resume`), which a
+   full queue does not refuse; its owner keeps one such step queued or running at a time, which
+   bounds the lane. A refused submission is never tried again from a timer: a timer stands in
+   only for logic that is about time (timeouts, idle retirement, periodic work).
 3. **Library code that must call a blocking API** (a tracker announce resolving a host name, a
    file served on a cache miss) does it on the pool or on a dedicated thread of its own, never
    on the loop that happened to trigger it. Only an in-memory fast path stays on the loop.

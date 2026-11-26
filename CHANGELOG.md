@@ -10,6 +10,23 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: admitted work goes on through a full pool instead of being cut or retried (akio-pool, akio-core, akio-http, akio-h3, akio-grpc, akio-quic, akio-bittorrent)
+
+`Pool::resume` queues the next step of work the pool admitted before in a lane of its own:
+taken before new work, never refused while the pool runs, and counted against the room
+`try_execute` leaves for new work. `ConnInner::resume`, `akio_http::Executor::resume`,
+`ConnSink::resume` and `akio_quic::Connection::resume` reach it. `PoolStats` gains `resumes`
+and `max_queued`; the pool drops the handles of threads that have exited instead of keeping one
+per thread ever started.
+
+- A coded file body (`FilePump`) and an HTTP/3 file body asked a full pool again every 5 ms
+  from a timer, and cut the response after a second; they now resume and wait for a thread.
+- A gRPC call on the pool (`handlers_on_logical_pool`) whose handler was idle ended with
+  `RESOURCE_EXHAUSTED` when its next message met a full queue; it is resumed now. Opening a
+  call is still new work, turned away when busy.
+- A BitTorrent piece downloaded whole was thrown away, and fetched again, when the disk pool's
+  queue was full; it is resumed now.
+
 ### Fixed: IPv4 multicast out of a chosen interface on macOS (akio-sys, akio-core)
 
 `UdpBinding::send_to_on` (and `akio_sys::send_to_on`) named the interface in an `IP_PKTINFO`

@@ -5,6 +5,14 @@
 //! I/O threads never block; code that must block (databases, files, slow RPC) is handed to this
 //! pool and its result is brought back to the connection's I/O thread by `akio-core`.
 //!
+//! Work comes in two lanes. New work ([`Pool::try_execute`]) is admitted while the queue has
+//! room and refused past `queue_capacity`: that is where an overloaded process turns work away.
+//! The next step of work already admitted ([`Pool::resume`]: the next piece of a file being
+//! sent, the next message of an open call) is never refused while the pool runs, so nobody has
+//! to try again later; threads take it before new work, so what was admitted finishes first. It
+//! is bounded by its owners, not by the queue: each owner has at most one step queued or
+//! running at a time.
+//!
 //! Guide: [Blocking work: the logical pool](https://lesismal.github.io/akio/en/concepts/blocking.html)
 //! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/akio/zh-CN/concepts/blocking.html)).
 #![warn(clippy::unwrap_used)]
@@ -48,7 +56,8 @@ pub struct PoolConfig {
     pub min_threads: usize,
     /// Upper bound on threads; a new one is started when work is queued and none is idle.
     pub max_threads: usize,
-    /// Jobs that may wait in the queue; beyond it [`Pool::try_execute`] rejects.
+    /// Jobs that may wait, new work and resumed work together; beyond it [`Pool::try_execute`]
+    /// rejects ([`Pool::resume`] does not).
     pub queue_capacity: usize,
     /// How long a thread above `min_threads` may sit idle before it exits.
     pub keep_alive: Duration,
@@ -100,8 +109,12 @@ pub struct PoolStats {
     pub threads: usize,
     /// Threads waiting for work.
     pub idle: usize,
-    /// Jobs waiting in the queue.
+    /// New jobs waiting ([`Pool::try_execute`]).
     pub queued: usize,
+    /// Resumed jobs waiting ([`Pool::resume`]).
+    pub resumes: usize,
+    /// The most jobs that have waited at once, new and resumed together.
+    pub max_queued: usize,
     /// Jobs that ran to completion or panicked.
     pub completed: u64,
     /// Jobs that panicked (also counted in `completed`).
@@ -111,7 +124,12 @@ pub struct PoolStats {
 }
 
 struct State {
+    /// New work ([`Pool::try_execute`]), bounded by `queue_capacity`.
     queue: VecDeque<Job>,
+    /// Work already admitted, resumed ([`Pool::resume`]); taken first.
+    resumes: VecDeque<Job>,
+    /// The deepest `queue` and `resumes` have been together.
+    max_queued: usize,
     threads: usize,
     /// Threads waiting on the condition variable, plus those just started ([`starting`]).
     idle: usize,
@@ -156,6 +174,8 @@ impl Pool {
             cfg,
             state: Mutex::new(State {
                 queue: VecDeque::new(),
+                resumes: VecDeque::new(),
+                max_queued: 0,
                 threads: 0,
                 idle: 0,
                 starting: 0,
@@ -184,10 +204,12 @@ impl Pool {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Queues `job`, starting a thread if all are busy and the maximum allows. Never blocks.
+    /// Queues `job` as new work, starting a thread if all are busy and the maximum allows.
+    /// Never blocks. Refused when `queue_capacity` jobs (new and resumed) wait already, or the
+    /// pool is shut down.
     pub fn try_execute(&self, job: Job) -> Result<(), Rejected> {
         let mut st = self.lock();
-        if st.closed || st.queue.len() >= self.cfg.queue_capacity {
+        if st.closed || st.queue.len() + st.resumes.len() >= self.cfg.queue_capacity {
             drop(st);
             self.rejected.fetch_add(1, Ordering::Relaxed);
             return Err(Rejected(job));
@@ -212,7 +234,9 @@ impl Pool {
         let room = if st.closed {
             0
         } else {
-            self.cfg.queue_capacity.saturating_sub(st.queue.len())
+            self.cfg
+                .queue_capacity
+                .saturating_sub(st.queue.len() + st.resumes.len())
         };
         let n = room.min(jobs.len());
         st.queue.extend(jobs.drain(..n));
@@ -231,6 +255,36 @@ impl Pool {
         }
     }
 
+    /// Queues `job` as the next step of work the pool admitted before (the next piece of a
+    /// response under way, the next message of an open call), ahead of new work. Never blocks
+    /// and, unlike [`try_execute`](Self::try_execute), is not refused for a full queue: work
+    /// already admitted goes on rather than being cut or tried again later. `Err(job)` hands
+    /// it back, unrun, only once the pool is shut down.
+    ///
+    /// The caller bounds it: each owner (a response, a call) keeps at most one step queued or
+    /// running at a time, so what waits here is at most one job per piece of admitted work.
+    pub fn resume(&self, job: Job) -> Result<(), Job> {
+        let mut st = self.lock();
+        if st.closed {
+            return Err(job);
+        }
+        st.resumes.push_back(job);
+        let wake = self.queued_locked(&mut st, 1);
+        drop(st);
+        for _ in 0..wake {
+            self.cv.notify_one();
+        }
+        Ok(())
+    }
+
+    /// The next job, resumed work first (under the lock).
+    fn next_locked(&self, st: &mut State) -> Option<Job> {
+        let job = st.resumes.pop_front().or_else(|| st.queue.pop_front())?;
+        self.queued
+            .store(st.queue.len() + st.resumes.len(), Ordering::SeqCst);
+        Some(job)
+    }
+
     /// After `added` jobs were queued (under the lock): starts threads if every live one is
     /// already spoken for and the maximum allows, and returns how many sleeping threads to wake
     /// for the new jobs: one each, except those a spinning thread not already claimed by the
@@ -239,8 +293,9 @@ impl Pool {
     /// ones: at 2k requests/s, one more context switch per request, 12% more CPU.) A thread
     /// busy with a job looks at the queue before it sleeps, so it is never woken.
     fn queued_locked(&self, st: &mut State, added: usize) -> usize {
-        let len = st.queue.len();
+        let len = st.queue.len() + st.resumes.len();
         self.queued.store(len, Ordering::SeqCst);
+        st.max_queued = st.max_queued.max(len);
         // Read under the lock: a spinner stops counting itself before it takes the lock to look
         // at the queue, so either it is counted here or it sees these jobs.
         let spinning = self.spinning.load(Ordering::SeqCst);
@@ -266,6 +321,8 @@ impl Pool {
         let Some(pool) = self.me.upgrade() else {
             return;
         };
+        // Handles of threads that have exited are dropped, so the list holds live threads only.
+        st.handles.retain(|h| !h.is_finished());
         let spawned = thread::Builder::new()
             .name("akio-pool".into())
             .spawn(move || pool.worker());
@@ -306,8 +363,7 @@ impl Pool {
         }
         let mut spun = false;
         loop {
-            if let Some(job) = st.queue.pop_front() {
-                self.queued.store(st.queue.len(), Ordering::SeqCst);
+            if let Some(job) = self.next_locked(&mut st) {
                 drop(st);
                 if catch_unwind(AssertUnwindSafe(job)).is_err() {
                     self.panicked.fetch_add(1, Ordering::Relaxed);
@@ -353,6 +409,7 @@ impl Pool {
             spun = false;
             if res.timed_out()
                 && st.queue.is_empty()
+                && st.resumes.is_empty()
                 && st.threads > self.cfg.min_threads
                 && !st.closed
             {
@@ -369,6 +426,8 @@ impl Pool {
             threads: st.threads,
             idle: st.idle,
             queued: st.queue.len(),
+            resumes: st.resumes.len(),
+            max_queued: st.max_queued,
             completed: self.completed.load(Ordering::Relaxed),
             panicked: self.panicked.load(Ordering::Relaxed),
             rejected: self.rejected.load(Ordering::Relaxed),
@@ -568,6 +627,65 @@ mod tests {
         let mut late: Vec<Job> = vec![Box::new(|| {})];
         p.try_execute_batch(&mut late);
         assert_eq!(late.len(), 1, "refused after shutdown");
+        p.join();
+    }
+
+    /// A job that holds the pool's one thread until the gate opens.
+    fn gate_job(gate: &Arc<(Mutex<bool>, Condvar)>) -> Job {
+        let g = gate.clone();
+        Box::new(move || {
+            let (m, cv) = &*g;
+            drop(cv.wait_while(m.lock().unwrap(), |o| !*o).unwrap());
+        })
+    }
+
+    fn open(gate: &Arc<(Mutex<bool>, Condvar)>) {
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+    }
+
+    /// A full queue refuses new work but not resumed work, which runs first; resumed work
+    /// counts against the room left for new work.
+    #[test]
+    fn resumed_work_is_never_refused_and_runs_first() {
+        let p = Pool::new(cfg(0, 1, 2));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        p.try_execute(gate_job(&gate)).unwrap();
+        wait_until(|| p.stats().queued == 0 && p.stats().threads == 1);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let push = |tag: &'static str| -> Job {
+            let o = order.clone();
+            Box::new(move || o.lock().unwrap().push(tag))
+        };
+        p.try_execute(push("new1")).unwrap();
+        p.try_execute(push("new2")).unwrap();
+        assert!(p.try_execute(push("new3")).is_err(), "queue of 2 is full");
+        for _ in 0..3 {
+            p.resume(push("resumed")).ok().unwrap();
+        }
+        let s = p.stats();
+        assert_eq!(
+            (s.queued, s.resumes, s.max_queued, s.rejected),
+            (2, 3, 5, 1)
+        );
+        open(&gate);
+        wait_until(|| p.stats().completed == 6);
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["resumed", "resumed", "resumed", "new1", "new2"]
+        );
+        // Resumed work waiting leaves less room for new work.
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        p.try_execute(gate_job(&gate)).unwrap();
+        wait_until(|| p.stats().queued == 0 && p.stats().completed == 6);
+        wait_until(|| p.stats().idle == 0);
+        p.resume(Box::new(|| {})).ok().unwrap();
+        p.try_execute(Box::new(|| {})).unwrap();
+        assert!(p.try_execute(Box::new(|| {})).is_err());
+        open(&gate);
+        wait_until(|| p.stats().completed == 9);
+        p.shutdown();
+        assert!(p.resume(Box::new(|| {})).is_err(), "refused after shutdown");
         p.join();
     }
 

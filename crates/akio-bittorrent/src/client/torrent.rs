@@ -1870,7 +1870,10 @@ impl TorrentState {
                 t.with(|st, cx| st.piece_done(index, res, cx));
             }
         });
-        if self.pool.try_execute(job).is_err() {
+        // A piece downloaded whole is work admitted already: resumed, it is not refused for a
+        // full queue (`Pool::resume`), so the data is not thrown away and fetched again. One
+        // job per piece (`verifying`). Refused only by a pool shut down.
+        if self.pool.resume(job).is_err() {
             self.verifying.remove(&index);
             cx.events
                 .push(TorrentEvent::Error("disk pool refused a piece".into()));

@@ -2614,6 +2614,21 @@ impl ConnInner {
         }
     }
 
+    /// [`execute`](Self::execute) for the next step of work the pool admitted before (the next
+    /// piece of a response under way, the next message of an open call): queued ahead of new
+    /// work and not refused for a full queue ([`Pool::resume`](akio_pool::Pool::resume)).
+    /// `Err(job)` hands it back, unrun, when the engine has no pool, the pool is shut down, or
+    /// the connection is closed. The caller keeps one such step queued or running at a time.
+    pub fn resume(&self, job: akio_pool::Job) -> std::result::Result<(), akio_pool::Job> {
+        if !self.is_open() {
+            return Err(job);
+        }
+        match self.link.pool() {
+            Some(pool) => pool.resume(job),
+            None => Err(job),
+        }
+    }
+
     /// Runs `f` on the thread that owns this connection (its I/O thread, or with work
     /// stealing the worker of its next round), after the current batch of events and
     /// without going through the logical pool: [`Conn::run_on_loop`] for code that holds only

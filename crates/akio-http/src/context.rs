@@ -409,7 +409,6 @@ fn coded_file(out: Out, mut resp: Response, req: &Request, end: EndGuard) {
         file: file.file,
         offset: file.offset,
         left: file.len,
-        refused: 0,
     }
     .submit();
 }
@@ -420,50 +419,27 @@ struct FilePump {
     file: Arc<std::fs::File>,
     offset: u64,
     left: u64,
-    /// Times in a row the pool refused the next run.
-    refused: u32,
 }
 
 /// What [`FilePump`] reads at a time: each piece is encoded and flushed as one write.
 const PUMP_PIECE: usize = 64 << 10;
 /// Bytes queued on the connection past which [`FilePump`] waits for it to drain.
 const PUMP_HIGH: usize = 256 << 10;
-/// How long [`FilePump`] waits before asking a full pool again, and how many times: past
-/// that (a second of a pool that stays full), the response is cut and its connection closed.
-const PUMP_RETRY: Duration = Duration::from_millis(5);
-const PUMP_RETRIES: u32 = 200;
 
 impl FilePump {
-    /// Runs the pump on the disk pool; a full pool is asked again a little later.
+    /// Runs the pump on the disk pool. Its head is out already, so this is the next step of a
+    /// response under way: resumed work, which a full pool does not refuse (`Pool::resume`);
+    /// one pump has one run queued or running at a time.
     fn submit(self) {
-        let cell = Arc::new(Mutex::new(Some(self)));
-        let job_cell = cell.clone();
-        let job = Box::new(move || {
-            let p = job_cell
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if let Some(p) = p {
-                p.run();
-            }
-        });
-        if crate::files::disk_pool().try_execute(job).is_err() {
-            let p = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
-            if let Some(mut p) = p {
-                p.refused += 1;
-                if p.refused <= PUMP_RETRIES {
-                    crate::timer::after(PUMP_RETRY, move || p.submit());
-                }
-                // Else dropped: the stream unfinished closes the connection.
-            }
-        }
+        // Refused only by a pool shut down: the pump dropped with the job, its stream
+        // unfinished, closes the connection.
+        let _ = crate::files::disk_pool().resume(Box::new(move || self.run()));
     }
 
     /// Reads, encodes and writes pieces until the file is sent (the stream finished), the
     /// connection falls behind (resumed when it drains) or a read or write fails (the stream
     /// dropped, which closes the connection: the body is cut).
     fn run(mut self) {
-        self.refused = 0;
         let mut buf = vec![0u8; PUMP_PIECE.min(usize::try_from(self.left).unwrap_or(PUMP_PIECE))];
         while self.left > 0 {
             let n = buf
@@ -2594,7 +2570,6 @@ impl Going {
                 file: file.file,
                 offset: file.offset,
                 left: file.len,
-                refused: 0,
             }
             .submit();
         }

@@ -165,3 +165,108 @@ fn a_panicking_pooled_handler_ends_its_call_and_the_connection_goes_on() {
     e.shutdown();
     e.wait();
 }
+
+/// An open call whose handler is idle gets its next message as resumed work: a pool whose one
+/// thread is busy and whose queue for new work is full still takes it (it waits for the
+/// thread), instead of ending the call with `RESOURCE_EXHAUSTED`.
+#[test]
+fn an_open_calls_next_message_waits_for_a_full_pool() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let release = Arc::new(AtomicBool::new(false));
+    let holding = Arc::new(AtomicUsize::new(0));
+    let (r, h) = (release.clone(), holding.clone());
+    let svc = GrpcServer::new()
+        .unary("/test.Pool/Hold", move |_md, _req, sink| {
+            h.fetch_add(1, Ordering::SeqCst);
+            let end = Instant::now() + Duration::from_secs(10);
+            while !r.load(Ordering::Acquire) && Instant::now() < end {
+                thread::sleep(Duration::from_millis(1));
+            }
+            sink.send(b"held");
+            sink.finish(Status::ok());
+        })
+        .bidi("/test.Pool/Chat", |_md, sink| {
+            Box::new(move |m| match m {
+                Some(m) => {
+                    sink.send(&[b"re:".as_slice(), &m].concat());
+                }
+                None => sink.finish(Status::ok()),
+            })
+        })
+        .handlers_on_logical_pool(true);
+    let e = Arc::new(
+        Engine::builder()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(300);
+                v
+            })
+            .pool({
+                let mut p = akio::PoolConfig::default();
+                p.max_threads = 1;
+                p.queue_capacity = 1;
+                p
+            })
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .threads(1)
+                    .serve(akio_http::serve(svc)),
+            )
+            .client_threads(1)
+            .build()
+            .unwrap(),
+    );
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let h2 = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
+    let c = GrpcClient::new(h2, &format!("http://{addr}"));
+
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let g = got.clone();
+    let (tx, done) = std::sync::mpsc::channel();
+    let chat = c.bidi(
+        "/test.Pool/Chat",
+        CallOptions::default(),
+        move |m| g.lock().unwrap().push(String::from_utf8(m).unwrap()),
+        move |st, _| {
+            let _ = tx.send(st);
+        },
+    );
+    let wait_for = |what: &str, f: &dyn Fn() -> bool| {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !f() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(1));
+        }
+    };
+    chat.send(b"a");
+    wait_for("the first answer", &|| got.lock().unwrap().len() == 1);
+    // The call's job has returned once it answered; give it a moment to go idle.
+    wait_for("an idle pool", &|| e.pool_stats().idle == 1);
+
+    // One call holds the only thread, the next fills the queue for new work.
+    let holds: Vec<_> = (0..2)
+        .map(|_| {
+            let c = c.clone();
+            thread::spawn(move || c.unary("/test.Pool/Hold", b"", CallOptions::default()))
+        })
+        .collect();
+    wait_for("a full pool", &|| {
+        holding.load(Ordering::SeqCst) == 1 && e.pool_stats().queued == 1
+    });
+    chat.send(b"b");
+    wait_for("the message to wait as resumed work", &|| {
+        e.pool_stats().resumes == 1
+    });
+    assert_eq!(e.pool_stats().rejected, 0);
+    release.store(true, Ordering::Release);
+    for h in holds {
+        h.join().unwrap().unwrap();
+    }
+    chat.close_send();
+    let st = done.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(st.code, Code::Ok, "{st:?}");
+    assert_eq!(*got.lock().unwrap(), ["re:a", "re:b"]);
+    e.shutdown();
+    e.wait();
+}

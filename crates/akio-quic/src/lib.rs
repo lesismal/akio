@@ -410,6 +410,17 @@ impl Connection {
         }
     }
 
+    /// [`execute`](Self::execute) for the next step of work admitted before (the next piece of
+    /// a response under way): queued ahead of new work and not refused for a full queue
+    /// (`Pool::resume`). Hands `job` back, unrun, when the socket or the pool is gone. The
+    /// caller keeps one such step queued or running at a time.
+    pub fn resume(&self, job: akio_core::Job) -> Result<(), akio_core::Job> {
+        match self.pool_socket() {
+            Some(sock) => sock.inner().resume(job),
+            None => Err(job),
+        }
+    }
+
     /// The socket this connection's pool work is posted through: the one its peer is on.
     fn pool_socket(&self) -> Option<Conn<Udp>> {
         let addr = self.remote_addr();

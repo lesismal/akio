@@ -49,6 +49,17 @@ impl Executor {
             .map_err(|_| akio_core::Error::Overloaded)
     }
 
+    /// Runs `job` on the pool as the next step of work admitted before (the next message of an
+    /// open call, the next piece of a response under way): ahead of new work, and not refused
+    /// for a full queue (`Pool::resume`). Hands `job` back, unrun, only when the pool is shut
+    /// down or the connection is gone. Keep one such step queued or running at a time.
+    pub fn resume(&self, job: Job) -> Result<(), Job> {
+        match &self.0 {
+            Kind::Conn(c) => c.resume(job),
+            Kind::Ext(s) => s.get().resume(job),
+        }
+    }
+
     /// Runs `job` on the pool, or hands it back unrun.
     pub(crate) fn try_execute(&self, job: Job) -> Result<(), Job> {
         match &self.0 {
