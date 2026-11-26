@@ -915,7 +915,7 @@ pub struct ConnInner {
     ordered_hold: AtomicBool,
     /// The episode of `Config::max_pending_bytes` in which this connection was parked (ADR-172);
     /// 0: none yet.
-    budget_epoch: std::sync::atomic::AtomicU64,
+    budget_epoch: AtomicU64,
     /// The loop corked the connection around a callback ([`set_corked`](Self::set_corked)):
     /// an atomic, so corking costs no lock. Read together with `WriteState::corked` (the
     /// application's [`cork`](Self::cork)) under the write lock; cleared under it too.
@@ -979,7 +979,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             ordered_hold: AtomicBool::new(false),
-            budget_epoch: std::sync::atomic::AtomicU64::new(0),
+            budget_epoch: AtomicU64::new(0),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
@@ -1022,7 +1022,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             ordered_hold: AtomicBool::new(false),
-            budget_epoch: std::sync::atomic::AtomicU64::new(0),
+            budget_epoch: AtomicU64::new(0),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
@@ -1070,7 +1070,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             ordered_hold: AtomicBool::new(false),
-            budget_epoch: std::sync::atomic::AtomicU64::new(0),
+            budget_epoch: AtomicU64::new(0),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
             pending_limit: pending_limit(&cfg),
