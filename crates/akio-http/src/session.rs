@@ -865,9 +865,19 @@ impl<S: Service> Session<S> {
         };
         let expect_continue = head.version == Version::Http11
             && expect.is_some_and(|e| e.eq_ignore_ascii_case("100-continue"));
+        // A target in absolute form names the host (RFC 9112 §3.2.2): an origin server ignores
+        // the `Host` field and takes the target's authority, without user information.
+        if let Some((host, _)) = head
+            .absolute
+            .as_deref()
+            .and_then(crate::parse::absolute_form)
+        {
+            head.headers.set("host", host);
+        }
         let req = Request {
             method: head.method,
             target: head.target,
+            absolute: head.absolute,
             version: head.version,
             headers: head.headers,
             trailers: Headers::new(),

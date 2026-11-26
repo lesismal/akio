@@ -653,6 +653,7 @@ pub fn akio_http::message::Request::new(akio_http::message::Method, impl core::c
 pub fn akio_http::message::Request::path(&self) -> &str
 pub fn akio_http::message::Request::query(&self) -> core::option::Option<&str>
 pub fn akio_http::message::Request::query_param(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::message::Request::raw_target(&self) -> &str
 impl core::clone::Clone for akio_http::message::Request
 pub fn akio_http::message::Request::clone(&self) -> Self
 impl core::fmt::Debug for akio_http::message::Request
@@ -1320,6 +1321,7 @@ pub fn akio_http::message::Request::new(akio_http::message::Method, impl core::c
 pub fn akio_http::message::Request::path(&self) -> &str
 pub fn akio_http::message::Request::query(&self) -> core::option::Option<&str>
 pub fn akio_http::message::Request::query_param(&self, &str) -> core::option::Option<&str>
+pub fn akio_http::message::Request::raw_target(&self) -> &str
 impl core::clone::Clone for akio_http::message::Request
 pub fn akio_http::message::Request::clone(&self) -> Self
 impl core::fmt::Debug for akio_http::message::Request

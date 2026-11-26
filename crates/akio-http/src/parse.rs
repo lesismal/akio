@@ -8,7 +8,11 @@ use crate::message::{Headers, Method, Spare, Version};
 #[derive(Debug)]
 pub(crate) struct Head {
     pub method: Method,
+    /// The target in origin form (`/a?b`), `*` (`OPTIONS`) or a `CONNECT`'s authority: a target
+    /// in absolute form is given here by its path and query (see [`absolute_form`]).
     pub target: String,
+    /// The target as sent when it was in absolute form (`http://a.example/b?c`), else `None`.
+    pub absolute: Option<Box<str>>,
     pub version: Version,
     pub headers: Headers,
 }
@@ -74,15 +78,92 @@ fn head(req: http1::Request<'_, '_>) -> Result<Option<(Head, usize)>, ParseError
         let v = std::str::from_utf8(h.value).map_err(|_| ParseError::Bad)?;
         headers.append(h.name, v);
     }
+    let method = Method::parse(req.method);
+    let (target, absolute) = target(&method, req.target)?;
     Ok(Some((
         Head {
-            method: Method::parse(req.method),
-            target: crate::context::new_target(req.target),
+            method,
+            target,
+            absolute,
             version,
             headers,
         },
         req.len,
     )))
+}
+
+/// The request's target and, for one in absolute form, the target as sent (RFC 9112 §3.2): a
+/// target in origin form (`/a?b`) is taken as it is, as is `*` for `OPTIONS` and any target of
+/// a `CONNECT` (authority form, which the service checks). One in absolute form
+/// (`http://a.example/b?c`) is taken as an origin server takes it (§3.2.2): by its path and query
+/// (`/b?c`, `/` for an empty path), its authority becoming the request's `Host` (see
+/// `Session::on_head`). Any other target, authority form included, is refused (400): routed by
+/// a target that is not a path, a request would miss the routes of the path a proxy forwards it
+/// to (akit A200).
+fn target(method: &Method, target: &str) -> Result<(String, Option<Box<str>>), ParseError> {
+    if target.starts_with('/')
+        || *method == Method::Connect
+        || (target == "*" && *method == Method::Options)
+    {
+        return Ok((crate::context::new_target(target), None));
+    }
+    let Some((_, rest)) = absolute_form(target) else {
+        return Err(ParseError::Bad);
+    };
+    let mut t = crate::context::new_target("");
+    if !rest.starts_with('/') {
+        t.push('/');
+    }
+    t.push_str(rest);
+    Ok((t, Some(target.into())))
+}
+
+/// The host and the rest of a request target in absolute form, `scheme "://" authority
+/// path-abempty [ "?" query ]` (RFC 9112 §3.2.2, RFC 3986 §3): the host is the authority without
+/// its user information (`a.example:8080` of `http://u@a.example:8080/b`), the rest what follows
+/// the authority (`/b?c`, `?c` or empty). `None` when `target` is not in absolute form, or its
+/// host is empty (RFC 9110 §4.2.1) or has a byte RFC 3986 does not allow in a host and port.
+pub(crate) fn absolute_form(target: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = target.split_once("://")?;
+    let mut b = scheme.bytes();
+    if !b.next()?.is_ascii_alphabetic()
+        || !b.all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
+    let end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, rest) = rest.split_at(end);
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // reg-name / IP-literal / IPv4address, then `:` port: unreserved, pct-encoded, sub-delims,
+    // `:`, `[` and `]`.
+    let host_byte = |c: u8| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'%'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b':'
+                    | b'['
+                    | b']'
+            )
+    };
+    if host.is_empty() || !host.bytes().all(host_byte) || host.starts_with(':') {
+        return None;
+    }
+    Some((host, rest))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -351,5 +432,73 @@ mod tests {
             parse_head_once(many.as_bytes()).unwrap_err(),
             ParseError::TooManyHeaders
         );
+    }
+
+    /// The parts of a target in absolute form (ADR-177): its host without user information,
+    /// and what follows the authority; `None` for any other form, or an empty or invalid host.
+    #[test]
+    fn absolute_form_parts() {
+        for (target, want) in [
+            (
+                "http://a.example/admin/x?q",
+                Some(("a.example", "/admin/x?q")),
+            ),
+            ("https://u:p@a:8443?q", Some(("a:8443", "?q"))),
+            ("HTTP://A", Some(("A", ""))),
+            ("h2c+x.y-z://a", Some(("a", ""))),
+            ("http://[::1]:80/", Some(("[::1]:80", "/"))),
+            ("http://u@v@a/b", Some(("a", "/b"))),
+            ("http:///x", None),
+            ("http://u@/x", None),
+            ("http://:80/x", None),
+            ("http://a\"b/", None),
+            ("http://a<b/", None),
+            ("http:/a/b", None),
+            ("/http://a/b", None),
+            ("a:443", None),
+            ("*", None),
+            ("1http://a/b", None),
+            ("ht_tp://a/b", None),
+            ("://a/b", None),
+        ] {
+            assert_eq!(absolute_form(target), want, "{target}");
+        }
+    }
+
+    /// Targets as RFC 9112 §3.2 asks of an origin server (ADR-177): origin form as sent,
+    /// absolute form by its path and query with the target kept, `*` for `OPTIONS` alone, any
+    /// target for `CONNECT`, and anything else refused.
+    #[test]
+    fn request_target_forms() {
+        let parse = |line: &str| {
+            parse_head_once(format!("{line} HTTP/1.1\r\nHost: h\r\n\r\n").as_bytes())
+                .map(|h| h.map(|(h, _)| (h.target, h.absolute.map(String::from))))
+        };
+        let ok = |t: &str, raw: Option<&str>| Ok(Some((t.to_owned(), raw.map(str::to_owned))));
+        assert_eq!(parse("GET /a?b"), ok("/a?b", None));
+        assert_eq!(
+            parse("GET http://a.example/admin/x?q"),
+            ok("/admin/x?q", Some("http://a.example/admin/x?q"))
+        );
+        assert_eq!(
+            parse("GET http://a.example"),
+            ok("/", Some("http://a.example"))
+        );
+        assert_eq!(
+            parse("GET http://a.example?q"),
+            ok("/?q", Some("http://a.example?q"))
+        );
+        assert_eq!(parse("OPTIONS *"), ok("*", None));
+        assert_eq!(parse("CONNECT a.example:443"), ok("a.example:443", None));
+        for bad in [
+            "GET *",
+            "GET a.example:443",
+            "GET admin/x",
+            "GET http:///admin/x",
+            "GET http:/admin/x",
+            "POST mailto:a@b",
+        ] {
+            assert_eq!(parse(bad), Err(ParseError::Bad), "{bad}");
+        }
     }
 }

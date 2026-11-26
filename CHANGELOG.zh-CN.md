@@ -33,6 +33,10 @@ ADR-104 的 2026-11-26 更新。`Scheduling::Rounds(RoundsConfig)` 现在是
 走线程池的 h2c 提升 30%–39%（每秒 49 万到 65 万–67 万请求）；inline 不变。剩下的是逻辑线程池自身的
 交接（每个任务一次 futex 唤醒和一次上下文切换）。
 
+### 修复：绝对形式的请求目标按其 path 和 host 处理（akio-http、akio-h3；akit A200）
+
+ADR-177。目标为绝对形式的 HTTP/1 请求（`GET http://a.example/admin/x?q HTTP/1.1`）按 RFC 9112 §3.2.2 对源服务器的要求处理：`Request::target` 为其 origin 形式（`/admin/x?q`，path 为空时为 `/`），目标的 authority（去掉用户信息）替换 `Host`。此前目标原样保留，路由器认不出这个路径，而代理向上游请求的是该 path：akit 的模糊测试发现这样的请求绕过了保护 `/admin/*` 的路由。`Request::raw_target()` 给出发送时的目标，访问日志记录它。HTTP/1.1 仍要求恰好一个 `Host`。不属于 RFC 9112 给源服务器的任何形式的目标（`CONNECT` 以外的 authority 形式、相对路径、`OPTIONS` 以外的 `*`、没有 host 的绝对形式）以 400 应答。在 HTTP/2 和 HTTP/3 上，`:path` 不是 origin 形式（或 `OPTIONS` 的 `*`）的请求（包括绝对 URI）是畸形请求（RFC 9113 §8.3.1、RFC 9114 §4.3.1）。
+
 ### 新增：每次拨号自己的连接超时，`Engine::dial_with`（akio、akio-core、各后端、akio-http；akit A12、A79）
 
 ADR-154。`Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)` 用自己的

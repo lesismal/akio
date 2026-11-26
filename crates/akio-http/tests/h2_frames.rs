@@ -691,6 +691,14 @@ fn malformed_requests_are_reset() {
             ("x-a", "a\nb"),
         ],
         vec![(":method", "GET"), (":scheme", "http"), (":path", "/a\nb")],
+        // `:path` in origin form, or `*` for OPTIONS alone (RFC 9113 §8.3.1, ADR-177).
+        vec![
+            (":method", "GET"),
+            (":scheme", "http"),
+            (":path", "http://a.example/admin"),
+        ],
+        vec![(":method", "GET"), (":scheme", "http"), (":path", "admin")],
+        vec![(":method", "GET"), (":scheme", "http"), (":path", "*")],
     ];
     let mut sid = 1;
     for h in &bad {
@@ -699,6 +707,10 @@ fn malformed_requests_are_reset() {
         assert_eq!(p.rst(sid), PROTOCOL, "headers {h:?}");
         sid += 2;
     }
+    // `OPTIONS *` is not malformed: it is answered (no route takes it), not reset.
+    p.request(sid, "OPTIONS", "*", true);
+    assert_eq!(p.response(sid).0, 404);
+    sid += 2;
     // END_STREAM on the headers but a non-zero content-length.
     let b = p.block(&[
         (":method", "POST"),

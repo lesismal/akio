@@ -140,3 +140,4 @@
 - [ADR-173：只统计接受的连接的连接数上限](173-accepted-connection-limit.zh-CN.md)（2026-11-26 采纳；akit A215）
 - [ADR-174：只服务 HTTP/2 的 HTTP 服务端](174-http2-alone.zh-CN.md)（2026-11-26 采纳；akit A168）
 - [ADR-176：HTTP/2 handler 默认重新 inline 执行](176-http2-handlers-inline-by-default.zh-CN.md)（2026-11-26 采纳；撤销 ADR-094 在 2026-11-25 设的默认值）
+- [ADR-177：按源服务器的方式处理绝对形式的请求目标](177-absolute-form-request-targets.zh-CN.md)（2026-11-26 采纳；akit A200）

@@ -1766,7 +1766,10 @@ impl Core {
         } else {
             let path = path.ok_or(())?;
             scheme.ok_or(())?;
-            if method != "CONNECT" && path.is_empty() {
+            // `:path` is in origin form, or `*` for `OPTIONS` (RFC 9113 §8.3.1): an absolute
+            // URI or anything else is malformed, so no request is routed by a target that is
+            // not a path (ADR-177).
+            if !(path.starts_with('/') || (path == "*" && method == "OPTIONS")) {
                 return Err(());
             }
             // An extended CONNECT carries every pseudo-header field (RFC 8441 §4).
@@ -1795,6 +1798,7 @@ impl Core {
             local: self.conn.local_addr(),
             protocol: protocol.map(str::to_owned),
             peer_certificates: self.peer_certs.get(&self.conn),
+            absolute: None,
         })
     }
 }
@@ -2159,6 +2163,7 @@ impl H2Responder {
                 local: c.conn.local_addr(),
                 protocol: None,
                 peer_certificates,
+                absolute: None,
             };
             (promised, hook, req)
         };

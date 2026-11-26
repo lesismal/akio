@@ -31,6 +31,21 @@ pub fn http1_request(data: &[u8]) {
         assert_eq!(m, n);
         assert_eq!(again.target, head.target);
         assert_eq!(again.headers.len(), head.headers.len());
+        // The target is a path but for `OPTIONS *` and a CONNECT's; one in absolute form was
+        // taken by its path and query, and names a host (ADR-177).
+        use crate::message::Method;
+        assert!(
+            head.target.starts_with('/')
+                || head.method == Method::Connect
+                || (head.target == "*" && head.method == Method::Options),
+            "target {:?}",
+            head.target
+        );
+        if let Some(raw) = &head.absolute {
+            let (host, rest) = crate::parse::absolute_form(raw).expect("absolute form");
+            assert!(!host.is_empty());
+            assert!(head.target.ends_with(rest));
+        }
     }
     let stream = data.get(1..).unwrap_or_default();
     let once = parse_head(stream, &mut Resume::default());
