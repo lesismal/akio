@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: pooled HTTP/2 responses are written by the connection's own thread (akio-http, akio-core)
+
+With `H2Config::handlers_on_logical_pool`, a handler that answers on its pool job no longer
+locks the connection and writes its response itself: it queues the response, and one task per
+batch (`ConnInner::run_on_loop`, new) encodes and writes the batch on the connection's I/O
+thread, or with rounds the worker of its next round, in one write. Work a handler posts to the
+pool itself (`detach_to_pool`, `executor`), other threads and timers still write their own.
+Measured on gpu51 (docs/BENCHMARKS.md): h2c through the pool +30% to +39% (0.49M to
+0.65M–0.67M requests/s); inline unchanged. What remains is the logical pool's own hand-off
+(a futex wake and a context switch per job).
+
 ### Added: a connect timeout per dial, `Engine::dial_with` (akio, akio-core, backends, akio-http; akit A12, A79)
 
 ADR-154. `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)`

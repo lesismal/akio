@@ -114,3 +114,7 @@ kept as an alias.
 
 [ADR-176](176-http2-handlers-inline-by-default.md) records the same decision from the same-run A/B
 of the A169 and A171 work (9-13 times slower on the pool) and the profile of the pool path.
+
+Since 2026-11-26 a pooled HTTP/2 handler's response is written by the connection's own thread,
+batched (`h2::Deferred`): +30% to +39% through the pool; the pool's own hand-off is what remains
+(docs/BENCHMARKS.md).

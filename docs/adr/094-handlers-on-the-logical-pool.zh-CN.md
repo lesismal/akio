@@ -97,3 +97,6 @@ HTTP/2 服务默认损失大部分吞吐，这个取舍不对；handler 会阻�
 版本发布，所以不保留别名。
 
 [ADR-176](176-http2-handlers-inline-by-default.zh-CN.md) 记录了同一决定所依据的 A169、A171 同轮 A/B（线程池上慢 9–13 倍）和线程池路径的 profile。
+
+自 2026-11-26 起，走线程池的 HTTP/2 handler 的响应由连接自己的线程按批写出（`h2::Deferred`）：走线程池
+提升 30%–39%；剩下的开销是线程池自身的交接（docs/BENCHMARKS.zh-CN.md）。

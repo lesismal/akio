@@ -793,6 +793,28 @@ responses of a read leave in one `writev`. Handing pooled responses back to the 
 (queued, one wake-up per batch, encoded and written there together) would remove both;
 replacing the pool's queue with per-thread queues would not.
 
+**Pooled responses handed back to the I/O thread** (2026-11-26, `h2::Deferred`: a pool thread
+queues its response beside the connection's lock, one drain per batch writes them on the
+connection's own thread; same setup, h2c, builds `fdd95418` and the change alternating in each
+of 5 rounds):
+
+| h2c 64 conns × 16 streams over 3 | before | after | |
+|---|---:|---:|---:|
+| on the pool, epoll (loops) | 485,691 | 672,919 (±1%) | +39% |
+| on the pool, io_uring (loops) | 497,691 | 648,257 (±1%) | +30% |
+| on the pool, rounds | 488,004 | 671,608 | +38% |
+| inline, epoll (loops) | 3,400,256 (±5%) | 3,283,220 (±2%) | noise |
+| inline, io_uring (loops) | 3,768,648 (±9%) | 3,693,347 (±7%) | noise |
+| inline, rounds | 4,119,715 (±1%) | 4,041,675 (±1%) | −2% (the inline path is unchanged) |
+
+Profiled again (same method): about 7 µs of CPU per pooled request (from 9); no `send()` per
+response any more (138k `writev` per 5 s for 2.9M responses, about 21 a write). What is left is
+the logical pool's own hand-off, which the per-response writes had hidden: of all samples, 33%
+are pool threads going to sleep on and waking from its condition variable, 41% the I/O threads
+in `try_execute` (its one mutex, contended by 4 I/O and 32 pool threads, and an unconditional
+`notify_one`, a futex wake per job), against 22% of HTTP/2 work (parsing, the batched encode and
+write, the handler). 3.0M context switches per 5 s, about one per request.
+
 ### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

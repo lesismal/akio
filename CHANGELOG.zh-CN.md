@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：走线程池的 HTTP/2 响应由连接自己的线程写出（akio-http、akio-core）
+
+开启 `H2Config::handlers_on_logical_pool` 时，在线程池任务里作答的 handler 不再自己锁住连接、写出
+响应：它只把响应放进队列，每批一个任务（新增的 `ConnInner::run_on_loop`）在连接的 I/O 线程（rounds
+模式下是处理它下一轮的 worker）上一次编码并写出整批。handler 自己投递到线程池的工作
+（`detach_to_pool`、`executor`）、其他线程和定时器仍自己写出。gpu51 实测（docs/BENCHMARKS.zh-CN.md）：
+走线程池的 h2c 提升 30%–39%（每秒 49 万到 65 万–67 万请求）；inline 不变。剩下的是逻辑线程池自身的
+交接（每个任务一次 futex 唤醒和一次上下文切换）。
+
 ### 新增：每次拨号自己的连接超时，`Engine::dial_with`（akio、akio-core、各后端、akio-http；akit A12、A79）
 
 ADR-154。`Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)` 用自己的
