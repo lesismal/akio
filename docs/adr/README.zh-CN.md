@@ -144,3 +144,4 @@
 - [ADR-178：UDP 监听器、绑定的套接字和 QUIC 服务端的接入过滤器](178-udp-accept-filter.zh-CN.md)（2026-11-26 采纳；akit A220）
 - [ADR-179：akio-crypto 中的 Argon2id，其 lane 在作用域线程上运行](179-argon2id.zh-CN.md)（2026-11-26 采纳；akit A230、A231）
 - [ADR-180：连接句柄、关闭期限，以及监听器的接受与关闭钩子](180-connection-handles-and-accept-hooks.zh-CN.md)（2026-11-26 采纳；akit A232）
+- [ADR-181：连接自己的发送队列上限](181-own-send-queue-bound.zh-CN.md)（2026-11-27 采纳；akit A234）

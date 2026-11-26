@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a connection's own bound of its send queue (akio-core, akio)
+
+akit's A234, for its tunnel's and LLM mesh's links, whose queues hold their streams' windows;
+ADR-181. `Conn::set_max_queued_bytes(Some(n))` (also on `ConnHandle`) gives a connection a bound
+of its own in place of the engine's `Config::max_queued_bytes`, `None` restores the engine's, and
+`Conn::max_queued_bytes()` reads the bound in force. Callable from any thread; the next send is
+checked against it (as are `send_room`, HTTP/1.1's held-back ordered responses and files sent
+through a transport). Lowering it below what is queued drops nothing; `write_high_watermark` is
+unchanged. `WriteState` is 16 bytes larger.
+
 ### Added: connection handles, close deadlines, and a listener's accept and close hooks (akio-core, akio, akio-http)
 
 akit's A232, for its console's connection rules (fit's: no login, closed 5 s after accept; a

@@ -434,6 +434,9 @@ struct WriteState {
     kernel_tx: bool,
     queue: InlineDeque<Chunk>,
     queued: usize,
+    /// The connection's own bound of `queued` ([`ConnInner::set_max_queued_bytes`], akit
+    /// A234) in place of the engine's `Config::max_queued_bytes`; `None`: the engine's.
+    max_queued: Option<usize>,
     /// Bytes of queued file chunks: they use no memory, so they are not in `queued`.
     file_bytes: u64,
     corked: bool,
@@ -2248,11 +2251,33 @@ impl ConnInner {
         }
     }
 
+    /// The bound of the send queue in force: the connection's own, or the engine's.
+    #[inline]
+    fn max_queued(&self, w: &WriteState) -> usize {
+        match w.max_queued {
+            Some(n) => n,
+            None => self.cfg.telemetry.live().max_queued_bytes(),
+        }
+    }
+
+    /// [`Conn::set_max_queued_bytes`].
+    pub fn set_max_queued_bytes(&self, n: Option<usize>) {
+        self.lock().max_queued = n;
+    }
+
+    /// The bound of the send queue in force for this connection: its own
+    /// ([`set_max_queued_bytes`](Self::set_max_queued_bytes)), or the engine's
+    /// `Config::max_queued_bytes`.
+    pub fn max_queued_bytes(&self) -> usize {
+        let w = self.lock();
+        self.max_queued(&w)
+    }
+
     fn check_sendable(&self, w: &WriteState, extra: usize) -> Result<()> {
         if !self.is_open() || w.close_after_send {
             return Err(Error::Closed);
         }
-        if w.queued + extra > self.cfg.telemetry.live().max_queued_bytes() {
+        if w.queued.saturating_add(extra) > self.max_queued(w) {
             if let Some(s) = &w.stats {
                 s.overloaded.add(1);
             }
@@ -2367,11 +2392,7 @@ impl ConnInner {
         if !self.is_open() || w.close_after_send {
             return 0;
         }
-        self.cfg
-            .telemetry
-            .live()
-            .max_queued_bytes()
-            .saturating_sub(w.queued)
+        self.max_queued(&w).saturating_sub(w.queued)
     }
 
     /// Sends `data`, then closes once everything queued is written, as one step: nothing sent
@@ -2735,13 +2756,12 @@ impl ConnInner {
         let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
         let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
-        let max = self.cfg.telemetry.live().max_queued_bytes();
         match o.entries.get_mut(i) {
             Some(Entry::Stream(s)) if !s.finished => {
                 if i == 0 && s.live {
                     return self.send_owned(data);
                 }
-                if s.pending.len() + data.len() > max {
+                if s.pending.len() + data.len() > self.max_queued_bytes() {
                     return Err(Error::Overloaded);
                 }
                 s.pending.extend_from_slice(&data);
@@ -2814,8 +2834,11 @@ impl ConnInner {
     /// with the send queue: past it the connection ends (as a response over it would), so a
     /// burst of large responses behind a slow one cannot hold unbounded memory.
     fn check_held(&self, o: &Ordered) {
-        let max = self.cfg.telemetry.live().max_queued_bytes();
-        if o.held > max || o.held + self.queued_bytes() > max {
+        let (max, queued) = {
+            let w = self.lock();
+            (self.max_queued(&w), w.queued + w.file_bytes as usize)
+        };
+        if o.held > max || o.held + queued > max {
             self.ordered_sent(Err(Error::Overloaded));
         }
     }
@@ -2907,13 +2930,15 @@ impl ConnInner {
         if self.needs_seal() {
             // All of it is queued in memory: refuse up front what cannot fit, rather than read
             // up to `max_queued_bytes` of it from disk and fail halfway.
-            let max = self.cfg.telemetry.live().max_queued_bytes() as u64;
-            if len.saturating_add(self.queued_bytes() as u64) > max {
-                if let Some(s) = &self.lock().stats {
+            let w = self.lock();
+            let max = self.max_queued(&w) as u64;
+            if len.saturating_add(w.queued as u64 + w.file_bytes) > max {
+                if let Some(s) = &w.stats {
                     s.overloaded.add(1);
                 }
                 return Err(Error::Overloaded);
             }
+            drop(w);
             // Records must be sealed: pass the file through memory in blocks.
             let (mut pos, mut left) = (offset, len);
             while left > 0 {
@@ -3251,7 +3276,8 @@ impl<H> Conn<H> {
     }
 
     /// Writes `data` now if the socket takes it, queues the rest (copying). Never blocks.
-    /// Fails with `Closed` after close, `Overloaded` beyond `Config::max_queued_bytes`.
+    /// Fails with `Closed` after close, `Overloaded` beyond `Config::max_queued_bytes` (or the
+    /// connection's own bound, [`set_max_queued_bytes`](Self::set_max_queued_bytes)).
     pub fn send(&self, data: &[u8]) -> Result<()> {
         self.inner.send(data)
     }
@@ -3403,6 +3429,28 @@ impl<H> Conn<H> {
         self.inner.set_relayed(relayed);
     }
 
+    /// Gives this connection a bound of its own on the bytes queued for it, in place of the
+    /// engine's `Config::max_queued_bytes`: past `n` (what is queued plus what is being sent),
+    /// a send fails with `Overloaded` and sends nothing. `None` restores the engine's bound.
+    /// Callable from any thread, at any time (in `on_open` too); the next send is checked
+    /// against it. Bytes queued already stay queued when the bound is lowered below them: only
+    /// later sends fail until the queue drains under it.
+    ///
+    /// For a connection that carries many streams with windows of their own (a tunnel's or a
+    /// mesh's link), whose queue may hold all their windows at once while the engine's bound
+    /// suits its clients. `Config::write_high_watermark` is not changed by it (see
+    /// [`set_relayed`](Self::set_relayed)), nor are the ordered responses of HTTP/1.1, which
+    /// count toward this bound as they count toward the engine's.
+    pub fn set_max_queued_bytes(&self, n: Option<usize>) {
+        self.inner.set_max_queued_bytes(n);
+    }
+
+    /// The bound of this connection's send queue in force: its own
+    /// ([`set_max_queued_bytes`](Self::set_max_queued_bytes)) or the engine's.
+    pub fn max_queued_bytes(&self) -> usize {
+        self.inner.max_queued_bytes()
+    }
+
     /// Gives this connection an idle timeout of its own, in place of the engine's
     /// (`Config::idle_timeout` for TCP, `Config::udp_idle_timeout` for a UDP peer, accepted or
     /// dialed): `Some(d)` closes it once nothing arrived for `d` (at least a millisecond),
@@ -3539,6 +3587,12 @@ impl ConnHandle {
     /// last activity; same backends and errors.
     pub fn set_idle_timeout(&self, timeout: Option<Duration>) -> Result<()> {
         self.inner.set_idle_timeout(timeout)
+    }
+
+    /// [`Conn::set_max_queued_bytes`]: the connection's own bound of its send queue (`None`:
+    /// the engine's), for its next send.
+    pub fn set_max_queued_bytes(&self, n: Option<usize>) {
+        self.inner.set_max_queued_bytes(n);
     }
 
     /// Closes the connection at `at`, whatever it sends meanwhile, unless

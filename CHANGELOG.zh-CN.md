@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：连接自己的发送队列上限（akio-core、akio）
+
+akit 的 A234，用于其隧道和 LLM 网格的链路，这些链路的队列要容纳各个流的窗口；ADR-181。
+`Conn::set_max_queued_bytes(Some(n))`（`ConnHandle` 上也有）为连接设置自己的上限，代替引擎的
+`Config::max_queued_bytes`；`None` 恢复引擎的；`Conn::max_queued_bytes()` 读出生效的上限。可在
+任意线程调用；下一次发送即按它检查（`send_room`、HTTP/1.1 被扣住的有序响应以及经由 transport 发送的
+文件也一样）。把它降到已排队字节数以下不会丢弃任何内容；`write_high_watermark` 不变。`WriteState`
+大 16 字节。
+
 ### 新增：连接句柄、关闭期限，以及监听器的接受与关闭钩子（akio-core、akio、akio-http）
 
 akit 的 A232，用于其控制台的连接规则（fit 的规则：未登录的连接在接受 5 秒后关闭；有会话的连接空闲
