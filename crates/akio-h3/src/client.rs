@@ -19,7 +19,10 @@ use akio_quic::{Connection, ConnectionError, Dir, QuicHandler, StreamId};
 
 use crate::frame::{self, Piece, Reader, StreamReader};
 use crate::qpack::{self, FieldBuf, SectionError};
-use crate::{Blocked, EncShared, H3Config, Peer, Settings, StreamLink, StreamMap, Uni, code, sid};
+use crate::{
+    Blocked, Drains, EncShared, H3Config, Peer, Settings, StreamLink, StreamMap, Uni, code, lock,
+    run_drain, sid,
+};
 
 type Callback = Box<dyn FnOnce(Result<Response, H3Error>) + Send>;
 type WsDone = Box<dyn FnOnce(Result<WsSender, H3Error>) + Send>;
@@ -708,6 +711,7 @@ impl H3Client {
             max_body: opts.max_body_bytes,
             uni: StreamMap::default(),
             ws: StreamMap::default(),
+            ws_drains: Arc::default(),
             ws_answer: None,
             dl_start: None,
             dl: StreamMap::default(),
@@ -1217,6 +1221,8 @@ struct ClientConn {
     ws_answer: Option<Box<WsAnswer>>,
     /// Open WebSockets, by stream.
     ws: StreamMap<(StreamReader, WsSession)>,
+    /// Their drain waiters (`WsSender::on_drain`), run once their stream has room.
+    ws_drains: Arc<Drains>,
     /// A streamed response's head `on_resp` just took off its stream, for `report`.
     dl_start: Option<Box<DlStart>>,
     /// Streamed responses past their head, by stream.
@@ -1383,6 +1389,10 @@ impl ClientConn {
         }
         for (_, (_, mut ws)) in self.ws.drain() {
             ws.on_transport_closed();
+        }
+        let drains: Vec<_> = lock(&self.ws_drains).drain().map(|(_, f)| f).collect();
+        for f in drains {
+            f();
         }
         for (_, mut d) in self.dl.drain() {
             d.s.fail(H3Error::Closed(why.clone()));
@@ -1769,7 +1779,7 @@ impl ClientConn {
                 return (w.done)(Err(e));
             }
         };
-        let link = Arc::new(StreamLink::new(c.clone(), id));
+        let link = Arc::new(StreamLink::new(c.clone(), id, self.ws_drains.clone()));
         let mut ws =
             WsSession::client_with_link(link, &w.cfg, pmd, w.handler, protocol, w.close_timeout);
         let sender = ws.sender().clone();
@@ -1811,6 +1821,7 @@ impl ClientConn {
         if fin || fed.is_err() {
             if let Some((_, mut ws)) = self.ws.remove(&id) {
                 ws.on_transport_closed();
+                run_drain(&self.ws_drains, id);
             }
         }
     }
@@ -1941,7 +1952,8 @@ impl QuicHandler for ClientConn {
 
     fn on_stream_reset(&mut self, c: &Connection, id: StreamId, code: u64) {
         if let Some((_, mut ws)) = self.ws.remove(&id) {
-            return ws.on_transport_closed();
+            ws.on_transport_closed();
+            return run_drain(&self.ws_drains, id);
         }
         if let Some(mut d) = self.dl.remove(&id) {
             if d.blocked.take().is_some() {
@@ -1974,7 +1986,14 @@ impl QuicHandler for ClientConn {
         }
     }
 
+    fn on_stream_stopped(&mut self, _c: &Connection, id: StreamId, _code: u64) {
+        // A WebSocket's writes are not wanted any more: its drain waiter runs.
+        run_drain(&self.ws_drains, id);
+    }
+
     fn on_stream_writable(&mut self, _c: &Connection, id: StreamId) {
+        // A WebSocket's drain waiter runs once its stream has room.
+        run_drain(&self.ws_drains, id);
         // An upload whose writes were refused goes on.
         let up = match self.dl.get(&id) {
             Some(d) => Some(d.s.up.clone()),

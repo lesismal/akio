@@ -211,6 +211,7 @@ impl CWs {
             WsState::Open(mut s, sh) => {
                 sh.closed.store(true, Ordering::Release);
                 s.on_transport_closed();
+                sh.emptied();
             }
             WsState::Gone => {}
         }
@@ -230,6 +231,44 @@ struct LinkShared {
     queued: AtomicUsize,
     max: usize,
     closed: AtomicBool,
+    /// The WebSocket's reads are held ([`WsSender::hold_reads`]): the stream's window is not
+    /// given back.
+    held: AtomicBool,
+    /// Called once `queued` is back to 0, or the stream is over ([`WsSender::on_drain`]).
+    drain: Mutex<Option<DrainCb>>,
+}
+
+impl LinkShared {
+    fn new(max: usize) -> LinkShared {
+        LinkShared {
+            q: Mutex::new(LinkQ::default()),
+            queued: AtomicUsize::new(0),
+            max,
+            closed: AtomicBool::new(false),
+            held: AtomicBool::new(false),
+            drain: Mutex::new(None),
+        }
+    }
+
+    fn take_drain(&self) -> Option<DrainCb> {
+        self.drain.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
+    /// `n` queued bytes left the queue: the drain waiter, if that emptied it.
+    fn sent(&self, n: usize) -> Option<DrainCb> {
+        if n > 0 && self.queued.fetch_sub(n, Ordering::AcqRel) == n {
+            return self.take_drain();
+        }
+        None
+    }
+
+    /// Nothing is queued any more (the stream is gone or given up): a drain waiter runs.
+    fn emptied(&self) {
+        self.queued.store(0, Ordering::Release);
+        if let Some(f) = self.take_drain() {
+            f();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -305,7 +344,10 @@ impl WsLink for ClientLink {
             let mut q = self.lock();
             q.scheduled = false;
             q.chunks.pop_back();
-            self.sh.queued.fetch_sub(n, Ordering::AcqRel);
+            drop(q);
+            if let Some(f) = self.sh.sent(n) {
+                f();
+            }
             return Err(match e {
                 akio::Error::Overloaded => akio::Error::Overloaded,
                 _ => akio::Error::Closed,
@@ -328,6 +370,32 @@ impl WsLink for ClientLink {
 
     fn queued_bytes(&self) -> usize {
         self.sh.queued.load(Ordering::Acquire)
+    }
+
+    /// The stream's reads: while held, its window is not given back (as
+    /// [`H2Stream::hold_reads`]); resumed, what was consumed meanwhile goes back at once.
+    fn hold_reads(&self, hold: bool) {
+        self.sh.held.store(hold, Ordering::Release);
+        if !hold {
+            let (sid, sh) = (self.sid, self.sh.clone());
+            let _ = self
+                .conn
+                .run_on_loop(move |h: &mut H2Conn, c| h.ws_release(c, sid, &sh));
+        }
+    }
+
+    /// Once what `send` accepted is in DATA frames, or the stream is over.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        let mut d = self.sh.drain.lock().unwrap_or_else(|p| p.into_inner());
+        if self.sh.queued.load(Ordering::Acquire) == 0 || self.sh.closed.load(Ordering::Acquire) {
+            drop(d);
+            return f();
+        }
+        *d = Some(f);
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        Some(self.conn.peer_addr())
     }
 }
 
@@ -1539,6 +1607,23 @@ impl H2Conn {
         }
     }
 
+    /// A WebSocket's reads were resumed: give back the window consumed while they were held.
+    fn ws_release(&mut self, c: &Conn<Self>, sid: u32, sh: &Arc<LinkShared>) {
+        if sh.held.load(Ordering::Acquire) || self.dead {
+            return;
+        }
+        let Some(st) = self.streams.get_mut(&sid) else {
+            return;
+        };
+        let owed = std::mem::take(&mut st.owed);
+        if owed > 0 && !st.ended {
+            st.recv_window += i64::from(owed);
+            let mut out = Vec::new();
+            window_update(&mut out, sid, owed);
+            let _ = c.send_owned(out);
+        }
+    }
+
     /// A header or idle timeout looks due (`arm`): give the stream up if it is, else check
     /// again when it will be.
     fn expire(&mut self, c: &Conn<Self>, ctl: &Arc<StreamCtl>, phase: u8) {
@@ -1861,12 +1946,7 @@ impl H2Conn {
             max_queued,
             ..
         } = *w;
-        let sh = Arc::new(LinkShared {
-            q: Mutex::new(LinkQ::default()),
-            queued: AtomicUsize::new(0),
-            max: max_queued,
-            closed: AtomicBool::new(false),
-        });
+        let sh = Arc::new(LinkShared::new(max_queued));
         let link: Arc<dyn WsLink> = Arc::new(ClientLink {
             conn: c.clone(),
             sid,
@@ -1910,7 +1990,7 @@ impl H2Conn {
             (std::mem::take(&mut q.chunks), q.end)
         };
         let Some(st) = self.streams.get_mut(&sid) else {
-            sh.queued.store(0, Ordering::Release);
+            sh.emptied();
             return;
         };
         for ch in chunks {
@@ -1921,7 +2001,7 @@ impl H2Conn {
             LinkEnd::Graceful => st.upload_open = false,
             LinkEnd::Now if st.ended => st.upload_open = false,
             LinkEnd::Now => {
-                sh.queued.store(0, Ordering::Release);
+                sh.emptied();
                 return self.cancel(c, sid);
             }
         }
@@ -2040,7 +2120,9 @@ impl H2Conn {
             let n = st.upload.len().min(allow as usize);
             let data: Vec<u8> = st.upload.drain(..n).collect();
             if let Some(CWs(WsState::Open(_, sh))) = st.ws.as_deref() {
-                sh.queued.fetch_sub(n, Ordering::AcqRel);
+                if let Some(f) = sh.sent(n) {
+                    drained = Some(f);
+                }
             }
             if let Some(u) = &st.up {
                 if let Some(f) = u.0.sent(n) {
@@ -2502,9 +2584,19 @@ impl H2Conn {
                 self.conn_recv += i64::from(total);
                 let end_stream = flags & flag::END_STREAM != 0;
                 if let Some(st) = self.streams.get_mut(&sid).filter(|s| s.ws.is_some()) {
-                    // A WebSocket's bytes: consumed now, so the window is given back now.
+                    // A WebSocket's bytes: consumed now, so the window is given back now,
+                    // unless its reads are held (`ws_release` gives it back then).
                     if !end_stream {
-                        window_update(&mut out, sid, total);
+                        let held = matches!(
+                            st.ws.as_deref(),
+                            Some(CWs(WsState::Open(_, sh))) if sh.held.load(Ordering::Acquire)
+                        );
+                        if held {
+                            st.recv_window -= i64::from(total);
+                            st.owed = st.owed.saturating_add(total);
+                        } else {
+                            window_update(&mut out, sid, total);
+                        }
                     }
                     if let (Some(CWs(WsState::Open(ws, _))), true) =
                         (st.ws.as_deref_mut(), start <= end)

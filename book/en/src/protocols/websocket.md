@@ -126,6 +126,25 @@ Each WebSocket is one stream: the stream's and the connection's windows pace it.
 producer when to wait. A close frame ends our half of the stream, `RST_STREAM` or a lost
 connection reach `on_close` as 1006, and graceful shutdown closes with 1001.
 
+## Pacing a WebSocket
+
+A relay or a tunnel whose messages come from, or go to, other connections links their
+backpressure (rule 8) through the `WsSender`, from any thread:
+
+- `queued_bytes()`: what waits to go out; past a high water, hold what feeds this WebSocket.
+- `on_drain(f)`: `f` runs once that queue is empty again (at once if it is), or when the
+  connection closes; the last waiter set wins. Over HTTP/3 it runs once the QUIC stream's send
+  buffer has room, as for a streamed response.
+- `hold_reads(true)` / `hold_reads(false)`: stop and resume reading from the peer, so that its
+  flow control stops it while what this WebSocket delivers cannot be written on. Over TCP or TLS
+  the connection's reads; over HTTP/2 and HTTP/3 the stream's (its window is not given back),
+  the connection's other streams going on.
+- `peer_addr()`: the peer's address (the HTTP/2 or QUIC connection's for a stream).
+- `set_relayed(true)`: over TCP or TLS, the connection's reads no longer pause because its own
+  output passed `write_high_watermark` (`Conn::set_relayed`); `set_max_queued_bytes(Some(n))`
+  gives it a send-queue bound of its own (`Conn::set_max_queued_bytes`). Over HTTP/2 and HTTP/3
+  the first does nothing and the second fails with `Unsupported`.
+
 ## Not done
 
 Client: cookies across redirects (set a `Cookie` header from `akio_http::cookie::CookieJar::header`

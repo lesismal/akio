@@ -731,6 +731,8 @@ struct ServerHost<'a, S> {
     c: &'a Connection,
     id: StreamId,
     sink: &'a SharedSink,
+    /// The connection's drain waiters (a WebSocket's `on_drain`).
+    drains: &'a Arc<Drains>,
     certs: &'a PeerCerts,
     local: SocketAddr,
 }
@@ -750,7 +752,11 @@ impl<S: Service> Host for ServerHost<'_, S> {
         let mut st =
             akio_http::transport::start_conn(self.svc, request, self.sink, tag(self.id, head_only));
         if ws {
-            let link = Arc::new(StreamLink::new(self.c.clone(), self.id));
+            let link = Arc::new(StreamLink::new(
+                self.c.clone(),
+                self.id,
+                self.drains.clone(),
+            ));
             if let Some(mut w) = st.take_websocket(link) {
                 w.open();
                 return Body::Ws(Box::new(w));
@@ -803,6 +809,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             sink: &self.sink,
+            drains: &self.out.drains,
             certs: &self.certs,
             local: self.local,
         };
@@ -933,6 +940,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             sink: &self.sink,
+            drains: &self.out.drains,
             certs: &self.certs,
             local: self.local,
         };
@@ -1030,7 +1038,12 @@ impl<S: Service> ServerConn<S> {
             self.conn.blocked -= 1;
             self.conn.dec.cancel(sid(id));
         }
+        let ws = matches!(r.sink, Some(Body::Ws(_)));
         r.finish_sink(None);
+        if ws {
+            // A WebSocket's stream is done: its drain waiter runs (outside its sender's lock).
+            run_drain(&self.out.drains, id);
+        }
     }
 }
 
@@ -1491,14 +1504,18 @@ pub(crate) struct StreamLink {
     c: Connection,
     id: StreamId,
     done: AtomicBool,
+    /// The connection's drain waiters, run when a stream becomes writable, is stopped or reset,
+    /// or the connection closes.
+    drains: Arc<Drains>,
 }
 
 impl StreamLink {
-    pub(crate) fn new(c: Connection, id: StreamId) -> StreamLink {
+    pub(crate) fn new(c: Connection, id: StreamId, drains: Arc<Drains>) -> StreamLink {
         StreamLink {
             c,
             id,
             done: AtomicBool::new(false),
+            drains,
         }
     }
 
@@ -1539,6 +1556,31 @@ impl WsLink for StreamLink {
 
     fn queued_bytes(&self) -> usize {
         self.c.queued_bytes(self.id)
+    }
+
+    /// What arrives stays in the stream's receive buffer and its window is not extended
+    /// (`Connection::hold_reads`).
+    fn hold_reads(&self, hold: bool) {
+        let _ = self.c.hold_reads(self.id, hold);
+    }
+
+    /// Once the stream's send buffer has room (at once if it has), as a streamed response's
+    /// `BodySink::on_drain`: QUIC reports room, not emptiness.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        // Registered first: a writable event from the I/O thread meanwhile finds it.
+        lock(&self.drains).insert(self.id, f);
+        let now = !self.is_open()
+            || match self.c.send_capacity(self.id) {
+                Ok(room) => room > 0,
+                Err(_) => true, // the stream is gone
+            };
+        if now {
+            run_drain(&self.drains, self.id);
+        }
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        Some(self.c.remote_addr())
     }
 }
 

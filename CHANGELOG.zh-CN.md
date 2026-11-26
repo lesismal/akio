@@ -10,6 +10,21 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：WebSocket 的读取暂停、排空通知与对端地址（akio-ws、akio-http、akio-h3）
+
+akit 的 A236，用于其隧道的 WebSocket 链路和 LLM 网格；ADR-183。`WsSender` 新增
+`hold_reads(bool)`（在 TCP 或 TLS 上暂停连接的读取；在 HTTP/2 和 HTTP/3 上暂停流的读取，期间不归还
+其窗口）、`on_drain(f)`（`queued_bytes()` 回到 0 或连接关闭时运行；在 HTTP/3 上为 QUIC 流的发送缓冲区
+有空间时）、`peer_addr()`、`set_relayed(bool)` 和 `set_max_queued_bytes(Option<usize>)`（在 TCP 或
+TLS 上作用于连接；在 HTTP/2 和 HTTP/3 上前者不做任何事，后者以 `Unsupported` 失败）。服务端
+（`Context::upgrade_websocket`，HTTP/1.1、HTTP/2 和 HTTP/3）与客户端（`akio_ws::client`、
+`H2Client::websocket`、`H3Client::websocket`）都支持，可在任意线程调用。
+
+### 修复：`akio_ws::client::dial_blocking` 转发 `on_message_ref`（akio-ws）
+
+交回 sender 的包装只转发 `on_message`，因此只实现 `on_message_ref` 的 handler 通过 `dial_blocking`
+收不到任何消息。
+
 ### 新增：TLS 客户端的固定服务端证书（akio-tls、akio-quic）
 
 akit 的 A235，用于其隧道和 LLM 网格到自签名 hub 的链路；ADR-182。
