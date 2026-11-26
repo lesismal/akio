@@ -279,6 +279,9 @@ struct Cmsg<T> {
 /// multicast destination picks the link it is sent on, as `IP_MULTICAST_IF` would for the whole
 /// socket. The source address is the system's choice for that interface. The family of the
 /// control message is the socket's (an IPv4 destination on an IPv6 socket is sent mapped).
+/// macOS, IPv4 multicast from an IPv4 socket: `IP_MULTICAST_IFINDEX` is set for the send
+/// instead (and put back), since there `IP_PKTINFO` fails on an interface without a multicast
+/// route (`lo0`, or every interface but the primary one).
 pub fn send_to_on(
     socket: &UdpSocket,
     data: &[u8],
@@ -293,6 +296,12 @@ pub fn send_to_on(
         (true, SocketAddr::V4(a)) => SocketAddr::new(a.ip().to_ipv6_mapped().into(), a.port()),
         _ => addr,
     };
+    #[cfg(target_os = "macos")]
+    if let (false, SocketAddr::V4(a)) = (v6, dest)
+        && a.ip().is_multicast()
+    {
+        return send_multicast_v4_on(socket, data, dest, interface);
+    }
     if v6 {
         let info = ffi::in6_pktinfo {
             ipi6_addr: ffi::in6_addr::default(),
@@ -313,6 +322,74 @@ pub fn send_to_on(
         };
         send_cmsg(socket, data, &dest, ffi::IPPROTO_IP, ffi::IP_PKTINFO, info)
     }
+}
+
+/// Serializes the sends of IPv4 multicast on macOS while [`send_to_on`] switches a socket's
+/// multicast interface (see [`send_multicast_v4_on`]).
+#[cfg(target_os = "macos")]
+static MULTICAST_V4: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// (internal) For a send to `addr` that does not name an interface: on macOS, when `addr` is an
+/// IPv4 multicast group, the lock [`send_to_on`] holds while it switches the socket's multicast
+/// interface, so this send does not leave on the interface another one named; elsewhere, and
+/// for other destinations, `None`. Hold it across the send.
+#[doc(hidden)]
+pub fn multicast_send_guard(addr: &SocketAddr) -> Option<std::sync::MutexGuard<'static, ()>> {
+    #[cfg(target_os = "macos")]
+    if let SocketAddr::V4(a) = addr
+        && a.ip().is_multicast()
+    {
+        return Some(MULTICAST_V4.lock().unwrap_or_else(|p| p.into_inner()));
+    }
+    let _ = addr;
+    None
+}
+
+/// macOS, an IPv4 multicast destination: the interface named in `IP_PKTINFO` scopes the route
+/// lookup to that interface there, and an interface without a route for 224.0.0.0/4 (`lo0`, or
+/// any but the one the multicast route names) fails with `ENETUNREACH`, where Linux sends out of
+/// it. `IP_MULTICAST_IFINDEX` picks the interface without a route, so it is set on the socket
+/// for this send and put back after, under [`MULTICAST_V4`] (which the socket's other IPv4
+/// multicast sends take too, [`multicast_send_guard`]).
+#[cfg(target_os = "macos")]
+fn send_multicast_v4_on(
+    socket: &UdpSocket,
+    data: &[u8],
+    dest: SocketAddr,
+    interface: u32,
+) -> io::Result<usize> {
+    let _g = MULTICAST_V4.lock().unwrap_or_else(|p| p.into_inner());
+    let fd = socket.as_raw_fd();
+    let mut old: u32 = 0;
+    let mut len = size_of::<u32>() as ffi::socklen_t;
+    // SAFETY: `old` is valid for `len` bytes of writes; the kernel writes at most `len`.
+    crate::net::cvt(unsafe {
+        ffi::getsockopt(
+            fd,
+            ffi::IPPROTO_IP,
+            ffi::IP_MULTICAST_IFINDEX,
+            (&raw mut old).cast(),
+            &raw mut len,
+        )
+    })?;
+    let set = |index: u32| {
+        // SAFETY: `index` outlives the call and the length matches its type.
+        crate::net::cvt(unsafe {
+            ffi::setsockopt(
+                fd,
+                ffi::IPPROTO_IP,
+                ffi::IP_MULTICAST_IFINDEX,
+                (&raw const index).cast(),
+                size_of::<u32>() as ffi::socklen_t,
+            )
+        })
+        .map(drop)
+    };
+    set(interface)?;
+    let sent = socket.send_to(data, dest);
+    // Put back before the lock goes, whatever the send did.
+    set(old)?;
+    sent
 }
 
 fn send_cmsg<T: Copy>(
@@ -441,6 +518,45 @@ mod tests {
                 assert!(a.prefix_len <= if a.ip.is_ipv4() { 32 } else { 128 });
             }
         }
+    }
+
+    /// macOS: IPv4 multicast out of `lo0`, which has no route for 224.0.0.0/4 (the multicast
+    /// route names the primary interface): `IP_PKTINFO` failed with `ENETUNREACH` there; the
+    /// socket's `IP_MULTICAST_IFINDEX` is switched for the send and put back after.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ipv4_multicast_leaves_on_an_interface_without_the_multicast_route() {
+        let lo = interfaces()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.flags.is_loopback() && i.flags.is_multicast())
+            .unwrap();
+        let rx = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let group = Ipv4Addr::new(239, 255, 42, 91);
+        rx.join_multicast_v4(&group, &Ipv4Addr::LOCALHOST).unwrap();
+        rx.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let tx = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let dest = SocketAddr::new(group.into(), rx.local_addr().unwrap().port());
+        assert_eq!(send_to_on(&tx, b"via lo0", dest, lo.index).unwrap(), 7);
+        let mut buf = [0u8; 16];
+        let (n, from) = rx.recv_from(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"via lo0");
+        assert_eq!(from.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        // The socket's own multicast interface is back to the system's choice.
+        let mut v: u32 = u32::MAX;
+        let mut len = size_of::<u32>() as ffi::socklen_t;
+        // SAFETY: `v` is valid for `len` bytes of writes.
+        let r = unsafe {
+            ffi::getsockopt(
+                tx.as_raw_fd(),
+                ffi::IPPROTO_IP,
+                ffi::IP_MULTICAST_IFINDEX,
+                (&raw mut v).cast(),
+                &raw mut len,
+            )
+        };
+        assert_eq!((r, v), (0, 0));
     }
 
     #[test]

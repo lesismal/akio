@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：macOS 上从指定接口发送 IPv4 组播（akio-sys、akio-core）
+
+`UdpBinding::send_to_on`（以及 `akio_sys::send_to_on`）用 `IP_PKTINFO` 控制消息指定接口，而 macOS 会把它
+当作限定在该接口上的路由查找：没有 224.0.0.0/4 路由的接口（`lo0`，或组播路由所在接口以外的任何接口）
+返回 `ENETUNREACH`，于是 mDNS（akio-webrtc）无法在这些接口上应答，
+`ipv4_group_reports_the_interface_each_datagram_arrived_on` 在只有一个网络接口的 Mac 上总是失败。现在在
+macOS 上发送 IPv4 组播时，为这次发送设置 socket 的 `IP_MULTICAST_IFINDEX`（它不经路由直接选定接口），
+发完再恢复，并持有一把锁；binding 的其他 IPv4 组播发送（`send_to`、`send_to_tos`）也拿这把锁，所以不会
+有发送从别人指定的接口发出。Linux、IPv6 和单播不受影响。
+
 ### 修复：线程扩容后很快又缩容时连接被重置（akio-epoll、akio-uring）
 
 扩容时，组会让持有某个 `SO_REUSEPORT` socket 的线程把它交回（这个 socket 是之前缩容时转交出去的），

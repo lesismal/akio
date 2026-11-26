@@ -513,6 +513,8 @@ impl UdpBinding {
     /// non-blocking: when its send buffer is full the datagram is dropped with
     /// `ErrorKind::WouldBlock` (UDP semantics; protocols on top retransmit).
     pub fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<()> {
+        // macOS: not while `send_to_on` has switched the multicast interface (akio-sys).
+        let _g = akio_sys::multicast_send_guard(&addr);
         let mut retried = false;
         loop {
             match self.sock.send_to(data, addr) {
@@ -529,8 +531,10 @@ impl UdpBinding {
     /// interface goes with the datagram (`IP_PKTINFO` / `IPV6_PKTINFO`), so a datagram to a
     /// multicast group leaves on that link, as `IP_MULTICAST_IF` would make every datagram of
     /// the socket do. What IPv4 multicast on several interfaces needs (IPv6 can name the link
-    /// in the destination's scope id instead). Linux and macOS; elsewhere a non-zero
-    /// `interface` fails with [`io::ErrorKind::Unsupported`].
+    /// in the destination's scope id instead). Linux and macOS (where IPv4 multicast switches
+    /// the socket's `IP_MULTICAST_IFINDEX` for the send instead, under a lock the binding's other
+    /// IPv4 multicast sends take too); elsewhere a non-zero `interface` fails with
+    /// [`io::ErrorKind::Unsupported`].
     pub fn send_to_on(&self, data: &[u8], addr: SocketAddr, interface: u32) -> io::Result<()> {
         if interface == 0 {
             return self.send_to(data, addr);
@@ -576,6 +580,9 @@ impl UdpBinding {
         {
             let tos = if akio_sys::ecn_available() { tos } else { 0 };
             if tos != 0 || ttl != 0 {
+                // macOS: not while `send_to_on` has switched the multicast interface
+                // (akio-sys); held here only, `send_to` below takes it itself.
+                let _g = akio_sys::multicast_send_guard(&addr);
                 use std::os::fd::AsRawFd;
                 let fd = self.sock.as_raw_fd();
                 let v6 = self.local.is_ipv6();

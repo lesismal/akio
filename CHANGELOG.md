@@ -10,6 +10,18 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: IPv4 multicast out of a chosen interface on macOS (akio-sys, akio-core)
+
+`UdpBinding::send_to_on` (and `akio_sys::send_to_on`) named the interface in an `IP_PKTINFO`
+control message, which macOS turns into a route lookup scoped to that interface: an interface
+without a route for 224.0.0.0/4 (`lo0`, or any but the one the multicast route names) failed
+with `ENETUNREACH`, so mDNS (akio-webrtc) could not answer on it, and
+`ipv4_group_reports_the_interface_each_datagram_arrived_on` failed on every Mac with one network
+interface. There an IPv4 multicast send now sets the socket's `IP_MULTICAST_IFINDEX` (which picks
+the interface without a route) for the send and puts it back, under a lock that the binding's
+other IPv4 multicast sends (`send_to`, `send_to_tos`) take too, so none leaves on the interface
+another named. Linux, IPv6 and unicast are unchanged.
+
 ### Fixed: connections reset when the thread count shrinks again soon after growing (akio-epoll, akio-uring)
 
 Growing the I/O threads asks the loop holding an `SO_REUSEPORT` socket handed on by an earlier

@@ -47,6 +47,8 @@ pub use icmp::{IcmpReport, enable_recverr, is_icmp_error, recv_icmp};
 #[cfg(target_os = "macos")]
 pub use icmp_mac::{IcmpListener, icmp_source_matches};
 pub use icmp_packet::{IcmpPacket, parse_icmp_error};
+#[doc(hidden)]
+pub use iface::multicast_send_guard;
 pub use iface::{Interface, InterfaceAddr, InterfaceFlags, interfaces, send_to_on};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
