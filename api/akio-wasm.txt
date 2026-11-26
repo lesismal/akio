@@ -987,9 +987,9 @@ impl<S> akio_wasm::Store<S>
 pub fn akio_wasm::Store<S>::typed_func<P: akio_wasm::WasmParams, R: akio_wasm::WasmResults>(&self, akio_wasm::Func) -> core::result::Result<akio_wasm::TypedFunc<P, R>, akio_wasm::Trap>
 impl<S> core::fmt::Debug for akio_wasm::Store<S>
 pub fn akio_wasm::Store<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<S> core::marker::Send for akio_wasm::Store<S> where alloc::vec::Vec<alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&mut akio_wasm::Caller<'_, S>, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Send, S: core::marker::Send
-impl<S> core::marker::Sync for akio_wasm::Store<S> where alloc::vec::Vec<alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&mut akio_wasm::Caller<'_, S>, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Sync, S: core::marker::Sync
-impl<S> core::marker::Unpin for akio_wasm::Store<S> where alloc::vec::Vec<alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&mut akio_wasm::Caller<'_, S>, &[akio_wasm::Value], &mut [akio_wasm::Value]) -> core::result::Result<(), akio_wasm::Trap> + core::marker::Send + core::marker::Sync)>>: core::marker::Unpin, S: core::marker::Unpin
+impl<S> core::marker::Send for akio_wasm::Store<S> where alloc::vec::Vec<HostFn<S>>: core::marker::Send, S: core::marker::Send
+impl<S> core::marker::Sync for akio_wasm::Store<S> where alloc::vec::Vec<HostFn<S>>: core::marker::Sync, S: core::marker::Sync
+impl<S> core::marker::Unpin for akio_wasm::Store<S> where alloc::vec::Vec<HostFn<S>>: core::marker::Unpin, S: core::marker::Unpin
 impl<S> !core::panic::unwind_safe::RefUnwindSafe for akio_wasm::Store<S>
 impl<S> !core::panic::unwind_safe::UnwindSafe for akio_wasm::Store<S>
 pub struct akio_wasm::Table
