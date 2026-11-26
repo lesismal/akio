@@ -5,10 +5,10 @@
 
 use std::hint::black_box;
 
-use akio_crypto::chacha::ChaCha20Poly1305;
+use akio_crypto::chacha::{ChaCha20Poly1305, XChaCha20Poly1305};
 use akio_crypto::ed25519::SigningKey;
 use akio_crypto::gcm::AesGcm;
-use akio_crypto::hash::Sha256;
+use akio_crypto::hash::{Blake2b, Sha256};
 use akio_crypto::mac::Hmac;
 use akio_crypto::rsa::HashAlg;
 use akio_crypto::seed::Seed;
@@ -267,6 +267,22 @@ pub(crate) fn all() -> Vec<Spec> {
             batch: 5000,
             about: "ChaCha20-Poly1305 open, 256 B: valid tag vs random tag (failure skips decryption)",
             make: chacha_valid,
+        },
+        Spec {
+            name: "xchacha20poly1305-open-tag",
+            kind: Kind::Secret,
+            hw: true,
+            batch: 5000,
+            about: "XChaCha20-Poly1305 open, 256 B (HChaCha20 subkey each call): tag wrong in the last byte vs random tag",
+            make: xchacha_tag,
+        },
+        Spec {
+            name: "blake2b-key",
+            kind: Kind::Secret,
+            hw: false,
+            batch: 5000,
+            about: "keyed BLAKE2b-256 over 256 B (Argon2id's hash of the password): all-zero key vs random key",
+            make: blake2b_key,
         },
         Spec {
             name: "hmac-sha256-verify-tag",
@@ -660,6 +676,41 @@ fn chacha_tag_64() -> Box<dyn Target> {
 
 fn chacha_valid() -> Box<dyn Target> {
     chacha(false, 256)
+}
+
+fn xchacha_tag() -> Box<dyn Target> {
+    const XNONCE: [u8; 24] = [0x22; 24];
+    let cipher = XChaCha20Poly1305::new(&[0x11; 32]);
+    let mut ct = vec![0x33u8; 256];
+    let tag = cipher.encrypt_in_place_detached(&XNONCE, AAD, &mut ct);
+    boxed(
+        Aead { cipher, ct, tag },
+        |s: &Aead<XChaCha20Poly1305>, c, rng| (s.ct.clone(), tag_for(&s.tag, c, true, rng)),
+        |s, (buf, tag)| {
+            black_box(
+                s.cipher
+                    .decrypt_in_place_detached(&XNONCE, AAD, black_box(buf), black_box(&*tag))
+                    .is_ok(),
+            );
+        },
+    )
+}
+
+fn blake2b_key() -> Box<dyn Target> {
+    boxed(
+        vec![0x55u8; 256],
+        |_, c, rng| if c == 0 { [0u8; 32] } else { rng.array() },
+        |msg, k| {
+            let Ok(mut h) = Blake2b::new_keyed(black_box(&*k), 32) else {
+                return;
+            };
+            h.update(msg);
+            let mut out = [0u8; 32];
+            if h.finalize_into(&mut out).is_ok() {
+                black_box(out);
+            }
+        },
+    )
 }
 
 fn hmac(near: bool) -> Box<dyn Target> {

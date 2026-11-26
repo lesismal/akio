@@ -1,4 +1,5 @@
-//! Key derivation: HKDF (RFC 5869) and PBKDF2 with HMAC (RFC 8018, section 5.2).
+//! Key derivation: HKDF (RFC 5869), PBKDF2 with HMAC (RFC 8018, section 5.2) and Argon2id
+//! (RFC 9106).
 //!
 //! ```
 //! use akio_crypto::hash::{Sha1, Sha256};
@@ -10,6 +11,10 @@
 //! let mut okm = [0u8; 42];
 //! kdf::hkdf::<Sha256>(b"salt", b"input key material", b"info", &mut okm).unwrap();
 //! ```
+
+mod argon2;
+
+pub use argon2::argon2id;
 
 use crate::Error;
 use crate::hash::Hash;

@@ -23,14 +23,14 @@
 
 | 模块 | 内容 |
 |---|---|
-| `hash` | SHA-1、SHA-224、SHA-256、SHA-384、SHA-512、MD5（流式与一次性，`Hash` trait）；SHAKE128、SHAKE256（FIPS 202，`squeeze` 任意长度） |
+| `hash` | SHA-1、SHA-224、SHA-256、SHA-384、SHA-512、MD5、BLAKE2b-512（流式与一次性，`Hash` trait）；摘要长度最长 64 字节任选、可带密钥的 BLAKE2b（RFC 7693）；SHAKE128、SHAKE256（FIPS 202，`squeeze` 任意长度） |
 | `mac` | 基于任意 `Hash` 的 HMAC（常数时间 `verify`） |
-| `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018） |
+| `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018）、Argon2id（RFC 9106，与 Go 的 `argon2.IDKey` 相同；内存可失败地分配，lane 在作用域线程上运行；ADR-179） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR、CBC（可带 PKCS #7 填充，用于 HLS `AES-128`） |
 | `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时同样用 256 位寄存器处理整条消息（尾部、AAD 与长度块经补零的栈缓冲区：AVX2 没有字节掩码），否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |
 | `seed` | SEED（RFC 4269）及 CTR、CCM（RFC 3610）与 GCM，供 SRTP 使用（RFC 5669；ADR-052）：不用查表，S 盒由固定切片 AES 的求逆电路经域同构再加仿射变换得到，G 函数在 16 个字上位切片运行（ECB / CTR / GCM 同时处理 16 个分组，单个分组与 CCM 的 CBC-MAC 走单字路径）；没有硬件路径 |
-| `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，AVX2 每步 4 个，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`） |
+| `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，AVX2 每步 4 个，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`）、HChaCha20 与 XChaCha20-Poly1305（draft-irtf-cfrg-xchacha，24 字节 nonce） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |
 | `ct_eq` | 常数时间比较 |
@@ -201,7 +201,9 @@ ring 的 2.20 倍（3072：2.19 倍，4096：2.55 倍），RSA-2048 证书握手
 
 - 已知答案测试：NIST CAVP（SHAVS、HMACVS、AESAVS ECB、GCMVS）、FIPS 197、SP 800-38A、GCM
   规范、RFC 1321、2202、4231、5869、6070、3720、4648、8439，以及 Wycheproof（AES-GCM、
-  ChaCha20-Poly1305、HMAC-SHA1/SHA256、HKDF-SHA256），数据放在 `tests/data/`。
+  ChaCha20-Poly1305、XChaCha20-Poly1305、HMAC-SHA1/SHA256、HKDF-SHA256）、RFC 7693 与 9106、
+  draft-irtf-cfrg-xchacha，以及 Go 的 golang.org/x/crypto（Argon2id、BLAKE2b、XChaCha20-Poly1305：
+  `go_x_crypto.txt`，由 `go_x_crypto.go` 打印），数据放在 `tests/data/`。
 - `tests/compat.rs` 把每个原语与被替代的 crate 交叉比对（仅作为 dev-dependency）；`fuzz/` 中有差分
   模糊测试目标 `crypto_hash`、`crypto_aead`（也让 VAES-AVX-512、VAES-AVX2、128 位与可移植四条 AES-GCM 路径原地与非原地
   互相比较，并比较 AVX-512 / IFMA、AVX2 与可移植三条 ChaCha20-Poly1305 路径，两者都包括追加路径）、`crypto_base64`。

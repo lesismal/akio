@@ -3,6 +3,7 @@ pub use akio::Acceptor
 pub use akio::AnyAcceptor
 pub use akio::Config
 pub use akio::Conn
+pub use akio::ConnHandle
 pub use akio::ConnInfo
 pub use akio::DatagramSender
 pub use akio::Datagrams
@@ -434,6 +435,8 @@ pub fn akio::Listener::backend(self, akio::Backend) -> Self
 pub fn akio::Listener::balance(self, akio::Balance) -> Self
 pub fn akio::Listener::dedicated(self) -> Self
 pub fn akio::Listener::filter(self, impl core::ops::function::Fn(&core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn akio::Listener::on_accept(self, impl core::ops::function::Fn(&akio_core::conn::ConnHandle) + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn akio::Listener::on_close(self, impl core::ops::function::Fn(&akio_core::conn::ConnHandle) + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn akio::Listener::scheduling(self, akio::Scheduling) -> Self
 pub fn akio::Listener::serve<A: akio_core::handler::Acceptor>(self, A) -> Self
 pub fn akio::Listener::serve_any(self, impl core::convert::Into<akio_core::handler::AnyAcceptor>) -> Self

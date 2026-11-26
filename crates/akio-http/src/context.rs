@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use akio_core::{Part, ResponseSlot, ResponseStream};
+use akio_core::{ConnHandle, Part, ResponseSlot, ResponseStream};
 
 use crate::h2::{H2Responder, H2Stream};
 use akio_ws::{WsConfig, WsHandler, deflate::PmdParams};
@@ -1041,6 +1041,27 @@ impl Context {
     /// HTTP/3; unspecified where there is none.
     pub fn local_addr(&self) -> SocketAddr {
         self.req.local
+    }
+
+    /// A handle to the connection the request came on (akit A232, ADR-180): to change its idle
+    /// timeout ([`ConnHandle::set_idle_timeout`]), cancel or set a deadline for it
+    /// ([`ConnHandle::cancel_close`], [`ConnHandle::close_after`]) or close it, now or later
+    /// from any thread; its [`id`](ConnHandle::id) is the one `Listener::on_accept` saw. On
+    /// HTTP/2 that is the whole connection, every stream of it. `None` on HTTP/3 (the QUIC
+    /// connection is the transport's) and once the response has been handed off
+    /// ([`detach`](Self::detach), [`stream_response`](Self::stream_response)): take the
+    /// handle before.
+    ///
+    /// The connection's idle timeout is the engine's (`Config::idle_timeout`) unless set here;
+    /// [`HttpConfig`](crate::HttpConfig)'s head, body and keep-alive timeouts still apply
+    /// alongside it, so the shorter one closes an idle connection.
+    pub fn connection(&self) -> Option<ConnHandle> {
+        let inner = match self.responder.as_ref()? {
+            Out::H1(r) => r.slot.conn()?.clone(),
+            Out::H2(r) => r.conn()?,
+            Out::Ext(_) => return None,
+        };
+        Some(ConnHandle::from_inner(inner))
     }
 
     /// A route parameter (`:id`, `{id:re}` or `*rest`) matched by the router, percent-decoded

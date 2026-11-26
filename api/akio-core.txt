@@ -644,6 +644,7 @@ pub fn akio_core::Conn<H>::close_after_send(&self)
 pub fn akio_core::Conn<H>::cork(&self)
 pub fn akio_core::Conn<H>::filter_allows(&self, core::net::socket_addr::SocketAddr) -> bool
 pub fn akio_core::Conn<H>::flush(&self) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::handle(&self) -> akio_core::ConnHandle
 pub fn akio_core::Conn<H>::hold_reads(&self, bool)
 pub fn akio_core::Conn<H>::id(&self) -> u64
 pub fn akio_core::Conn<H>::is_open(&self) -> bool
@@ -670,6 +671,31 @@ impl<H> core::marker::Sync for akio_core::Conn<H> where core::marker::PhantomDat
 impl<H> core::marker::Unpin for akio_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Unpin
 impl<H> !core::panic::unwind_safe::RefUnwindSafe for akio_core::Conn<H>
 impl<H> !core::panic::unwind_safe::UnwindSafe for akio_core::Conn<H>
+pub struct akio_core::ConnHandle
+impl akio_core::ConnHandle
+pub fn akio_core::ConnHandle::cancel_close(&self)
+pub fn akio_core::ConnHandle::close(&self)
+pub fn akio_core::ConnHandle::close_after(&self, core::time::Duration) -> akio_core::Result<()>
+pub fn akio_core::ConnHandle::close_at(&self, std::time::Instant) -> akio_core::Result<()>
+pub fn akio_core::ConnHandle::id(&self) -> u64
+pub fn akio_core::ConnHandle::is_open(&self) -> bool
+pub fn akio_core::ConnHandle::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::ConnHandle::peer_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::ConnHandle::set_idle_timeout(&self, core::option::Option<core::time::Duration>) -> akio_core::Result<()>
+impl core::clone::Clone for akio_core::ConnHandle
+pub fn akio_core::ConnHandle::clone(&self) -> Self
+impl core::cmp::Eq for akio_core::ConnHandle
+impl core::cmp::PartialEq for akio_core::ConnHandle
+pub fn akio_core::ConnHandle::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_core::ConnHandle
+pub fn akio_core::ConnHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_core::ConnHandle
+pub fn akio_core::ConnHandle::hash<S: core::hash::Hasher>(&self, &mut S)
+impl core::marker::Send for akio_core::ConnHandle
+impl core::marker::Sync for akio_core::ConnHandle
+impl core::marker::Unpin for akio_core::ConnHandle
+impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::ConnHandle
+impl !core::panic::unwind_safe::UnwindSafe for akio_core::ConnHandle
 #[non_exhaustive] pub struct akio_core::ConnInfo
 pub akio_core::ConnInfo::age: core::time::Duration
 pub akio_core::ConnInfo::backpressure: bool

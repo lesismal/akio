@@ -30,6 +30,22 @@ pub fn akio_sys::process::allowed_cpus() -> core::io::error::Result<alloc::vec::
 pub fn akio_sys::process::kill(u32, i32) -> core::io::error::Result<()>
 pub fn akio_sys::process::pin_current_thread(&[usize]) -> core::io::error::Result<()>
 pub fn akio_sys::process::signal_pipe(&[i32]) -> core::io::error::Result<std::os::unix::net::stream::UnixStream>
+pub mod akio_sys::terminal
+pub struct akio_sys::terminal::TerminalGuard<'fd>
+impl akio_sys::terminal::TerminalGuard<'_>
+pub fn akio_sys::terminal::TerminalGuard<'_>::restore(self) -> core::io::error::Result<()>
+impl core::ops::drop::Drop for akio_sys::terminal::TerminalGuard<'_>
+pub fn akio_sys::terminal::TerminalGuard<'_>::drop(&mut self)
+impl<'fd> core::fmt::Debug for akio_sys::terminal::TerminalGuard<'fd>
+pub fn akio_sys::terminal::TerminalGuard<'fd>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'fd> core::marker::Send for akio_sys::terminal::TerminalGuard<'fd>
+impl<'fd> core::marker::Sync for akio_sys::terminal::TerminalGuard<'fd>
+impl<'fd> core::marker::Unpin for akio_sys::terminal::TerminalGuard<'fd>
+impl<'fd> core::panic::unwind_safe::RefUnwindSafe for akio_sys::terminal::TerminalGuard<'fd>
+impl<'fd> core::panic::unwind_safe::UnwindSafe for akio_sys::terminal::TerminalGuard<'fd>
+pub fn akio_sys::terminal::echo_enabled(std::os::fd::owned::BorrowedFd<'_>) -> core::io::error::Result<bool>
+pub fn akio_sys::terminal::no_echo(std::os::fd::owned::BorrowedFd<'_>) -> core::io::error::Result<akio_sys::terminal::TerminalGuard<'_>>
+pub fn akio_sys::terminal::raw(std::os::fd::owned::BorrowedFd<'_>) -> core::io::error::Result<akio_sys::terminal::TerminalGuard<'_>>
 pub enum akio_sys::FsEvent
 pub akio_sys::FsEvent::Changed
 pub akio_sys::FsEvent::Changed::id: akio_sys::WatchId

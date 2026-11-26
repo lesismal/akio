@@ -164,9 +164,29 @@ impl core::marker::Sync for akio_crypto::chacha::Poly1305
 impl core::marker::Unpin for akio_crypto::chacha::Poly1305
 impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::chacha::Poly1305
 impl core::panic::unwind_safe::UnwindSafe for akio_crypto::chacha::Poly1305
+pub struct akio_crypto::chacha::XChaCha20Poly1305
+impl akio_crypto::chacha::XChaCha20Poly1305
+pub fn akio_crypto::chacha::XChaCha20Poly1305::decrypt(&self, &[u8; 24], &[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, akio_crypto::Error>
+pub fn akio_crypto::chacha::XChaCha20Poly1305::decrypt_in_place(&self, &[u8; 24], &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::chacha::XChaCha20Poly1305::decrypt_in_place_detached(&self, &[u8; 24], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::chacha::XChaCha20Poly1305::encrypt(&self, &[u8; 24], &[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub fn akio_crypto::chacha::XChaCha20Poly1305::encrypt_in_place(&self, &[u8; 24], &[u8], &mut alloc::vec::Vec<u8>)
+pub fn akio_crypto::chacha::XChaCha20Poly1305::encrypt_in_place_detached(&self, &[u8; 24], &[u8], &mut [u8]) -> [u8; 16]
+pub fn akio_crypto::chacha::XChaCha20Poly1305::new(&[u8; 32]) -> Self
+impl core::clone::Clone for akio_crypto::chacha::XChaCha20Poly1305
+pub fn akio_crypto::chacha::XChaCha20Poly1305::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::chacha::XChaCha20Poly1305
+pub fn akio_crypto::chacha::XChaCha20Poly1305::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::chacha::XChaCha20Poly1305
+impl core::marker::Sync for akio_crypto::chacha::XChaCha20Poly1305
+impl core::marker::Unpin for akio_crypto::chacha::XChaCha20Poly1305
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::chacha::XChaCha20Poly1305
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::chacha::XChaCha20Poly1305
 pub const akio_crypto::chacha::KEY_LEN: usize
 pub const akio_crypto::chacha::NONCE_LEN: usize
 pub const akio_crypto::chacha::TAG_LEN: usize
+pub const akio_crypto::chacha::XNONCE_LEN: usize
+pub fn akio_crypto::chacha::hchacha20(&[u8; 32], &[u8; 16]) -> [u8; 32]
 pub mod akio_crypto::crc
 pub struct akio_crypto::crc::Crc32
 impl akio_crypto::crc::Crc32
@@ -428,6 +448,51 @@ impl core::panic::unwind_safe::UnwindSafe for akio_crypto::gcm::AesGcm
 pub const akio_crypto::gcm::NONCE_LEN: usize
 pub const akio_crypto::gcm::TAG_LEN: usize
 pub mod akio_crypto::hash
+pub struct akio_crypto::hash::Blake2b
+impl akio_crypto::hash::Blake2b
+pub const akio_crypto::hash::Blake2b::BLOCK_LEN: usize
+pub const akio_crypto::hash::Blake2b::MAX_KEY_LEN: usize
+pub const akio_crypto::hash::Blake2b::MAX_OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Blake2b::digest(&mut [u8], &[u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::hash::Blake2b::finalize_into(self, &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
+pub fn akio_crypto::hash::Blake2b::new(usize) -> core::result::Result<Self, akio_crypto::Error>
+pub fn akio_crypto::hash::Blake2b::new_keyed(&[u8], usize) -> core::result::Result<Self, akio_crypto::Error>
+pub fn akio_crypto::hash::Blake2b::output_len(&self) -> usize
+pub fn akio_crypto::hash::Blake2b::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Blake2b
+pub fn akio_crypto::hash::Blake2b::clone(&self) -> Self
+impl core::fmt::Debug for akio_crypto::hash::Blake2b
+pub fn akio_crypto::hash::Blake2b::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::hash::Blake2b
+impl core::marker::Sync for akio_crypto::hash::Blake2b
+impl core::marker::Unpin for akio_crypto::hash::Blake2b
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Blake2b
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Blake2b
+pub struct akio_crypto::hash::Blake2b512(_)
+impl akio_crypto::hash::Blake2b512
+pub fn akio_crypto::hash::Blake2b512::digest(&[u8]) -> [u8; 64]
+impl akio_crypto::hash::Blake2b512
+pub fn akio_crypto::hash::Blake2b512::finalize(self) -> [u8; 64]
+pub fn akio_crypto::hash::Blake2b512::new() -> Self
+pub fn akio_crypto::hash::Blake2b512::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Blake2b512
+pub type akio_crypto::hash::Blake2b512::Output = [u8; 64]
+pub const akio_crypto::hash::Blake2b512::BLOCK_LEN: usize
+pub const akio_crypto::hash::Blake2b512::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Blake2b512::digest(&[u8]) -> [u8; 64]
+pub fn akio_crypto::hash::Blake2b512::finalize(self) -> [u8; 64]
+pub fn akio_crypto::hash::Blake2b512::update(&mut self, &[u8])
+impl core::clone::Clone for akio_crypto::hash::Blake2b512
+pub fn akio_crypto::hash::Blake2b512::clone(&self) -> Self
+impl core::default::Default for akio_crypto::hash::Blake2b512
+pub fn akio_crypto::hash::Blake2b512::default() -> Self
+impl core::fmt::Debug for akio_crypto::hash::Blake2b512
+pub fn akio_crypto::hash::Blake2b512::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for akio_crypto::hash::Blake2b512
+impl core::marker::Sync for akio_crypto::hash::Blake2b512
+impl core::marker::Unpin for akio_crypto::hash::Blake2b512
+impl core::panic::unwind_safe::RefUnwindSafe for akio_crypto::hash::Blake2b512
+impl core::panic::unwind_safe::UnwindSafe for akio_crypto::hash::Blake2b512
 pub struct akio_crypto::hash::Md5
 impl akio_crypto::hash::Md5
 pub fn akio_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
@@ -619,6 +684,13 @@ pub const akio_crypto::hash::Hash::OUTPUT_LEN: usize
 pub fn akio_crypto::hash::Hash::digest(&[u8]) -> Self::Output
 pub fn akio_crypto::hash::Hash::finalize(self) -> Self::Output
 pub fn akio_crypto::hash::Hash::update(&mut self, &[u8])
+impl akio_crypto::hash::Hash for akio_crypto::hash::Blake2b512
+pub type akio_crypto::hash::Blake2b512::Output = [u8; 64]
+pub const akio_crypto::hash::Blake2b512::BLOCK_LEN: usize
+pub const akio_crypto::hash::Blake2b512::OUTPUT_LEN: usize
+pub fn akio_crypto::hash::Blake2b512::digest(&[u8]) -> [u8; 64]
+pub fn akio_crypto::hash::Blake2b512::finalize(self) -> [u8; 64]
+pub fn akio_crypto::hash::Blake2b512::update(&mut self, &[u8])
 impl akio_crypto::hash::Hash for akio_crypto::hash::Md5
 pub type akio_crypto::hash::Md5::Output = [u8; 16]
 pub const akio_crypto::hash::Md5::BLOCK_LEN: usize
@@ -662,6 +734,7 @@ pub fn akio_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
 pub fn akio_crypto::hash::Sha512::finalize(self) -> [u8; 64]
 pub fn akio_crypto::hash::Sha512::update(&mut self, &[u8])
 pub mod akio_crypto::kdf
+pub fn akio_crypto::kdf::argon2id(&[u8], &[u8], u32, u32, u8, &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
 pub fn akio_crypto::kdf::hkdf<H: akio_crypto::hash::Hash>(&[u8], &[u8], &[u8], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
 pub fn akio_crypto::kdf::hkdf_expand<H: akio_crypto::hash::Hash>(&[u8], &[u8], &mut [u8]) -> core::result::Result<(), akio_crypto::Error>
 pub fn akio_crypto::kdf::hkdf_extract<H: akio_crypto::hash::Hash>(&[u8], &[u8]) -> <H as akio_crypto::hash::Hash>::Output
@@ -1165,6 +1238,8 @@ pub fn akio_crypto::x448::x448(&[u8; 56], &[u8; 56]) -> [u8; 56]
 pub akio_crypto::Error::Encoding
 pub akio_crypto::Error::InvalidKey
 pub akio_crypto::Error::InvalidLength
+pub akio_crypto::Error::InvalidParameter
+pub akio_crypto::Error::OutOfMemory
 pub akio_crypto::Error::Random
 pub akio_crypto::Error::Unsupported
 pub akio_crypto::Error::Verification

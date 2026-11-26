@@ -51,7 +51,7 @@ pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use conn::KernelRead;
-pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport, TransportWaker};
+pub use conn::{Conn, ConnHandle, Part, ResponseSlot, ResponseStream, Transport, TransportWaker};
 #[doc(hidden)]
 pub use conn::{ConnInner, LoopLink, RING_IOV, RingSend, RingSent, Task};
 #[cfg(target_os = "linux")]
@@ -68,7 +68,7 @@ pub use group::{Countdown, CountdownToken};
 pub use group::{IcmpError, IcmpHandler, UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]
-pub use handler::{DynAcceptor, DynHandler};
+pub use handler::{ConnHook, DynAcceptor, DynHandler, hooked};
 #[doc(hidden)]
 pub use idle::{IdleCheck, IdleRule};
 #[doc(hidden)]

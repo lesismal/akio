@@ -10,6 +10,48 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: connection handles, close deadlines, and a listener's accept and close hooks (akio-core, akio, akio-http)
+
+akit's A232, for its console's connection rules (fit's: no login, closed 5 s after accept; a
+session, 2 minutes idle; past `max_conns`, the oldest unauthenticated connection evicted);
+ADR-180. `ConnHandle` (akio-core, re-exported by `akio`; `Conn::handle()`) is a cloneable,
+thread-safe handle without the handler type: `id`, `is_open`, addresses, `close`,
+`set_idle_timeout`, and a close deadline, `close_at` / `close_after` (closed then whatever the
+connection sends; the last one set is in force) and `cancel_close`, run by a timer on the
+connection's own I/O thread. `Listener::on_accept` tells an application of every connection
+accepted (after the filter and `max_connections`, before TLS and `on_open`) and
+`Listener::on_close` of every one closed (exactly once for each, panics and refused connections
+included), so it can keep a table of them and close the one it chooses. In akio-http,
+`Context::connection()` gives a request's connection (HTTP/1.1 and HTTP/2; `None` on HTTP/3).
+`ConnInner` is 8 bytes larger; a listener without hooks is unchanged.
+
+### Added: a terminal's echo turned off, and raw mode (akio-sys)
+
+akit's A233, for `akit hash-password` at a terminal. `akio_sys::terminal::no_echo(fd)` turns
+`ECHO` off (line editing and Ctrl-C kept, as Go's `term.ReadPassword`), `terminal::raw(fd)` puts
+the terminal in raw mode (as `cfmakeraw` and Go's `term.MakeRaw`: a key at a time, no echo, no
+signals from keys); both return a `TerminalGuard` that puts back the modes it found when dropped
+or `restore`d, and both fail (`ENOTTY`) for a descriptor that is not a terminal.
+`terminal::echo_enabled(fd)` reads the echo bit. Linux and macOS, through the own `ffi`
+bindings (`termios`, `tcgetattr`, `tcsetattr`, checked against `libc`); tested on a
+pseudo-terminal.
+
+### Added: Argon2id, BLAKE2b and XChaCha20-Poly1305 (akio-crypto)
+
+akit's A230 and A231, for fit's encrypted store; ADR-179. `kdf::argon2id(password, salt, time,
+memory_kib, lanes, out)` is Argon2id (RFC 9106, version 0x13) as Go's `argon2.IDKey`: RFC 9106's
+bounds are errors (`Error::InvalidLength`, the new `Error::InvalidParameter`), the memory is one
+fallible allocation (the new `Error::OutOfMemory`), and the lanes run on scoped threads (up to one
+per lane and per CPU) with the same result as on one. It blocks for a time in proportion to
+`time × memory_kib`: call it off the I/O threads. `hash::Blake2b` (RFC 7693: digests of 1 to 64
+bytes, keyed or not) and `hash::Blake2b512` (the `Hash` trait) come with it. `chacha::hchacha20`
+and `chacha::XChaCha20Poly1305` (`XNONCE_LEN = 24`; draft-irtf-cfrg-xchacha, as Go's
+`chacha20poly1305.NewX`) have `ChaCha20Poly1305`'s `encrypt`, `decrypt` and in-place methods.
+Tested against RFC 9106, RFC 7693, the XChaCha draft, Wycheproof's XChaCha20-Poly1305 vectors and
+Go's golang.org/x/crypto output (fit's Argon2id setting among them); `ct-dudect` has two new
+targets, `xchacha20poly1305-open-tag` and `blake2b-key`. Argon2id reads memory at
+password-dependent indices after its first half pass, by design (docs/constant-time.md).
+
 ### Added: every pool submission is registered with its lane (tests)
 
 A workspace test, `crates/akio/tests/pool_submissions.rs`, scans the libraries' sources for

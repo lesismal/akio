@@ -24,14 +24,14 @@ known-answer vector with and without it. Under Miri nothing is detected.
 
 | Module | What |
 |---|---|
-| `hash` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5 (streaming and one-shot, `Hash` trait); SHAKE128, SHAKE256 (FIPS 202, `squeeze` any length) |
+| `hash` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5, BLAKE2b-512 (streaming and one-shot, `Hash` trait); BLAKE2b with any digest length up to 64 bytes, keyed or not (RFC 7693); SHAKE128, SHAKE256 (FIPS 202, `squeeze` any length) |
 | `mac` | HMAC over any `Hash` (constant-time `verify`) |
-| `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
+| `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018), Argon2id (RFC 9106, as Go's `argon2.IDKey`; memory allocated fallibly, lanes on scoped threads; ADR-179) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR, CBC (with PKCS #7 padding, for HLS `AES-128`) |
 | `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 the whole message too on 256-bit registers (the tail, the AAD and the length block through a zero-padded stack buffer: AVX2 has no byte masks), else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`); `encrypt_append` / `decrypt_append` (hidden, for the TLS record layer) write straight into a vector's spare capacity, without zero-filling it first |
 | `seed` | SEED (RFC 4269) with CTR, CCM (RFC 3610) and GCM, for SRTP (RFC 5669; ADR-052): no tables, the S-boxes as the fixsliced AES's inversion circuit behind a field isomorphism plus affine maps, G bitsliced over sixteen words (sixteen blocks in flight for ECB / CTR / GCM, a one-word path for single blocks and CCM's CBC-MAC); no hardware path |
-| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, AVX2 four, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer) |
+| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, AVX2 four, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer), HChaCha20 and XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha, 24-byte nonces) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
 | `ct_eq` | constant-time comparison |
@@ -257,7 +257,10 @@ doubling is bound by it).
 
 - Known answers: NIST CAVP (SHAVS, HMACVS, AESAVS ECB, GCMVS), FIPS 197, SP 800-38A, the GCM
   specification, RFC 1321, 2202, 4231, 5869, 6070, 3720, 4648, 8439, and Wycheproof (AES-GCM,
-  ChaCha20-Poly1305, HMAC-SHA1/SHA256, HKDF-SHA256), vendored under `tests/data/`.
+  ChaCha20-Poly1305, XChaCha20-Poly1305, HMAC-SHA1/SHA256, HKDF-SHA256), RFC 7693 and 9106,
+  draft-irtf-cfrg-xchacha, and Go's golang.org/x/crypto (Argon2id, BLAKE2b,
+  XChaCha20-Poly1305: `go_x_crypto.txt`, printed by `go_x_crypto.go`), vendored under
+  `tests/data/`.
 - `tests/compat.rs` cross-checks every primitive against the replaced crates (dev-dependencies
   only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also the VAES-AVX-512,
   VAES-AVX2, 128-bit and portable AES-GCM paths against each other, in place and out of place,

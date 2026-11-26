@@ -1,6 +1,7 @@
-//! ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439). All three are constant time by
-//! construction (additions, rotations and XORs; Poly1305 uses 44-bit limbs and
-//! multiplications only).
+//! ChaCha20, Poly1305 and the ChaCha20-Poly1305 AEAD (RFC 8439), and its extended-nonce variant
+//! XChaCha20-Poly1305 (draft-irtf-cfrg-xchacha: [`hchacha20`] derives a subkey from the key and
+//! the nonce's first 16 bytes). All are constant time by construction (additions, rotations and
+//! XORs; Poly1305 uses 44-bit limbs and multiplications only).
 //!
 //! ChaCha20 computes several blocks at once: sixteen (zmm) or four (xmm) with AVX-512 on x86_64,
 //! eight with AVX2 (detected at run time, see `hw`), else four in a lane-parallel layout that
@@ -29,6 +30,8 @@ pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
 /// The Poly1305 tag length in bytes.
 pub const TAG_LEN: usize = 16;
+/// The XChaCha20-Poly1305 nonce length in bytes.
+pub const XNONCE_LEN: usize = 24;
 
 /// The widest implementation a key may use; the default allows all, the others exist for
 /// differential tests and benchmarks.
@@ -1150,6 +1153,144 @@ impl ChaCha20Poly1305 {
     }
 }
 
+/// HChaCha20 (draft-irtf-cfrg-xchacha, section 2.2): ChaCha20's twenty rounds over the key and a
+/// 16-byte nonce, without the final addition, keeping words 0–3 and 12–15. The subkey of
+/// XChaCha20.
+#[must_use]
+pub fn hchacha20(key: &[u8; KEY_LEN], nonce: &[u8; 16]) -> [u8; 32] {
+    let mut s = [0u32; 16];
+    s[..4].copy_from_slice(&[0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574]);
+    for (w, k) in s[4..12].iter_mut().zip(key.chunks_exact(4)) {
+        *w = le32(k);
+    }
+    for (w, n) in s[12..].iter_mut().zip(nonce.chunks_exact(4)) {
+        *w = le32(n);
+    }
+    for _ in 0..10 {
+        quarter(&mut s, 0, 4, 8, 12);
+        quarter(&mut s, 1, 5, 9, 13);
+        quarter(&mut s, 2, 6, 10, 14);
+        quarter(&mut s, 3, 7, 11, 15);
+        quarter(&mut s, 0, 5, 10, 15);
+        quarter(&mut s, 1, 6, 11, 12);
+        quarter(&mut s, 2, 7, 8, 13);
+        quarter(&mut s, 3, 4, 9, 14);
+    }
+    let mut out = [0u8; 32];
+    for (o, w) in out.chunks_exact_mut(4).zip(s[..4].iter().chain(&s[12..])) {
+        o.copy_from_slice(&w.to_le_bytes());
+    }
+    out
+}
+
+/// The XChaCha20-Poly1305 AEAD (draft-irtf-cfrg-xchacha, section 2.3; Go's
+/// `chacha20poly1305.NewX`): ChaCha20-Poly1305 under the subkey [`hchacha20`] derives from the
+/// key and the nonce's first 16 bytes, with the inner nonce four zero bytes then the nonce's
+/// last 8. Its 24-byte nonce is long enough to be chosen at random for each message.
+///
+/// The methods are [`ChaCha20Poly1305`]'s, with a 24-byte nonce.
+///
+/// ```
+/// use akio_crypto::chacha::XChaCha20Poly1305;
+///
+/// let aead = XChaCha20Poly1305::new(&[7u8; 32]);
+/// let nonce = [1u8; 24];
+/// let sealed = aead.encrypt(&nonce, b"header", b"secret");
+/// assert_eq!(aead.decrypt(&nonce, b"header", &sealed).unwrap(), b"secret");
+/// ```
+#[derive(Clone)]
+pub struct XChaCha20Poly1305 {
+    key: [u8; KEY_LEN],
+}
+
+impl std::fmt::Debug for XChaCha20Poly1305 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XChaCha20Poly1305").finish_non_exhaustive()
+    }
+}
+
+impl XChaCha20Poly1305 {
+    /// An AEAD key.
+    #[must_use]
+    pub fn new(key: &[u8; KEY_LEN]) -> Self {
+        XChaCha20Poly1305 { key: *key }
+    }
+
+    /// The inner ChaCha20-Poly1305 key and nonce for `nonce`.
+    fn inner(&self, nonce: &[u8; XNONCE_LEN]) -> (ChaCha20Poly1305, [u8; NONCE_LEN]) {
+        let mut head = [0u8; 16];
+        head.copy_from_slice(&nonce[..16]);
+        let sub = hchacha20(&self.key, &head);
+        let mut n = [0u8; NONCE_LEN];
+        n[4..].copy_from_slice(&nonce[16..]);
+        (ChaCha20Poly1305::new(&sub), n)
+    }
+
+    /// Encrypts `buf` in place and returns the tag.
+    ///
+    /// # Panics
+    ///
+    /// If `buf` is longer than the construction allows (256 GiB).
+    pub fn encrypt_in_place_detached(
+        &self,
+        nonce: &[u8; XNONCE_LEN],
+        aad: &[u8],
+        buf: &mut [u8],
+    ) -> [u8; TAG_LEN] {
+        let (aead, n) = self.inner(nonce);
+        aead.encrypt_in_place_detached(&n, aad, buf)
+    }
+
+    /// Verifies `tag` and decrypts `buf` in place. On failure ([`Error::Verification`], or
+    /// [`Error::InvalidLength`] for a tag that is not 16 bytes) `buf` is left as it was.
+    pub fn decrypt_in_place_detached(
+        &self,
+        nonce: &[u8; XNONCE_LEN],
+        aad: &[u8],
+        buf: &mut [u8],
+        tag: &[u8],
+    ) -> Result<(), Error> {
+        let (aead, n) = self.inner(nonce);
+        aead.decrypt_in_place_detached(&n, aad, buf, tag)
+    }
+
+    /// Encrypts `buf` in place and appends the tag.
+    pub fn encrypt_in_place(&self, nonce: &[u8; XNONCE_LEN], aad: &[u8], buf: &mut Vec<u8>) {
+        let (aead, n) = self.inner(nonce);
+        aead.encrypt_in_place(&n, aad, buf);
+    }
+
+    /// Verifies and decrypts `buf` (ciphertext followed by the tag) in place, removing the tag.
+    /// On failure `buf` is left as it was.
+    pub fn decrypt_in_place(
+        &self,
+        nonce: &[u8; XNONCE_LEN],
+        aad: &[u8],
+        buf: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        let (aead, n) = self.inner(nonce);
+        aead.decrypt_in_place(&n, aad, buf)
+    }
+
+    /// Returns the ciphertext of `plaintext` followed by the tag.
+    #[must_use]
+    pub fn encrypt(&self, nonce: &[u8; XNONCE_LEN], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        let (aead, n) = self.inner(nonce);
+        aead.encrypt(&n, aad, plaintext)
+    }
+
+    /// Verifies and decrypts `ciphertext` (followed by the tag).
+    pub fn decrypt(
+        &self,
+        nonce: &[u8; XNONCE_LEN],
+        aad: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let (aead, n) = self.inner(nonce);
+        aead.decrypt(&n, aad, ciphertext)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1547,5 +1688,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn hchacha20_draft_vector() {
+        // draft-irtf-cfrg-xchacha-03, section 2.2.1.
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let nonce: [u8; 16] = unhex("000000090000004a0000000031415927")
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            hchacha20(&key, &nonce).to_vec(),
+            unhex("82413b4227b27bfed30e42508a877d73a0f9e4d58a74a853c12ec41326d3ecdc")
+        );
+    }
+
+    #[test]
+    fn xchacha20_poly1305_draft_vector() {
+        // draft-irtf-cfrg-xchacha-03, appendix A.3.1.
+        let pt = b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip \
+                   for the future, sunscreen would be it.";
+        let aad = unhex("50515253c0c1c2c3c4c5c6c7");
+        let key: [u8; 32] = std::array::from_fn(|i| 0x80 + i as u8);
+        let nonce: [u8; 24] = std::array::from_fn(|i| 0x40 + i as u8);
+        let want = unhex(
+            "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb
+             731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b452
+             2f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff9
+             21f9664c97637da9768812f615c68b13b52e
+             c0875924c1c7987947deafd8780acf49",
+        );
+        let aead = XChaCha20Poly1305::new(&key);
+        assert_eq!(aead.encrypt(&nonce, &aad, pt), want);
+        assert_eq!(aead.decrypt(&nonce, &aad, &want).unwrap(), pt);
+        let mut bad = want.clone();
+        bad[0] ^= 1;
+        assert_eq!(aead.decrypt(&nonce, &aad, &bad), Err(Error::Verification));
+        let mut buf = pt.to_vec();
+        let tag = aead.encrypt_in_place_detached(&nonce, &aad, &mut buf);
+        assert_eq!(tag[..], want[pt.len()..]);
+        aead.decrypt_in_place_detached(&nonce, &aad, &mut buf, &tag)
+            .unwrap();
+        assert_eq!(buf, pt);
     }
 }

@@ -454,6 +454,54 @@ const _: () = assert!(size_of::<cpu_set_t>() == 128);
 const _: () = assert!(size_of::<sigaction>() == 152);
 const _: () = assert!(size_of::<utsname>() == 390);
 
+// ---- terminals (termios) --------------------------------------------------------------------
+
+/// `tcflag_t`.
+pub type tcflag_t = c_uint;
+/// `cc_t`.
+pub type cc_t = u8;
+/// `speed_t`.
+pub type speed_t = c_uint;
+/// Control characters in `termios::c_cc`.
+pub const NCCS: usize = 32;
+
+/// `struct termios` of the C library (glibc and musl share it; not the kernel's `termios2`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct termios {
+    pub c_iflag: tcflag_t,
+    pub c_oflag: tcflag_t,
+    pub c_cflag: tcflag_t,
+    pub c_lflag: tcflag_t,
+    pub c_line: cc_t,
+    pub c_cc: [cc_t; NCCS],
+    pub c_ispeed: speed_t,
+    pub c_ospeed: speed_t,
+}
+
+const _: () = assert!(size_of::<termios>() == 60);
+
+pub const IGNBRK: tcflag_t = 0o1;
+pub const BRKINT: tcflag_t = 0o2;
+pub const PARMRK: tcflag_t = 0o10;
+pub const ISTRIP: tcflag_t = 0o40;
+pub const INLCR: tcflag_t = 0o100;
+pub const IGNCR: tcflag_t = 0o200;
+pub const ICRNL: tcflag_t = 0o400;
+pub const IXON: tcflag_t = 0o2000;
+pub const OPOST: tcflag_t = 0o1;
+pub const CSIZE: tcflag_t = 0o60;
+pub const CS8: tcflag_t = 0o60;
+pub const PARENB: tcflag_t = 0o400;
+pub const ISIG: tcflag_t = 0o1;
+pub const ICANON: tcflag_t = 0o2;
+pub const ECHO: tcflag_t = 0o10;
+pub const ECHONL: tcflag_t = 0o100;
+pub const IEXTEN: tcflag_t = 0o100000;
+pub const VTIME: usize = 5;
+pub const VMIN: usize = 6;
+pub const TCSANOW: c_int = 0;
+
 // ---- ancillary data (the CMSG_* macros) -----------------------------------------------------
 
 const fn cmsg_align(len: usize) -> usize {
@@ -616,4 +664,7 @@ unsafe extern "C" {
     pub fn sched_getaffinity(pid: pid_t, size: size_t, set: *mut cpu_set_t) -> c_int;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction, old: *mut sigaction) -> c_int;
+
+    pub fn tcgetattr(fd: c_int, t: *mut termios) -> c_int;
+    pub fn tcsetattr(fd: c_int, action: c_int, t: *const termios) -> c_int;
 }

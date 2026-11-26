@@ -5,6 +5,7 @@ use std::{
     marker::PhantomData,
     net::{SocketAddr, TcpStream, UdpSocket},
     sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 use akio_buf::SharedBuf;
@@ -267,7 +268,7 @@ pub trait Transport: Send + 'static {
     /// [`handshaking`](Transport::handshaking) this long after it opened is closed with
     /// `ErrorKind::TimedOut` (and counted as a failed handshake) by the engine's TCP backends.
     /// `None` (the default): no limit.
-    fn handshake_timeout(&self) -> Option<std::time::Duration> {
+    fn handshake_timeout(&self) -> Option<Duration> {
         None
     }
     /// Receives the connection's [`TransportWaker`] once, when the transport is installed.
@@ -954,6 +955,10 @@ pub struct ConnInner {
     idle_ms: AtomicU64,
     /// Outbound data counts as activity for the idle timeout ([`Conn::set_idle_counts_writes`]).
     idle_writes: AtomicBool,
+    /// The close deadline in force ([`ConnHandle::close_at`], akit A232): a timer closes the
+    /// connection only if this still holds the generation it was set with; setting or
+    /// cancelling a deadline moves it on.
+    close_gen: AtomicU64,
     write: Mutex<WriteState>,
     /// A drain waiter whose condition was met while the write lock was held; run right after.
     drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -997,6 +1002,7 @@ impl ConnInner {
             rx_offload_ok: AtomicBool::new(false),
             idle_ms: AtomicU64::new(IDLE_ENGINE),
             idle_writes: AtomicBool::new(false),
+            close_gen: AtomicU64::new(0),
             write: Mutex::new(WriteState {
                 stats: link.stats(),
                 ..WriteState::default()
@@ -1043,6 +1049,7 @@ impl ConnInner {
             rx_offload_ok: AtomicBool::new(false),
             idle_ms: AtomicU64::new(IDLE_ENGINE),
             idle_writes: AtomicBool::new(false),
+            close_gen: AtomicU64::new(0),
             write: Mutex::new(WriteState {
                 datagram: true,
                 stats: link.stats(),
@@ -1092,6 +1099,7 @@ impl ConnInner {
             rx_offload_ok: AtomicBool::new(false),
             idle_ms: AtomicU64::new(IDLE_ENGINE),
             idle_writes: AtomicBool::new(false),
+            close_gen: AtomicU64::new(0),
             write: Mutex::new(WriteState {
                 datagram,
                 stats: link.stats(),
@@ -1304,7 +1312,7 @@ impl ConnInner {
     }
 
     /// [`Conn::set_idle_timeout`].
-    pub fn set_idle_timeout(&self, timeout: Option<std::time::Duration>) -> Result<()> {
+    pub fn set_idle_timeout(&self, timeout: Option<Duration>) -> Result<()> {
         let ms = timeout.map_or(0, |d| {
             u64::try_from(d.as_millis())
                 .unwrap_or(IDLE_MAX)
@@ -2969,7 +2977,7 @@ impl ConnInner {
 
     /// The handshake deadline of the transport, if one is installed, still negotiating and
     /// has a [`handshake_timeout`](Transport::handshake_timeout). Loop side, once at open.
-    pub fn handshake_timeout(&self) -> Option<std::time::Duration> {
+    pub fn handshake_timeout(&self) -> Option<Duration> {
         let w = self.lock();
         let t = w.transport.as_ref()?;
         if t.handshaking() {
@@ -3409,7 +3417,7 @@ impl<H> Conn<H> {
     /// (the peers of UDP listeners and of [`UdpBinding`](crate::UdpBinding)s, and `dial_udp`'s
     /// connections); elsewhere (DPDK, TUN) it fails with `ErrorKind::Unsupported` and the
     /// engine's timeout applies. `Err(Closed)` once the connection is closed.
-    pub fn set_idle_timeout(&self, timeout: Option<std::time::Duration>) -> Result<()> {
+    pub fn set_idle_timeout(&self, timeout: Option<Duration>) -> Result<()> {
         self.inner.set_idle_timeout(timeout)
     }
 
@@ -3439,9 +3447,148 @@ impl<H> Conn<H> {
         &self.inner
     }
 
+    /// A [`ConnHandle`] to this connection: its id, addresses, idle timeout and closing,
+    /// without the handler type (akit A232).
+    pub fn handle(&self) -> ConnHandle {
+        ConnHandle {
+            inner: self.inner.clone(),
+        }
+    }
+
     /// Runs `f` on the connection's [`Transport`] (e.g. to read TLS details), if it has one.
     pub fn with_transport<R>(&self, f: impl FnOnce(&mut dyn Transport) -> R) -> Option<R> {
         self.inner.with_transport(f)
+    }
+}
+
+/// A cloneable, thread-safe handle to a connection that knows nothing of its handler or
+/// protocol (akit A232, ADR-180): what an application needs to keep a table of the connections
+/// a listener accepted ([`Listener::on_accept`] and `on_close` in `akio`) and to close or retime
+/// one of them later, from any thread. HTTP handlers get one from `akio_http::Context::connection`.
+///
+/// Like [`Conn`], it never touches a recycled descriptor: once the connection is closed its
+/// methods do nothing or return [`Error::Closed`]. Holding it keeps the connection's shared
+/// state (a few hundred bytes) and its socket allocated until it is dropped, not the
+/// connection open.
+///
+/// [`Listener::on_accept`]: https://docs.rs/akio/latest/akio/struct.Listener.html#method.on_accept
+#[derive(Clone)]
+pub struct ConnHandle {
+    inner: Arc<ConnInner>,
+}
+
+impl std::fmt::Debug for ConnHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnHandle")
+            .field("id", &self.inner.id)
+            .field("peer", &self.inner.peer)
+            .field("open", &self.inner.is_open())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ConnHandle {
+    /// The same connection.
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl Eq for ConnHandle {}
+
+impl std::hash::Hash for ConnHandle {
+    fn hash<S: std::hash::Hasher>(&self, state: &mut S) {
+        self.inner.id.hash(state);
+    }
+}
+
+impl ConnHandle {
+    /// A handle to the connection `inner` (for protocol crates that hold the type-erased state).
+    #[doc(hidden)]
+    pub fn from_inner(inner: Arc<ConnInner>) -> Self {
+        ConnHandle { inner }
+    }
+
+    /// Process-unique connection id (the same as [`Conn::id`]).
+    pub fn id(&self) -> u64 {
+        self.inner.id()
+    }
+
+    /// Whether the connection is still open.
+    pub fn is_open(&self) -> bool {
+        self.inner.is_open()
+    }
+
+    /// Local address.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.inner.local_addr()
+    }
+
+    /// Peer address.
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.inner.peer_addr()
+    }
+
+    /// Closes the connection, discarding unsent data, as [`Conn::close`]: the protocol's
+    /// `on_close` runs on its I/O thread. Nothing if it is already closed.
+    pub fn close(&self) {
+        self.inner.close();
+    }
+
+    /// [`Conn::set_idle_timeout`]: the connection's own idle timeout (`None`: none), from its
+    /// last activity; same backends and errors.
+    pub fn set_idle_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        self.inner.set_idle_timeout(timeout)
+    }
+
+    /// Closes the connection at `at`, whatever it sends meanwhile, unless
+    /// [`cancel_close`](Self::cancel_close) or another `close_at` / `close_after` comes
+    /// first (the last one set is the one in force). A deadline already past closes it at the
+    /// connection's loop's next turn.
+    ///
+    /// The timer runs on the connection's own I/O thread (set through
+    /// [`Conn::run_on_loop`]'s path, from any thread) and holds only a weak reference to the
+    /// connection; each call schedules one, which lives until its time even if cancelled.
+    /// `Err(Closed)` once the connection is closed.
+    pub fn close_at(&self, at: Instant) -> Result<()> {
+        if !self.inner.is_open() {
+            return Err(Error::Closed);
+        }
+        let generation = self.inner.close_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let weak = Arc::downgrade(&self.inner);
+        let fire = move || {
+            if let Some(c) = weak.upgrade() {
+                if c.close_gen.load(Ordering::Acquire) == generation {
+                    c.close();
+                }
+            }
+        };
+        let arm = move || {
+            let delay = at.saturating_duration_since(Instant::now());
+            if crate::timer::on_loop() {
+                let _ = crate::timer::after(delay, fire);
+            } else {
+                // A thread without a timer wheel: the process-wide timer thread.
+                let _ = crate::timer::after_send(delay, fire);
+            }
+        };
+        if self.inner.run_on_loop(arm) {
+            Ok(())
+        } else {
+            Err(Error::Closed)
+        }
+    }
+
+    /// [`close_at`](Self::close_at) `delay` from now.
+    pub fn close_after(&self, delay: Duration) -> Result<()> {
+        self.close_at(Instant::now() + delay)
+    }
+
+    /// Cancels the deadline [`close_at`](Self::close_at) or
+    /// [`close_after`](Self::close_after) set, if any: its timer, when it comes, finds it
+    /// cancelled and leaves the connection open.
+    pub fn cancel_close(&self) {
+        self.inner.close_gen.fetch_add(1, Ordering::AcqRel);
     }
 }
 

@@ -10,6 +10,42 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：连接句柄、关闭期限，以及监听器的接受与关闭钩子（akio-core、akio、akio-http）
+
+akit 的 A232，用于其控制台的连接规则（fit 的规则：未登录的连接在接受 5 秒后关闭；有会话的连接空闲
+2 分钟；超过 `max_conns` 时驱逐最早的未认证连接）；ADR-180。`ConnHandle`（akio-core，由 `akio`
+重新导出；`Conn::handle()`）是不带 handler 类型的可克隆、线程安全的句柄：`id`、`is_open`、地址、
+`close`、`set_idle_timeout`，以及关闭期限 `close_at` / `close_after`（到期即关闭，无论连接发送什么；
+最后设置的生效）和 `cancel_close`，由连接自己的 I/O 线程上的定时器执行。`Listener::on_accept` 告诉
+应用每个被接受的连接（在 filter 和 `max_connections` 之后、TLS 和 `on_open` 之前），
+`Listener::on_close` 告诉应用每个关闭的连接（每个恰好一次，包括 panic 和被拒绝的连接），应用因此能
+维护一张连接表并关闭它选中的那个。akio-http 中 `Context::connection()` 给出请求所在的连接（HTTP/1.1
+和 HTTP/2；HTTP/3 上为 `None`）。`ConnInner` 大 8 字节；没有钩子的监听器不变。
+
+### 新增：关闭终端回显与 raw 模式（akio-sys）
+
+akit 的 A233，供在终端中运行的 `akit hash-password` 使用。`akio_sys::terminal::no_echo(fd)` 关闭
+`ECHO`（保留行编辑和 Ctrl-C，与 Go 的 `term.ReadPassword` 相同），`terminal::raw(fd)` 把终端置于
+raw 模式（与 `cfmakeraw` 和 Go 的 `term.MakeRaw` 相同：逐键读取、不回显、按键不产生信号）；两者都返回
+`TerminalGuard`，在 drop 或 `restore` 时恢复它看到的原有模式；对不是终端的描述符两者都返回错误
+（`ENOTTY`）。`terminal::echo_enabled(fd)` 读取回显位。支持 Linux 和 macOS，通过自有的 `ffi` 绑定
+（`termios`、`tcgetattr`、`tcsetattr`，与 `libc` 对照检查）；在伪终端上测试。
+
+### 新增：Argon2id、BLAKE2b 和 XChaCha20-Poly1305（akio-crypto）
+
+akit 的 A230 和 A231，用于 fit 的加密存储；ADR-179。`kdf::argon2id(password, salt, time,
+memory_kib, lanes, out)` 是与 Go 的 `argon2.IDKey` 相同的 Argon2id（RFC 9106，0x13 版）：违反 RFC
+9106 界限的参数返回错误（`Error::InvalidLength`、新增的 `Error::InvalidParameter`），内存一次性
+可失败地分配（新增的 `Error::OutOfMemory`），lane 在作用域线程上运行（每个 lane、每个 CPU 至多一个
+线程），结果与单线程相同。它会阻塞，耗时与 `time × memory_kib` 成正比：不要在 I/O 线程上调用。
+随之新增 `hash::Blake2b`（RFC 7693：1 到 64 字节的摘要，可带密钥）和 `hash::Blake2b512`（`Hash`
+trait）。`chacha::hchacha20` 和 `chacha::XChaCha20Poly1305`（`XNONCE_LEN = 24`；
+draft-irtf-cfrg-xchacha，与 Go 的 `chacha20poly1305.NewX` 相同）提供与 `ChaCha20Poly1305` 相同的
+`encrypt`、`decrypt` 和原地方法。测试覆盖 RFC 9106、RFC 7693、XChaCha 草案、Wycheproof 的
+XChaCha20-Poly1305 向量以及 Go 的 golang.org/x/crypto 输出（含 fit 的 Argon2id 设置）；`ct-dudect`
+新增两个目标 `xchacha20poly1305-open-tag` 和 `blake2b-key`。Argon2id 在第一遍的前半之后按依赖口令的
+下标读取内存，这是设计使然（docs/constant-time.md）。
+
 ### 新增：每一处线程池投递都登记了它的车道（测试）
 
 workspace 测试 `crates/akio/tests/pool_submissions.rs` 扫描各库源码中把工作交给线程池的调用
