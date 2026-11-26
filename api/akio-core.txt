@@ -649,6 +649,7 @@ pub fn akio_core::Conn<H>::hold_reads(&self, bool)
 pub fn akio_core::Conn<H>::id(&self) -> u64
 pub fn akio_core::Conn<H>::is_open(&self) -> bool
 pub fn akio_core::Conn<H>::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn akio_core::Conn<H>::max_queued_bytes(&self) -> usize
 pub fn akio_core::Conn<H>::on_drain(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
 pub fn akio_core::Conn<H>::peer_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_core::Conn<H>::queued_bytes(&self) -> usize
@@ -659,6 +660,7 @@ pub fn akio_core::Conn<H>::send_segments(&self, alloc::vec::Vec<u8>, usize) -> a
 pub fn akio_core::Conn<H>::send_shared(&self, akio_buf::SharedBuf) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::set_idle_counts_writes(&self, bool) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::set_idle_timeout(&self, core::option::Option<core::time::Duration>) -> akio_core::Result<()>
+pub fn akio_core::Conn<H>::set_max_queued_bytes(&self, core::option::Option<usize>)
 pub fn akio_core::Conn<H>::set_relayed(&self, bool)
 pub fn akio_core::Conn<H>::shutdown_write_after_send(&self)
 pub fn akio_core::Conn<H>::with_transport<R>(&self, impl core::ops::function::FnOnce(&mut dyn akio_core::Transport) -> R) -> core::option::Option<R>
@@ -682,6 +684,7 @@ pub fn akio_core::ConnHandle::is_open(&self) -> bool
 pub fn akio_core::ConnHandle::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_core::ConnHandle::peer_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_core::ConnHandle::set_idle_timeout(&self, core::option::Option<core::time::Duration>) -> akio_core::Result<()>
+pub fn akio_core::ConnHandle::set_max_queued_bytes(&self, core::option::Option<usize>)
 impl core::clone::Clone for akio_core::ConnHandle
 pub fn akio_core::ConnHandle::clone(&self) -> Self
 impl core::cmp::Eq for akio_core::ConnHandle
