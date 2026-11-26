@@ -397,6 +397,7 @@ pub fn akio::EngineBuilder::max_listeners(self, usize) -> Self
 pub fn akio::EngineBuilder::numa(self, akio::numa::NumaConfig) -> Self
 pub fn akio::EngineBuilder::pin_io_threads(self, bool) -> Self
 pub fn akio::EngineBuilder::pool(self, akio_pool::PoolConfig) -> Self
+pub fn akio::EngineBuilder::reserve_pool_cpus(self, usize) -> Self
 pub fn akio::EngineBuilder::udp_client_threads(self, usize) -> Self
 impl core::default::Default for akio::EngineBuilder
 pub fn akio::EngineBuilder::default() -> Self

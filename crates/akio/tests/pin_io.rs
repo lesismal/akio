@@ -13,7 +13,10 @@ use akio::{Config, Conn, Engine, Handler, Listener, fn_acceptor};
 
 struct Nop;
 impl Handler for Nop {
-    fn on_data(&mut self, _c: &Conn<Self>, _d: &[u8]) {}
+    fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
+        // Starts a logical pool thread (they start on demand).
+        let _ = c.execute(|| std::thread::sleep(Duration::from_millis(300)));
+    }
 }
 
 fn listener() -> Listener {
@@ -154,4 +157,64 @@ fn io_threads_get_one_cpu_each_in_turn() {
     wait_affinity(&want);
     e.shutdown();
     e.wait();
+
+    // Some CPUs kept for the logical pool: the I/O threads take the others in turn, the pool's
+    // threads run on the kept ones.
+    if n < 3 {
+        return;
+    }
+    let keep = n / 2;
+    let io = &cpus[..n - keep];
+    let e = Engine::builder()
+        .config(quick())
+        .pin_io_threads(true)
+        .reserve_pool_cpus(keep)
+        .io_threads(io.len())
+        .listen(listener())
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let want: Vec<String> = io.iter().map(ToString::to_string).collect();
+    wait_affinity(&want);
+    let mut s = std::net::TcpStream::connect(e.local_addrs()[0]).unwrap();
+    std::io::Write::write_all(&mut s, b"x").unwrap();
+    let t0 = std::time::Instant::now();
+    let pool = loop {
+        let found = std::fs::read_dir("/proc/self/task").unwrap().find_map(|t| {
+            let t = t.ok()?;
+            let comm = std::fs::read_to_string(t.path().join("comm")).ok()?;
+            if !comm.starts_with("akio-pool") {
+                return None;
+            }
+            let status = std::fs::read_to_string(t.path().join("status")).ok()?;
+            Some(
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))?
+                    .trim()
+                    .to_owned(),
+            )
+        });
+        if let Some(f) = found {
+            break f;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(5), "no pool thread");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(cpu_set(&pool), cpus[n - keep..], "pool on {pool}");
+    drop(s);
+    e.shutdown();
+    e.wait();
+}
+
+/// `0-2,5` as `[0, 1, 2, 5]`.
+fn cpu_set(list: &str) -> Vec<usize> {
+    let mut cpus = Vec::new();
+    for part in list.split(',') {
+        match part.split_once('-') {
+            Some((a, b)) => cpus.extend(a.parse::<usize>().unwrap()..=b.parse().unwrap()),
+            None => cpus.push(part.parse().unwrap()),
+        }
+    }
+    cpus
 }

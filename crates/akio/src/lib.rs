@@ -602,6 +602,11 @@ fn pin_io_from_env() -> bool {
     )
 }
 
+/// `AKIO_POOL_CPUS`: the CPUs [`EngineBuilder::reserve_pool_cpus`] keeps for the logical pool.
+fn pool_cpus_from_env() -> Option<usize> {
+    std::env::var("AKIO_POOL_CPUS").ok()?.trim().parse().ok()
+}
+
 /// Gives I/O threads one CPU each, in turn ([`EngineBuilder::pin_io_threads`]).
 struct Pinner {
     /// The CPUs the process may use.
@@ -611,9 +616,8 @@ struct Pinner {
 }
 
 impl Pinner {
-    /// `None` where CPU affinity is unavailable (not Linux).
-    fn new() -> Option<Pinner> {
-        let cpus = akio_sys::process::allowed_cpus().ok()?;
+    /// Over `cpus`; `None` when there is none.
+    fn new(cpus: Vec<usize>) -> Option<Pinner> {
         (!cpus.is_empty()).then_some(Pinner { cpus, next: 0 })
     }
 
@@ -1035,6 +1039,8 @@ pub struct EngineBuilder {
     io_threads: Option<usize>,
     /// One CPU per I/O thread; `None`: what `AKIO_PIN_IO_THREADS` says.
     pin_io_threads: Option<bool>,
+    /// CPUs kept for the logical pool when pinning; `None`: what `AKIO_POOL_CPUS` says.
+    pool_cpus: Option<usize>,
     client_threads: usize,
     udp_client_threads: usize,
     cfg: Config,
@@ -1084,6 +1090,25 @@ impl EngineBuilder {
     #[must_use]
     pub fn pin_io_threads(mut self, on: bool) -> Self {
         self.pin_io_threads = Some(on);
+        self
+    }
+
+    /// With [`pin_io_threads`](Self::pin_io_threads): keeps the last `n` of the CPUs the process
+    /// may use for the logical pool (its threads run on those, on any of them) and pins the I/O
+    /// threads to the others (default: 0, or what `AKIO_POOL_CPUS` says when this is not called).
+    /// For handlers that run on the pool (HTTP/2's by default, `run_on_pool`, `spawn_blocking`):
+    /// a pinned I/O thread cannot move away from a busy pool thread on its CPU, so the two get
+    /// CPUs of their own. Size [`io_threads`](Self::io_threads) to the CPUs left (one per CPU).
+    /// Measure before relying on it: on gpu51 (4 CPUs, h2c on the pool over 3 listeners) 2 + 2
+    /// raised io_uring from 496k to 840k requests/s but lowered epoll from 485k to 337k, and
+    /// HTTP/1.1 served inline lost what the fewer I/O threads could not carry; serving such
+    /// handlers inline (`run_on_pool` off) with pinning gave 4.0M (docs/BENCHMARKS.md).
+    /// Ignored without pinning, when `n` leaves no CPU for the I/O threads, under NUMA placement
+    /// (whose `NumaConfig::pool` confines the pool), and when the pool already has a start hook.
+    /// Linux only.
+    #[must_use]
+    pub fn reserve_pool_cpus(mut self, n: usize) -> Self {
+        self.pool_cpus = Some(n);
         self
     }
 
@@ -1155,6 +1180,22 @@ impl EngineBuilder {
                 self.pool.on_start = Some(akio_pool_hook(pool_cpus.clone()));
             }
         }
+        // Pinning (ADR-130 follow-up): the CPUs the I/O threads take in turn, less those kept for
+        // the logical pool. Not under NUMA placement, which places both itself.
+        let pin_io = self.pin_io_threads.unwrap_or_else(pin_io_from_env);
+        let numa_places = matches!(&numa_nodes, Ok(n) if !n.is_empty());
+        let io_cpus = if pin_io && !numa_places {
+            akio_sys::process::allowed_cpus().ok().map(|mut cpus| {
+                let keep = self.pool_cpus.or_else(pool_cpus_from_env).unwrap_or(0);
+                if keep > 0 && keep < cpus.len() && self.pool.on_start.is_none() {
+                    let for_pool = cpus.split_off(cpus.len() - keep);
+                    self.pool.on_start = Some(akio_pool_hook(for_pool));
+                }
+                cpus
+            })
+        } else {
+            None
+        };
         if self.cfg.telemetry.is_bound() {
             // Another engine adopted this config's hub: metrics must not mix.
             self.cfg.telemetry = Telemetry::new();
@@ -1253,10 +1294,9 @@ impl EngineBuilder {
         let rt_nodes = numa_nodes.as_ref().ok().cloned().unwrap_or_default();
         let numa = place_threads(&numa_cfg, numa_nodes, &groups, &accel, &unplaced, pool_cpus);
         // One CPU per I/O thread, where NUMA placement did not place them (ADR-130 follow-up).
-        let pin_io = self.pin_io_threads.unwrap_or_else(pin_io_from_env);
-        let mut pinner = (pin_io && !matches!(numa, NumaStatus::Placed(_)))
-            .then(Pinner::new)
-            .flatten();
+        let mut pinner = io_cpus
+            .filter(|_| !matches!(numa, NumaStatus::Placed(_)))
+            .and_then(Pinner::new);
         if let Some(p) = pinner.as_mut() {
             for g in shared_groups.all() {
                 p.pin(g.as_ref());

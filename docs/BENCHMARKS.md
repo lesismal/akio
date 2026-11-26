@@ -724,6 +724,26 @@ setup, `base` = `7d03a0f4`; the listener has 4 threads of its own, unpinned):
 **Answer: unchanged** within the noise of this host (the plaintext rows swing ±6% between rounds
 for the reason above: 4 unpinned threads on 4 CPUs).
 
+**Follow-up: HTTP/2 inline, and CPUs kept for the logical pool** (2026-11-26, same setup, the
+3 listeners sharing one group, 5 rounds, `shared.sh all,h2`). `inline` serves HTTP/2 on the I/O
+threads (`run_on_pool` off); `pool N` is `reserve_pool_cpus(N)` with pinning: N of the 4 CPUs
+for the logical pool, 4 − N pinned I/O threads on the others.
+
+| Load | backend | shared | pinned | inline | inline pinned | pool 2 | pool 1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| h2c 64 conns × 16 streams over 3 | epoll | 485,155 | 312,891 (±20%) | 3,220,035 (±10%) | 4,010,784 (±1%) | 336,612 | 234,961 |
+| h2c 64 conns × 16 streams over 3 | io_uring | 496,446 | 335,508 (±13%) | 3,445,100 (±11%) | 4,038,660 (±4%) | 840,488 (±14%) | 283,113 |
+| HTTP/1.1 plaintext, 256 conns over 3 | epoll | 690,019 (±9%) | 716,531 | 615,243 (±13%) | 699,108 | 368,748 | 554,824 |
+| HTTP/1.1 plaintext, 256 conns over 3 | io_uring | 718,045 (±5%) | 754,550 | 728,572 (±7%) | 753,743 | 429,682 | 656,317 |
+
+**Answers.** (1) The pinned h2c drop is the logical pool's: served inline, h2c pinned is the
+fastest and steadiest column. (2) Keeping CPUs for the pool does not get pooled h2c back above
+the unpinned default on epoll (it does on io_uring with 2 + 2, with a wide spread), and costs
+HTTP/1.1, which runs on fewer I/O threads. (3) The pool hand-off itself dominates trivial HTTP/2
+handlers: on the same 4 CPUs, inline h2c serves 3.2M–4.0M requests/s against about 0.49M on the
+pool (`H2Config::run_on_pool`, on by default since 2026-11-25), a ceiling that more CPUs for the
+pool do not raise.
+
 ### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +
