@@ -69,11 +69,12 @@ pool.min_threads = 0;                       // 空闲时也保留的线程数
 pool.max_threads = cores * 8 (至少 8);      // 按需启动
 pool.queue_capacity = 65_536;               // 超出后：Error::Overloaded
 pool.keep_alive = Duration::from_secs(30);  // 超过 min_threads 的空闲线程退出
+pool.max_blocked_threads = cores * 8 (至少 8); // 顶替在 akio::blocking 中等待的线程
 EngineBuilder::pool(pool)
 ```
 
 以上是默认值。`Engine::pool_stats()`（以及指标端点）报告线程数、空闲线程、队列长度、已完成、
-panic 和被拒绝的任务数。
+panic 和被拒绝的任务数，以及在 `akio::blocking` 中等待的线程（见下文）。
 
 `max_threads` 按阻塞任务等待的资源来定：数据库连接池只有 50 个连接时，200 个线程池线程没有
 任何好处。`queue_capacity` 按你能接受多少排队延迟来定：`Overloaded` 是该回复"忙"（HTTP 503）
@@ -88,6 +89,25 @@ panic 和被拒绝的任务数。
 忙于收尾的线程池会更早拒绝新工作。它的上限由所有者保证：每个所有者（一个 pump、一个调用、一个
 piece）同一时刻最多有一步在排队或执行。`PoolStats` 报告这条车道（`resumes`）以及两条车道合计的
 历史最大深度（`max_queued`）。
+
+### 会等待的线程池任务
+
+线程池任务如果等待只有同一个线程池才能产出的结果，一旦所有线程都这样等待就会永久卡住：例如在线程池上
+运行的 handler（`handlers_on_logical_pool`）通过阻塞客户端调用同一 engine 上 handler 也在线程池上运行
+的路由，然后 `wait()`。内层请求排在这些等待者后面，没有线程执行它。把这样的等待包在
+`akio::blocking(|| ...)` 里：线程在其中等待时被计为阻塞，没有空闲线程接手的排队工作会得到新线程，
+上限是 `max_threads` 加上每个阻塞线程一个，最多多出 `max_blocked_threads` 个。等待结束后，超出这个
+额度的线程在执行完手上的任务后立即退出，不必等 `keep_alive`。
+
+akio 的阻塞客户端已经这样做：`ResponseFuture::wait` 和 `wait_timeout`（HTTP/1.1 和 HTTP/2）、arpc 的
+`CallFuture::wait`、gRPC 的 `unary` 和 `collect`、HTTP/3 的 `request_blocking` 和 `get`，以及各
+`*_blocking` 拨号。你自己在 channel、条件变量或 join 上的等待也这样包起来；嵌套调用只计一次，不在线程池
+线程上时 `blocking` 直接运行闭包（`akio::on_pool_thread()` 可以判断）。能内联执行子工作，或从完成回调
+开始下一阶段时，这样做仍然不需要额外线程，更为合适（规则 §1）。
+
+`PoolStats` 报告当前阻塞的线程（`blocked`）、为它们启动的线程（`compensated`），以及排队工作因阻塞
+线程超过 `max_blocked_threads` 所能顶替的数量而找不到线程的次数（`blocked_at_ceiling`）：调高这个上限，
+或减少线程池上的等待。`max_blocked_threads = 0` 关闭顶替。
 
 ## 自己的线程池
 

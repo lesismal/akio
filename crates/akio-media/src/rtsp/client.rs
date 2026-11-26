@@ -1731,13 +1731,17 @@ fn establish(engine: &Engine, addr: SocketAddr, s: &Arc<Shared>) -> Result<(), C
                     g = lock(&s.inner);
                     continue;
                 }
-                g = s
-                    .cond
-                    .wait_timeout(g, d - now)
-                    .unwrap_or_else(|p| p.into_inner())
-                    .0;
+                // A pool thread waiting here may be stood in for (`akio::blocking`).
+                g = akio::blocking(move || {
+                    s.cond
+                        .wait_timeout(g, d - now)
+                        .unwrap_or_else(|p| p.into_inner())
+                        .0
+                });
             }
-            None => g = s.cond.wait(g).unwrap_or_else(|p| p.into_inner()),
+            None => {
+                g = akio::blocking(move || s.cond.wait(g).unwrap_or_else(|p| p.into_inner()));
+            }
         }
     }
 }
@@ -2379,7 +2383,7 @@ pub fn pull(
     cfg: RtspClientConfig,
 ) -> Result<RtspClient, ClientError> {
     let url = Url::parse(url)?;
-    let addrs = url.resolve(&cfg)?;
+    let addrs = akio::blocking(|| url.resolve(&cfg))?;
     let publisher = hub
         .reserve(path, PeerInfo::new("rtsp", addrs.first().copied(), ""))
         .map_err(ClientError::Hub)?;
@@ -2423,8 +2427,10 @@ pub fn push(
     cfg: RtspClientConfig,
 ) -> Result<RtspClient, ClientError> {
     let url = Url::parse(url)?;
-    let addrs = url.resolve(&cfg)?;
-    let tracks = wait_tracks(hub, path, cfg.push_wait)?;
+    let (addrs, tracks) = akio::blocking(|| {
+        let addrs = url.resolve(&cfg)?;
+        wait_tracks(hub, path, cfg.push_wait).map(|t| (addrs, t))
+    })?;
     let c = Arc::new(Client {
         url,
         cfg,

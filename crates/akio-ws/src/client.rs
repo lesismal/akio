@@ -577,7 +577,7 @@ pub fn dial_blocking(
         },
     );
     // The handshake timeout always resolves the dial; the margin only guards against a bug.
-    rx.recv_timeout(opts.handshake_timeout + Duration::from_secs(5))
+    akio_core::blocking(|| rx.recv_timeout(opts.handshake_timeout + Duration::from_secs(5)))
         .unwrap_or(Err(WsClientError::Timeout))
 }
 

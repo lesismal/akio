@@ -458,3 +458,67 @@ fn clients_called_from_a_full_pool_do_not_wait_for_it() {
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
     stop(&e);
 }
+
+/// A handler on a full pool (its only thread) that calls another route of the same server,
+/// whose handlers run on the pool too, and waits for the answer: the wait is
+/// `akio::blocking`, so the pool starts a thread for the inner request instead of leaving it
+/// queued behind the waiting handler for good. HTTP/2 and HTTP/1.1 clients, HTTP/2 and
+/// HTTP/1.1 handlers on the pool.
+#[test]
+fn a_pooled_handler_waiting_for_a_pooled_route_of_its_own_server_gets_a_thread() {
+    use akio_http::client::Client;
+    use std::sync::OnceLock;
+
+    type Clients = (H2Client, Client, SocketAddr);
+    let clients: Arc<OnceLock<Clients>> = Arc::new(OnceLock::new());
+    let cl = clients.clone();
+    let app = Router::new()
+        .get("/inner", |ctx: &mut Context| {
+            assert!(on_pool_thread());
+            ctx.text(200, "inner");
+        })
+        .get("/outer", move |ctx: &mut Context| {
+            assert!(on_pool_thread() && akio::on_pool_thread());
+            let (h2, h1, addr) = cl.get().unwrap();
+            let url = format!("http://{addr}/inner");
+            let mut got = Vec::new();
+            for r in [
+                h2.send(ClientRequest::get(&url)),
+                h1.send(ClientRequest::get(&url)),
+            ] {
+                // Bounded, so a regression fails the test instead of hanging it.
+                got.push(match r.wait_timeout(Duration::from_secs(3)) {
+                    Some(Ok(r)) => String::from_utf8(r.body).unwrap(),
+                    Some(Err(e)) => format!("{e}"),
+                    None => "stuck".to_owned(),
+                });
+            }
+            ctx.text(200, got.join("/"));
+        });
+    let mut cfg = pooled_h1();
+    cfg.h2.as_mut().unwrap().handlers_on_logical_pool = true;
+    let e = start(
+        app,
+        cfg,
+        Some({
+            let mut v = PoolConfig::default();
+            v.max_threads = 1;
+            v
+        }),
+    );
+    let addr = e.local_addrs()[0];
+    let h2 = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
+    assert!(clients.set((h2, Client::new(e.clone()), addr)).is_ok());
+
+    let front = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
+    let r = front
+        .send(ClientRequest::get(&format!("http://{addr}/outer")))
+        .wait_timeout(Duration::from_secs(10))
+        .expect("the outer request answered")
+        .unwrap();
+    assert_eq!(String::from_utf8(r.body).unwrap(), "inner/inner");
+    let s = e.pool_stats();
+    assert!(s.compensated >= 1, "{s:?}");
+    assert_eq!(s.blocked, 0);
+    stop(&e);
+}

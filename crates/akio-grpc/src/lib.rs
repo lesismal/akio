@@ -1322,8 +1322,14 @@ impl GrpcClient {
         }
         sink.close_send();
         let mut g = fin.0.lock().unwrap_or_else(|p| p.into_inner());
-        while g.is_none() {
-            g = fin.1.wait(g).unwrap_or_else(|p| p.into_inner());
+        if g.is_none() {
+            let cv = &fin.1;
+            g = akio::blocking(move || {
+                while g.is_none() {
+                    g = cv.wait(g).unwrap_or_else(|p| p.into_inner());
+                }
+                g
+            });
         }
         let st = g.take().expect("set");
         let msgs = std::mem::take(&mut out.lock().unwrap_or_else(|p| p.into_inner()).0);

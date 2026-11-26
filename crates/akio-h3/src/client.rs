@@ -936,7 +936,7 @@ impl H3Client {
         self.request(method, path, headers, body, move |r| {
             let _ = tx.send(r);
         });
-        rx.recv_timeout(timeout).map_err(|_| H3Error::Timeout)?
+        akio_core::blocking(|| rx.recv_timeout(timeout)).map_err(|_| H3Error::Timeout)?
     }
 
     /// `GET path`, blocking.
@@ -1041,7 +1041,7 @@ impl H3Client {
         self.websocket(path, opts, handler, move |r| {
             let _ = tx.send(r);
         });
-        rx.recv_timeout(timeout).map_err(|_| H3Error::Timeout)?
+        akio_core::blocking(|| rx.recv_timeout(timeout)).map_err(|_| H3Error::Timeout)?
     }
 
     /// Closes the connection (`H3_NO_ERROR`).

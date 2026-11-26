@@ -906,33 +906,44 @@ impl FutureShared {
 }
 
 impl ResponseFuture {
-    /// Blocks until the response (or an error) is there.
+    /// Blocks until the response (or an error) is there. On a pool thread the wait is
+    /// [`akio_core::blocking`]: the pool may start a thread in this one's place meanwhile.
     pub fn wait(self) -> Result<ClientResponse, ClientError> {
         let mut g = self.shared.slot.lock().unwrap_or_else(|p| p.into_inner());
-        loop {
-            if let Some(r) = g.0.take() {
-                return r;
-            }
-            g = self.shared.cv.wait(g).unwrap_or_else(|p| p.into_inner());
+        if let Some(r) = g.0.take() {
+            return r;
         }
+        akio_core::blocking(|| {
+            loop {
+                g = self.shared.cv.wait(g).unwrap_or_else(|p| p.into_inner());
+                if let Some(r) = g.0.take() {
+                    return r;
+                }
+            }
+        })
     }
 
     /// Like [`wait`](Self::wait) with a limit; `None` on timeout.
     pub fn wait_timeout(self, d: Duration) -> Option<Result<ClientResponse, ClientError>> {
         let deadline = Instant::now() + d;
         let mut g = self.shared.slot.lock().unwrap_or_else(|p| p.into_inner());
-        loop {
-            if let Some(r) = g.0.take() {
-                return Some(r);
-            }
-            let left = deadline.checked_duration_since(Instant::now())?;
-            g = self
-                .shared
-                .cv
-                .wait_timeout(g, left)
-                .unwrap_or_else(|p| p.into_inner())
-                .0;
+        if let Some(r) = g.0.take() {
+            return Some(r);
         }
+        akio_core::blocking(|| {
+            loop {
+                let left = deadline.checked_duration_since(Instant::now())?;
+                g = self
+                    .shared
+                    .cv
+                    .wait_timeout(g, left)
+                    .unwrap_or_else(|p| p.into_inner())
+                    .0;
+                if let Some(r) = g.0.take() {
+                    return Some(r);
+                }
+            }
+        })
     }
 }
 

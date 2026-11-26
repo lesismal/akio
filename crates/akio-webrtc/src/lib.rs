@@ -1937,29 +1937,32 @@ impl Endpoint {
         }
         drop(tx);
         let deadline = Instant::now() + timeout;
-        let r = loop {
-            for (sock, _, _, req, got) in &asks {
-                if got.is_none() {
-                    let _ = sock.send_to(req, stun_server);
-                }
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break Err(Error::Timeout);
-            }
-            match rx.recv_timeout(left.min(Duration::from_millis(250))) {
-                Ok((tid, a)) => {
-                    if let Some(x) = asks.iter_mut().find(|x| x.2 == tid) {
-                        x.4 = Some(a);
-                    }
-                    if asks.iter().all(|x| x.4.is_some()) {
-                        break Ok(());
+        // A pool thread waiting here may be stood in for (`akio::blocking`).
+        let r = akio::blocking(|| {
+            loop {
+                for (sock, _, _, req, got) in &asks {
+                    if got.is_none() {
+                        let _ = sock.send_to(req, stun_server);
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => break Err(Error::Closed),
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break Err(Error::Timeout);
+                }
+                match rx.recv_timeout(left.min(Duration::from_millis(250))) {
+                    Ok((tid, a)) => {
+                        if let Some(x) = asks.iter_mut().find(|x| x.2 == tid) {
+                            x.4 = Some(a);
+                        }
+                        if asks.iter().all(|x| x.4.is_some()) {
+                            break Ok(());
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break Err(Error::Closed),
+                }
             }
-        };
+        });
         {
             let mut w = lock(&self.0.stun_waiters);
             for x in &asks {
@@ -2065,7 +2068,7 @@ impl Endpoint {
         let mut failed = None;
         for (r, rx) in &started {
             let left = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left) {
+            match akio::blocking(|| rx.recv_timeout(left)) {
                 Ok(Ok(a)) => done.push((r.clone(), a)),
                 Ok(Err(e)) => failed = Some(Error::Turn(e)),
                 Err(_) => failed = Some(Error::Timeout),

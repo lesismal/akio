@@ -1113,25 +1113,31 @@ impl Torrent {
         self.shared.lock().is_complete()
     }
 
+    /// On a pool thread the wait is `akio::blocking`: the pool may stand in for this thread.
     fn wait(&self, timeout: Duration, f: impl Fn(&torrent::TorrentState) -> bool) -> bool {
         let deadline = Instant::now() + timeout;
         let mut st = self.shared.lock();
-        loop {
-            if f(&st) {
-                return true;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            let wait = (deadline - now).min(Duration::from_millis(200));
-            st = self
-                .shared
-                .cv
-                .wait_timeout(st, wait)
-                .unwrap_or_else(|p| p.into_inner())
-                .0;
+        if f(&st) {
+            return true;
         }
+        akio::blocking(move || {
+            loop {
+                if f(&st) {
+                    return true;
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    return false;
+                }
+                let wait = (deadline - now).min(Duration::from_millis(200));
+                st = self
+                    .shared
+                    .cv
+                    .wait_timeout(st, wait)
+                    .unwrap_or_else(|p| p.into_inner())
+                    .0;
+            }
+        })
     }
 
     /// Waits until every piece is had; `false` on timeout.

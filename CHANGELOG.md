@@ -10,6 +10,27 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a pool thread that waits is stood in for (akio-pool, akio-core, akio, akio-http, akio-arpc, akio-h3, akio-ws, akio-socks, akio-grpc, akio-bittorrent, akio-media, akio-webrtc)
+
+`akio::blocking(f)` (also `akio_core::blocking`, `akio_pool::blocking`) runs a wait telling the
+calling thread's pool that the thread is blocked: queued work no idle thread will take then gets
+a new thread, up to `max_threads` plus one per blocked thread, at most
+`PoolConfig::max_blocked_threads` (new, default the default `max_threads`) more. Once the waits
+end, a thread above that allowance leaves after its current job, not after `keep_alive`.
+`akio::on_pool_thread()` and `Pool::is_current` tell whether the caller is a pool thread.
+`PoolStats` gains `blocked`, `compensated` and `blocked_at_ceiling`.
+
+- A handler on the logical pool that called, through a blocking client, a route of the same
+  engine whose handlers ran on the pool too, then waited, hung for good once every pool thread
+  waited so (`wait()` without a timeout): the inner request sat in the queue. The blocking
+  waits of the libraries now go through `blocking`: `ResponseFuture::wait` / `wait_timeout`,
+  `H2Client::dial_blocking` / `websocket_blocking`, arpc `CallFuture::wait`, `dial_blocking`
+  and `ClientPool::dial`, gRPC `unary` / `collect`, HTTP/3 `request_blocking` / `get` /
+  `websocket_blocking`, `akio_ws::client::dial_blocking`, the SOCKS client's
+  `dial_blocking` / `bind_blocking` / `udp_associate_blocking` and the blocking `accept` /
+  `recv_from`, BitTorrent `wait_complete` / `wait_metadata`, the RTSP client's `pull` / `push`
+  handshake, and WebRTC `gather_srflx` / `gather_relay`.
+
 ### Changed: admitted work goes on through a full pool instead of being cut or retried (akio-pool, akio-core, akio-http, akio-h3, akio-grpc, akio-quic, akio-bittorrent)
 
 `Pool::resume` queues the next step of work the pool admitted before in a lane of its own:

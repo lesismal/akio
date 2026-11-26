@@ -10,6 +10,24 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：等待中的线程池线程有线程顶替（akio-pool、akio-core、akio、akio-http、akio-arpc、akio-h3、akio-ws、akio-socks、akio-grpc、akio-bittorrent、akio-media、akio-webrtc）
+
+`akio::blocking(f)`（以及 `akio_core::blocking`、`akio_pool::blocking`）执行一次等待，并告诉调用线程
+所在的线程池该线程处于阻塞：没有空闲线程接手的排队工作会得到新线程，上限是 `max_threads` 加上每个阻塞
+线程一个，最多多出 `PoolConfig::max_blocked_threads`（新增，默认等于默认的 `max_threads`）个。等待结束
+后，超出额度的线程执行完当前任务即退出，不必等 `keep_alive`。`akio::on_pool_thread()` 和
+`Pool::is_current` 判断调用者是否为线程池线程。`PoolStats` 新增 `blocked`、`compensated` 和
+`blocked_at_ceiling`。
+
+- 在逻辑线程池上运行的 handler 通过阻塞客户端调用同一 engine 上 handler 也在线程池上运行的路由并等待，
+  一旦所有线程池线程都这样等待就会永久卡住（不带超时的 `wait()`）：内层请求留在队列里。各库的阻塞等待
+  现在都经过 `blocking`：`ResponseFuture::wait` / `wait_timeout`、`H2Client::dial_blocking` /
+  `websocket_blocking`、arpc 的 `CallFuture::wait`、`dial_blocking` 和 `ClientPool::dial`、gRPC 的
+  `unary` / `collect`、HTTP/3 的 `request_blocking` / `get` / `websocket_blocking`、
+  `akio_ws::client::dial_blocking`、SOCKS 客户端的 `dial_blocking` / `bind_blocking` /
+  `udp_associate_blocking` 以及阻塞的 `accept` / `recv_from`、BitTorrent 的 `wait_complete` /
+  `wait_metadata`、RTSP 客户端 `pull` / `push` 的握手，以及 WebRTC 的 `gather_srflx` / `gather_relay`。
+
 ### 变更：已接受的工作在线程池满时继续进行，不再被切断或重试（akio-pool、akio-core、akio-http、akio-h3、akio-grpc、akio-quic、akio-bittorrent）
 
 `Pool::resume` 把线程池之前接受的工作的下一步放进单独的车道：先于新工作被取走，线程池运行期间

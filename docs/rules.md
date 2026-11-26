@@ -23,10 +23,17 @@ for a proxy built on an event-loop library.
    pool is bounded (`Overloaded` when full); a feature that queues work there handles that error.
    Waits between pools and loops go one way only: a pool task never waits for a loop, so they
    cannot deadlock each other. Nor does a pool task wait for another task of the same pool
-   (queue a sub-task, then block on its channel or join): once every thread holds such a waiter,
-   the sub-tasks sit in the queue with no thread to run them, and those requests hang for good
-   while new ones are refused. A pool task may block, so it does the sub-work inline; a later
-   stage starts from the completion on the loop; fan-out with a join uses a pool of its own.
+   (queue a sub-task, then block on its channel or join) where it can do without: once every
+   thread holds such a waiter, the sub-tasks sit in the queue with no thread to run them, and
+   those requests hang for good while new ones are refused. A pool task may block, so it does
+   the sub-work inline; a later stage starts from the completion on the loop; fan-out with a join
+   uses a pool of its own. A pool task that must wait for something the same pool may have to
+   produce (a client call to a service of the same engine whose handlers run on the pool) wraps
+   the wait in `akio::blocking`: the pool then starts a thread in the waiter's place, and that
+   thread leaves once the wait is over. The libraries' blocking clients (`ResponseFuture::wait`,
+   `CallFuture::wait`, gRPC `unary`, the `*_blocking` calls) do it already. The stand-ins are
+   bounded by `PoolConfig::max_blocked_threads`; past it the work waits
+   (`PoolStats::blocked_at_ceiling` counts it).
    Blocking calls a pool task makes on other services (an HTTP or gRPC client) carry a timeout,
    since each one holds a pool thread while it waits. Code that only needs to reach a
    connection's loop (to start a client request, fire a deadline) uses `Conn::run_on_loop`,

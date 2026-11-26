@@ -13,11 +13,19 @@
 //! is bounded by its owners, not by the queue: each owner has at most one step queued or
 //! running at a time.
 //!
+//! A pool task that waits for something only another task of the same pool can produce (a
+//! handler on the pool calling a service of the same engine whose handlers run there too, then
+//! waiting for the answer) would hang once every thread waits so. It wraps the wait in
+//! [`blocking`], as the libraries' blocking clients do: while it waits, the pool may start a
+//! thread in its place (up to [`PoolConfig::max_blocked_threads`] such threads), and the extra
+//! thread leaves as soon as it is not needed.
+//!
 //! Guide: [Blocking work: the logical pool](https://lesismal.github.io/akio/en/concepts/blocking.html)
 //! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/akio/zh-CN/concepts/blocking.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{
+    cell::{Cell, RefCell},
     collections::VecDeque,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -45,6 +53,94 @@ const MAX_SPINNING: usize = 1;
 /// and a look that finds work turns it back on for every pass.
 const SPIN_PROBE: u32 = 16;
 
+thread_local! {
+    /// The pool this thread works for, while it is a pool thread.
+    static CURRENT: RefCell<Option<Weak<Pool>>> = const { RefCell::new(None) };
+    /// How deep this thread is in [`blocking`] calls (only the outermost one counts).
+    static BLOCKING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether the calling thread is a thread of an akio pool (any [`Pool`], the engine's logical
+/// pool among them).
+pub fn on_pool_thread() -> bool {
+    CURRENT.with(|c| c.borrow().is_some())
+}
+
+/// Runs `f`, a wait, telling the pool of the calling thread that this thread is blocked
+/// meanwhile, so that the pool may start a thread in its place.
+///
+/// A pool task that waits for a result only another task of the same pool can produce (a
+/// handler on the logical pool calling, through a blocking client, a service of the same engine
+/// whose handlers run on the pool too) would hang for good once every thread of the pool waits
+/// so: the tasks they wait for sit in the queue with no thread to run them. Inside `blocking`,
+/// the thread is counted as blocked ([`PoolStats::blocked`]): while it is, queued work that no
+/// idle thread will take gets a new thread, up to `max_threads` plus one per blocked thread, at
+/// most [`PoolConfig::max_blocked_threads`] more ([`PoolStats::compensated`] counts them,
+/// [`PoolStats::blocked_at_ceiling`] the times that limit left work waiting). Once the waits
+/// end, a thread above that allowance leaves after the job it is running, without waiting for
+/// `keep_alive`.
+///
+/// The libraries' blocking calls (`ResponseFuture::wait`, `CallFuture::wait`, the gRPC
+/// client's `unary`, the `*_blocking` dials and requests) do this already. Off a pool thread it
+/// just runs `f`; nested calls count once; a panic in `f` ends the blocked state too. Wrap only
+/// the wait, not work that uses the CPU.
+///
+/// ```
+/// use std::sync::mpsc;
+/// use std::time::Duration;
+///
+/// let mut cfg = akio_pool::PoolConfig::default();
+/// cfg.max_threads = 1;
+/// let pool = akio_pool::Pool::new(cfg);
+/// let (done_tx, done_rx) = mpsc::channel();
+/// let p = pool.clone();
+/// pool.try_execute(Box::new(move || {
+///     // On the pool's only thread: a sub-task, then a wait for it.
+///     let (tx, rx) = mpsc::channel();
+///     let _ = p.try_execute(Box::new(move || {
+///         let _ = tx.send(2 + 2);
+///     }));
+///     let got = akio_pool::blocking(|| rx.recv_timeout(Duration::from_secs(5)));
+///     let _ = done_tx.send(got);
+/// }))
+/// .ok()
+/// .expect("queued");
+/// assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(4)));
+/// pool.shutdown();
+/// pool.join();
+/// ```
+pub fn blocking<R>(f: impl FnOnce() -> R) -> R {
+    let depth = BLOCKING.with(Cell::get);
+    let pool = if depth == 0 {
+        match CURRENT.with(|c| c.borrow().as_ref().and_then(Weak::upgrade)) {
+            Some(p) => Some(p),
+            None => return f(),
+        }
+    } else {
+        None
+    };
+    BLOCKING.with(|d| d.set(depth + 1));
+    if let Some(p) = &pool {
+        p.enter_blocking();
+    }
+    // Dropped after `f`, also when it panics.
+    let _blocked = Blocked(pool);
+    f()
+}
+
+/// Ends a [`blocking`] call: the depth, and for the outermost call the pool's count.
+struct Blocked(Option<Arc<Pool>>);
+
+impl Drop for Blocked {
+    fn drop(&mut self) {
+        BLOCKING.with(|d| d.set(d.get().saturating_sub(1)));
+        if let Some(p) = &self.0 {
+            let mut st = p.lock();
+            st.blocked = st.blocked.saturating_sub(1);
+        }
+    }
+}
+
 /// A unit of work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -55,7 +151,13 @@ pub struct PoolConfig {
     /// Threads kept alive even when idle.
     pub min_threads: usize,
     /// Upper bound on threads; a new one is started when work is queued and none is idle.
+    /// Threads waiting in [`blocking`] may be stood in for beyond it
+    /// (`max_blocked_threads`).
     pub max_threads: usize,
+    /// How many threads beyond `max_threads` may be started while pool threads wait in
+    /// [`blocking`]: one per blocked thread, at most this many. 0 turns that off. Default: the
+    /// default `max_threads`.
+    pub max_blocked_threads: usize,
     /// Jobs that may wait, new work and resumed work together; beyond it [`Pool::try_execute`]
     /// rejects ([`Pool::resume`] does not).
     pub queue_capacity: usize,
@@ -82,9 +184,11 @@ impl std::fmt::Debug for ThreadHook {
 impl Default for PoolConfig {
     fn default() -> Self {
         let cores = thread::available_parallelism().map_or(4, |n| n.get());
+        let max_threads = (cores * 8).max(8);
         PoolConfig {
             min_threads: 0,
-            max_threads: (cores * 8).max(8),
+            max_threads,
+            max_blocked_threads: max_threads,
             queue_capacity: 65_536,
             keep_alive: Duration::from_secs(30),
             on_start: None,
@@ -121,6 +225,14 @@ pub struct PoolStats {
     pub panicked: u64,
     /// Jobs refused because the queue was full or the pool was closed.
     pub rejected: u64,
+    /// Threads waiting in [`blocking`] now.
+    pub blocked: usize,
+    /// Threads started beyond `max_threads` because threads were waiting in [`blocking`].
+    pub compensated: u64,
+    /// Times queued work was left with no thread to take it while more threads waited in
+    /// [`blocking`] than `max_blocked_threads` stands in for: a sign that limit (or a wait in a
+    /// pool task) is what holds the work up.
+    pub blocked_at_ceiling: u64,
 }
 
 struct State {
@@ -135,6 +247,12 @@ struct State {
     idle: usize,
     /// Threads spawned that have not yet looked at the queue (counted in `idle` meanwhile).
     starting: usize,
+    /// Threads waiting in [`blocking`].
+    blocked: usize,
+    /// Threads started beyond `max_threads` for blocked ones ([`PoolStats::compensated`]).
+    compensated: u64,
+    /// [`PoolStats::blocked_at_ceiling`].
+    blocked_at_ceiling: u64,
     closed: bool,
     handles: Vec<JoinHandle<()>>,
 }
@@ -179,6 +297,9 @@ impl Pool {
                 threads: 0,
                 idle: 0,
                 starting: 0,
+                blocked: 0,
+                compensated: 0,
+                blocked_at_ceiling: 0,
                 closed: false,
                 handles: Vec::new(),
             }),
@@ -299,22 +420,62 @@ impl Pool {
         // Read under the lock: a spinner stops counting itself before it takes the lock to look
         // at the queue, so either it is counted here or it sees these jobs.
         let spinning = self.spinning.load(Ordering::SeqCst);
+        let started = self.grow_locked(st, len, spinning);
+        let free_spinners = spinning.saturating_sub(len - added);
+        added
+            .saturating_sub(free_spinners + started)
+            .min(st.idle - st.starting)
+    }
+
+    /// How many threads may run (under the lock): `max_threads`, plus one for each thread
+    /// waiting in [`blocking`], at most `max_blocked_threads` more.
+    fn allowance(&self, st: &State) -> usize {
+        self.cfg
+            .max_threads
+            .saturating_add(st.blocked.min(self.cfg.max_blocked_threads))
+    }
+
+    /// Starts threads (under the lock) while `len` queued jobs are more than the idle and
+    /// `spinning` threads will take and the [`allowance`](Self::allowance) has room. Returns
+    /// how many it started.
+    fn grow_locked(&self, st: &mut State, len: usize, spinning: usize) -> usize {
+        let allowance = self.allowance(st);
         let mut started = 0;
-        while st.idle + spinning < len && st.threads < self.cfg.max_threads {
+        while st.idle + spinning < len && st.threads < allowance {
             let before = st.threads;
             self.spawn_locked(st);
             if st.threads == before {
                 break;
+            }
+            if before >= self.cfg.max_threads {
+                st.compensated += 1;
             }
             // A new thread looks at the queue when it starts: count it as taking a job.
             st.idle += 1;
             st.starting += 1;
             started += 1;
         }
-        let free_spinners = spinning.saturating_sub(len - added);
-        added
-            .saturating_sub(free_spinners + started)
-            .min(st.idle - st.starting)
+        if st.blocked > self.cfg.max_blocked_threads
+            && st.idle + spinning < len
+            && st.threads >= allowance
+        {
+            st.blocked_at_ceiling += 1;
+        }
+        started
+    }
+
+    /// The calling pool thread starts waiting in [`blocking`]: counts it, and starts a thread
+    /// in its place if queued work has none to take it.
+    fn enter_blocking(&self) {
+        let mut st = self.lock();
+        st.blocked += 1;
+        let len = st.queue.len() + st.resumes.len();
+        if len > 0 {
+            // Read under the lock, as in `queued_locked`. A thread started here looks at the
+            // queue when it starts; sleeping ones were woken for the jobs when they came.
+            let spinning = self.spinning.load(Ordering::SeqCst);
+            self.grow_locked(&mut st, len, spinning);
+        }
     }
 
     fn spawn_locked(&self, st: &mut State) {
@@ -352,6 +513,7 @@ impl Pool {
     }
 
     fn worker(self: Arc<Self>) {
+        CURRENT.with(|c| *c.borrow_mut() = Some(Arc::downgrade(&self)));
         if let Some(h) = &self.cfg.on_start {
             (h.0)();
         }
@@ -362,6 +524,8 @@ impl Pool {
             st.idle -= 1;
         }
         let mut spun = false;
+        // Leaving with jobs queued: a sleeping thread is woken to take this one's place.
+        let mut hand_over = false;
         loop {
             if let Some(job) = self.next_locked(&mut st) {
                 drop(st);
@@ -371,6 +535,15 @@ impl Pool {
                 self.completed.fetch_add(1, Ordering::Relaxed);
                 spun = false;
                 st = self.lock();
+                // More threads than the allowance: one started for a thread that was blocked
+                // and is no longer. It leaves now, not after `keep_alive`. (Threads above
+                // `max_threads` exist only while the allowance was higher, so it is at most
+                // `max_threads` plus the blocked ones: those that stay are enough.)
+                if st.threads > self.allowance(&st) {
+                    hand_over =
+                        (!st.queue.is_empty() || !st.resumes.is_empty()) && st.idle > st.starting;
+                    break;
+                }
                 continue;
             }
             if st.closed {
@@ -417,6 +590,11 @@ impl Pool {
             }
         }
         st.threads -= 1;
+        drop(st);
+        if hand_over {
+            self.cv.notify_one();
+        }
+        CURRENT.with(|c| *c.borrow_mut() = None);
     }
 
     /// Current counters.
@@ -431,7 +609,19 @@ impl Pool {
             completed: self.completed.load(Ordering::Relaxed),
             panicked: self.panicked.load(Ordering::Relaxed),
             rejected: self.rejected.load(Ordering::Relaxed),
+            blocked: st.blocked,
+            compensated: st.compensated,
+            blocked_at_ceiling: st.blocked_at_ceiling,
         }
+    }
+
+    /// Whether the calling thread is one of this pool's threads.
+    pub fn is_current(&self) -> bool {
+        CURRENT.with(|c| {
+            c.borrow()
+                .as_ref()
+                .is_some_and(|w| std::ptr::eq(w.as_ptr(), self))
+        })
     }
 
     /// Stops accepting work; threads finish the queued jobs and exit.
@@ -461,6 +651,7 @@ mod tests {
             max_threads: max,
             queue_capacity: cap,
             keep_alive: Duration::from_millis(100),
+            max_blocked_threads: max,
             on_start: None,
         }
     }
@@ -686,6 +877,143 @@ mod tests {
         wait_until(|| p.stats().completed == 9);
         p.shutdown();
         assert!(p.resume(Box::new(|| {})).is_err(), "refused after shutdown");
+        p.join();
+    }
+
+    /// Runs `job` on `p` with a handle to `p`, and gives back what it returns (5 s at most).
+    fn on_pool<R: Send + 'static>(
+        p: &Arc<Pool>,
+        job: impl FnOnce(&Arc<Pool>) -> R + Send + 'static,
+    ) -> R {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let q = p.clone();
+        p.try_execute(Box::new(move || {
+            let _ = tx.send(job(&q));
+        }))
+        .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).expect("job ran")
+    }
+
+    /// A sub-task that sends 4, and the receiver its waiter waits on.
+    fn sub_task(p: &Arc<Pool>) -> std::sync::mpsc::Receiver<i32> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        p.try_execute(Box::new(move || {
+            let _ = tx.send(4);
+        }))
+        .unwrap();
+        rx
+    }
+
+    /// The pool's only thread waits (in `blocking`) for a task of the same pool: a thread is
+    /// started for it, whether it was queued before the wait began or during it.
+    #[test]
+    fn a_task_waiting_for_the_same_pool_gets_a_thread() {
+        let p = Pool::new(cfg(0, 1, 16));
+        let got = on_pool(&p, |p| {
+            let rx = sub_task(p);
+            blocking(|| rx.recv_timeout(Duration::from_secs(5)))
+        });
+        assert_eq!(got, Ok(4));
+        let s = p.stats();
+        assert_eq!((s.compensated, s.blocked, s.blocked_at_ceiling), (1, 0, 0));
+        // The sub-task queued while its waiter is blocked already.
+        let got = on_pool(&p, |p| {
+            blocking(|| {
+                let rx = sub_task(p);
+                rx.recv_timeout(Duration::from_secs(5))
+            })
+        });
+        assert_eq!(got, Ok(4));
+        p.shutdown();
+        p.join();
+    }
+
+    #[test]
+    fn nested_blocking_counts_once_and_only_on_a_pool_thread() {
+        assert!(!on_pool_thread());
+        assert_eq!(blocking(|| 7), 7, "off a pool thread it just runs");
+        let p = Pool::new(cfg(0, 2, 16));
+        assert!(!p.is_current());
+        let other = Pool::new(cfg(0, 1, 16));
+        let o = other.clone();
+        let (on, mine, theirs, outer, inner, after) = on_pool(&p, move |p| {
+            let (outer, inner) = blocking(|| (p.stats().blocked, blocking(|| p.stats().blocked)));
+            (
+                on_pool_thread(),
+                p.is_current(),
+                o.is_current(),
+                outer,
+                inner,
+                p.stats().blocked,
+            )
+        });
+        assert!(on && mine && !theirs);
+        assert_eq!((outer, inner, after), (1, 1, 0));
+        assert_eq!(p.stats().blocked, 0);
+        for q in [p, other] {
+            q.shutdown();
+            q.join();
+        }
+    }
+
+    /// A panic inside `blocking` ends the blocked state: the pool's count and the thread's
+    /// depth (the next outermost call on that thread counts again).
+    #[test]
+    fn a_panic_in_blocking_restores_the_count() {
+        let p = Pool::new(cfg(1, 1, 16));
+        p.try_execute(Box::new(|| blocking(|| panic!("boom"))))
+            .unwrap();
+        wait_until(|| p.stats().completed == 1);
+        let s = p.stats();
+        assert_eq!((s.panicked, s.blocked), (1, 0));
+        // The same (only) thread: a fresh outermost call counts again.
+        assert_eq!(on_pool(&p, |p| blocking(|| p.stats().blocked)), 1);
+        assert_eq!(p.stats().blocked, 0);
+        p.shutdown();
+        p.join();
+    }
+
+    /// With `max_blocked_threads = 0` nothing stands in for a blocked thread: the work it
+    /// waits for is counted as held up by that limit, and runs once the wait gives up.
+    #[test]
+    fn no_stand_in_past_max_blocked_threads() {
+        let mut c = cfg(0, 1, 16);
+        c.max_blocked_threads = 0;
+        let p = Pool::new(c);
+        let got = on_pool(&p, |p| {
+            let rx = sub_task(p);
+            blocking(|| rx.recv_timeout(Duration::from_millis(200)))
+        });
+        assert!(got.is_err(), "no thread for the sub-task");
+        let s = p.stats();
+        assert_eq!(s.compensated, 0);
+        assert!(s.blocked_at_ceiling >= 1);
+        wait_until(|| p.stats().completed == 2);
+        assert_eq!(p.stats().threads, 1);
+        p.shutdown();
+        p.join();
+    }
+
+    /// The thread started for a blocked one leaves once the wait is over, on the next job a
+    /// thread finishes, not after `keep_alive`.
+    #[test]
+    fn the_extra_thread_leaves_without_waiting_for_keep_alive() {
+        let mut c = cfg(0, 1, 16);
+        c.keep_alive = Duration::from_secs(60);
+        let p = Pool::new(c);
+        let got = on_pool(&p, |p| {
+            let rx = sub_task(p);
+            let r = blocking(|| rx.recv_timeout(Duration::from_secs(5)));
+            // Two threads while this one is blocked.
+            (r, p.stats().threads)
+        });
+        assert_eq!(got, (Ok(4), 2));
+        wait_until(|| p.stats().completed == 2);
+        wait_until(|| p.stats().threads == 1);
+        // More work runs on the one left.
+        assert_eq!(on_pool(&p, |_| 5), 5);
+        assert_eq!(p.stats().threads, 1);
+        p.shutdown();
         p.join();
     }
 

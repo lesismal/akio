@@ -482,71 +482,77 @@ impl SocksClient {
     /// A `CONNECT` tunnel to `to` through the proxy, blocking: the returned stream is
     /// connected to the target (its timeouts cleared).
     pub fn dial_blocking(&self, to: &Dest) -> io::Result<TcpStream> {
-        let (s, mut hs, dl) = self.open_blocking(Cmd::Connect, to)?;
-        read_reply(&s, &mut hs, &dl)?;
-        unprotected(&hs)?;
-        dl.clear(&s)?;
-        Ok(s)
+        akio_core::blocking(|| {
+            let (s, mut hs, dl) = self.open_blocking(Cmd::Connect, to)?;
+            read_reply(&s, &mut hs, &dl)?;
+            unprotected(&hs)?;
+            dl.clear(&s)?;
+            Ok(s)
+        })
     }
 
     /// `BIND`, blocking: returns once the proxy listens ([`BlockingBind::bound_addr`]); then
     /// [`BlockingBind::accept`] waits for the peer.
     pub fn bind_blocking(&self, from: &Dest) -> io::Result<BlockingBind> {
-        let (s, mut hs, dl) = self.open_blocking(Cmd::Bind, from)?;
-        let first = read_reply(&s, &mut hs, &dl)?;
-        unprotected(&hs)?;
-        let proxy = s.peer_addr()?;
-        Ok(BlockingBind {
-            bound: reply_addr(&first.addr, proxy),
-            stream: s,
-            hs,
-            proxy,
-            timeout: self.bind_timeout,
+        akio_core::blocking(|| {
+            let (s, mut hs, dl) = self.open_blocking(Cmd::Bind, from)?;
+            let first = read_reply(&s, &mut hs, &dl)?;
+            unprotected(&hs)?;
+            let proxy = s.peer_addr()?;
+            Ok(BlockingBind {
+                bound: reply_addr(&first.addr, proxy),
+                stream: s,
+                hs,
+                proxy,
+                timeout: self.bind_timeout,
+            })
         })
     }
 
     /// `UDP ASSOCIATE` (SOCKS5), blocking: binds a UDP socket on the unspecified address of
     /// the proxy's family, announces it and returns the association.
     pub fn udp_associate_blocking(&self) -> io::Result<BlockingUdp> {
-        self.no_blocking_tls()?;
-        if self.version != Version::Socks5 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "UDP ASSOCIATE needs SOCKS5",
-            ));
-        }
-        let dl = Deadline::new(self.handshake_timeout);
-        let mut last = io::Error::new(io::ErrorKind::NotFound, "proxy has no address");
-        for addr in (self.host.as_str(), self.port).to_socket_addrs()? {
-            let s = match dl.left()? {
-                Some(t) => TcpStream::connect_timeout(&addr, t),
-                None => TcpStream::connect(addr),
-            };
-            let s = match s {
-                Ok(s) => s,
-                Err(e) => {
-                    last = e;
-                    continue;
-                }
-            };
-            let sock = UdpSocket::bind(unspecified(addr))?;
-            let declared = unspecified_port(addr, sock.local_addr()?.port());
-            let mut hs = self.handshake_to(Cmd::UdpAssociate, Target::Addr(declared))?;
-            let mut out = Vec::new();
-            hs.start(&mut out);
-            dl.write(&s, &out)?;
-            let r = read_reply(&s, &mut hs, &dl)?;
-            dl.clear(&s)?;
-            let relay = reply_addr(&r.addr, addr);
-            return Ok(BlockingUdp {
-                control: s,
-                sock,
-                relay,
-                gss: datagram_gss(&mut hs),
-                rx: Mutex::new((Reassembly::default(), vec![0u8; 65_536])),
-            });
-        }
-        Err(last)
+        akio_core::blocking(|| {
+            self.no_blocking_tls()?;
+            if self.version != Version::Socks5 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "UDP ASSOCIATE needs SOCKS5",
+                ));
+            }
+            let dl = Deadline::new(self.handshake_timeout);
+            let mut last = io::Error::new(io::ErrorKind::NotFound, "proxy has no address");
+            for addr in (self.host.as_str(), self.port).to_socket_addrs()? {
+                let s = match dl.left()? {
+                    Some(t) => TcpStream::connect_timeout(&addr, t),
+                    None => TcpStream::connect(addr),
+                };
+                let s = match s {
+                    Ok(s) => s,
+                    Err(e) => {
+                        last = e;
+                        continue;
+                    }
+                };
+                let sock = UdpSocket::bind(unspecified(addr))?;
+                let declared = unspecified_port(addr, sock.local_addr()?.port());
+                let mut hs = self.handshake_to(Cmd::UdpAssociate, Target::Addr(declared))?;
+                let mut out = Vec::new();
+                hs.start(&mut out);
+                dl.write(&s, &out)?;
+                let r = read_reply(&s, &mut hs, &dl)?;
+                dl.clear(&s)?;
+                let relay = reply_addr(&r.addr, addr);
+                return Ok(BlockingUdp {
+                    control: s,
+                    sock,
+                    relay,
+                    gss: datagram_gss(&mut hs),
+                    rx: Mutex::new((Reassembly::default(), vec![0u8; 65_536])),
+                });
+            }
+            Err(last)
+        })
     }
 }
 
@@ -1200,10 +1206,12 @@ impl BlockingBind {
     /// Waits (up to [`SocksClient::bind_timeout`]) for the peer to connect: returns the stream,
     /// now relayed to the peer, and the peer's address as the proxy reports it.
     pub fn accept(mut self) -> io::Result<(TcpStream, SocketAddr)> {
-        let dl = Deadline::new(self.timeout);
-        let r = read_reply(&self.stream, &mut self.hs, &dl)?;
-        dl.clear(&self.stream)?;
-        Ok((self.stream, reply_addr(&r.addr, self.proxy)))
+        akio_core::blocking(|| {
+            let dl = Deadline::new(self.timeout);
+            let r = read_reply(&self.stream, &mut self.hs, &dl)?;
+            dl.clear(&self.stream)?;
+            Ok((self.stream, reply_addr(&r.addr, self.proxy)))
+        })
     }
 }
 
@@ -1245,41 +1253,44 @@ impl BlockingUdp {
     /// but the relay are skipped. Honours [`set_read_timeout`](Self::set_read_timeout) per
     /// datagram received.
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, Dest)> {
-        let mut rx = self.rx.lock().unwrap_or_else(|p| p.into_inner());
-        let (reasm, tmp) = &mut *rx;
-        loop {
-            let (n, peer) = self.sock.recv_from(tmp)?;
-            if canon(peer) != self.relay {
-                continue;
+        akio_core::blocking(|| {
+            let mut rx = self.rx.lock().unwrap_or_else(|p| p.into_inner());
+            let (reasm, tmp) = &mut *rx;
+            loop {
+                let (n, peer) = self.sock.recv_from(tmp)?;
+                if canon(peer) != self.relay {
+                    continue;
+                }
+                let opened;
+                let (tmp, n) = match &self.gss {
+                    Some(g) => match g.open(&tmp[..n]) {
+                        Ok(d) => {
+                            opened = d;
+                            (&opened[..], opened.len())
+                        }
+                        Err(_) => continue,
+                    },
+                    None => (&tmp[..], n),
+                };
+                let Some((frag, from, h)) = crate::udp::parse_header(&tmp[..n]) else {
+                    continue;
+                };
+                let copy = |buf: &mut [u8], p: &[u8]| {
+                    let k = p.len().min(buf.len());
+                    buf[..k].copy_from_slice(&p[..k]);
+                    k
+                };
+                if frag == 0 {
+                    reasm.reset();
+                    return Ok((copy(buf, &tmp[h..n]), from));
+                }
+                if let Frag::Complete(from, whole) =
+                    reasm.push(Instant::now(), frag, &from, &tmp[h..n])
+                {
+                    return Ok((copy(buf, &whole), from));
+                }
             }
-            let opened;
-            let (tmp, n) = match &self.gss {
-                Some(g) => match g.open(&tmp[..n]) {
-                    Ok(d) => {
-                        opened = d;
-                        (&opened[..], opened.len())
-                    }
-                    Err(_) => continue,
-                },
-                None => (&tmp[..], n),
-            };
-            let Some((frag, from, h)) = crate::udp::parse_header(&tmp[..n]) else {
-                continue;
-            };
-            let copy = |buf: &mut [u8], p: &[u8]| {
-                let k = p.len().min(buf.len());
-                buf[..k].copy_from_slice(&p[..k]);
-                k
-            };
-            if frag == 0 {
-                reasm.reset();
-                return Ok((copy(buf, &tmp[h..n]), from));
-            }
-            if let Frag::Complete(from, whole) = reasm.push(Instant::now(), frag, &from, &tmp[h..n])
-            {
-                return Ok((copy(buf, &whole), from));
-            }
-        }
+        })
     }
 
     /// Timeout of [`recv_from`](Self::recv_from) (`None`: block).

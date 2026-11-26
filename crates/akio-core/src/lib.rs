@@ -46,7 +46,7 @@ pub const UNIX_ADDR: std::net::SocketAddr = std::net::SocketAddr::V4(std::net::S
 pub use akio_buf::SharedBuf;
 #[doc(hidden)]
 pub use akio_pool::ThreadHook;
-pub use akio_pool::{Job, Pool, PoolConfig, PoolStats, Rejected};
+pub use akio_pool::{Job, Pool, PoolConfig, PoolStats, Rejected, blocking, on_pool_thread};
 pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]

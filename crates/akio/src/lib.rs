@@ -71,6 +71,22 @@ pub use akio_tun as tun;
 #[cfg(feature = "wasm")]
 pub use akio_wasm as wasm;
 
+/// Runs `f`, a wait, telling the pool of the calling thread (the engine's logical pool, or a
+/// [`Pool`] of your own) that this thread is blocked meanwhile, so that the pool may start a
+/// thread in its place: a pool task that waits for something only another task of the same
+/// pool produces (a handler on the logical pool calling a service of the same engine, whose
+/// handlers run on the pool too) then cannot hang the pool once every thread waits so. Threads
+/// started this way are bounded by [`PoolConfig::max_blocked_threads`] and leave once the waits
+/// end ([`PoolStats::blocked`], [`PoolStats::compensated`], [`PoolStats::blocked_at_ceiling`]).
+///
+/// The blocking calls of akio's clients (`ResponseFuture::wait`, arpc's `CallFuture::wait`,
+/// gRPC's `unary`, the `*_blocking` dials and requests) do it already; wrap your own waits
+/// (a channel, a condition variable, a join) in it. Off a pool thread it just runs `f`; nested
+/// calls count once (rules 1-2 in `docs/rules.md`).
+pub use akio_core::blocking;
+/// Whether the calling thread is a thread of an akio pool (the engine's logical pool or a
+/// [`Pool`] of your own); [`Pool::is_current`] asks about one pool.
+pub use akio_core::on_pool_thread;
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
     DatagramsIter, DialOptions, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters,
@@ -86,7 +102,7 @@ pub use akio_core::{DynAcceptor, DynHandler};
 /// the logical pool nor anything else.
 ///
 /// [`Pool::new`] takes a [`PoolConfig`] (start from `PoolConfig::default()` and set its fields:
-/// `max_threads`, `queue_capacity`, `min_threads`, `keep_alive`) and returns an `Arc<Pool>`.
+/// `max_threads`, `queue_capacity`, `min_threads`, `keep_alive`, `max_blocked_threads`) and returns an `Arc<Pool>`.
 /// [`Pool::try_execute`] queues a [`Job`] and never blocks: past `queue_capacity` queued jobs, or
 /// after [`Pool::shutdown`], it gives the job back as [`Rejected`], which the caller handles
 /// (answers "busy", runs a fallback), never unwraps. A job that panics is caught and counted

@@ -1194,15 +1194,21 @@ impl std::fmt::Debug for CallFuture {
 }
 
 impl CallFuture {
-    /// Blocks until the answer.
+    /// Blocks until the answer. On a pool thread the wait is [`akio_core::blocking`]: the
+    /// pool may start a thread in this one's place meanwhile.
     pub fn wait(self) -> CallResult {
         let mut g = self.0.slot.lock().unwrap_or_else(|p| p.into_inner());
-        loop {
-            if let Some(r) = g.0.take() {
-                return r;
-            }
-            g = self.0.cv.wait(g).unwrap_or_else(|p| p.into_inner());
+        if let Some(r) = g.0.take() {
+            return r;
         }
+        akio_core::blocking(|| {
+            loop {
+                g = self.0.cv.wait(g).unwrap_or_else(|p| p.into_inner());
+                if let Some(r) = g.0.take() {
+                    return r;
+                }
+            }
+        })
     }
 }
 
@@ -1351,8 +1357,8 @@ pub fn dial_blocking(
     addr: SocketAddr,
     routes: Arc<Routes>,
 ) -> io::Result<Peer> {
-    start_dial(engine, addr, routes, Duration::from_secs(1), None)
-        .recv_timeout(Duration::from_secs(10))
+    let rx = start_dial(engine, addr, routes, Duration::from_secs(1), None);
+    akio_core::blocking(|| rx.recv_timeout(Duration::from_secs(10)))
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "arpc dial timed out"))?
 }
 

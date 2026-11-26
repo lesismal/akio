@@ -94,7 +94,7 @@ impl PoolBuilder {
         let mut err = None;
         for rx in pending {
             let left = until.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left) {
+            match akio_core::blocking(|| rx.recv_timeout(left)) {
                 Ok(Ok(p)) => peers.push(p),
                 Ok(Err(e)) => err = err.or(Some(e)),
                 Err(_) => {

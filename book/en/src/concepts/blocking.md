@@ -73,11 +73,13 @@ pool.min_threads = 0;                       // kept alive when idle
 pool.max_threads = cores * 8 (at least 8);  // started on demand
 pool.queue_capacity = 65_536;               // beyond it: Error::Overloaded
 pool.keep_alive = Duration::from_secs(30);  // idle threads above min_threads retire
+pool.max_blocked_threads = cores * 8 (at least 8); // stand-ins for threads in akio::blocking
 EngineBuilder::pool(pool)
 ```
 
 Those are the defaults. `Engine::pool_stats()` (and the metrics endpoint) report threads, idle
-threads, queue length, completed, panicked and rejected jobs.
+threads, queue length, completed, panicked and rejected jobs, and the threads waiting in
+`akio::blocking` (see below).
 
 Choose `max_threads` by what the blocking work waits on: a database pool of 50 connections gains
 nothing from 200 pool threads. Choose `queue_capacity` by how much latency you accept before
@@ -94,6 +96,30 @@ before new work, so admitted work finishes first, and counted against the room l
 work, so a pool busy finishing turns new work away sooner. What bounds it is its owners: each
 keeps at most one step queued or running (a pump, a call, a piece). `PoolStats` reports the lane
 (`resumes`) and the deepest both have been (`max_queued`).
+
+### A pool task that waits
+
+A pool task that waits for something only the same pool can produce would hang once every
+thread waits so: a handler on the pool (`handlers_on_logical_pool`) that calls, through a
+blocking client, a route of the same engine whose handlers run on the pool too, then `wait()`s.
+The inner request sits in the queue behind the waiters, with no thread to run it. Wrap such a
+wait in `akio::blocking(|| ...)`: while the thread waits there it counts as blocked, and queued
+work that no idle thread will take gets a new thread, up to `max_threads` plus one per blocked
+thread, at most `max_blocked_threads` more. When the waits end, a thread above that allowance
+leaves after the job it is running, without waiting for `keep_alive`.
+
+akio's blocking clients do it already: `ResponseFuture::wait` and `wait_timeout` (HTTP/1.1 and
+HTTP/2), arpc's `CallFuture::wait`, gRPC's `unary` and `collect`, `request_blocking` and
+`get` of HTTP/3, and the `*_blocking` dials. Wrap your own waits on a channel, a condition
+variable or a join the same way; nested calls count once, and off a pool thread `blocking`
+just runs the closure (`akio::on_pool_thread()` tells which). Doing the sub-work inline, or
+starting the next stage from a completion, still needs no extra thread and is better where it
+fits (rules §1).
+
+`PoolStats` reports the threads blocked now (`blocked`), the threads started for them
+(`compensated`), and the times queued work found no thread because more threads were blocked
+than `max_blocked_threads` stands in for (`blocked_at_ceiling`): raise the limit, or wait less
+on the pool. `max_blocked_threads = 0` turns the stand-ins off.
 
 ## A pool of your own
 

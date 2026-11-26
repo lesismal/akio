@@ -1002,7 +1002,7 @@ impl H2Client {
         H2Client::dial(engine, addr, tls, opts, move |r| {
             let _ = tx.send(r);
         });
-        rx.recv_timeout(Duration::from_secs(10))
+        akio_core::blocking(|| rx.recv_timeout(Duration::from_secs(10)))
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "h2 connect timed out"))?
     }
 
@@ -1215,7 +1215,7 @@ impl H2Client {
         self.websocket(url, opts, handler, move |r| {
             let _ = tx.send(r);
         });
-        rx.recv_timeout(opts.timeout + Duration::from_secs(1))
+        akio_core::blocking(|| rx.recv_timeout(opts.timeout + Duration::from_secs(1)))
             .map_err(|_| ClientError::Timeout)?
     }
 
