@@ -373,7 +373,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 事件循环，kqueue | akio-epoll（macOS，M1） | 否 | 否 | 开发/调试用后端；规则 17 不采用 macOS 数字。需要决定它是否要基准测试（一台空闲的 macOS 主机，或者不测）。 |
 | TCP echo 与每连接内存 | akio-core | 是（测评，`tools/bench/echo.sh`、`mem.sh`） | 是（内联队列头、装箱的会话状态、装箱的 deflate 状态） | 受客户端限制，平台期在 0.65–0.8 M req/s；没有延迟分位数。 |
 | UDP：按对端、无连接、GRO/GSO、自有缓冲区 | akio-core、akio-sys（ADR-024、ADR-065、ADR-093） | 是（“无连接 UDP”“绑定 UDP 套接字接收”，测评 UDP echo） | 是（默认 GRO、`recvmmsg` 槽位来自池化 slab、`sendmmsg` + GSO，数据报监听器 1.08x） | – |
-| 逻辑池（`spawn_blocking`） | akio-pool（M2） | 部分（M2：比在线程上直接阻塞恢复约 58x） | 否 | 没有每个任务提交/完成成本的同轮微基准。 |
+| 逻辑池（`spawn_blocking`） | akio-pool（M2） | 部分（M2：比在线程上直接阻塞恢复约 58x；2026-11-26：池上的 h2c 每请求 8.3 µs CPU，内联 0.87，`perf` 中排第一的是 `Mutex::lock_contended`） | 否 | 没有每个任务提交/完成成本的同轮微基准。队列是一把共享的 `Mutex` + `Condvar`：按线程或成批交接可以减少竞争（ADR-176，未做）。 |
 | NUMA 放置 | akio-core（ADR-088） | 部分（“NUMA 放置”：只测了开销，gpu51 只有一个节点） | 否 | 跨节点的收益需要多节点主机。 |
 | 热重载（prefork 分流：已删除，ADR-129） | akio-core（ADR-028） | 是（“热重载”，引擎 A/B） | 是（未测出开销） | prefork 的 BPF 分流从未单独测过；已随 akio-prefork 删除（ADR-129）。 |
 | 遥测、指标、span、OTLP、日志 | akio-core、akio-export、akio-log（ADR-020、ADR-064） | 是（“遥测开销”“可观测性开销”“OTLP 导出新增项”；akio-log `overhead` 基准） | 是（exemplar 路径移出热路径，`d4151796`、`7dde0830`；关闭的日志语句 0.25 ns） | – |
@@ -395,10 +395,10 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 消息体旁路、外层响应过滤器 | akio-http `context`、`message`、`tap`（ADR-116） | 否 | 否 | 待测：普通响应（`Response` 与 `BodyStream` 各多一个 `None` 字，过滤器多一次判空）的 A/B，以及有旁路的流（每次写入一次加锁）与无旁路的流的对比；其余由 akit 缓存（I67）的命中与未命中基准覆盖。 |
 | 请求的对端取自受信任的 PROXY 头 | akio-http `session`（ADR-118） | 否 | 否 | 要测：没有 PROXY 层时 HTTP/1.1 与 h2c 请求速率的 A/B（每个请求一次 `OnceLock::get`），在安静主机上。 |
 | WebAssembly 插件：解码、验证与解释器 | akio-wasm（ADR-125） | 否 | 否 | 要测（W5）：在基准机上，经 fit 的 `headers` 和 Proxy-Wasm `http_routing` guest 的一次 guest 调用和一个请求，与 wazero 上的 fit 对比；以及 fit 的 Go guest（2.6–4.6 MB）的加载时间。 |
-| HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s） | 部分（每连接一个截止时间定时器，`95bca264`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
+| HTTP/1 客户端 | akio-http `client`（ADR-059） | 部分（只有 `client-bench` A/B，270k req/s；2026-11-26 带超时的 A/B，epoll 与 io_uring） | 部分（每连接一个截止时间定时器，`95bca264`；定时器任务按线程排队、不唤醒定时器线程，10 秒超时的开销从 15–17% 降到 1.6–3.3%，`815b2eba`） | 没有与参考实现对比（hyper 客户端、reqwest）。 |
 | 路由与路由正则 | akio-http、akio-regex（ADR-051） | 是（`router-bench`，“编解码微基准”） | 是（每次查找约 28 ns、0 次分配；路由正则快于 `regex`） | – |
 | 日志过滤正则 | akio-regex、akio-log（ADR-047） | 是（“编解码微基准”，`logregex`） | 部分 | 对比 `regex`：无匹配的多选分支 92 对 16 ns，`\b\d+ms\b` 93 对 33 ns；编译更慢。不在热路径上（只用于过滤）。 |
-| HTTP/2 | akio-http（M4） | 是（测评 h2c、TLS 上的 h2） | 是（帧原地解析、扁平 HPACK；fib 的 1.22–1.34x） | 处于 h2load 的上限：是下界。 |
+| HTTP/2 | akio-http（M4） | 是（测评 h2c、TLS 上的 h2；2026-11-26 内联与池上的 A/B） | 是（帧原地解析、扁平 HPACK；fib 的 1.22–1.34x；RFC 9113 §8.2.1 检查改用 HPACK 解码器给出的字节类别，内联 +10–14%，`610587da`） | 处于 h2load 的上限：是下界。处理函数默认内联（ADR-176）；池路径慢 9–13 倍（每个请求两次线程交接）。 |
 | 压缩中间件、流式响应 | akio-http `compress`（ADR-074） | 是（“压缩的流式响应”、brotli 流式各节） | 是（每次写入和每个流的固定开销） | – |
 | WebSocket（HTTP/1、HTTP/2、HTTP/3） | akio-ws（M3、ADR-060、ADR-011） | 是（测评 echo、内存，“HTTP/2 上的 WebSocket”） | 部分（内存；规则审计中 echo +7–11%） | 帧解析、掩码和 UTF-8 校验没有微基准，也没有优化过。 |
 | permessage-deflate、deflate | akio-deflate | 是（“Deflate”，`pmd_echo`） | 是（zlib-ng 策略、stored 块只拷贝一次） | 仍是没有 SIMD 的安全 Rust。 |

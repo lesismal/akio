@@ -23,6 +23,12 @@ an application, and a proxy on akio passed them to its upstream:
   the application, and an HTTP/1.1 client then wrote it to its upstream.
 - HTTP/3: the same, as RFC 9114 §4.2 asks.
 
+The HTTP/2 checks cost nothing measurable: the HPACK decoder works out each field's byte classes
+with a 256-entry table as it reads a string and keeps them with the dynamic table entry (an
+indexed field is not scanned at all), and the server takes a block's text from one UTF-8 check
+instead of one per name and value. h2c with handlers inline is 10–14% faster than with the
+first, per-byte version of the checks (docs/BENCHMARKS.md).
+
 ### Fixed: an HTTP client request's timeout no longer holds the request until it would pass (akio-http)
 
 akit's A171, found by akit's I25 benchmarks, where akit's proxy grew by about 240 bytes a request
@@ -32,6 +38,13 @@ stayed queued after the request ended, keeping its exchange's allocation (or its
 stream control) until the delay passed. With a 60s timeout that is a minute of requests; with an
 hour, an hour. The job is now cancelled when the request ends, and the heap entries of cancelled
 jobs are compacted once they outnumber the live ones.
+
+Scheduling and cancelling no longer wake the timer thread or touch a counter shared by every
+thread: each thread queues its jobs and cancels on a queue of its own, the timer thread is woken
+only for a job due before its next wake-up (or by a cancel while it sleeps idle) and collects the
+queues every 10 ms while they fill, so a cancelled job goes within 10 ms. A 10 s timeout now
+costs the HTTP/1.1 client 1.6% on epoll and 3.3% on io_uring, instead of 15–17%; the h2 client
+with a timeout is 1.11× (epoll) and 1.69× (io_uring) faster (docs/BENCHMARKS.md).
 
 ### Added: `Client::close_idle` (akio-http, akit's A10)
 

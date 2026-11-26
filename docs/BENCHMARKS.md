@@ -2919,6 +2919,62 @@ logical pool. Same host, same binaries: 0.47–0.53 M req/s on the pool against 
 `http-bench` gained `AKIO_H2_RUN_ON_POOL=0` to measure the inline path, and h2c benchmarks from
 before 2026-11-25 compare with those numbers, not with the default.
 
+**Follow-up: the costs removed (same-run A/B, 2026-11-26).** `A` is `c1dc3629` (the measurement
+above: `main` with A169 and A171), `B` is branch `claude/perf-a169-a171-39c327` (`610587da` the
+request checks from the HPACK decoder's classes, `815b2eba` the timer queues, `9698f872`
+ADR-176). Same host, harness and pinning as above; 9 rounds, each revision built in its own
+target directory, the order within a round reversed every other round, all under one `quiet.sh
+run`. `pool` rows set `AKIO_H2_RUN_ON_POOL=1` (`A`'s default; `B` serves HTTP/2 inline by
+default since ADR-176). `B slower` counts the rounds where `B` lost.
+
+| Load | backend | A | B / A | per round | B slower |
+|---|---|---:|---:|---|---:|
+| h2c 64 × 16, handlers inline | epoll | 4,085,510 (±12%) | **1.117** | 1.118 (0.917–1.474) | 1 / 9 |
+| h2c 16 × 128, handlers inline | epoll | 5,470,169 (±4%) | **1.135** | 1.139 (1.092–1.175) | 0 / 9 |
+| h2c 64 × 16, handlers inline | io_uring | 4,271,564 (±11%) | **1.100** | 1.097 (0.843–1.138) | 3 / 9 |
+| h2c 16 × 128, handlers inline | io_uring | 5,512,307 | **1.113** | 1.110 (1.092–1.125) | 0 / 9 |
+| h2c 64 × 16 on the pool | epoll | 485,292 | 1.008 | 1.008 (0.999–1.012) | 1 / 9 |
+| h2c 64 × 16 on the pool | io_uring | 496,692 | 1.009 | 1.008 (1.002–1.015) | 0 / 9 |
+| client HTTP/1.1, 10 s timeout | epoll | 254,069 | **1.175** | 1.172 (1.156–1.194) | 0 / 9 |
+| client HTTP/1.1, no timeout | epoll | 304,598 | 0.996 | 0.997 (0.980–1.012) | 6 / 9 |
+| client h2, 10 s timeout | epoll | 288,978 | **1.114** | 1.113 (1.064–1.123) | 0 / 9 |
+| client HTTP/1.1, 10 s timeout | io_uring | 283,997 | **1.124** | 1.123 (1.072–1.219) | 0 / 9 |
+| client HTTP/1.1, no timeout | io_uring | 332,886 | 0.993 | 0.996 (0.963–1.060) | 6 / 9 |
+| client h2, 10 s timeout | io_uring | 540,947 (±6%) | **1.691** | 1.687 (1.502–1.717) | 0 / 9 |
+
+- **A169, h2c inline: +10–14%, more than the 7–9% A169 cost.** The decoder now works out each
+  field's class (bad name byte, NUL/CR/LF, byte over 0x7F) with a 256-entry table as it reads a
+  literal string, keeps it with the dynamic table entry, and has the static table's at compile
+  time, so an indexed field (all of `h2load`'s from its second request on) is not scanned at all;
+  the server then takes the text of the whole block from one UTF-8 check instead of one per name
+  and value. `perf` on the inline 64 × 16 epoll server, twice each: `headers_complete`
+  8.9–9.4% → 7.2–7.3% of the samples, `core::str::from_utf8` 2.8% → 0.9–1.0% (`h2load`
+  4.03–4.05 → 4.52–4.56 M req/s). Multiplied with the 0.907–0.934 above, h2c inline is about
+  2–4% above `main` before A169: the checks cost nothing now and the per-string UTF-8 calls they
+  replaced are gone. Every refusal A169 added stays. Micro-benchmark (ignored test
+  `h2::tests::request_head_cost`, decode plus checks per block, macOS, indicative): `h2load`'s
+  block indexed 94 → 52 ns, as literals 122 → 82 ns; a browser's 14 fields indexed 445 → 164
+  ns, as literals 559 → 290 ns. On the pool the checks never showed (+0.8%).
+- **A171, the client timeout: its whole cost gone, not only A171's.** Each thread queues its
+  timer adds and cancels on a queue of its own (an uncontended lock) and takes its keys from a
+  block of its own; the timer thread is woken only for a job due before its next wake-up, or by
+  a cancel that finds it asleep, and while messages flow it collects them every 10 ms (the
+  longest a cancelled job, and what it captured, outlives its cancel). A 10 s timeout now costs
+  the HTTP/1.1 client 1.6% on epoll (298,418 against 303,269 without one, `B`) and 3.3% on
+  io_uring (319,353 against 330,401), against 16.6% and 14.7% on `A` in this run. The h2 client
+  gains the most on io_uring (1.69×): the same two messages per request at its higher rate woke
+  the timer thread over a million times a second on `A`, each wake-up a system call of an I/O
+  thread that otherwise makes almost none.
+- **h2c on the pool (ADR-176).** The pool path did not get cheaper, and cannot by much while
+  each request crosses threads twice. `perf` on the pooled server (64 × 16, epoll, 0.45 M req/s):
+  the top symbol is `Mutex::lock_contended` (5.7%), then the kernel's spin locks, wake-ups and
+  system calls; no handler-side symbol reaches 1%. `perf stat` over 6 s: inline 24.0 CPU-s and
+  70 context switches for 4.58 M req/s (0.87 µs of CPU per request), pooled 23.2 CPU-s and
+  1.46 M context switches for 0.47 M req/s (8.3 µs per request, the pool threads sharing the
+  server's 4 CPUs). `H2Config::run_on_pool` is off by default again (ADR-176): the clients'
+  deadlock fix does not depend on it, no release had it on, and every other protocol serves
+  inline by default.
+
 ### monoio (2026-11-21, same run, `tools/bench-ref/monoio-ref`)
 
 A separate run, not part of the 2026-11-15 campaign: same host, same harness, same pinning and

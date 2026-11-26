@@ -24,8 +24,10 @@ pays two hand-offs between threads that an inline one does not:
   thread, which wakes the loop to write it. Inline, the responses of one read go out in one
   write.
 
-`perf` on the pooled server (see the same section) shows the time going to the kernel's futex
-and wake-up paths and to lock contention rather than to the handler.
+`perf` on the pooled server (same section, follow-up) puts `Mutex::lock_contended` first (5.7%
+of the samples), then the kernel's spin locks, wake-ups and system calls; no handler-side symbol
+reaches 1%. Over 6 s the pooled server makes 1.46 M context switches and spends 8.3 µs of CPU per
+request, against 70 and 0.87 µs inline.
 
 The update's other change, the deadlock fix of the HTTP clients (`Conn::run_on_loop`: a client
 called from a pool task reaches its connection's loop without a pool job of its own), does not
