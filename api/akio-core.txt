@@ -5,6 +5,8 @@ pub use akio_core::PoolConfig
 pub use akio_core::PoolStats
 pub use akio_core::Rejected
 pub use akio_core::SharedBuf
+pub use akio_core::blocking
+pub use akio_core::on_pool_thread
 pub mod akio_core::metrics
 #[non_exhaustive] pub enum akio_core::metrics::Kind
 pub akio_core::metrics::Kind::Counter
@@ -368,6 +370,7 @@ pub akio_core::telemetry::LoopCounters::filtered: u64
 pub akio_core::telemetry::LoopCounters::handshake_failures: u64
 pub akio_core::telemetry::LoopCounters::idle_timeouts: u64
 pub akio_core::telemetry::LoopCounters::iterations: u64
+pub akio_core::telemetry::LoopCounters::max_cmd_batch: u64
 pub akio_core::telemetry::LoopCounters::overloaded: u64
 pub akio_core::telemetry::LoopCounters::queued_bytes: u64
 pub akio_core::telemetry::LoopCounters::reads: u64
@@ -853,6 +856,7 @@ pub akio_core::LoopCounters::filtered: u64
 pub akio_core::LoopCounters::handshake_failures: u64
 pub akio_core::LoopCounters::idle_timeouts: u64
 pub akio_core::LoopCounters::iterations: u64
+pub akio_core::LoopCounters::max_cmd_batch: u64
 pub akio_core::LoopCounters::overloaded: u64
 pub akio_core::LoopCounters::queued_bytes: u64
 pub akio_core::LoopCounters::reads: u64

@@ -1162,6 +1162,7 @@ impl !core::panic::unwind_safe::UnwindSafe for akio_http::Detached
 pub struct akio_http::Executor(_)
 impl akio_http::Executor
 pub fn akio_http::Executor::execute(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> akio_core::error::Result<()>
+pub fn akio_http::Executor::resume(&self, akio_pool::Job) -> core::result::Result<(), akio_pool::Job>
 impl core::clone::Clone for akio_http::Executor
 pub fn akio_http::Executor::clone(&self) -> Self
 impl core::fmt::Debug for akio_http::Executor

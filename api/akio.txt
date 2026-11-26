@@ -38,10 +38,12 @@ pub use akio::Transport
 pub use akio::UNIX_ADDR
 pub use akio::UdpBinding
 pub use akio::UdpStats
+pub use akio::blocking
 pub use akio::ebpf
 pub use akio::fn_acceptor
 pub use akio::log
 pub use akio::metrics
+pub use akio::on_pool_thread
 pub use akio::telemetry
 pub use akio::timer
 pub use akio::tls

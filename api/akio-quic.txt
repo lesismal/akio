@@ -231,6 +231,7 @@ pub fn akio_quic::Connection::preferred_address(&self) -> core::option::Option<c
 pub fn akio_quic::Connection::queued_bytes(&self, akio_quic::StreamId) -> usize
 pub fn akio_quic::Connection::remote_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn akio_quic::Connection::reset(&self, akio_quic::StreamId, u32) -> core::result::Result<(), akio_quic::Error>
+pub fn akio_quic::Connection::resume(&self, akio_pool::Job) -> core::result::Result<(), akio_pool::Job>
 pub fn akio_quic::Connection::rtt(&self) -> core::time::Duration
 pub fn akio_quic::Connection::send(&self, akio_quic::StreamId, impl core::convert::Into<akio_quic::Bytes>) -> core::result::Result<(), akio_quic::Error>
 pub fn akio_quic::Connection::send_capacity(&self, akio_quic::StreamId) -> core::result::Result<usize, akio_quic::Error>
