@@ -10,6 +10,26 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：engine 范围的排队字节预算、接受连接数上限，以及只服务 HTTP/2 的 HTTP 服务端（akio-core、各后端、akio-http）
+
+akit 的 A214、A215 和 A168，对应 fit 的 `limits.max_pending_bytes`、`limits.max_conns` 和只有 `h2c` 的 listener：
+
+- `Config::max_pending_bytes: Option<usize>`（ADR-172；默认 `None`，可重载，`Live::set_max_pending_bytes`）：当 engine
+  所有连接待发送的字节达到它时，每个连接在当前这次读之后暂停读，就像写水位暂停单个连接的读一样；回落到它的四分之三时
+  恢复。一个监视线程（`akio-budget`，仅在设置了预算时存在）每毫秒（低于预算一半时每 10 毫秒）对各 I/O 线程已有的
+  `queued_bytes` gauge 求和；写路径不变，读只多一次 relaxed load。连接通过每个后端都会询问的 `ConnInner::read_held`
+  暂停，每轮挂起一次，并像 `hold_reads(false)` 那样被唤醒。新增：`LoopCounters::budget_pauses`
+  （`akio_budget_pauses_total`）、`Telemetry::pending_bytes`、`Telemetry::over_budget`。
+- `Config::max_accepted_connections: usize`（ADR-173；默认 0，不限制；可重载，`Live::set_max_accepted_connections`）：
+  超过它的 TCP 接受连接在 `accept` 后立即关闭并计入 `rejected`，不论 engine 拨出了多少连接；`max_connections` 仍统计
+  所有连接。它读取 akit A30 的计数器（`Telemetry::open_accepted`，按 `claude/akit-open-requests` 上的原样引入）。
+- `HttpConfig::http1: bool`（ADR-174；默认 `true`）：为 `false` 时服务端只说 HTTP/2，就像只以 prior knowledge 提供
+  `h2c` 的 listener：前几个字节偏离客户端 preface 的连接收到 `GOAWAY`（`PROTOCOL_ERROR`）并被关闭；不接受
+  `Upgrade: h2c`。
+- `tools/bench/echo.sh connect`（每秒新建 TCP 连接数，即 accept 路径），以及基准服务端的
+  `AKIO_BENCH_MAX_PENDING_BYTES` / `AKIO_BENCH_MAX_ACCEPTED`，用于 docs/BENCHMARKS.zh-CN.md 中的 A/B
+  （“engine 预算与接受连接数上限”）。
+
 ### 新增：I/O 线程绑核，以及共享线程组基准（akio、tools/bench）
 
 `EngineBuilder::pin_io_threads(bool)`（或 `AKIO_PIN_IO_THREADS=1`），默认关闭，把每个 I/O 线程

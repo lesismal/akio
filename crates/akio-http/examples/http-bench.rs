@@ -14,6 +14,9 @@
 //! same app on `n` listeners, at the ports `port`, `port + 1`, ... of `addr` (plain only). Each
 //! has `<threads>` I/O threads of its own (`Listener::threads`, as every listener had before
 //! ADR-130), or with `AKIO_BENCH_SHARED=1` they share `<threads>` (`EngineBuilder::io_threads`).
+//!
+//! `AKIO_BENCH_MAX_PENDING_BYTES` and `AKIO_BENCH_MAX_ACCEPTED` turn on the engine's budget of
+//! queued bytes and its limit on accepted connections (ADR-172, ADR-173).
 
 use akio::{
     Backend, Engine, Listener,
@@ -87,7 +90,7 @@ fn main() -> std::io::Result<()> {
         .unwrap_or(1);
     if listeners > 1 {
         let shared = std::env::var("AKIO_BENCH_SHARED").as_deref() == Ok("1");
-        let mut b = Engine::builder();
+        let mut b = Engine::builder().config(bench_config());
         if shared {
             b = b.io_threads(threads);
         }
@@ -126,7 +129,20 @@ fn main() -> std::io::Result<()> {
     } else {
         l.serve(serve(app))
     };
-    let engine = Engine::builder().listen(l).build()?;
+    let engine = Engine::builder().config(bench_config()).listen(l).build()?;
     println!("listening on {:?}", engine.local_addrs());
     engine.run()
+}
+
+/// `AKIO_BENCH_MAX_PENDING_BYTES=n` and `AKIO_BENCH_MAX_ACCEPTED=n` set the engine's
+/// `Config::max_pending_bytes` and `max_accepted_connections` (ADR-172, ADR-173), to measure what
+/// they cost (akit's A214 and A215).
+fn bench_config() -> akio::Config {
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<usize>().ok());
+    let mut cfg = akio::Config::default();
+    cfg.max_pending_bytes = env("AKIO_BENCH_MAX_PENDING_BYTES");
+    if let Some(n) = env("AKIO_BENCH_MAX_ACCEPTED") {
+        cfg.max_accepted_connections = n;
+    }
+    cfg
 }

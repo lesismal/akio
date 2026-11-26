@@ -15,6 +15,7 @@
 
 #[doc(hidden)]
 pub mod balance;
+mod budget;
 mod config;
 mod conn;
 mod datagrams;

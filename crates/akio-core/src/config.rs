@@ -118,6 +118,20 @@ pub struct Config {
     /// off for a moment instead of spinning. Set it below that limit to keep descriptors for
     /// files and outgoing connections under a connection flood.
     pub max_connections: usize,
+    /// Accepted TCP connections beyond this many open ones, across the engine's listeners, are
+    /// closed right after `accept` and counted as `rejected`, whatever the engine dials: unlike
+    /// `max_connections`, dialed connections and UDP peers do not count (ADR-173). 0 (the
+    /// default) = no limit. Both limits apply when both are set.
+    pub max_accepted_connections: usize,
+    /// A budget of the bytes queued for sending across every connection of the engine
+    /// (ADR-172): while they reach it, every connection's reads pause after its current read,
+    /// as `write_high_watermark` pauses one connection's, and resume once they are back under
+    /// three quarters of it; `LoopCounters::budget_pauses` counts the pauses. It bounds what
+    /// many slow peers together can make the engine hold, where the watermark bounds one: 100,000
+    /// connections at a 256 KiB watermark may otherwise queue 25 GiB. The sum is taken by a
+    /// watcher thread every millisecond or so (10 ms while under half the budget), so it can
+    /// be passed by what is queued meanwhile. `None` (the default, as is `Some(0)`): no budget.
+    pub max_pending_bytes: Option<usize>,
     /// When set, the engine calls [`akio_log::set_max_level`] with it (`akio` logs through the
     /// `akio-log` facade, re-exported as `akio::log`, under the `akio` target; install a logger
     /// such as `akio::log::init(..)` to see the records, or enable the `log` feature to send
@@ -129,7 +143,7 @@ pub struct Config {
     ///
     /// Reloadable at runtime (`Engine::reload` / [`Telemetry::reload`]): `idle_timeout`,
     /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
-    /// `max_connections`, `shutdown_timeout`, `retire_timeout`, `log_level`, `read_buffer`,
+    /// `max_connections`, `max_accepted_connections`, `max_pending_bytes`, `shutdown_timeout`, `retire_timeout`, `log_level`, `read_buffer`,
     /// `backlog`, `udp_idle_timeout` and `write_timeout` (see [`Live`](crate::Live) for when each
     /// applies). Fixed at build time: `max_pending_responses`, `connect_timeout`,
     /// `udp_max_peers`, `udp_gro`. Thread counts change with `Engine::set_threads`.
@@ -155,6 +169,8 @@ impl Default for Config {
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             retire_timeout: None,
             max_connections: 0,
+            max_accepted_connections: 0,
+            max_pending_bytes: None,
             log_level: None,
             telemetry: Telemetry::new(),
         }
