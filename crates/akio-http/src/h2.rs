@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::hpack::{Decoder, Encoder};
+use crate::hpack::{Decoder, Encoder, class};
 use crate::observe::{H2Shard, H2Stats};
 use akio_core::ConnInner;
 use akio_ws::{WsLink, WsSender, WsSession};
@@ -116,10 +116,14 @@ pub struct H2Config {
     /// of the connection's I/O thread, so handlers may block and the streams of one connection
     /// are served at the same time. Requests whose body the service takes as a stream, and
     /// CONNECTs (extended or not), stay on the I/O thread. When the pool's queue is full the stream is
-    /// answered `503`. Default `true`: one multiplexed connection is otherwise served one stream
-    /// at a time on its I/O thread, so a slow stream holds up its siblings and the thread's
-    /// other connections. Turn it off for handlers that never block, where inline is faster
-    /// (no hand-off per request).
+    /// answered `503`. Default `false` (ADR-176), as for every other protocol: handlers run
+    /// inline, one stream at a time on the connection's I/O thread, and must not block (a single
+    /// request can still go to the pool with [`Context::detach_to_pool`]). Turn it on for
+    /// handlers that block, so that a slow stream holds up neither its siblings nor the thread's
+    /// other connections; it costs two hand-offs between threads per request, several times
+    /// what a handler that never blocks costs inline.
+    ///
+    /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
     pub run_on_pool: bool,
 }
 
@@ -138,7 +142,7 @@ impl Default for H2Config {
             reset_window: Duration::from_secs(30),
             stats: None,
             enable_connect_protocol: true,
-            run_on_pool: true,
+            run_on_pool: false,
         }
     }
 }
@@ -353,26 +357,49 @@ type StreamMap = HashMap<u32, Stream, BuildHasherDefault<IdHasher>>;
 #[derive(Default)]
 struct Fields {
     buf: Vec<u8>,
-    /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
-    spans: Vec<(usize, usize, usize)>,
+    /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`, and the field's
+    /// [`class`] (decoded blocks; 0 in the blocks we encode).
+    spans: Vec<(usize, usize, usize, u8)>,
+    /// The classes of every field, ORed.
+    classes: u8,
 }
 
 impl Fields {
     fn clear(&mut self) {
         self.buf.clear();
         self.spans.clear();
+        self.classes = 0;
     }
-    fn push(&mut self, n: &[u8], v: &[u8]) {
+    fn push(&mut self, n: &[u8], v: &[u8], class: u8) {
         let a = self.buf.len();
         self.buf.extend_from_slice(n);
         let b = self.buf.len();
         self.buf.extend_from_slice(v);
-        self.spans.push((a, b, self.buf.len()));
+        self.spans.push((a, b, self.buf.len(), class));
+        self.classes |= class;
     }
     fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.spans
             .iter()
-            .map(|&(a, b, c)| (&self.buf[a..b], &self.buf[b..c]))
+            .map(|&(a, b, c, _)| (&self.buf[a..b], &self.buf[b..c]))
+    }
+
+    /// The whole buffer as text when no name or value has a byte over 0x7F (the usual case):
+    /// one UTF-8 check for the block rather than one per string.
+    fn ascii(&self) -> Option<&str> {
+        if self.classes & (class::NON_ASCII | class::NAME_NON_ASCII) != 0 {
+            return None;
+        }
+        std::str::from_utf8(&self.buf).ok()
+    }
+
+    /// `buf[a..b]` as text: a slice of `ascii` (from [`Fields::ascii`]) when there is one,
+    /// else checked on its own.
+    fn text<'a>(&'a self, ascii: Option<&'a str>, a: usize, b: usize) -> Option<&'a str> {
+        match ascii {
+            Some(t) => t.get(a..b),
+            None => std::str::from_utf8(&self.buf[a..b]).ok(),
+        }
     }
 }
 
@@ -738,7 +765,7 @@ impl Core {
             f.buf.extend_from_slice(b":status");
             let b = f.buf.len();
             crate::message::push_uint(&mut f.buf, u64::from(s));
-            f.spans.push((a, b, f.buf.len()));
+            f.spans.push((a, b, f.buf.len(), 0));
         }
         let (mut has_date, mut has_len) = (false, false);
         for (n, v) in headers.iter() {
@@ -761,17 +788,17 @@ impl Core {
             } else {
                 f.buf.extend_from_slice(v.as_bytes());
             }
-            f.spans.push((a, b, f.buf.len()));
+            f.spans.push((a, b, f.buf.len(), 0));
         }
         if add_date && !has_date {
-            crate::message::with_http_date(|d| f.push(b"date", d.as_bytes()));
+            crate::message::with_http_date(|d| f.push(b"date", d.as_bytes(), 0));
         }
         if let (Some(len), false) = (content_length, has_len) {
             let a = f.buf.len();
             f.buf.extend_from_slice(b"content-length");
             let b = f.buf.len();
             crate::message::push_uint(&mut f.buf, len);
-            f.spans.push((a, b, f.buf.len()));
+            f.spans.push((a, b, f.buf.len(), 0));
         }
         // Encode behind a placeholder frame header, which is filled in once the size is known.
         self.out_pooled();
@@ -1514,10 +1541,10 @@ impl Core {
         let mut fields = std::mem::take(&mut self.fields);
         fields.clear();
         let mut size = 0usize;
-        let decoded = self.dec.decode_with(block, |n, v, _| {
+        let decoded = self.dec.decode_classified(block, |n, v, _, class| {
             size = size.saturating_add(n.len() + v.len() + 32);
             if size <= limit {
-                fields.push(n, v);
+                fields.push(n, v, class);
             }
         });
         let r = match decoded {
@@ -1658,11 +1685,14 @@ impl Core {
             return self.peer_rst(sid, err::PROTOCOL);
         }
         let mut tr = Headers::new();
-        for (n, v) in fields.iter() {
-            if n.first() == Some(&b':') || !valid_field(n, v) {
-                return self.peer_rst(sid, err::PROTOCOL);
-            }
-            if let (Ok(n), Ok(v)) = (std::str::from_utf8(n), std::str::from_utf8(v)) {
+        // RFC 9113 §8.2.1 (A169): no pseudo-header, a name with no byte a token cannot hold, a
+        // value with no NUL, CR or LF (`BAD_NAME` covers the colon of a pseudo-header).
+        if fields.classes & (class::BAD_NAME | class::BAD_VALUE) != 0 {
+            return self.peer_rst(sid, err::PROTOCOL);
+        }
+        let ascii = fields.ascii();
+        for &(a, b, c, _) in &fields.spans {
+            if let (Some(n), Some(v)) = (fields.text(ascii, a, b), fields.text(ascii, b, c)) {
                 tr.append(n, v);
             }
         }
@@ -1694,65 +1724,14 @@ impl Core {
     }
 
     fn build_request(&mut self, fields: &Fields) -> Result<Request, ()> {
-        let (mut method, mut path, mut authority, mut scheme, mut protocol) =
-            (None, None, None, None, None);
-        // The regular fields fit in one allocation (the pseudo-headers are not kept as fields;
-        // a request with few regular fields keeps their positions inline).
-        let n = fields
-            .spans
-            .iter()
-            .filter(|&&(a, b, _)| a == b || fields.buf[a] != b':')
-            .count();
-        let mut headers = Headers::spare(Spare::Req, n, fields.buf.len());
-        let mut regular = false;
-        let mut cookies: Option<String> = None;
-        for (n, v) in fields.iter() {
-            if invalid_value(v) {
-                return Err(()); // RFC 9113 §8.2.1, pseudo-header fields too
-            }
-            let v = std::str::from_utf8(v).map_err(|_| ())?;
-            if n.first() == Some(&b':') {
-                if regular {
-                    return Err(()); // pseudo-header after a regular one
-                }
-                let slot = match n {
-                    b":method" => &mut method,
-                    b":path" => &mut path,
-                    b":authority" => &mut authority,
-                    b":scheme" => &mut scheme,
-                    // Only once we allowed it (RFC 8441 §3).
-                    b":protocol" if self.cfg.enable_connect_protocol => &mut protocol,
-                    _ => return Err(()),
-                };
-                if slot.replace(v).is_some() {
-                    return Err(());
-                }
-                continue;
-            }
-            regular = true;
-            if !valid_field(n, b"") {
-                return Err(());
-            }
-            let n = std::str::from_utf8(n).map_err(|_| ())?;
-            match n {
-                "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding"
-                | "upgrade" => {
-                    return Err(());
-                }
-                "te" if v != "trailers" => return Err(()),
-                "cookie" => match &mut cookies {
-                    Some(c) => {
-                        c.push_str("; ");
-                        c.push_str(v);
-                    }
-                    None => cookies = Some(v.to_owned()),
-                },
-                _ => headers.append(n, v),
-            }
-        }
-        if let Some(c) = cookies {
-            headers.append("cookie", c);
-        }
+        let (pseudo, mut headers) = request_fields(fields, self.cfg.enable_connect_protocol)?;
+        let Pseudo {
+            method,
+            path,
+            authority,
+            scheme,
+            protocol,
+        } = pseudo;
         let method = method.ok_or(())?;
         let path = if method == "CONNECT" && protocol.is_none() {
             // A CONNECT (RFC 9113 §8.5): `:authority` alone names the tunnel's host and port,
@@ -1796,6 +1775,98 @@ impl Core {
             peer_certificates: self.peer_certs.get(&self.conn),
         })
     }
+}
+
+/// A request's pseudo-header fields.
+#[derive(Default)]
+struct Pseudo<'a> {
+    method: Option<&'a str>,
+    path: Option<&'a str>,
+    authority: Option<&'a str>,
+    scheme: Option<&'a str>,
+    protocol: Option<&'a str>,
+}
+
+/// A request header block's pseudo-header fields and regular fields, or `Err` when it is
+/// malformed (RFC 9113 §8.2-8.3): a pseudo-header after a regular field, unknown or repeated, a
+/// name or value RFC 9113 §8.2.1 refuses, a connection-specific field, `te` other than
+/// `trailers`, not UTF-8. `connect_protocol`: whether `:protocol` is allowed (RFC 8441 §3).
+fn request_fields(fields: &Fields, connect_protocol: bool) -> Result<(Pseudo<'_>, Headers), ()> {
+    if fields.classes & class::BAD_VALUE != 0 {
+        return Err(()); // a NUL, CR or LF: RFC 9113 §8.2.1, pseudo-header fields too (A169)
+    }
+    let Pseudo {
+        mut method,
+        mut path,
+        mut authority,
+        mut scheme,
+        mut protocol,
+    } = Pseudo::default();
+    // The regular fields fit in one allocation (the pseudo-headers are not kept as fields;
+    // a request with few regular fields keeps their positions inline).
+    let n = fields
+        .spans
+        .iter()
+        .filter(|&&(a, b, _, _)| a == b || fields.buf[a] != b':')
+        .count();
+    let mut headers = Headers::spare(Spare::Req, n, fields.buf.len());
+    let mut regular = false;
+    let mut cookies: Option<String> = None;
+    let ascii = fields.ascii();
+    for &(a, b, c, cl) in &fields.spans {
+        let n = &fields.buf[a..b];
+        let v = fields.text(ascii, b, c).ok_or(())?;
+        if n.first() == Some(&b':') {
+            if regular {
+                return Err(()); // pseudo-header after a regular one
+            }
+            let slot = match n {
+                b":method" => &mut method,
+                b":path" => &mut path,
+                b":authority" => &mut authority,
+                b":scheme" => &mut scheme,
+                // Only once we allowed it (RFC 8441 §3).
+                b":protocol" if connect_protocol => &mut protocol,
+                _ => return Err(()),
+            };
+            if slot.replace(v).is_some() {
+                return Err(());
+            }
+            continue;
+        }
+        regular = true;
+        if cl & class::BAD_NAME != 0 {
+            return Err(()); // RFC 9113 §8.2.1: uppercase, a byte no token holds (A169)
+        }
+        let n = fields.text(ascii, a, b).ok_or(())?;
+        match n {
+            "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade" => {
+                return Err(());
+            }
+            "te" if v != "trailers" => return Err(()),
+            "cookie" => match &mut cookies {
+                Some(c) => {
+                    c.push_str("; ");
+                    c.push_str(v);
+                }
+                None => cookies = Some(v.to_owned()),
+            },
+            _ => headers.append(n, v),
+        }
+    }
+    if let Some(c) = cookies {
+        headers.append("cookie", c);
+    }
+    Ok((
+        Pseudo {
+            method,
+            path,
+            authority,
+            scheme,
+            protocol,
+        },
+        headers,
+    ))
 }
 
 // ---- response side, usable from any thread ---------------------------------------------------
@@ -2609,19 +2680,145 @@ fn finalize(ctx: &mut Context) {
     }
 }
 
-/// Whether a regular field's name and value are well formed, as RFC 9113 §8.2.1 asks: the name
-/// has no byte in 0x00-0x20, 0x41-0x5A (uppercase) or 0x7F-0xFF and no colon (pseudo-header
-/// names are checked apart), and the value no NUL, CR or LF. A request or trailer section
-/// breaking either is malformed: an HTTP/1.1 hop behind this server would read it differently.
-pub(crate) fn valid_field(name: &[u8], value: &[u8]) -> bool {
-    !name.is_empty()
-        && name
-            .iter()
-            .all(|&b| matches!(b, 0x21..=0x40 | 0x5b..=0x7e) && b != b':')
-        && !invalid_value(value)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{hint::black_box, time::Instant};
 
-/// Whether a field value holds a NUL, CR or LF, which no HTTP version lets a value carry.
-pub(crate) fn invalid_value(value: &[u8]) -> bool {
-    value.iter().any(|&b| matches!(b, 0 | b'\r' | b'\n'))
+    /// The request checks as A169 merged them: a pass per name and per value beside a UTF-8
+    /// check per string (the micro-benchmark's reference).
+    fn per_byte(fields: &Fields) -> Result<usize, ()> {
+        let mut kept = 0;
+        for (n, v) in fields.iter() {
+            if v.iter().any(|&b| matches!(b, 0 | b'\r' | b'\n')) {
+                return Err(());
+            }
+            let v = std::str::from_utf8(v).map_err(|_| ())?;
+            if n.first() == Some(&b':') {
+                kept += v.len();
+                continue;
+            }
+            if n.is_empty()
+                || !n
+                    .iter()
+                    .all(|&b| matches!(b, 0x21..=0x40 | 0x5b..=0x7e) && b != b':')
+            {
+                return Err(());
+            }
+            let n = std::str::from_utf8(n).map_err(|_| ())?;
+            kept += n.len() + v.len();
+        }
+        Ok(kept)
+    }
+
+    /// The same walk with the decoder's classes and one UTF-8 check per block.
+    fn classed(fields: &Fields) -> Result<usize, ()> {
+        if fields.classes & class::BAD_VALUE != 0 {
+            return Err(());
+        }
+        let ascii = fields.ascii();
+        let mut kept = 0;
+        for &(a, b, c, cl) in &fields.spans {
+            let v = fields.text(ascii, b, c).ok_or(())?;
+            if fields.buf.get(a) == Some(&b':') {
+                kept += v.len();
+                continue;
+            }
+            if cl & class::BAD_NAME != 0 {
+                return Err(());
+            }
+            kept += fields.text(ascii, a, b).ok_or(())?.len() + v.len();
+        }
+        Ok(kept)
+    }
+
+    /// A literal field without indexing, raw strings (RFC 7541 §6.2.2): every one is scanned.
+    fn literal(out: &mut Vec<u8>, n: &[u8], v: &[u8]) {
+        out.push(0);
+        for s in [n, v] {
+            assert!(s.len() < 127);
+            out.push(s.len() as u8);
+            out.extend_from_slice(s);
+        }
+    }
+
+    fn time(label: &str, n: u32, mut f: impl FnMut() -> usize) {
+        for _ in 0..n / 10 {
+            black_box(f());
+        }
+        let t = Instant::now();
+        let mut sum = 0usize;
+        for _ in 0..n {
+            sum = sum.wrapping_add(black_box(f()));
+        }
+        let ns = t.elapsed().as_secs_f64() * 1e9 / f64::from(n);
+        println!("{label:<58} {ns:7.1} ns/block ({sum})");
+    }
+
+    /// Micro-benchmark of a request header block's decoding and RFC 9113 §8.2.1 checks (A169):
+    /// `cargo test --release -p akio-http --lib h2::tests::request_head_cost -- --ignored
+    /// --nocapture`. Blocks as `h2load` sends them (indexed from the second request on) and as a
+    /// browser does (more and longer fields), plus every field as an unindexed literal, the case
+    /// where each string is scanned. Each line: decode into `Fields` (the same decoder, which
+    /// works out the classes of literals either way), then the checks with a pass per string
+    /// and UTF-8 per string (A169 as merged) or with the decoder's classes.
+    #[test]
+    #[ignore]
+    fn request_head_cost() {
+        let h2load: &[(&[u8], &[u8])] = &[
+            (b":method", b"GET"),
+            (b":path", b"/plaintext"),
+            (b":scheme", b"http"),
+            (b":authority", b"127.0.0.1:7401"),
+            (b"user-agent", b"h2load nghttp2/1.59.0"),
+        ];
+        let browser: &[(&[u8], &[u8])] = &[
+            (b":method", b"GET"),
+            (b":authority", b"www.example.com"),
+            (b":scheme", b"https"),
+            (b":path", b"/static/js/app.4f1c2b.js?v=20261126"),
+            (b"sec-ch-ua", b"\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""),
+            (b"sec-ch-ua-mobile", b"?0"),
+            (b"user-agent", b"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+            (b"accept", b"*/*"),
+            (b"sec-fetch-site", b"same-origin"),
+            (b"sec-fetch-mode", b"no-cors"),
+            (b"referer", b"https://www.example.com/products/list?page=2"),
+            (b"accept-encoding", b"gzip, deflate, br, zstd"),
+            (b"accept-language", b"en-US,en;q=0.9,zh-CN;q=0.8"),
+            (b"cookie", b"session=8f2d1c0e9b7a6f5e4d3c2b1a; theme=dark; consent=yes"),
+        ];
+        const N: u32 = 2_000_000;
+        for (name, list) in [("h2load", h2load), ("browser", browser)] {
+            let mut enc = Encoder::new();
+            let _first = enc.encode(list.iter().copied());
+            let indexed = enc.encode(list.iter().copied());
+            let mut lit = Vec::new();
+            for (n, v) in list {
+                literal(&mut lit, n, v);
+            }
+            for (kind, block) in [("indexed", &indexed), ("literals", &lit)] {
+                let mut dec = Decoder::new();
+                dec.decode(&_first).expect("first block");
+                let mut fields = Fields::default();
+                for (check, classes) in [("UTF-8 per string", false), ("classes", true)] {
+                    time(&format!("{name}, {kind}, {check}"), N, || {
+                        fields.clear();
+                        dec.decode_classified(block, |n, v, _, c| fields.push(n, v, c))
+                            .expect("decodes");
+                        if classes {
+                            classed(&fields).expect("valid")
+                        } else {
+                            per_byte(&fields).expect("valid")
+                        }
+                    });
+                }
+                // Both walks agree, and request_fields accepts the block.
+                assert_eq!(per_byte(&fields), classed(&fields));
+                let (p, h) = request_fields(&fields, false).expect("a valid request");
+                assert_eq!(p.method, Some("GET"));
+                assert!(h.len() + 4 >= list.len());
+            }
+        }
+    }
 }

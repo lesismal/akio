@@ -220,6 +220,83 @@ const STATIC: [(&[u8], &[u8]); 61] = [
     (b"user-agent", b""), (b"vary", b""), (b"via", b""), (b"www-authenticate", b""),
 ];
 
+/// The checks RFC 9113 §8.2.1 asks of every request and trailer field (akit A169), worked out
+/// by the decoder as it reads a string, with one table lookup per byte, and kept with each
+/// dynamic table entry: a field indexed from either table costs no byte scan at all. The HTTP/2
+/// server reads them from [`Decoder::decode_classified`].
+pub(crate) mod class {
+    /// The name is not a regular field name: empty, a byte outside 0x21-0x40 and 0x5B-0x7E
+    /// (uppercase, controls, space, 0x7F and over), or a colon. Every pseudo-header name has it.
+    pub(crate) const BAD_NAME: u8 = 1;
+    /// The value holds a NUL, CR or LF.
+    pub(crate) const BAD_VALUE: u8 = 2;
+    /// The value has a byte over 0x7F: only then does it need a UTF-8 check of its own.
+    pub(crate) const NON_ASCII: u8 = 4;
+    /// The name has a byte over 0x7F (it has [`BAD_NAME`] too).
+    pub(crate) const NAME_NON_ASCII: u8 = 8;
+
+    const NAME: u8 = BAD_NAME | NAME_NON_ASCII;
+    const VALUE: u8 = BAD_VALUE | NON_ASCII;
+
+    /// Every class a byte can put a field in.
+    const BYTES: [u8; 256] = {
+        let mut t = [0u8; 256];
+        let mut i = 0;
+        while i < 256 {
+            let b = i as u8;
+            if !matches!(b, 0x21..=0x39 | 0x3b..=0x40 | 0x5b..=0x7e) {
+                t[i] |= BAD_NAME;
+            }
+            if matches!(b, 0 | b'\r' | b'\n') {
+                t[i] |= BAD_VALUE;
+            }
+            if b > 0x7f {
+                t[i] |= NON_ASCII | NAME_NON_ASCII;
+            }
+            i += 1;
+        }
+        t
+    };
+
+    const fn or(s: &[u8]) -> u8 {
+        let (mut c, mut i) = (0, 0);
+        while i < s.len() {
+            c |= BYTES[s[i] as usize];
+            i += 1;
+        }
+        c
+    }
+
+    /// The class of a name: [`BAD_NAME`], [`NAME_NON_ASCII`] or none.
+    pub(crate) const fn name(n: &[u8]) -> u8 {
+        if n.is_empty() {
+            return BAD_NAME;
+        }
+        or(n) & NAME
+    }
+
+    /// The class of a value: [`BAD_VALUE`], [`NON_ASCII`] or none.
+    pub(crate) const fn value(v: &[u8]) -> u8 {
+        or(v) & VALUE
+    }
+
+    /// The name's part of a field's class.
+    pub(crate) const fn name_part(c: u8) -> u8 {
+        c & NAME
+    }
+}
+
+/// The class of each static table entry ([`class`]), worked out at compile time.
+const STATIC_CLASS: [u8; 61] = {
+    let mut t = [0u8; 61];
+    let mut i = 0;
+    while i < 61 {
+        t[i] = class::name(STATIC[i].0) | class::value(STATIC[i].1);
+        i += 1;
+    }
+    t
+};
+
 /// The first static index with this name.
 fn static_name(name: &[u8]) -> Option<usize> {
     Some(match name {
@@ -299,8 +376,9 @@ pub const DEFAULT_TABLE_SIZE: usize = 4096;
 /// Decoded header fields, `(name, value)` in order.
 pub type HeaderList = Vec<(Vec<u8>, Vec<u8>)>;
 
-/// A dynamic table entry.
-type Entry = (Box<[u8]>, Box<[u8]>);
+/// A dynamic table entry: name, value and, in a decoder's table, the field's [`class`] (an
+/// encoder's table keeps 0 there).
+type Entry = (Box<[u8]>, Box<[u8]>, u8);
 
 /// A dynamic table: newest entry first.
 #[derive(Debug)]
@@ -321,7 +399,7 @@ impl Table {
 
     fn evict_to(&mut self, max: usize) {
         while self.size > max {
-            let Some((n, v)) = self.entries.pop_back() else {
+            let Some((n, v, _)) = self.entries.pop_back() else {
                 break;
             };
             self.size -= n.len() + v.len() + ENTRY_OVERHEAD;
@@ -334,7 +412,7 @@ impl Table {
     }
 
     /// Adds an entry, evicting old ones; an entry larger than the table empties it (§4.4).
-    fn insert(&mut self, name: Box<[u8]>, value: Box<[u8]>) {
+    fn insert(&mut self, name: Box<[u8]>, value: Box<[u8]>, class: u8) {
         let size = name.len() + value.len() + ENTRY_OVERHEAD;
         if size > self.max {
             self.entries.clear();
@@ -343,18 +421,23 @@ impl Table {
         }
         self.evict_to(self.max - size);
         self.size += size;
-        self.entries.push_front((name, value));
+        self.entries.push_front((name, value, class));
     }
 
-    /// The entry with HPACK index `index` (static entries first, then this table).
-    fn field(&self, index: usize) -> Result<(&[u8], &[u8]), DecoderError> {
+    /// The entry with HPACK index `index` (static entries first, then this table), with its
+    /// [`class`].
+    fn field(&self, index: usize) -> Result<(&[u8], &[u8], u8), DecoderError> {
         match index {
             0 => Err(DecoderError::InvalidIndex),
-            1..=61 => Ok(STATIC[index - 1]),
+            1..=61 => Ok((
+                STATIC[index - 1].0,
+                STATIC[index - 1].1,
+                STATIC_CLASS[index - 1],
+            )),
             _ => self
                 .entries
                 .get(index - 62)
-                .map(|(n, v)| (&n[..], &v[..]))
+                .map(|(n, v, c)| (&n[..], &v[..], *c))
                 .ok_or(DecoderError::InvalidIndex),
         }
     }
@@ -362,7 +445,7 @@ impl Table {
     /// (HPACK index of an entry with this name, of an entry with this name and value).
     fn find(&self, name: &[u8], value: &[u8]) -> (Option<usize>, Option<usize>) {
         let mut by_name = None;
-        for (i, (n, v)) in self.entries.iter().enumerate() {
+        for (i, (n, v, _)) in self.entries.iter().enumerate() {
             if **n == *name {
                 if **v == *value {
                     return (Some(62 + i), Some(62 + i));
@@ -511,6 +594,16 @@ impl Decoder {
         block: &[u8],
         mut f: impl FnMut(&[u8], &[u8], bool),
     ) -> Result<(), DecoderError> {
+        self.decode_classified(block, |n, v, never, _| f(n, v, never))
+    }
+
+    /// [`decode_with`](Self::decode_with), with each field's [`class`]: what the RFC 9113
+    /// §8.2.1 checks found in it, scanned once per string read (never for an indexed field).
+    pub(crate) fn decode_classified(
+        &mut self,
+        block: &[u8],
+        mut f: impl FnMut(&[u8], &[u8], bool, u8),
+    ) -> Result<(), DecoderError> {
         let mut name_buf = std::mem::take(&mut self.name_buf);
         let mut value_buf = std::mem::take(&mut self.value_buf);
         let r = self.run(block, &mut f, &mut name_buf, &mut value_buf);
@@ -522,7 +615,7 @@ impl Decoder {
     fn run(
         &mut self,
         b: &[u8],
-        f: &mut impl FnMut(&[u8], &[u8], bool),
+        f: &mut impl FnMut(&[u8], &[u8], bool, u8),
         name_buf: &mut Vec<u8>,
         value_buf: &mut Vec<u8>,
     ) -> Result<(), DecoderError> {
@@ -531,10 +624,10 @@ impl Decoder {
         while pos < b.len() {
             let c = b[pos];
             if c & 0x80 != 0 {
-                // Indexed field (§6.1).
+                // Indexed field (§6.1): its class came with the entry.
                 let i = read_int(b, &mut pos, 7)?;
-                let (n, v) = self.table.field(i)?;
-                f(n, v, false);
+                let (n, v, cl) = self.table.field(i)?;
+                f(n, v, false, cl);
                 fields = true;
             } else if c & 0xe0 == 0x20 {
                 // Dynamic table size update (§6.3).
@@ -550,14 +643,17 @@ impl Decoder {
                 // Literal with incremental indexing (§6.2.1).
                 fields = true;
                 let i = read_int(b, &mut pos, 6)?;
-                let name: Box<[u8]> = if i == 0 {
-                    read_string(b, &mut pos, name_buf)?.into()
+                let (name, name_class): (Box<[u8]>, u8) = if i == 0 {
+                    let n = read_string(b, &mut pos, name_buf)?;
+                    (n.into(), class::name(n))
                 } else {
-                    self.table.field(i)?.0.into()
+                    let (n, _, cl) = self.table.field(i)?;
+                    (n.into(), class::name_part(cl))
                 };
                 let value: Box<[u8]> = read_string(b, &mut pos, value_buf)?.into();
-                f(&name, &value, false);
-                self.table.insert(name, value);
+                let cl = name_class | class::value(&value);
+                f(&name, &value, false, cl);
+                self.table.insert(name, value, cl);
             } else {
                 // Literal without indexing (§6.2.2) or never indexed (§6.2.3).
                 fields = true;
@@ -566,11 +662,16 @@ impl Decoder {
                 if i == 0 {
                     let name = read_string(b, &mut pos, name_buf)?;
                     let value = read_string(b, &mut pos, value_buf)?;
-                    f(name, value, never);
+                    f(name, value, never, class::name(name) | class::value(value));
                 } else {
-                    let name = self.table.field(i)?.0;
+                    let (name, _, cl) = self.table.field(i)?;
                     let value = read_string(b, &mut pos, value_buf)?;
-                    f(name, value, never);
+                    f(
+                        name,
+                        value,
+                        never,
+                        class::name_part(cl) | class::value(value),
+                    );
                 }
             }
         }
@@ -720,7 +821,7 @@ impl Encoder {
         }
         self.put_string(value, out);
         if index {
-            self.table.insert(name.into(), value.into());
+            self.table.insert(name.into(), value.into(), 0);
         }
     }
 
@@ -853,7 +954,7 @@ mod tests {
     fn table(d: &Table) -> Vec<(String, String)> {
         d.entries
             .iter()
-            .map(|(n, v)| {
+            .map(|(n, v, _)| {
                 (
                     String::from_utf8_lossy(n).into_owned(),
                     String::from_utf8_lossy(v).into_owned(),
@@ -1100,8 +1201,8 @@ mod tests {
         assert_eq!(blk, b"\x3f\xe1\x1f");
         // A field larger than the table empties it.
         let mut t = Table::new(64);
-        t.insert(b"a"[..].into(), b"b"[..].into());
-        t.insert(vec![b'n'; 40].into(), b""[..].into());
+        t.insert(b"a"[..].into(), b"b"[..].into(), 0);
+        t.insert(vec![b'n'; 40].into(), b""[..].into(), 0);
         assert!(t.entries.is_empty());
         assert_eq!(t.size, 0);
     }
@@ -1116,5 +1217,98 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(size, 3 * 32 + 9 + 2001);
         assert_eq!(table(&d.table), table(&e.table));
+    }
+
+    /// The checks as A169 wrote them, one predicate per byte: the classes must agree.
+    fn reference(n: &[u8], v: &[u8]) -> u8 {
+        let mut c = 0;
+        if n.is_empty()
+            || !n
+                .iter()
+                .all(|&b| matches!(b, 0x21..=0x40 | 0x5b..=0x7e) && b != b':')
+        {
+            c |= class::BAD_NAME;
+        }
+        if n.iter().any(|&b| b > 0x7f) {
+            c |= class::NAME_NON_ASCII;
+        }
+        if v.iter().any(|&b| matches!(b, 0 | b'\r' | b'\n')) {
+            c |= class::BAD_VALUE;
+        }
+        if v.iter().any(|&b| b > 0x7f) {
+            c |= class::NON_ASCII;
+        }
+        c
+    }
+
+    #[test]
+    fn field_classes_match_the_rfc_9113_checks() {
+        for b in 0..=255u8 {
+            for s in [vec![b], vec![b'x', b], vec![b, b'-', b'y']] {
+                let got = class::name(&s) | class::value(&s);
+                assert_eq!(got, reference(&s, &s), "{s:?}");
+            }
+        }
+        assert_eq!(class::name(b""), class::BAD_NAME);
+        assert_eq!(class::value(b""), 0);
+        for (i, (n, v)) in STATIC.iter().enumerate() {
+            assert_eq!(STATIC_CLASS[i], reference(n, v), "static {}", i + 1);
+        }
+    }
+
+    /// Every representation hands the decoder's callback the class of what it decoded: the
+    /// literal forms scan their strings, an indexed field (static or dynamic) brings the class
+    /// worked out when its entry was made, a literal with an indexed name takes that name's.
+    #[test]
+    fn decoded_fields_carry_their_class() {
+        let fields: &[(&[u8], &[u8])] = &[
+            (b":method", b"GET"),
+            (b":path", b"/a\nb"),
+            (b"x-ok", b"plain"),
+            (b"X-Up", b"1"),
+            (b"x a", b"1"),
+            (b"x\xc3\xa9", b"1"),
+            (b"x-cr", b"a\rb"),
+            (b"x-nul", b"a\0b"),
+            (b"x-utf8", b"caf\xc3\xa9"),
+            (b"", b"empty name"),
+            (b"cookie", b"secret"),
+            (b"user-agent", b"x\ny"),
+        ];
+        for huffman in [true, false] {
+            let mut e = Encoder::new();
+            e.set_huffman(huffman);
+            let mut d = Decoder::new();
+            // Twice: literals first, then mostly indexed from the dynamic table.
+            for _ in 0..2 {
+                let blk = e.encode(fields.iter().copied());
+                let mut got = Vec::new();
+                d.decode_classified(&blk, |n, v, _, c| got.push((n.to_vec(), v.to_vec(), c)))
+                    .unwrap();
+                assert_eq!(got.len(), fields.len());
+                for ((n, v, c), (n0, v0)) in got.iter().zip(fields) {
+                    assert_eq!((&n[..], &v[..]), (*n0, *v0));
+                    assert_eq!(*c, reference(n, v), "{n0:?}: {v0:?}");
+                }
+            }
+        }
+        // A literal whose name is indexed: `user-agent` (static 58) with a value, `x-up`'s
+        // dynamic entry with another one.
+        let mut d = Decoder::new();
+        let mut blk = vec![0x0f, 0x2b, 3];
+        blk.extend_from_slice(b"a\rb");
+        blk.extend_from_slice(&[0x40, 3]);
+        blk.extend_from_slice(b"X-U");
+        blk.extend_from_slice(&[1, b'1', 0x0f, 0x2f, 2]);
+        blk.extend_from_slice(b"\xc3\xa9");
+        let mut got = Vec::new();
+        d.decode_classified(&blk, |n, v, _, c| got.push((n.to_vec(), v.to_vec(), c)))
+            .unwrap();
+        assert_eq!(got.len(), 3);
+        for (n, v, c) in &got {
+            assert_eq!(*c, reference(n, v), "{n:?}: {v:?}");
+        }
+        assert_eq!(got[2].0, b"X-U");
+        assert_eq!(got[2].2, class::BAD_NAME | class::NON_ASCII);
     }
 }

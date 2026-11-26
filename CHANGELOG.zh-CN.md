@@ -185,9 +185,18 @@ akit 的 A169，由 akit I25 的一致性测试套件发现：akio 的服务端�
 - HTTP/2：请求或 trailer 字段的名字含 0x00-0x20、0x41-0x5A 或 0x7F-0xFF 范围内的字节，或值（伪首部字段的值也算）含 NUL、CR 或 LF 时，以 `PROTOCOL_ERROR` 重置该流（RFC 9113 §8.2.1）。此前只拒绝大写名字；值里的 NUL 会到达应用，HTTP/1.1 客户端随后把它写给上游。
 - HTTP/3：同上，按 RFC 9114 §4.2 的要求。
 
+HTTP/2 的这些检查没有可测出的开销：HPACK 解码器在读取字符串时用一张 256 项的表算出每个字段的字节类别，并和
+动态表条目存在一起（按索引给出的字段完全不扫描），服务端对一个块只做一次 UTF-8 检查取得文本，而不是每个名字和
+值各一次。处理函数内联时，h2c 比第一版逐字节检查快 10–14%（docs/BENCHMARKS.zh-CN.md）。
+
 ### 修复：HTTP 客户端请求的超时不再把请求一直保留到超时时间（akio-http）
 
 akit 的 A171，由 akit I25 的基准测试发现：akit 的代理每个请求约增长 240 字节（每秒 23 万请求的 35 秒运行中达 1.8 GiB）。定时器线程上为请求的 `timeout`（`Client`）以及 h2 流的超时和 header、idle 检查（`H2Client`）安排的任务，在请求结束后仍留在队列中，一直保留其 exchange 的内存（或其回调和流控制）直到延迟过去。超时为 60 秒时就是一分钟的请求，为一小时时就是一小时的请求。现在请求结束时就取消该任务，已取消任务的堆条目在数量超过存活任务后被清理。
+
+安排和取消任务不再唤醒定时器线程，也不再碰所有线程共享的计数器：每个线程把任务和取消放进自己的队列，只有某个任务
+在定时器线程下次醒来前到期（或它空闲睡眠时来了取消）才唤醒它，队列不断有消息时它每 10 ms 收集一次，所以被取消的
+任务在 10 ms 内释放。10 秒超时现在让 HTTP/1.1 客户端在 epoll 上慢 1.6%、io_uring 上慢 3.3%，此前是 15–17%；带
+超时的 h2 客户端快 1.11 倍（epoll）和 1.69 倍（io_uring）（docs/BENCHMARKS.zh-CN.md）。
 
 ### 新增：`Client::close_idle`（akio-http，akit 的 A10）
 
@@ -258,15 +267,13 @@ HTTP/1.1 客户端（复用 keep-alive 连接时）和 HTTP/2 客户端（每个
 - docs/rules.zh-CN.md 规则 2：线程池任务从不等待同一线程池中的其他任务，线程池任务中的阻塞调用都带
   超时，进入事件循环使用 `run_on_loop`。
 
-### 变更：HTTP/2 stream 默认在逻辑线程池上执行（akio-http）
+### 变更：HTTP/2 handler 默认仍在 I/O 线程上 inline 执行（akio-http）
 
-`H2Config::run_on_pool` 的默认值改为 `true`（ADR-094 的 2026-11-25 更新）。过去一个 HTTP/2 连接的
-各个 stream 在它的 I/O 线程上逐个处理，慢 handler 会拖住同一连接的其他 stream 以及该线程上的所有
-其他连接；现在每个完整请求的中间件和 handler 在引擎的逻辑线程池上执行，同一连接的各个 stream 同时
-处理。流式请求体和 CONNECT（包括 HTTP/2 上的 WebSocket）仍在 I/O 线程上执行。使用默认配置的服务会
-看到的变化：同一连接的响应可能以任意顺序完成；线程池满时回 `503` 并带 `Retry-After: 1`；handler 中
-调用 `Context::after` 时，回调在共享的定时器线程上执行。handler 从不阻塞的服务可设置
-`run_on_pool: false` 保留 inline 路径。HTTP/1.1、HTTP/3、gRPC 和 arpc 的开关仍默认关闭。
+`H2Config::run_on_pool` 的默认值改回 `false`（ADR-176），与 HTTP/1.1、HTTP/3、gRPC 和 arpc 一致。
+2026-11-25 改为线程池默认（ADR-094 的更新）后从未进入任何发布版本；开启期间，同一台机器上 `http-bench`
+的 h2c 每秒 0.47-0.53 M 请求，inline 时为 4.4-6.1 M，每个请求要付出两次跨线程交接。同一天的客户端
+死锁修复（`Conn::run_on_loop`）并不依赖这个默认值。HTTP/2 handler 会阻塞的服务设置
+`run_on_pool: true`（或用 `Context::detach_to_pool` 把这些请求交给线程池）。
 
 ### 修复：四处引擎挂起（akio-epoll、akio-uring、akio-http、akio-ws、akio-h3、akio-quic、akio-webrtc、akio-turn、akio-kcp）
 

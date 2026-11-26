@@ -124,9 +124,10 @@ bridge). For raw `Handler`s, `Conn::spawn_blocking` uses the engine's pool.
 
 The HTTP, gRPC and arpc servers can also run **every** request's handler on the pool, so
 handlers may block and the requests of one connection are served at the same time instead of
-one after another. It is set per protocol, and on by default only for HTTP/2, whose streams
-would otherwise be served one at a time on their connection's I/O thread (set
-`h2.run_on_pool = false` to keep non-blocking handlers inline):
+one after another. It is set per protocol and off by default for every protocol (ADR-176): a
+handler that never blocks is several times faster inline than with the two hand-offs between
+threads the pool costs per request. Turn it on where handlers block, HTTP/2 in particular, whose
+streams are otherwise served one at a time on their connection's I/O thread:
 
 ```rust,ignore
 let mut http = HttpConfig::default();

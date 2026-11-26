@@ -221,6 +221,12 @@ an application, and a proxy on akio passed them to its upstream:
   the application, and an HTTP/1.1 client then wrote it to its upstream.
 - HTTP/3: the same, as RFC 9114 §4.2 asks.
 
+The HTTP/2 checks cost nothing measurable: the HPACK decoder works out each field's byte classes
+with a 256-entry table as it reads a string and keeps them with the dynamic table entry (an
+indexed field is not scanned at all), and the server takes a block's text from one UTF-8 check
+instead of one per name and value. h2c with handlers inline is 10–14% faster than with the
+first, per-byte version of the checks (docs/BENCHMARKS.md).
+
 ### Fixed: an HTTP client request's timeout no longer holds the request until it would pass (akio-http)
 
 akit's A171, found by akit's I25 benchmarks, where akit's proxy grew by about 240 bytes a request
@@ -230,6 +236,13 @@ stayed queued after the request ended, keeping its exchange's allocation (or its
 stream control) until the delay passed. With a 60s timeout that is a minute of requests; with an
 hour, an hour. The job is now cancelled when the request ends, and the heap entries of cancelled
 jobs are compacted once they outnumber the live ones.
+
+Scheduling and cancelling no longer wake the timer thread or touch a counter shared by every
+thread: each thread queues its jobs and cancels on a queue of its own, the timer thread is woken
+only for a job due before its next wake-up (or by a cancel while it sleeps idle) and collects the
+queues every 10 ms while they fill, so a cancelled job goes within 10 ms. A 10 s timeout now
+costs the HTTP/1.1 client 1.6% on epoll and 3.3% on io_uring, instead of 15–17%; the h2 client
+with a timeout is 1.11× (epoll) and 1.69× (io_uring) faster (docs/BENCHMARKS.md).
 
 ### Added: `Client::close_idle` (akio-http, akit's A10)
 
@@ -313,18 +326,14 @@ way, so a jammed pool also stopped them.
 - docs/rules.md rule 2: a pool task never waits for another task of the same pool, blocking
   calls from pool tasks carry a timeout, and reaching a loop uses `run_on_loop`.
 
-### Changed: HTTP/2 streams run on the logical pool by default (akio-http)
+### Changed: HTTP/2 handlers stay inline by default (akio-http)
 
-`H2Config::run_on_pool` now defaults to `true` (ADR-094, update of 2026-11-25). The streams of
-one HTTP/2 connection used to be served one at a time on its I/O thread, so a slow handler held
-up its connection's other streams and every other connection of that thread; now each complete
-request's middleware and handler run on the engine's logical pool, and the streams of a
-connection are served at the same time. Streamed request bodies and CONNECTs (WebSocket over
-HTTP/2 included) still run on the I/O thread. What changes for a service on the default:
-responses of one connection may finish in any order, a full pool answers `503` with
-`Retry-After: 1`, and `Context::after` from a handler runs its callback on the shared timer
-thread. Set `run_on_pool: false` to keep the inline path for handlers that never block. HTTP/1.1,
-HTTP/3, gRPC and arpc keep their switches off.
+`H2Config::run_on_pool` defaults to `false` again (ADR-176), as for HTTP/1.1, HTTP/3, gRPC and
+arpc. The pool default of 2026-11-25 (ADR-094's update) never shipped in a release; while it was
+on, h2c in `http-bench` served 0.47-0.53 M requests/s against 4.4-6.1 M inline on the same host,
+each request paying two hand-offs between threads. The clients' deadlock fix of the same day
+(`Conn::run_on_loop`) does not depend on it. A service whose HTTP/2 handlers block sets
+`run_on_pool: true` (or sends those requests to the pool with `Context::detach_to_pool`).
 
 ### Fixed: four engine hangs (akio-epoll, akio-uring, akio-http, akio-ws, akio-h3, akio-quic, akio-webrtc, akio-turn, akio-kcp)
 

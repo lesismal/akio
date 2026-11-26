@@ -14,8 +14,8 @@
 //! same app on `n` listeners, at the ports `port`, `port + 1`, ... of `addr` (plain only). Each
 //! has `<threads>` I/O threads of its own (`Listener::threads`, as every listener had before
 //! ADR-130), or with `AKIO_BENCH_SHARED=1` they share `<threads>` (`EngineBuilder::io_threads`).
-//! `AKIO_BENCH_H2_INLINE=1` serves HTTP/2 streams on the I/O threads (`H2Config::run_on_pool`
-//! off) instead of the logical pool.
+//! `AKIO_H2_RUN_ON_POOL=1` runs HTTP/2 handlers on the logical pool (`H2Config::run_on_pool`,
+//! off by default since ADR-176), `0` inline; `AKIO_BENCH_H2_INLINE=1` is the same as `0`.
 
 use akio::{
     Backend, Engine, Listener,
@@ -85,8 +85,11 @@ fn main() -> std::io::Result<()> {
     };
     let http = || {
         let mut c = HttpConfig::default();
-        if std::env::var("AKIO_BENCH_H2_INLINE").as_deref() == Ok("1") {
-            if let Some(h2) = c.h2.as_mut() {
+        if let Some(h2) = c.h2.as_mut() {
+            if let Ok(v) = std::env::var("AKIO_H2_RUN_ON_POOL") {
+                h2.run_on_pool = v != "0";
+            }
+            if std::env::var("AKIO_BENCH_H2_INLINE").as_deref() == Ok("1") {
                 h2.run_on_pool = false;
             }
         }

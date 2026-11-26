@@ -2,8 +2,9 @@
 
 English | [简体中文](094-handlers-on-the-logical-pool.zh-CN.md)
 
-Status: accepted (2026-11-23; updated 2026-11-25: `H2Config::run_on_pool` is on by default, see
-[Update](#update-2026-11-25-http2-on-the-pool-by-default))
+Status: accepted (2026-11-23; updated 2026-11-25: `H2Config::run_on_pool` on by default, see
+[Update](#update-2026-11-25-http2-on-the-pool-by-default); that default was reversed on
+2026-11-26 by [ADR-176](176-http2-handlers-inline-by-default.md))
 
 ## Context
 
@@ -93,3 +94,8 @@ ordered.
   not recycled for pooled requests; `Context::after` called from a pooled handler runs on the
   crate's shared timer thread instead of the I/O thread.
 - Services whose handlers never block can set `run_on_pool: false` to get the inline path back.
+
+**Reversed on 2026-11-26 by [ADR-176](176-http2-handlers-inline-by-default.md):** the pool path
+measured 9-13 times slower than inline for handlers that never block, the clients' deadlock fix
+does not depend on the default, and no release had it. `H2Config::run_on_pool` defaults to
+`false` again.

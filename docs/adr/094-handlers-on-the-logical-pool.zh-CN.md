@@ -3,7 +3,8 @@
 [English](094-handlers-on-the-logical-pool.md) | 简体中文
 
 状态：已采纳（2026-11-23；2026-11-25 更新：`H2Config::run_on_pool` 默认开启，见
-[更新](#更新2026-11-25http2-默认在线程池上执行)）
+[更新](#更新2026-11-25http2-默认在线程池上执行)；该默认值于 2026-11-26 被
+[ADR-176](176-http2-handlers-inline-by-default.zh-CN.md) 撤销）
 
 ## 背景
 
@@ -81,3 +82,7 @@ HTTP/1.1 的响应顺序已经由有序响应位置（`Conn::reserve_response`�
   不回收线程局部的备用缓冲区；在线程池 handler 中调用 `Context::after` 时，回调在本 crate 共享的
   定时器线程上执行，而不是 I/O 线程。
 - handler 从不阻塞的服务可以设置 `run_on_pool: false` 恢复 inline 路径。
+
+**2026-11-26 被 [ADR-176](176-http2-handlers-inline-by-default.zh-CN.md) 撤销：** 对从不阻塞的
+handler，线程池路径实测比 inline 慢 9-13 倍；客户端的死锁修复不依赖这个默认值；也没有任何发布版本带有
+它。`H2Config::run_on_pool` 的默认值改回 `false`。

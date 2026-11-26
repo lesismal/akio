@@ -151,7 +151,8 @@ fn decode_chunked(pieces: &[&[u8]], max: usize) -> Decoded {
 /// `hpack`: the HPACK decoder as the HTTP/2 server configures it. `data[0]` splits the input
 /// into two header blocks decoded in sequence (the dynamic table carries over). Whatever decodes
 /// must survive a round trip through the encoder (with and without Huffman coding), and the
-/// limited decoder must agree with the plain one.
+/// limited decoder must agree with the plain one, and the class each field comes with (indexed
+/// ones from their table entry) with the class of its bytes.
 pub fn hpack(data: &[u8]) {
     let Some((&cut, rest)) = data.split_first() else {
         return;
@@ -159,12 +160,20 @@ pub fn hpack(data: &[u8]) {
     let cut = usize::from(cut).min(rest.len());
     let mut dec = crate::hpack::Decoder::new();
     let mut lim = crate::hpack::Decoder::new();
+    let mut classed = crate::hpack::Decoder::new();
     let mut enc = [crate::hpack::Encoder::new(), crate::hpack::Encoder::new()];
     enc[1].set_huffman(false);
     let mut back = [crate::hpack::Decoder::new(), crate::hpack::Decoder::new()];
     for block in [&rest[..cut], &rest[cut..]] {
         let r = dec.decode(block);
         let limited = lim.decode_limited(block, 256);
+        let mut ok = true;
+        let c = classed.decode_classified(block, |n, v, _, c| {
+            use crate::hpack::class;
+            ok &= c == class::name(n) | class::value(v);
+        });
+        assert!(ok, "a field's class differs from its bytes'");
+        assert_eq!(c.is_ok(), r.is_ok());
         let Ok(list) = r else {
             assert!(limited.is_err(), "limited decoding accepted a bad block");
             return;
