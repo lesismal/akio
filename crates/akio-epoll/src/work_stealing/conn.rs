@@ -1,4 +1,4 @@
-//! A connection under rounds scheduling (ADR-104) and the round that serves it.
+//! A connection under work-stealing scheduling (ADR-104) and the round that serves it.
 //!
 //! Events reach a connection as bits in `pending` (from its poller, from sends on any thread,
 //! from timers). Whoever sets `scheduled` from false to true queues it on the workers; the

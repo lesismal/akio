@@ -422,7 +422,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | TURN 中继 | akio-turn（ADR-083、ADR-091） | 是（`turn-relay-bench`） | 是（按客户端分片分配，3.7x；`028d61d2`） | 没有与 coturn 的吞吐对比。 |
 | 媒体服务器（RTMP、RTSP、HLS、hub） | akio-media | 部分（`bench_segmenting`，各 ADR 的接入 A/B） | 部分（2026-11-21/22 的 `perf(media)`） | 没有与参考服务器对比（SRS、mediamtx）。 |
 | BitTorrent | akio-bittorrent | 部分（`bt-bench` A/B：回环 2,180 MiB/s） | 部分（SHA-1 分片哈希） | 没有与其他客户端对比。 |
-| 每个连接的空闲超时；UDP listener 移除；HTTP/3 GOAWAY | akio-core、akio-epoll、akio-uring、akio-quic、akio-h3（ADR-155，akit A78、A22） | 否 | 否 | 与 main 同次 A/B、交替轮次：HTTP/1.1 keep-alive 与 pipelined plaintext、设置 `Config::idle_timeout` 的 TCP echo（epoll、io_uring、轮次调度）、64 B 按对端 UDP echo，以及 HTTP/3 请求（请求流 id 检查、QUIC 投递循环的 shutdown 标志）。读路径不变；事件循环的每连接记录大 16 字节（每连接内存）。 |
+| 每个连接的空闲超时；UDP listener 移除；HTTP/3 GOAWAY | akio-core、akio-epoll、akio-uring、akio-quic、akio-h3（ADR-155，akit A78、A22） | 否 | 否 | 与 main 同次 A/B、交替轮次：HTTP/1.1 keep-alive 与 pipelined plaintext、设置 `Config::idle_timeout` 的 TCP echo（epoll、io_uring、工作窃取调度）、64 B 按对端 UDP echo，以及 HTTP/3 请求（请求流 id 检查、QUIC 投递循环的 shutdown 标志）。读路径不变；事件循环的每连接记录大 16 字节（每连接内存）。 |
 
 待办项（不是 `是` / `是` 的行），大致按分量排列：KCP 和 protobuf（什么都没测）；落后于 RustCrypto 的加密原语
 （AES-CTR、SHA-512、base64、MD5、PBKDF2、HMAC-SHA1，供 KCP、SRTP 和 STUN 使用）；WebSocket 帧解析、掩码和

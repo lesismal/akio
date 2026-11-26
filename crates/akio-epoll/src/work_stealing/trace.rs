@@ -1,6 +1,6 @@
-//! Diagnostics of rounds scheduling (ADR-104), on with `AKIO_ROUNDS_TRACE=1`: once a second,
-//! stderr gets how long connections waited in the worker queues and how long pollers took to
-//! hand out a batch of events. Off, it costs one relaxed load per round.
+//! Diagnostics of work-stealing scheduling (ADR-104), on with `AKIO_WORK_STEALING_TRACE=1`:
+//! once a second, stderr gets how long connections waited in the worker queues and how long
+//! pollers took to hand out a batch of events. Off, it costs one relaxed load per round.
 
 use std::{
     sync::{
@@ -57,10 +57,10 @@ pub(crate) fn count(c: &AtomicU64) {
 /// Whether tracing is on (decided once; starts the reporter thread).
 pub(crate) fn on() -> bool {
     INIT.get_or_init(|| {
-        if std::env::var("AKIO_ROUNDS_TRACE").as_deref() == Ok("1") {
+        if std::env::var("AKIO_WORK_STEALING_TRACE").as_deref() == Ok("1") {
             ON.store(true, Ordering::Relaxed);
             let _ = std::thread::Builder::new()
-                .name("akio-rounds-trace".into())
+                .name("akio-stealtrace".into())
                 .spawn(report);
         }
         Instant::now()
@@ -109,7 +109,7 @@ fn report() {
         std::thread::sleep(Duration::from_secs(1));
         let t = |a: &AtomicU64| a.swap(0, Ordering::Relaxed);
         eprintln!(
-            "rounds-trace rounds={} q>100us={} q>1ms={} q>3ms={} qmax={}us polls={} poll>1ms={} pollmax={}us longwait+events={} unparks={} driver_wakes={} parks={}",
+            "work-stealing-trace rounds={} q>100us={} q>1ms={} q>3ms={} qmax={}us polls={} poll>1ms={} pollmax={}us longwait+events={} unparks={} driver_wakes={} parks={}",
             t(&C.rounds),
             t(&C.queue_gt100us),
             t(&C.queue_gt1ms),

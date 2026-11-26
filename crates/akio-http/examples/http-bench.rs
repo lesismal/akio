@@ -1,8 +1,9 @@
 //! Server for the HTTP / WebSocket benchmarks (see docs/BENCHMARKS.md):
 //!
-//! `http-bench <addr> <threads> <epoll|uring|rounds> [tls]`
+//! `http-bench <addr> <threads> <epoll|uring|work-stealing> [tls]`
 //!
-//! `rounds` is epoll/kqueue with `Scheduling::Rounds`: one poller and `<threads>` workers.
+//! `work-stealing` is epoll/kqueue with `Scheduling::WorkStealing`: one poller and `<threads>`
+//! workers.
 //!
 //! * `GET /plaintext`: `Hello, World!` as `text/plain` (TechEmpower style).
 //! * `GET /json`: `{"message":"Hello, World!"}`, serialised per request.
@@ -24,7 +25,7 @@
 //! queued bytes and its limit on accepted connections (ADR-172, ADR-173).
 
 use akio::{
-    Backend, Engine, Listener, PoolConfig, RoundsConfig, Scheduling,
+    Backend, Engine, Listener, PoolConfig, Scheduling, WorkStealingConfig,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 use akio_http::{
@@ -67,7 +68,7 @@ fn json_message(s: &str) -> Vec<u8> {
 fn main() -> std::io::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.len() < 3 {
-        eprintln!("usage: http-bench <addr> <threads> <epoll|uring> [tls]");
+        eprintln!("usage: http-bench <addr> <threads> <epoll|uring|work-stealing> [tls]");
         std::process::exit(2);
     }
     let addr = a[0].parse().expect("address");
@@ -76,11 +77,13 @@ fn main() -> std::io::Result<()> {
         "uring" => Backend::IoUring(Default::default()),
         _ => Backend::Epoll,
     };
-    let rounds = a[2] == "rounds";
+    let work_stealing = a[2] == "work-stealing";
     let listener = |at| {
         let l = Listener::tcp(at).backend(backend.clone());
-        if rounds {
-            l.scheduling(Scheduling::Rounds(RoundsConfig::new(1, threads)))
+        if work_stealing {
+            l.scheduling(Scheduling::WorkStealing(WorkStealingConfig::new(
+                1, threads,
+            )))
         } else {
             l
         }

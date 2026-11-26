@@ -1,8 +1,9 @@
 //! Listeners sharing an I/O thread group (ADR-130): by default TCP listeners of one backend
-//! and scheduling share one group, sized by `EngineBuilder::io_threads` (rounds: by its
-//! `RoundsConfig`); `Listener::threads` and `Listener::dedicated` keep a group of their own;
-//! removing, filtering and resizing act on the right listener. The loops tests run on the
-//! backend under test (`AKIO_TEST_BACKEND=uring`: io_uring), the rounds ones on epoll/kqueue.
+//! and scheduling share one group, sized by `EngineBuilder::io_threads` (work stealing: by its
+//! `WorkStealingConfig`); `Listener::threads` and `Listener::dedicated` keep a group of their
+//! own; removing, filtering and resizing act on the right listener. The event-loops tests run on
+//! the backend under test (`AKIO_TEST_BACKEND=uring`: io_uring), the work-stealing ones on
+//! epoll/kqueue.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -21,10 +22,10 @@ use std::{
 
 use akio::{Config, Conn, Engine, EngineBuilder, Handler, Listener, fn_acceptor};
 
-/// The loops tests count loops: runs that force rounds scheduling (or another default
-/// backend) skip.
+/// The event-loops tests count loops: runs that force work-stealing scheduling (or another
+/// default backend) skip.
 fn skip() -> bool {
-    common::rounds() || std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
+    common::work_stealing() || std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
 }
 
 fn localhost() -> SocketAddr {
@@ -60,7 +61,7 @@ fn tagged(tag: u8, closed: &Arc<AtomicUsize>) -> Listener {
     tagged_on_default(tag, closed).backend(common::backend())
 }
 
-/// On the default backend (epoll/kqueue): rounds scheduling runs only there.
+/// On the default backend (epoll/kqueue): work-stealing scheduling runs only there.
 fn tagged_on_default(tag: u8, closed: &Arc<AtomicUsize>) -> Listener {
     let closed = closed.clone();
     Listener::tcp(localhost()).serve(fn_acceptor(move |_c: &Conn<Tagged>| Tagged {
@@ -310,34 +311,34 @@ fn a_listener_added_at_run_time_joins_the_shared_group() {
     stop(&e);
 }
 
-// ---- rounds scheduling (ADR-104): listeners with one `RoundsConfig` share its workers ----------
+// ---- work stealing (ADR-104): listeners with one `WorkStealingConfig` share its workers --------
 
-/// Rounds listeners need epoll/kqueue: a run that forces another default backend skips.
-fn skip_rounds() -> bool {
+/// Work-stealing listeners need epoll/kqueue: a run that forces another default backend skips.
+fn skip_work_stealing() -> bool {
     std::env::var("AKIO_DEFAULT_BACKEND").is_ok()
 }
 
 /// One poller and `workers` workers.
-fn rounds(workers: usize) -> akio::Scheduling {
-    akio::Scheduling::Rounds(akio::RoundsConfig::new(1, workers))
+fn work_stealing(workers: usize) -> akio::Scheduling {
+    akio::Scheduling::WorkStealing(akio::WorkStealingConfig::new(1, workers))
 }
 
-/// Threads of the engine: workers and pollers of rounds groups, loops of the others.
+/// Threads of the engine: workers and pollers of work-stealing groups, loops of the others.
 fn all_threads(e: &Engine) -> usize {
     e.metrics().loops.len()
 }
 
 #[test]
-fn rounds_listeners_share_their_workers() {
-    if skip_rounds() {
+fn work_stealing_listeners_share_their_workers() {
+    if skip_work_stealing() {
         return;
     }
     let closed = Arc::new(AtomicUsize::new(0));
     let e = Engine::builder()
         .config(quick())
-        .listen(tagged_on_default(b'a', &closed).scheduling(rounds(2)))
-        .listen(tagged_on_default(b'b', &closed).scheduling(rounds(2)))
-        .listen(tagged_on_default(b'c', &closed).scheduling(rounds(3)))
+        .listen(tagged_on_default(b'a', &closed).scheduling(work_stealing(2)))
+        .listen(tagged_on_default(b'b', &closed).scheduling(work_stealing(2)))
+        .listen(tagged_on_default(b'c', &closed).scheduling(work_stealing(3)))
         .build()
         .unwrap();
     e.start().unwrap();
@@ -364,15 +365,15 @@ fn rounds_listeners_share_their_workers() {
 }
 
 #[test]
-fn removing_a_shared_rounds_listener_leaves_the_others() {
-    if skip_rounds() {
+fn removing_a_shared_work_stealing_listener_leaves_the_others() {
+    if skip_work_stealing() {
         return;
     }
     let (ca, cb) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let e = Engine::builder()
         .config(quick())
-        .listen(tagged_on_default(b'a', &ca).scheduling(rounds(2)))
-        .listen(tagged_on_default(b'b', &cb).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'a', &ca).scheduling(work_stealing(2)))
+        .listen(tagged_on_default(b'b', &cb).scheduling(work_stealing(2)))
         .build()
         .unwrap();
     e.start().unwrap();
@@ -395,8 +396,8 @@ fn removing_a_shared_rounds_listener_leaves_the_others() {
 }
 
 #[test]
-fn rounds_filters_and_run_time_listeners_are_per_listener() {
-    if skip_rounds() {
+fn work_stealing_filters_and_run_time_listeners_are_per_listener() {
+    if skip_work_stealing() {
         return;
     }
     let closed = Arc::new(AtomicUsize::new(0));
@@ -404,10 +405,10 @@ fn rounds_filters_and_run_time_listeners_are_per_listener() {
         .config(quick())
         .listen(
             tagged_on_default(b'a', &closed)
-                .scheduling(rounds(2))
+                .scheduling(work_stealing(2))
                 .filter(|_| false),
         )
-        .listen(tagged_on_default(b'b', &closed).scheduling(rounds(2)))
+        .listen(tagged_on_default(b'b', &closed).scheduling(work_stealing(2)))
         .build()
         .unwrap();
     e.start().unwrap();
@@ -419,7 +420,7 @@ fn rounds_filters_and_run_time_listeners_are_per_listener() {
     assert_eq!(tag_of(&mut connect(ab)), b'b');
     // Added at run time: it joins the same workers.
     let id = e
-        .add_listener(tagged_on_default(b'n', &closed).scheduling(rounds(2)))
+        .add_listener(tagged_on_default(b'n', &closed).scheduling(work_stealing(2)))
         .unwrap();
     let info = e.listeners().into_iter().find(|l| l.id == id).unwrap();
     assert_eq!(info.threads, 2);
@@ -433,9 +434,9 @@ fn rounds_filters_and_run_time_listeners_are_per_listener() {
 }
 
 #[test]
-fn a_unix_listener_shares_rounds_workers_with_tcp_ones() {
+fn a_unix_listener_shares_work_stealing_workers_with_tcp_ones() {
     use std::os::unix::net::UnixStream;
-    if skip_rounds() {
+    if skip_work_stealing() {
         return;
     }
     let path = std::env::temp_dir().join(format!("akio-shared-{}.sock", std::process::id()));
@@ -444,7 +445,7 @@ fn a_unix_listener_shares_rounds_workers_with_tcp_ones() {
     let unix = {
         let closed = closed.clone();
         Listener::unix(&path)
-            .scheduling(rounds(2))
+            .scheduling(work_stealing(2))
             .serve(fn_acceptor(move |_c: &Conn<Tagged>| Tagged {
                 tag: b'u',
                 closed: closed.clone(),
@@ -452,7 +453,7 @@ fn a_unix_listener_shares_rounds_workers_with_tcp_ones() {
     };
     let e = Engine::builder()
         .config(quick())
-        .listen(tagged_on_default(b't', &closed).scheduling(rounds(2)))
+        .listen(tagged_on_default(b't', &closed).scheduling(work_stealing(2)))
         .listen(unix)
         .build()
         .unwrap();

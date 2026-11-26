@@ -94,4 +94,4 @@ where there is none. It is the socket's address, not a PROXY header's destinatio
   the row and what to measure.
 - Tests: `akio-http/tests/body_limit.rs` (A24, A49 on HTTP/1 and HTTP/2, A148),
   `akio-http/tests/sized_stream.rs` (A35), `akio-h3/tests/limit_body.rs` (A49, A148 on HTTP/3),
-  on kqueue, epoll, io_uring and rounds.
+  on kqueue, epoll, io_uring and work stealing.

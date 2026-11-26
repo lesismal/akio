@@ -1,7 +1,7 @@
 //! A CPU-bound request/response benchmark for comparing the two scheduling modes (ADR-104).
 //!
 //! ```text
-//! skew-bench server <addr> <loops|rounds> [threads|pollers:workers]
+//! skew-bench server <addr> <event-loops|work-stealing> [threads|pollers:workers]
 //! skew-bench client <addr> <conns> <depth> <work_us> <heavy_conns> <heavy_work_us> <secs>
 //! skew-bench churn <addr> <conns> <requests_per_conn> <secs>
 //! skew-bench rate <addr> <conns> <requests_per_sec> <secs>
@@ -25,7 +25,7 @@
 //!
 //! With few connections per thread, thread-per-core loops leave some threads with more
 //! connections than others (the kernel's `SO_REUSEPORT` hash), and the heavy connections pin
-//! whichever threads they land on; rounds spread the work over every worker.
+//! whichever threads they land on; work stealing spreads the work over every worker.
 
 use std::{
     io::{Read, Write},
@@ -38,7 +38,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use akio::{Conn, Engine, Handler, Listener, RoundsConfig, Scheduling, fn_acceptor};
+use akio::{Conn, Engine, Handler, Listener, Scheduling, WorkStealingConfig, fn_acceptor};
 
 const FRAME: usize = 16;
 
@@ -94,17 +94,17 @@ fn server(addr: SocketAddr, mode: &str, sizes: Option<&str>) {
     let cpus = thread::available_parallelism().map_or(1, |n| n.get());
     let mut l = Listener::tcp(addr).serve(fn_acceptor(|_c: &Conn<Work>| Work::default()));
     match mode {
-        "rounds" => {
+        "work-stealing" => {
             let (p, w) = sizes
                 .and_then(|s| s.split_once(':'))
                 .map_or((0, 0), |(p, w)| {
                     (p.parse().unwrap_or(0), w.parse().unwrap_or(0))
                 });
-            l = l.scheduling(Scheduling::Rounds(RoundsConfig::new(p, w)));
+            l = l.scheduling(Scheduling::WorkStealing(WorkStealingConfig::new(p, w)));
         }
         _ => {
             let t = sizes.and_then(|s| s.parse().ok()).unwrap_or(cpus);
-            l = l.scheduling(Scheduling::Loops).threads(t);
+            l = l.scheduling(Scheduling::EventLoops).threads(t);
         }
     }
     let e = Engine::builder().listen(l).build().expect("build");
@@ -408,7 +408,7 @@ fn main() {
         Some("churn") if args.len() >= 5 => churn(&args[1..]),
         Some("rate") if args.len() >= 5 => rate(&args[1..]),
         _ => eprintln!(
-            "usage: skew-bench server <addr> <loops|rounds> [threads|pollers:workers]\n       \
+            "usage: skew-bench server <addr> <event-loops|work-stealing> [threads|pollers:workers]\n       \
              skew-bench client <addr> <conns> <depth> <work_us> <heavy_conns> <heavy_work_us> <secs>\n       \
              skew-bench churn <addr> <conns> <requests_per_conn> <secs>\n       \
              skew-bench rate <addr> <conns> <requests_per_sec> <secs>"

@@ -33,15 +33,15 @@ hub. You build it with `Engine::builder()`:
 | `.accel(Accel::..)` | `None` or `Ebpf(EbpfConfig)` steering | `None` |
 | `.balance(Balance::..)` | `LeastConnections`: a thread holding more than its share hands a new connection, before its first read, to the thread with the fewest (ADR-105); `Kernel`: keep what the socket accepted | `LeastConnections` (`Kernel` under steering or NUMA `incoming_cpu`) |
 
-TCP listeners on epoll/kqueue with per-thread loops **share** one group of I/O threads,
+TCP listeners on epoll/kqueue with event loops **share** one group of I/O threads,
 `EngineBuilder::io_threads(n)` (one per core by default), whatever their port, protocol or
 handler type: an HTTP, a gRPC and an admin port on 8 cores run 8 I/O threads, not 24 (ADR-130).
 Each thread polls every listener's sockets and runs the right acceptor and accept filter; each
 connection stays on the thread that accepted it. A listener that sets `.threads(n)` or
 `.dedicated()` gets a group of its own instead (isolation: its connections never wait behind
 another listener's callbacks), and so do UDP, datagram, DPDK and BPF-steered listeners;
-io_uring listeners share a group per ring options, rounds-scheduled listeners share workers
-per `RoundsConfig`. Removing a shared listener closes its sockets and drains its connections only;
+io_uring listeners share a group per ring options, work-stealing listeners share workers per
+`WorkStealingConfig`. Removing a shared listener closes its sockets and drains its connections only;
 `Engine::set_threads` on a shared listener resizes the shared group, for all its listeners.
 Several listeners with different handler types, backends and thread counts can live in one
 engine.

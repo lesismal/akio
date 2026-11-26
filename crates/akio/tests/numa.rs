@@ -102,8 +102,8 @@ fn io_threads(want: &[Vec<usize>]) -> Vec<(String, Vec<usize>)> {
 
 #[test]
 fn numa_placement() {
-    if common::rounds() {
-        return; // rounds: pollers and workers are placed differently (ADR-104)
+    if common::work_stealing() {
+        return; // work stealing: pollers and workers are placed differently (ADR-104)
     }
     // Off unless asked (AKIO_NUMA is not set by the test runner).
     if std::env::var_os("AKIO_NUMA").is_none() {

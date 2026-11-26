@@ -16,10 +16,11 @@ pub(crate) fn backend() -> Backend {
     }
 }
 
-/// Listeners default to rounds scheduling (`AKIO_DEFAULT_SCHEDULING=rounds`, ADR-104): tests
-/// of what only per-thread loops do (thread resizing, one metrics row per I/O thread) skip.
-pub(crate) fn rounds() -> bool {
-    std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("rounds")
+/// Listeners default to work-stealing scheduling (`AKIO_DEFAULT_SCHEDULING=work-stealing`,
+/// ADR-104): tests of what only per-thread loops do (thread resizing, one metrics row per I/O
+/// thread) skip.
+pub(crate) fn work_stealing() -> bool {
+    std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("work-stealing")
 }
 
 /// `read` that retries `EINTR`: with an io_uring ring in the same process, a blocking std read

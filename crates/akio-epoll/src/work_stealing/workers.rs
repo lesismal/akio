@@ -1,5 +1,5 @@
-//! The worker pool of rounds scheduling (ADR-104): a fixed set of threads, each with its own
-//! queue of connections whose round is due.
+//! The worker pool of work-stealing scheduling (ADR-104): a fixed set of threads, each with its
+//! own queue of connections whose round is due.
 //!
 //! Who waits for readiness depends on the mode:
 //!
@@ -48,17 +48,17 @@ const POLL_INTERVAL: u32 = 61;
 /// Driver mode: how long the watch (one parked worker) sleeps before it looks at the drivers.
 const WATCH: Duration = Duration::from_millis(10);
 
-/// `SPIN`, or `AKIO_ROUNDS_SPIN` (diagnostic knob).
+/// `SPIN`, or `AKIO_WORK_STEALING_SPIN` (diagnostic knob).
 fn spin_limit() -> usize {
-    std::env::var("AKIO_ROUNDS_SPIN")
+    std::env::var("AKIO_WORK_STEALING_SPIN")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SPIN)
 }
 
-/// `POLL_INTERVAL`, or `AKIO_ROUNDS_POLL_INTERVAL` (diagnostic knob).
+/// `POLL_INTERVAL`, or `AKIO_WORK_STEALING_POLL_INTERVAL` (diagnostic knob).
 fn poll_interval() -> u32 {
-    std::env::var("AKIO_ROUNDS_POLL_INTERVAL")
+    std::env::var("AKIO_WORK_STEALING_POLL_INTERVAL")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n: &u32| n > 0)

@@ -181,14 +181,14 @@ flowchart LR
   `dial` and `dial_udp`). A group is a set of I/O threads; each thread runs one event loop that
   owns its connections, its timer wheel (`akio-timer`, millisecond ticks) and its read
   buffer(s) (ADR-001, ADR-004). Groups implement the internal `akio_core::Group` trait.
-- **Shared groups** (ADR-130): TCP listeners on epoll/kqueue loops share one group
+- **Shared groups** (ADR-130): TCP listeners on epoll/kqueue event loops share one group
   (`EngineBuilder::io_threads`, one thread per core by default), and so do io_uring listeners
   with the same ring options, unless they ask for threads of their own (`Listener::threads`,
   `Listener::dedicated`). Each loop keeps a table of the group's listeners (acceptor, accept
   filter, Unix-domain or not, removed or not), polls their sockets under tokens naming listener
   and socket (io_uring: one multishot accept per socket, its `user_data` naming both), and each
-  connection remembers its listener. Rounds-scheduled listeners share workers and pollers per
-  `RoundsConfig` (each listener's sockets are accept jobs carrying its acceptor). UDP,
+  connection remembers its listener. Work-stealing listeners share workers and pollers per
+  `WorkStealingConfig` (each listener's sockets are accept jobs carrying its acceptor). UDP,
   datagram, DPDK and BPF-steered listeners have groups of their own.
 - **Accept distribution**: on Linux every thread binds its own `SO_REUSEPORT` socket and the
   kernel (or a steering program from `akio-ebpf`) picks the thread; on macOS the threads share

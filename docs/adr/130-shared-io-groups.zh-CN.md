@@ -2,7 +2,7 @@
 
 [English](130-shared-io-groups.md) | 简体中文
 
-状态：已采纳（2026-11-25）。第一阶段（epoll/kqueue、每线程事件循环）、第二阶段（轮次调度）和
+状态：已采纳（2026-11-25）。第一阶段（epoll/kqueue、每线程事件循环）、第二阶段（工作窃取调度）和
 第三阶段（io_uring）已实现。
 
 ## 背景
@@ -20,7 +20,7 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
    Unix 域的）加入 engine 中与其键对应的共享线程组，键为：后端、调度方式和 accept 时的均衡方式
    （`Balance`）。该组随该键的第一个 listener 创建，大小由 `EngineBuilder::io_threads(n)` 决定
    （默认每核一个）。8 核上的一个 HTTP 和一个 gRPC listener 现在运行 8 个 I/O 线程，而不是 16 个。
-   轮次调度（ADR-104）下，键是解析后的 `RoundsConfig`（poller 数和 worker 数），它同时决定组的
+   工作窃取调度（ADR-104）下，键是解析后的 `WorkStealingConfig`（poller 数和 worker 数），它同时决定组的
    大小：配置相同的 listener 共享其 worker 和 poller。
 2. **listener 仍可独占一组。** `Listener::threads(n)`（任何显式数量）或新增的
    `Listener::dedicated()`（每核一个）让该 listener 保持 ADR-004 的方式：为管理端口或对延迟敏感的
@@ -55,13 +55,13 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
 - 对一个 listener 调用 `set_threads` 现在可能改变其他 listener 的线程；文档对此有说明。
 - `Group` trait 增加按键操作 listener 的方法（面向后端，`#[doc(hidden)]`）。
 
-## 第二阶段：轮次调度（2026-11-25 实现）
+## 第二阶段：工作窃取调度（2026-11-25 实现）
 
-轮次调度组的监听 socket 本来就各自是带 acceptor 的 accept 任务。共享的轮次调度组保存 listener 表
+工作窃取调度组的监听 socket 本来就各自是带 acceptor 的 accept 任务。共享的工作窃取调度组保存 listener 表
 （每个 listener 的 accept 任务和 accept 过滤器）；之后加入的 listener 的 accept 任务投递给 poller
 （`RCmd::AddJob`），由 poller 注册；每个连接记住自己的 listener，所以移除一个 listener 只关闭它的
 accept 任务、只排空它的连接（`RCmd::StopListening` 标明它），连接表也标明每个连接的 listener。
-Unix 域 listener 也一样加入：它们的 accept 任务 accept 时不读取地址（2026-11-26；此前使用轮次调度的
+Unix 域 listener 也一样加入：它们的 accept 任务 accept 时不读取地址（2026-11-26；此前使用工作窃取调度的
 Unix 域 listener 被当作 TCP listener 绑定在未指定地址上）。
 
 ## 第三阶段：io_uring（2026-11-26 实现）

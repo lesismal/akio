@@ -465,8 +465,8 @@ fn loop_states(e: &Engine) -> (usize, usize, usize) {
 
 #[test]
 fn threads_grow_and_shrink_under_load_without_dropping_connections() {
-    if common::rounds() {
-        return; // rounds scheduling refuses set_threads (ADR-104)
+    if common::work_stealing() {
+        return; // work-stealing scheduling refuses set_threads (ADR-104)
     }
     let (e, addr, _) = echo_engine(quick(), 2);
     assert_eq!(e.threads(), vec![2]);
@@ -513,8 +513,8 @@ fn threads_grow_and_shrink_under_load_without_dropping_connections() {
 
 #[test]
 fn retiring_thread_keeps_its_connections_until_they_close() {
-    if common::rounds() {
-        return; // rounds scheduling refuses set_threads (ADR-104)
+    if common::work_stealing() {
+        return; // work-stealing scheduling refuses set_threads (ADR-104)
     }
     let (e, addr, _) = echo_engine(quick(), 2);
     // Enough connections that both threads own some.
@@ -571,8 +571,8 @@ fn retiring_thread_keeps_its_connections_until_they_close() {
 
 #[test]
 fn revived_thread_takes_connections_again() {
-    if common::rounds() {
-        return; // rounds scheduling refuses set_threads (ADR-104)
+    if common::work_stealing() {
+        return; // work-stealing scheduling refuses set_threads (ADR-104)
     }
     let (e, addr, _) = echo_engine(quick(), 2);
     let mut conns: Vec<TcpStream> = (0..16).map(|_| connect(addr)).collect();
@@ -615,8 +615,8 @@ fn revived_thread_takes_connections_again() {
 
 #[test]
 fn retire_timeout_shuts_down_what_a_retired_thread_still_serves() {
-    if common::rounds() {
-        return; // rounds scheduling refuses set_threads (ADR-104)
+    if common::work_stealing() {
+        return; // work-stealing scheduling refuses set_threads (ADR-104)
     }
     let mut cfg = quick();
     cfg.retire_timeout = Some(Duration::from_millis(200));
@@ -714,8 +714,8 @@ fn client_group_threads_resize_and_dials_spread() {
 
 #[test]
 fn set_threads_errors() {
-    if common::rounds() {
-        return; // rounds scheduling refuses set_threads (ADR-104)
+    if common::work_stealing() {
+        return; // work-stealing scheduling refuses set_threads (ADR-104)
     }
     let (e, _addr, _) = echo_engine(quick(), 1);
     assert_eq!(e.set_threads(5, 2).unwrap_err().kind(), ErrorKind::NotFound);

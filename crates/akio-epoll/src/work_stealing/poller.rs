@@ -1,7 +1,7 @@
-//! A poller of rounds scheduling (ADR-104): waits for readiness and runs the control path
-//! (dials, telemetry, shutdown, timers). It never reads, writes, accepts or runs handler code:
-//! a readiness event becomes pending bits on a connection, or an accept job for a listener, both
-//! served by the workers.
+//! A poller of work-stealing scheduling (ADR-104): waits for readiness and runs the control
+//! path (dials, telemetry, shutdown, timers). It never reads, writes, accepts or runs handler
+//! code: a readiness event becomes pending bits on a connection, or an accept job for a
+//! listener, both served by the workers.
 //!
 //! The connections a poller watches are in its [`ConnTable`]: sharded and behind locks, so the
 //! workers add the connections they accept and remove the ones they close themselves, without
@@ -1336,7 +1336,7 @@ pub(crate) mod tests {
         Config, ConnInner, DynAcceptor, DynHandler, Error, Group, Pool, PoolConfig, Task,
     };
 
-    use super::super::{RoundsConfig, RoundsGroup};
+    use super::super::{WorkStealingConfig, WorkStealingGroup};
 
     /// A round was queued while the connection already was (the invariant broken).
     pub(crate) static DOUBLE_QUEUED: AtomicU64 = AtomicU64::new(0);
@@ -1392,15 +1392,15 @@ pub(crate) mod tests {
         }
     }
 
-    fn group(counts: &Arc<Counts>) -> RoundsGroup {
+    fn group(counts: &Arc<Counts>) -> WorkStealingGroup {
         let mut cfg = Config::default();
         cfg.shutdown_timeout = Duration::from_millis(500);
-        let g = RoundsGroup::bind(
+        let g = WorkStealingGroup::bind(
             Some((
                 "127.0.0.1:0".parse().expect("addr"),
                 Arc::new(Acc(counts.clone())),
             )),
-            RoundsConfig::new(1, 2),
+            WorkStealingConfig::new(1, 2),
             cfg,
             Pool::new(PoolConfig::default()),
         )
@@ -1470,7 +1470,7 @@ pub(crate) mod tests {
         let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let counts = Arc::new(Counts::default());
         let g = Arc::new(group(&counts));
-        let me: Arc<std::sync::OnceLock<std::sync::Weak<RoundsGroup>>> = Arc::default();
+        let me: Arc<std::sync::OnceLock<std::sync::Weak<WorkStealingGroup>>> = Arc::default();
         let _ = me.set(Arc::downgrade(&g));
         let stopped = Arc::new(AtomicUsize::new(0));
         let st = stopped.clone();
@@ -1504,15 +1504,15 @@ pub(crate) mod tests {
     #[test]
     fn one_worker_polls_every_driver() {
         let _s = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
-        if std::env::var("AKIO_ROUNDS_POLLERS").as_deref() == Ok("dedicated") {
+        if std::env::var("AKIO_WORK_STEALING_POLLERS").as_deref() == Ok("dedicated") {
             return; // driver mode only
         }
         let counts = Arc::new(Counts::default());
         let mut cfg = Config::default();
         cfg.shutdown_timeout = Duration::from_millis(500);
-        let g = RoundsGroup::bind(
+        let g = WorkStealingGroup::bind(
             None,
-            RoundsConfig::new(2, 1),
+            WorkStealingConfig::new(2, 1),
             cfg,
             Pool::new(PoolConfig::default()),
         )

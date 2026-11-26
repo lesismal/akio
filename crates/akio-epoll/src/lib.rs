@@ -18,9 +18,9 @@
 
 mod group;
 mod reactor;
-mod rounds;
 mod udp;
+mod work_stealing;
 
 pub use group::EpollGroup;
-pub use rounds::{RoundsConfig, RoundsGroup};
 pub use udp::UdpGroup;
+pub use work_stealing::{WorkStealingConfig, WorkStealingGroup};

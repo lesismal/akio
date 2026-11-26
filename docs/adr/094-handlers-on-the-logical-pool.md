@@ -100,14 +100,14 @@ ordered.
 `H2Config::handlers_on_logical_pool` defaults to `false` again, like every other switch.
 Measured on gpu51 (docs/BENCHMARKS.md, shared I/O groups): with 4 I/O threads on 4 CPUs, h2c
 with trivial handlers served about 0.49M requests/s through the pool against 3.2M–4.0M inline,
-and more CPUs for the pool did not lift that ceiling; nor did Rounds scheduling or the pool's
+and more CPUs for the pool did not lift that ceiling; nor did work-stealing scheduling or the pool's
 thread count (16 threads gave the same, fewer gave less). A default that costs every non-blocking
 HTTP/2 service most of its throughput is the wrong trade; a service whose handlers block turns
 the switch on (or detaches single requests with `Context::detach_to_pool`), and the reasons of
 the 2026-11-25 update remain its documentation.
 
 The switches were called `run_on_pool`, which did not say what runs there nor which pool (a
-Rounds group is a pool of workers too). They are now `handlers_on_logical_pool` on every
+work-stealing group is a pool of workers too). They are now `handlers_on_logical_pool` on every
 protocol (`HttpConfig`, `H2Config`, `H3Config`, `GrpcServer`, `Routes`): the middleware and
 handler of each request, on the engine's logical pool. No release had the old name, so it is not
 kept as an alias.

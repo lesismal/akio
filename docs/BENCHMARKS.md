@@ -744,32 +744,33 @@ handlers: on the same 4 CPUs, inline h2c serves 3.2M–4.0M requests/s against a
 pool (`H2Config::handlers_on_logical_pool`, on by default from 2026-11-25 to 2026-11-26), a ceiling that more CPUs for the
 pool do not raise.
 
-**Follow-up: the pool path on Rounds, and the pool's thread cap** (2026-11-26, same setup, 5
-rounds, `shared.sh all,h2`, no pinning). HTTP/2 now runs inline by default; `h2pool` turns
-`handlers_on_logical_pool` on, `cap N` caps the logical pool at N threads (`PoolConfig::max_threads`;
-the default on these 4 CPUs is 32). Rounds is one poller and 4 workers shared by the 3 listeners.
-"Threads after h2c" is the server's thread count after the h2c case (6 without pool threads).
+**Follow-up: the pool path with work stealing, and the pool's thread cap** (2026-11-26, same setup,
+5 rounds, `shared.sh all,h2`, no pinning). HTTP/2 now runs inline by default; `h2pool` turns
+`handlers_on_logical_pool` on, `cap N` caps the logical pool at N threads
+(`PoolConfig::max_threads`; the default on these 4 CPUs is 32). Work stealing is one poller and 4
+workers shared by the 3 listeners. "Threads after h2c" is the server's thread count after the h2c
+case (6 without pool threads).
 
 | h2c 64 conns × 16 streams over 3 | inline | h2pool (32) | cap 16 | cap 8 | cap 4 |
 |---|---:|---:|---:|---:|---:|
-| epoll (loops) | 3,466,777 (±5%) | 485,785 | 483,260 | 456,821 | 380,733 |
-| io_uring (loops) | 3,572,412 (±8%) | 496,780 | 504,114 | 480,455 | 409,361 |
-| rounds (epoll) | 4,120,683 (±1%) | 488,080 | 489,025 | 469,483 | 390,489 |
+| epoll (event loops) | 3,466,777 (±5%) | 485,785 | 483,260 | 456,821 | 380,733 |
+| io_uring (event loops) | 3,572,412 (±8%) | 496,780 | 504,114 | 480,455 | 409,361 |
+| work stealing (epoll) | 4,120,683 (±1%) | 488,080 | 489,025 | 469,483 | 390,489 |
 | threads after h2c | 6 | 38 | 22 | 14 | 10 |
 
-HTTP/1.1 plaintext over the 3 listeners (served inline in every column): loops 610k–750k with
-±5–13% between rounds, rounds 615k–620k (±1–2%) at about 6 CPU seconds per million requests
-against 5 on loops.
+HTTP/1.1 plaintext over the 3 listeners (served inline in every column): event loops 610k–750k
+with ±5–13% between rounds, work stealing 615k–620k (±1–2%) at about 6 CPU seconds per million
+requests against 5 on event loops.
 
-**Answers.** (1) The pool path's ceiling of about 0.49M requests/s is the same on loops (epoll,
-io_uring) and on rounds, and steady to ±1%: it does not come from the I/O side. (2) The pool does
-grow to its cap (32 threads) under 1,024 open streams, but the cap is not the cause either: 16
-threads give the same, fewer give less (cap 4: 0.38M–0.41M). With trivial handlers, a ceiling
-that neither the I/O model, the CPUs left to the pool nor its thread count moves points at the
-hand-off itself (the pool's one locked queue and a wake-up per job, then the completion posted
-back to the loop), still to be profiled. (3) Inline, rounds is the fastest unpinned setup for
-h2c (4.12M ±1%, against 3.5M ±5–8% for unpinned loops and 4.0M for pinned loops); for HTTP/1.1
-it is steadier but slower than loops.
+**Answers.** (1) The pool path's ceiling of about 0.49M requests/s is the same with event loops
+(epoll, io_uring) and with work stealing, and steady to ±1%: it does not come from the I/O side.
+(2) The pool does grow to its cap (32 threads) under 1,024 open streams, but the cap is not the
+cause either: 16 threads give the same, fewer give less (cap 4: 0.38M–0.41M). With trivial
+handlers, a ceiling that neither the I/O model, the CPUs left to the pool nor its thread count
+moves points at the hand-off itself (the pool's one locked queue and a wake-up per job, then the
+completion posted back to the loop), still to be profiled. (3) Inline, work stealing is the fastest
+unpinned setup for h2c (4.12M ±1%, against 3.5M ±5–8% for unpinned event loops and 4.0M for pinned
+event loops); for HTTP/1.1 it is steadier but slower than event loops.
 
 **Profile of the pool path** (2026-11-26, same setup on epoll, `perf record -g` for 6 s,
 `perf stat` for 5 s, `offcputime`; a build with frame pointers and line tables). Through the pool
@@ -800,12 +801,12 @@ of 5 rounds):
 
 | h2c 64 conns × 16 streams over 3 | before | after | |
 |---|---:|---:|---:|
-| on the pool, epoll (loops) | 485,691 | 672,919 (±1%) | +39% |
-| on the pool, io_uring (loops) | 497,691 | 648,257 (±1%) | +30% |
-| on the pool, rounds | 488,004 | 671,608 | +38% |
-| inline, epoll (loops) | 3,400,256 (±5%) | 3,283,220 (±2%) | noise |
-| inline, io_uring (loops) | 3,768,648 (±9%) | 3,693,347 (±7%) | noise |
-| inline, rounds | 4,119,715 (±1%) | 4,041,675 (±1%) | −2% (the inline path is unchanged) |
+| on the pool, epoll (event loops) | 485,691 | 672,919 (±1%) | +39% |
+| on the pool, io_uring (event loops) | 497,691 | 648,257 (±1%) | +30% |
+| on the pool, work stealing | 488,004 | 671,608 | +38% |
+| inline, epoll (event loops) | 3,400,256 (±5%) | 3,283,220 (±2%) | noise |
+| inline, io_uring (event loops) | 3,768,648 (±9%) | 3,693,347 (±7%) | noise |
+| inline, work stealing | 4,119,715 (±1%) | 4,041,675 (±1%) | −2% (the inline path is unchanged) |
 
 Profiled again (same method): about 7 µs of CPU per pooled request (from 9); no `send()` per
 response any more (138k `writev` per 5 s for 2.9M responses, about 21 a write). What is left is

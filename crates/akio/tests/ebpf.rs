@@ -680,7 +680,7 @@ fn tunnel_writes_first_then_relays_and_drains_on_close() {
             .is_some_and(|c| c.written == 8)
     });
     // Whether the greeting's movement is seen by the first `moved` depends on when the kernel
-    // relayed it against the tunnel's baseline (io_uring and rounds scheduling may relay it
+    // relayed it against the tunnel's baseline (io_uring and work-stealing scheduling may relay it
     // first); either way the tunnel goes quiet once the kernel is done with it.
     let _ = t.moved();
     wait_until("the tunnel quiet", || !t.moved());

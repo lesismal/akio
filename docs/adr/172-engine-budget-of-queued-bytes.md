@@ -27,15 +27,15 @@ connection from outside the I/O threads that own them.
    one flag. The write path is unchanged; no shared counter is added to it. The budget is soft:
    what is queued between two sums can pass it, by at most what the engine writes in a
    millisecond or two, and each connection is still bounded by `max_queued_bytes`.
-3. **Reads pause through `ConnInner::read_held`.** Every backend (epoll/kqueue loops, rounds,
-   io_uring, DPDK, tun) asks it after each read and when it re-arms reading. While the flag is up
-   it answers yes and *parks* the connection, once per episode: its id and loop go into a table
-   (an episode number on the connection tells whether it is in this episode's table). Lowering the
-   flag empties the table and wakes each parked connection through its loop (`wake_conn`, as
+3. **Reads pause through `ConnInner::read_held`.** Every backend (epoll/kqueue event loops, work
+   stealing, io_uring, DPDK, tun) asks it after each read and when it re-arms reading. While the
+   flag is up it answers yes and *parks* the connection, once per episode: its id and loop go into a
+   table (an episode number on the connection tells whether it is in this episode's table). Lowering
+   the flag empties the table and wakes each parked connection through its loop (`wake_conn`, as
    `hold_reads(false)` does), so it re-arms its reads. A connection that reads nothing is never
-   parked and costs nothing; one that closes while parked leaves the table. The table is bounded
-   by the open connections. Checking the flag costs one relaxed load of a line written only when
-   an episode starts or ends.
+   parked and costs nothing; one that closes while parked leaves the table. The table is bounded by
+   the open connections. Checking the flag costs one relaxed load of a line written only when an
+   episode starts or ends.
 4. **Every connection pauses**, accepted and dialed: a proxy's upstream reads are what fills its
    clients' queues. Writes go on, so the queues drain; a peer that never reads is closed by
    `write_timeout`. UDP peers are not paused (no stream to hold).

@@ -1,7 +1,8 @@
 //! An idle timeout per connection (ADR-155, akit A78): `Conn::set_idle_timeout` and
 //! `Conn::set_idle_counts_writes`, for TCP connections (on the backend under test: epoll/kqueue,
-//! io_uring with `AKIO_TEST_BACKEND=uring`, rounds with `AKIO_DEFAULT_SCHEDULING=rounds`) and UDP
-//! peers (the UDP loop: listener peers and dialed connections).
+//! io_uring with `AKIO_TEST_BACKEND=uring`, work stealing with
+//! `AKIO_DEFAULT_SCHEDULING=work-stealing`) and UDP peers (the UDP loop: listener peers and
+//! dialed connections).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 

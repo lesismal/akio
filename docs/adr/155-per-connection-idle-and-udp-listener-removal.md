@@ -39,11 +39,11 @@ listener's socket (on Linux, one `SO_REUSEPORT` socket per I/O thread).
 2. **The I/O path pays nothing for it.** The setting is two atomics on `ConnInner` that the loop
    reads only when told: the setter calls `LoopLink::retime_conn(id)` (a default method
    answering `false`), which posts a command to the epoll/kqueue, io_uring and UDP loops (and,
-   with rounds scheduling, re-arms the timer in the poller's connection table under its shard's
-   lock, from the calling thread). The loop copies the setting into its per-connection
+   with work-stealing scheduling, re-arms the timer in the poller's connection table under its
+   shard's lock, from the calling thread). The loop copies the setting into its per-connection
    `IdleRule` and re-arms the timer from the connection's last activity. A connection that never
-   sets one has `IdleRule::ENGINE`, whose checks are those the loops always made; reads still
-   only store the loop clock.
+   sets one has `IdleRule::ENGINE`, whose checks are those the loops always made; reads still only
+   store the loop clock.
 3. **Writes are sampled, not timestamped.** Counting writes on the write path would put a clock
    read (or a shared store) on every `send`, from any thread. Instead a connection counting its
    writes is checked every eighth of its timeout: bytes sent since the last check (the

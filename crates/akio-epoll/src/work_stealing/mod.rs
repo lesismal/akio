@@ -1,4 +1,4 @@
-//! Rounds scheduling (ADR-104): a few pollers report readiness, and each round of a
+//! Work-stealing scheduling (ADR-104): a few pollers report readiness, and each round of a
 //! connection (read, handler, write) runs on whichever worker is free. So does accepting: a
 //! listening socket's readiness queues an accept job, and the worker running it opens and
 //! registers what it accepted.
@@ -30,27 +30,27 @@ use workers::{Driver, Workers};
 
 /// Backend name for metrics labels.
 pub(crate) const BACKEND: &str = if cfg!(target_os = "linux") {
-    "epoll-rounds"
+    "epoll-work-stealing"
 } else {
-    "kqueue-rounds"
+    "kqueue-work-stealing"
 };
 
-/// Thread counts of rounds scheduling. 0 picks the default.
+/// Thread counts of work-stealing scheduling. 0 picks the default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct RoundsConfig {
+pub struct WorkStealingConfig {
     /// epoll/kqueue instances the workers poll (default: 1; with dedicated poller threads,
-    /// `AKIO_ROUNDS_POLLERS=dedicated`: one with 4 CPUs or fewer, else one per 4 CPUs, at
-    /// least 2).
+    /// `AKIO_WORK_STEALING_POLLERS=dedicated`: one with 4 CPUs or fewer, else one per 4 CPUs,
+    /// at least 2).
     pub pollers: usize,
     /// Workers that run rounds (default: one per CPU).
     pub workers: usize,
 }
 
-impl RoundsConfig {
+impl WorkStealingConfig {
     /// `pollers` pollers and `workers` workers (0: the default).
-    pub fn new(pollers: usize, workers: usize) -> RoundsConfig {
-        RoundsConfig { pollers, workers }
+    pub fn new(pollers: usize, workers: usize) -> WorkStealingConfig {
+        WorkStealingConfig { pollers, workers }
     }
 
     /// The poller and worker counts this configuration resolves to.
@@ -72,9 +72,9 @@ impl RoundsConfig {
 }
 
 /// Who waits in `epoll_wait`: the workers themselves (driver mode, the default) or poller
-/// threads of their own (`AKIO_ROUNDS_POLLERS=dedicated`, kept for comparison).
+/// threads of their own (`AKIO_WORK_STEALING_POLLERS=dedicated`, kept for comparison).
 fn driver_mode() -> bool {
-    std::env::var("AKIO_ROUNDS_POLLERS").as_deref() != Ok("dedicated")
+    std::env::var("AKIO_WORK_STEALING_POLLERS").as_deref() != Ok("dedicated")
 }
 
 struct Slot {
@@ -93,9 +93,9 @@ struct RListener {
     unlisted: bool,
 }
 
-/// A group served by rounds scheduling: one listener, several (a shared group, ADR-130), or
+/// A group served by work-stealing scheduling: one listener, several (a shared group, ADR-130), or
 /// only dialed connections.
-pub struct RoundsGroup {
+pub struct WorkStealingGroup {
     /// The listener's address when the group was built for one; the unspecified address for
     /// shared and client-only groups.
     addr: SocketAddr,
@@ -121,9 +121,9 @@ pub struct RoundsGroup {
     stopping: AtomicBool,
 }
 
-impl std::fmt::Debug for RoundsGroup {
+impl std::fmt::Debug for WorkStealingGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RoundsGroup").finish_non_exhaustive()
+        f.debug_struct("WorkStealingGroup").finish_non_exhaustive()
     }
 }
 
@@ -209,7 +209,7 @@ struct Bound {
     socks: Vec<TcpListener>,
 }
 
-impl RoundsGroup {
+impl WorkStealingGroup {
     /// Binds `listen` (if any) with `rc`'s pollers and workers. Nothing runs until
     /// [`Group::start`].
     ///
@@ -217,10 +217,10 @@ impl RoundsGroup {
     /// accepts run on several workers at once; elsewhere one socket, cloned for each poller.
     pub fn bind(
         listen: Option<(SocketAddr, Arc<dyn DynAcceptor>)>,
-        rc: RoundsConfig,
+        rc: WorkStealingConfig,
         cfg: Config,
         pool: Arc<Pool>,
-    ) -> io::Result<RoundsGroup> {
+    ) -> io::Result<WorkStealingGroup> {
         match listen {
             Some((a, acc)) => Self::one(ListenSocket::Bind(a), acc, rc, cfg, pool),
             None => Self::assemble(rc, None, false, false, cfg, pool),
@@ -231,10 +231,10 @@ impl RoundsGroup {
     pub fn bind_listener(
         listener: TcpListener,
         acceptor: Arc<dyn DynAcceptor>,
-        rc: RoundsConfig,
+        rc: WorkStealingConfig,
         cfg: Config,
         pool: Arc<Pool>,
-    ) -> io::Result<RoundsGroup> {
+    ) -> io::Result<WorkStealingGroup> {
         Self::one(ListenSocket::Inherited(listener), acceptor, rc, cfg, pool)
     }
 
@@ -245,10 +245,10 @@ impl RoundsGroup {
     pub fn bind_unix_listener(
         listener: TcpListener,
         acceptor: Arc<dyn DynAcceptor>,
-        rc: RoundsConfig,
+        rc: WorkStealingConfig,
         cfg: Config,
         pool: Arc<Pool>,
-    ) -> io::Result<RoundsGroup> {
+    ) -> io::Result<WorkStealingGroup> {
         Self::one(ListenSocket::Unix(listener), acceptor, rc, cfg, pool)
     }
 
@@ -256,7 +256,11 @@ impl RoundsGroup {
     /// listeners join with [`Group::add_listener`] and leave with [`Group::remove_listener`],
     /// and the workers serve them all until shutdown. Its `local_addr` is the unspecified
     /// address and its threads report no listener in their `LoopMeta`.
-    pub fn shared(rc: RoundsConfig, cfg: Config, pool: Arc<Pool>) -> io::Result<RoundsGroup> {
+    pub fn shared(
+        rc: WorkStealingConfig,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<WorkStealingGroup> {
         Self::assemble(rc, None, true, true, cfg, pool)
     }
 
@@ -264,10 +268,10 @@ impl RoundsGroup {
     fn one(
         socket: ListenSocket,
         acceptor: Arc<dyn DynAcceptor>,
-        rc: RoundsConfig,
+        rc: WorkStealingConfig,
         cfg: Config,
         pool: Arc<Pool>,
-    ) -> io::Result<RoundsGroup> {
+    ) -> io::Result<WorkStealingGroup> {
         let (pollers, workers) = rc.resolved();
         let b = bind_socks(socket, pollers, workers, cfg.backlog)?;
         let fds = if b.reuseport {
@@ -283,13 +287,13 @@ impl RoundsGroup {
     }
 
     fn assemble(
-        rc: RoundsConfig,
+        rc: WorkStealingConfig,
         listener_addr: Option<SocketAddr>,
         listens: bool,
         shared: bool,
         cfg: Config,
         pool: Arc<Pool>,
-    ) -> io::Result<RoundsGroup> {
+    ) -> io::Result<WorkStealingGroup> {
         cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
         let (npollers, nworkers) = rc.resolved();
@@ -324,7 +328,7 @@ impl RoundsGroup {
                 .collect();
             workers.set_drivers(drivers);
         }
-        Ok(RoundsGroup {
+        Ok(WorkStealingGroup {
             addr: SocketAddr::from(([0, 0, 0, 0], 0)),
             fds: Vec::new(),
             shareds: slots.iter().map(|s| s.shared.clone()).collect(),
@@ -383,7 +387,7 @@ impl RoundsGroup {
     }
 }
 
-impl Group for RoundsGroup {
+impl Group for WorkStealingGroup {
     fn local_addr(&self) -> SocketAddr {
         self.addr
     }
@@ -436,7 +440,7 @@ impl Group for RoundsGroup {
     fn set_threads(&self, _n: usize) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "set_threads on a listener with rounds scheduling",
+            "set_threads on a listener with work-stealing scheduling",
         ))
     }
 

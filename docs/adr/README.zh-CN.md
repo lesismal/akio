@@ -103,7 +103,7 @@
 - [ADR-101：带联动背压的流式消息体：边产生边发送的客户端请求体、边到达边交付的客户端响应、服务端请求对读取的暂停与排空通知](101-streamed-bodies-linked-backpressure.zh-CN.md)（2026-11-24 采纳）
 - [ADR-102：按 UDP 对端记住 QUIC 路由，HTTP/3 服务端默认开启 QPACK 动态表](102-quic-peer-routes-qpack-server-default.zh-CN.md)（2026-11-24 采纳）
 - [ADR-103：I/O 循环上的定时器](103-loop-timers.zh-CN.md)（2026-11-23 采纳）
-- [ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次](104-rounds-scheduling.zh-CN.md)（2026-11-23 提议）
+- [ADR-104：TCP listener 的两种调度模式：事件循环，与在 worker 池上的工作窃取](104-work-stealing-scheduling.zh-CN.md)（2026-11-23 提议；2026-11-26 改名）
 - [ADR-105：在监听器的各线程之间于 accept 时均衡连接](105-accept-time-balancing.zh-CN.md)（2026-11-23 采纳；更新 ADR-001）
 - [ADR-106：io_uring 环上发送：响应作为 SEND 条目，随 loop 的那一次 `io_uring_enter` 发出](106-uring-ring-sends.zh-CN.md)（2026-11-24 采纳）
 - [ADR-107：akio-x509 中的证书签名请求](107-x509-certificate-requests.zh-CN.md)（2026-11-23 采纳）
@@ -129,7 +129,7 @@
 - [ADR-127：得知请求的结束：响应完整发出，或客户端离开](127-request-end-hooks.zh-CN.md)（2026-11-25 采纳）
 - [ADR-128：由别处的工作扣住响应头、过滤响应 body](128-held-response-heads-and-body-filters.zh-CN.md)（2026-11-25 采纳；akit A166、A167；ADR-125 的 W6）
 - [ADR-129：删除 akio-prefork](129-akio-prefork-removed.zh-CN.md)（2026-11-25 采纳）
-- [ADR-130：同一后端的 listener 共享一组 I/O 线程](130-shared-io-groups.zh-CN.md)（2026-11-25 采纳；第一至三阶段：epoll/kqueue 事件循环、轮次调度、io_uring）
+- [ADR-130：同一后端的 listener 共享一组 I/O 线程](130-shared-io-groups.zh-CN.md)（2026-11-25 采纳；第一至三阶段：epoll/kqueue 事件循环、工作窃取调度、io_uring）
 - [ADR-154：每次拨号自己的连接超时，以及 I/O 线程之外的定时器](154-dial-options-and-send-timers.zh-CN.md)（2026-11-26 采纳；akit A12、A79、A45）
 - [ADR-155：每个连接自己的空闲超时，以及 UDP listener 的移除与排空](155-per-connection-idle-and-udp-listener-removal.zh-CN.md)（2026-11-26 采纳；akit A78、A22）
 - [ADR-156：拼接隧道与连接的 TCP 计数器](156-spliced-tunnels-and-tcp-counters.zh-CN.md)（2026-11-26 采纳；akit A170）

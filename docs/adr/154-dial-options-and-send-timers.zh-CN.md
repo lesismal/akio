@@ -23,7 +23,7 @@ akit 为此自己跑了一个带有界堆的线程（akit A45）。
    **`Engine::dial_with(addr, opts, acceptor, on_error)`** 即带选项的 `dial`。
 2. 面向后端的 `Group` trait 新增 `dial_with`；默认实现忽略选项并调用 `dial`。TCP 组实现它：
    epoll/kqueue 事件循环和 io_uring 在拨号命令中带上超时，并用它代替 `Config::connect_timeout`
-   设置连接截止时间；轮次调度同样如此；DPDK 用它代替其协议栈自己的 10 s。共享 listener 组（ADR-130）
+   设置连接截止时间；工作窃取调度同样如此；DPDK 用它代替其协议栈自己的 10 s。共享 listener 组（ADR-130）
    转发它。截止时间还是原来那个时间轮条目（整毫秒、至少一毫秒、上限为 `timer::MAX_DELAY`），所以拨号
    没有额外开销。
 3. **`HappyEyeballs`** 的每一次尝试都受它的 `connect_timeout` 约束：单个地址和依次拨的地址都经由

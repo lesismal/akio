@@ -86,12 +86,12 @@ HTTP/1.1 的响应顺序已经由有序响应位置（`Conn::reserve_response`�
 
 `H2Config::handlers_on_logical_pool` 的默认值改回 `false`，与其他开关一致。在 gpu51 上实测
 （docs/BENCHMARKS.zh-CN.md，共享 I/O 线程组）：4 个 I/O 线程、4 个 CPU，handler 很轻的 h2c 走线程池
-约每秒 49 万请求，inline 则是 320 万–400 万，给线程池更多 CPU 也提不高这个上限；改用 Rounds
+约每秒 49 万请求，inline 则是 320 万–400 万，给线程池更多 CPU 也提不高这个上限；改用工作窃取
 调度或调整线程池线程数也不行（16 个线程结果相同，更少则更低）。让所有不阻塞的
 HTTP/2 服务默认损失大部分吞吐，这个取舍不对；handler 会阻塞的服务自行打开开关（或用
 `Context::detach_to_pool` 分离单个请求），2026-11-25 更新中的理由留作这个开关的说明。
 
-这些开关原名 `run_on_pool`，既没说明什么在那里执行，也没说明是哪个线程池（轮次调度的线程组本身也是
+这些开关原名 `run_on_pool`，既没说明什么在那里执行，也没说明是哪个线程池（工作窃取调度的线程组本身也是
 一组 worker）。现在所有协议（`HttpConfig`、`H2Config`、`H3Config`、`GrpcServer`、`Routes`）都叫
 `handlers_on_logical_pool`：每个请求的中间件和 handler，在引擎的逻辑线程池上执行。旧名字没有随任何
 版本发布，所以不保留别名。

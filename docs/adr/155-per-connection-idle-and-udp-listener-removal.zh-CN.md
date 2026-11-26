@@ -31,7 +31,7 @@ TCP listener 在这里有一个关键区别：它的对端没有自己的 socket
    （DPDK、TUN）上返回 `Err(Io(Unsupported))`。
 2. **I/O 路径不为它付任何代价。** 设置是 `ConnInner` 上的两个原子量，事件循环只在被告知时才读：
    setter 调用 `LoopLink::retime_conn(id)`（默认方法，返回 `false`），它向 epoll/kqueue、io_uring 和
-   UDP 事件循环投递一条命令（轮次调度下则在调用线程上，持有分片锁，在 poller 的连接表中重新安排
+   UDP 事件循环投递一条命令（工作窃取调度下则在调用线程上，持有分片锁，在 poller 的连接表中重新安排
    定时器）。事件循环把设置复制到该连接的 `IdleRule`，并从连接最后一次活动起重新安排定时器。从不
    设置的连接使用 `IdleRule::ENGINE`，其检查与事件循环一直以来所做的相同；读操作仍然只记录事件循环
    的时钟。

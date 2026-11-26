@@ -1,10 +1,21 @@
-# ADR-104：TCP listener 的两种调度模式：每线程事件循环，与在 worker 池上执行的轮次
+# ADR-104：TCP listener 的两种调度模式：事件循环，与在 worker 池上的工作窃取
 
-[English](104-rounds-scheduling.md) | 简体中文
+[English](104-work-stealing-scheduling.md) | 简体中文
 
 状态：提议中（2026-11-23；2026-11-24 更新：由 worker 驱动 poller，补充测量；2026-11-24 第二次修订：
 accept 与关闭改在 worker 上进行，轻负载时减少唤醒；2026-11-24 第三次修订：运行时增删 listener、accept 过滤器、
-运行时修改的写超时）
+运行时修改的写超时；2026-11-26 改名：`Scheduling::Loops` 改为 `EventLoops`，`Scheduling::Rounds` 改为
+`WorkStealing`）
+
+## 更新（2026-11-26）：两种模式改名
+
+两种模式最初叫 `Loops` 和 `Rounds`，现在是 `Scheduling::EventLoops`（仍是默认）和
+`Scheduling::WorkStealing(WorkStealingConfig)`；随之 `RoundsConfig` 改为 `WorkStealingConfig`，`RoundsGroup`
+改为 `WorkStealingGroup`，模块 `akio_epoll::rounds` 改为 `akio_epoll::work_stealing`，`AKIO_ROUNDS_*` 改为
+`AKIO_WORK_STEALING_*`，`AKIO_DEFAULT_SCHEDULING` 的取值改为 `work-stealing` 或 `event-loops`。"Rounds"
+说的是内部的工作单位，即连接的一轮，而不是用户选择的东西：每个连接绑定在一个线程上，还是由一组互相窃取工作的
+worker 执行。旧名字没有出现在任何发布版本中，所以没有保留别名。下文的"一轮"仍指连接的一轮（读、handler、写）；
+测量中作为当时标签的名字（HttpArena 的条目名）保持原样。
 
 ## 背景
 
@@ -23,21 +34,21 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
 
 ## 决定
 
-1. **由 listener 选择调度方式**：`akio::Scheduling::Loops`（默认，ADR-001 不变）或
-   `Scheduling::Rounds(RoundsConfig)`，用 `Listener::scheduling` 设置。环境变量
-   `AKIO_DEFAULT_SCHEDULING=rounds` 为没有显式设置的 listener 选择轮次模式（测试开关，与
-   ADR-029 的 `AKIO_DEFAULT_BACKEND` 相同）。但如果 listener 要求了只有每线程事件循环才支持的东西，
+1. **由 listener 选择调度方式**：`akio::Scheduling::EventLoops`（默认，ADR-001 不变）或
+   `Scheduling::WorkStealing(WorkStealingConfig)`，用 `Listener::scheduling` 设置。环境变量
+   `AKIO_DEFAULT_SCHEDULING=work-stealing` 为没有显式设置的 listener 选择工作窃取模式（测试开关，与
+   ADR-029 的 `AKIO_DEFAULT_BACKEND` 相同）。但如果 listener 要求了只有事件循环才支持的东西，
    环境变量不生效：io_uring（listener 自己选的或 `AKIO_DEFAULT_BACKEND` 指定的）和 BPF 调度
    （`Accel::Ebpf`）。
-2. **轮次模式**（`akio-epoll`，Linux 上 epoll，macOS 上 kqueue）：
+2. **工作窃取模式**（`akio-epoll`，Linux 上 epoll，macOS 上 kqueue）：
    - **由 worker 轮询的 driver**（与 Tokio 的多线程 runtime 相同）。没有 poller 线程：每个
-     epoll/kqueue 实例（`RoundsConfig::pollers`，默认 1）是一个由锁保护的 *driver*。没有任务可执行
+     epoll/kqueue 实例（`WorkStealingConfig::pollers`，默认 1）是一个由锁保护的 *driver*。没有任务可执行
      的 worker 拿到一个空闲的 driver，在它的 `epoll_wait` 中等待；它发现的就绪连接进入自己的队列，并
      唤醒 park 的 worker 来偷。忙碌的 worker 每执行 61 轮就不阻塞地轮询一次 driver（Tokio 的
      `event_interval`），所以满载时收集事件不需要任何线程唤醒另一个线程。driver 负责控制路径（dial、
      定时器、遥测、关闭），从不 accept、读写，也不执行用户代码。连接只注册一次，读写都用边沿
      触发（`EPOLLET` / `EV_CLEAR`），所以一轮不需要调用 `epoll_ctl`。专门的 poller 线程（第一版
-     原型）保留在 `AKIO_ROUNDS_POLLERS=dedicated` 之后，仅供对比；它表现更差（见"测量"）。
+     原型）保留在 `AKIO_WORK_STEALING_POLLERS=dedicated` 之后，仅供对比；它表现更差（见"测量"）。
    - **accept 与关闭分散到各个 worker**（2026-11-24 第二次修订）。在 Linux 上，一个 listener 每个
      worker 有一个 `SO_REUSEPORT` socket（其它平台一个，为每个 driver 复制一份），以边沿触发注册到某个
      driver。它就绪时向 worker 投递一个 *accept 任务*，调度方式与连接相同（一个待处理标志和一个
@@ -52,7 +63,7 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      之前就被中止或重置的连接只是跳过。关闭时在 accept 任务的锁下关闭 socket，所以发送 `on_shutdown` 时
      accept 任务打开的每个连接都已在表中，之后打开的连接会看到排空标志；每个连接有一个一次性标志，无论谁
      先请求，`on_shutdown` 都只执行一次。
-   - **Worker**（`RoundsConfig::workers`，0 = 自动：每个 CPU 一个）执行轮次。连接的一轮依次：
+   - **Worker**（`WorkStealingConfig::workers`，0 = 自动：每个 CPU 一个）执行轮次。连接的一轮依次：
      若 `on_open` 还没执行则执行它；执行投递给它的 `spawn_blocking` 完成回调；刷出发送队列；读到
      socket 读空为止（最多 16 次读，之后让出、排到队尾）；每次读到数据就在 cork 状态下调用
      `on_data`；最后把这一轮排队的输出一次写出。
@@ -79,8 +90,8 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
    超时对已打开的连接生效，ADR-108）、慢回调报告（按 worker 统计）、`max_connections`、内核 TLS
    offload、运行时添加、移除和排空 listener 以及 accept 过滤器（ADR-099，见下文第三次修订）。所有协议
    crate 无需修改：它们的线程局部缓存只在单次回调内借用。
-4. **轮次模式不支持的**（原型范围）：UDP listener（继续使用事件循环，并记录一条警告）、io_uring
-   （`Backend::IoUring` 加轮次模式会被拒绝）、`set_threads`（返回 `Unsupported`）、BPF 调度（它
+4. **工作窃取模式不支持的**（原型范围）：UDP listener（继续使用事件循环，并记录一条警告）、io_uring
+   （`Backend::IoUring` 加工作窃取模式会被拒绝）、`set_threads`（返回 `Unsupported`）、BPF 调度（它
    只能把连接分给 poller，没有意义）。每个 listener group 一个 worker 池。
 
 ## 影响
@@ -88,29 +99,29 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
 - 负载按工作量而不是按连接分摊：一个重负载连接同一时刻只占一个 worker，而与它同属一个 poller 的
   其它连接会交给别的 worker。
 - 每一轮都有一次交接开销：poller 入队，可能唤醒一个 park 的 worker，连接状态在 CPU 核之间迁移。
-  对大量小而均匀的连接，每线程事件循环仍然更快，所以它仍是默认值。
+  对大量小而均匀的连接，事件循环仍然更快，所以它仍是默认值。
 - handler 状态可能在相邻的两轮里被不同线程访问（但绝不会同时），所以 handler 不能跨回调依赖线程
   局部变量。我们自己的 handler 都没有这样做。
 
 ## 测量
 
-gpu51（Ryzen 7 7800X3D，Linux 7.0），2026-11-24。服务端绑 CPU 0-3,8-11（8 个逻辑 CPU；loops：8 个
-线程；rounds：8 个 worker、1 个 driver），客户端用另外 8 个。每个场景 10 秒；跑两到三轮，rounds 各轮
-相差几个百分点以内，loops 各轮最多相差 20%（每次运行内核哈希的结果不同）。"CPU" 是服务端每次运行用掉
+gpu51（Ryzen 7 7800X3D，Linux 7.0），2026-11-24。服务端绑 CPU 0-3,8-11（8 个逻辑 CPU；事件循环：8 个
+线程；工作窃取：8 个 worker、1 个 driver），客户端用另外 8 个。每个场景 10 秒；跑两到三轮，工作窃取各轮
+相差几个百分点以内，事件循环各轮最多相差 20%（每次运行内核哈希的结果不同）。"CPU" 是服务端每次运行用掉
 的 CPU 秒数（约 88 即 8 个 CPU 全部用满）。
 
 `skew-bench`（CPU 密集的请求；连接数、每连接在途请求数、每请求的 CPU 时间）：
 
-| 场景 | Loops | Rounds | 各连接请求数（最少~最多） | CPU |
+| 场景 | 事件循环 | 工作窃取 | 各连接请求数（最少~最多） | CPU |
 |---|---|---|---|---|
-| 12 个连接，在途 4，50 µs | 11.4 万~13.2 万/s，p99 0.85~1.27 ms | **15.1 万/s，p99 0.39 ms** | loops 3.2 万~18.9 万，rounds 12.6 万~12.6 万 | 66~77 → 88 |
-| 8 个连接，在途 8，100 µs | 3.9 万~5.9 万/s，p99 1.6~3.2 ms | **7.8 万/s，p99 0.82 ms** | loops 2.5 万~9.8 万，rounds 9.8 万~9.8 万 | 44~66 → 87 |
-| 64 个连接（4 个 500 µs，其余 20 µs），在途 2 | 21.0 万~25.8 万/s，p99 2.4~2.8 ms | 21.7 万/s，**p99 1.5 ms** | loops 0.4 万~13.4 万，rounds 1.4 万~3.5 万 | 两者都约 88 |
-| 256 个连接，在途 1，10 µs | **48.1 万/s**，p99 1.1 ms | 45.0 万/s（-6%），**p99 0.92 ms** | loops 1.1 万~2.6 万，rounds 1.75 万~1.76 万 | 87 / 85 |
+| 12 个连接，在途 4，50 µs | 11.4 万~13.2 万/s，p99 0.85~1.27 ms | **15.1 万/s，p99 0.39 ms** | 事件循环 3.2 万~18.9 万，工作窃取 12.6 万~12.6 万 | 66~77 → 88 |
+| 8 个连接，在途 8，100 µs | 3.9 万~5.9 万/s，p99 1.6~3.2 ms | **7.8 万/s，p99 0.82 ms** | 事件循环 2.5 万~9.8 万，工作窃取 9.8 万~9.8 万 | 44~66 → 87 |
+| 64 个连接（4 个 500 µs，其余 20 µs），在途 2 | 21.0 万~25.8 万/s，p99 2.4~2.8 ms | 21.7 万/s，**p99 1.5 ms** | 事件循环 0.4 万~13.4 万，工作窃取 1.4 万~3.5 万 | 两者都约 88 |
+| 256 个连接，在途 1，10 µs | **48.1 万/s**，p99 1.1 ms | 45.0 万/s（-6%），**p99 0.92 ms** | 事件循环 1.1 万~2.6 万，工作窃取 1.75 万~1.76 万 | 87 / 85 |
 
 TCP echo（`echo-bench`，8 个客户端线程；`bench-server`）：
 
-| 场景 | Loops | Rounds | CPU |
+| 场景 | 事件循环 | 工作窃取 | CPU |
 |---|---|---|---|
 | 64 个连接 x 64 B | 84.0 万~91.5 万/s | **98.3 万/s** | 57~62 → 76 |
 | 1024 个连接 x 64 B | **101 万~109 万/s** | 97.8 万~98.8 万/s（-6%） | 67~72 → 71 |
@@ -129,18 +140,19 @@ TCP echo（`echo-bench`，8 个客户端线程；`bench-server`）：
 
 结论：
 
-- 如果因为内核分配连接的方式（每线程连接少）让 loops 有 CPU 空闲，rounds 能用上所有 CPU：吞吐提高
+- 如果因为内核分配连接的方式（每线程连接少）让事件循环有 CPU 空闲，工作窃取能用上所有 CPU：吞吐提高
   15%~100%，尾延迟缩短 2~4 倍。
-- 如果 loops 已经用均匀分布的连接把所有 CPU 跑满，rounds 每轮的交接让吞吐低约 6%，尾延迟相同或更短。
-- 所以默认仍是 loops；连接少或负载不均时选 rounds。
+- 如果事件循环已经用均匀分布的连接把所有 CPU 跑满，工作窃取每轮的交接让吞吐低约 6%，尾延迟相同或更短。
+- 所以默认仍是事件循环；连接少或负载不均时选工作窃取。
 
 ### HttpArena
 
 gpu51 统一批次，2026-11-24 09:16~11:43，已包含停止和 panic 的修复。每个场景跑 2 轮，每轮取 3 次中最好的，
-再取平均。rounds 用 8 个 worker、1 个 driver。两组对比：`akio-rounds` 对 `akio-loops`（只有 rounds 分支，
-同一份源码），以及 `akio-all-rounds` 对 `akio-all`（合并了全部优化，只换调度模式）。
+再取平均。工作窃取用 8 个 worker、1 个 driver。两组对比（HttpArena 条目沿用当时的名字）：`akio-rounds` 对
+`akio-loops`（只有工作窃取分支，同一份源码），以及 `akio-all-rounds` 对 `akio-all`（合并了全部优化，只换
+调度模式）。
 
-| 场景 | loops | rounds | 变化 |
+| 场景 | 事件循环 | 工作窃取 | 变化 |
 |---|---|---|---|
 | baseline 4096c | 1.083M | 1.038M | -4.1% |
 | pipelined 4096c | 7.15M | 6.95M | -2.8% |
@@ -158,32 +170,32 @@ gpu51 统一批次，2026-11-24 09:16~11:43，已包含停止和 panic 的修复
 固定速率场景：
 
 - latency-10k：p99 相同（约 0.05 ms），但每请求 CPU 17.2 µs 对 9.5 µs。可能的原因：空闲的 worker 最多 park 10 ms，
-  由 driver 通过 eventfd 唤醒，负载轻时要为 loops 没有的唤醒付出代价。（后来测得：原因是每个请求唤醒一个
+  由 driver 通过 eventfd 唤醒，负载轻时要为事件循环没有的唤醒付出代价。（后来测得：原因是每个请求唤醒一个
   worker，而不是 park；见第二次修订。）
-- latency-1m：p99 7.8~10.4 ms，`akio-all`（loops，带 ADR-105 尾延迟修复）是 3.3~4.4 ms；每请求 CPU 略少
+- latency-1m：p99 7.8~10.4 ms，`akio-all`（事件循环，带 ADR-105 尾延迟修复）是 3.3~4.4 ms；每请求 CPU 略少
   （7.5 对 7.7 µs）。没有这些修复的 main 是 0.9~1.1 s。
 - 8gbit：吞吐相同，每请求 CPU 24 µs 对 18 µs。
 
-echo-ws-limited 512 个连接时，rounds 只用了 8 个 CPU 中的 5.7 个。这个场景不停地重连，每次 accept、注册、
+echo-ws-limited 512 个连接时，工作窃取只用了 8 个 CPU 中的 5.7 个。这个场景不停地重连，每次 accept、注册、
 关闭都经过唯一的 driver，连接寿命短时 driver 就成了瓶颈。
 
 所以，在连接分布均匀的真实 HTTP 流量上：
 
-- 请求占用线程时间长、负载不均时 rounds 占优（async +12%），h2c 和 gRPC 持平。
+- 请求占用线程时间长、负载不均时工作窃取占优（async +12%），h2c 和 gRPC 持平。
 - 大量连接上的小请求慢 3%~10%，连接寿命短时最多慢 32%，负载轻时更费 CPU。
-- 默认仍是 loops。rounds 下一步：把 accept 和关闭移出 driver，减少轻负载时的唤醒（已在下面的第二次修订中
+- 默认仍是事件循环。工作窃取下一步：把 accept 和关闭移出 driver，减少轻负载时的唤醒（已在下面的第二次修订中
   完成；HttpArena 尚未重测）。
 
 ### 第二次修订：在 worker 上 accept 和关闭，减少唤醒（2026-11-24）
 
-gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 worker、1 个 driver），每个场景跑两轮，
-使用 `skew-bench` 和 `echo-bench`。"main" 是本次修订之前的 rounds，"new" 是之后的。服务端 CPU 在每次运行前后
+gpu51，环境同上（服务端 8 个 CPU；事件循环 8 个线程；工作窃取 8 个 worker、1 个 driver），每个场景跑两轮，
+使用 `skew-bench` 和 `echo-bench`。"main" 是本次修订之前的工作窃取，"new" 是之后的。服务端 CPU 在每次运行前后
 从 `/proc` 读取。短连接场景每次跑 5 s，并先等内核的 conntrack 表有空间：每秒 20 万个连接时它会被填满（200 万个
 条目，每个在 TIME_WAIT 中停留 120 s），之后丢弃 SYN，这曾让之前的短连接测试对接下来运行的模式失去意义。
 
 **短连接**（`skew-bench churn`：每个客户端建立连接，逐个发送 N 个 16 字节请求，关闭，再重来）：
 
-| 场景 | Loops | Rounds main | Rounds new | 服务端 CPU 秒：loops / main / new |
+| 场景 | 事件循环 | 工作窃取 main | 工作窃取 new | 服务端 CPU 秒：事件循环 / main / new |
 |---|---|---|---|---|
 | 512 个客户端 x 10 个请求 | 713k~720k req/s | 513k~519k（-28%） | **693k~712k**（-2%） | 46~47 / 36 / 47~48 |
 | 512 个客户端 x 1 个请求 | 205k~206k conn/s | 102k~103k（-50%） | **207k~208k**（+1%） | 43 / 22 / 47~48 |
@@ -192,19 +204,20 @@ gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 wo
 **固定低速率**（`skew-bench rate`：1024 个已打开的连接，以固定的总速率发送请求，16 字节回显；每请求 CPU =
 服务端 CPU / 发送的请求数）：
 
-| 场景 | Loops | Rounds main | Rounds new |
+| 场景 | 事件循环 | 工作窃取 main | 工作窃取 new |
 |---|---|---|---|
 | 10k req/s：每请求 CPU | 9.1 µs | 16.3 µs | **11.3 µs** |
 | 10k req/s：每请求上下文切换 | 1.11 | 2.27 | **1.18** |
 | 10k req/s：p50 / p99 | 17 / 20 µs | 18 / 20 µs | 17 / 19~20 µs |
 | 50k req/s：每请求 CPU | 8.7 µs | 15.6 µs | **9.9 µs** |
 
-轻负载时的 CPU 花在哪里（main，10k req/s，服务端开 `AKIO_ROUNDS_TRACE=1` 并用 `perf stat`）：每秒 10,001
-轮，**10,001 次 unpark 和 10,001 次 park**，1.91 万次 futex 调用，2.52 万次 `epoll_wait`，1.95 万次上下文
-切换（loops：0.95 万次上下文切换、0.95 万次 `epoll_wait`，没有 futex）。每个请求都唤醒了第二个 worker：阻塞在
-`epoll_wait` 中的 worker 发现一个连接，放进自己的队列，入队时唤醒一个 park 的 worker"来偷"；然后它自己执行了
-这一轮，被唤醒的 worker 什么也没找到，自旋后拿到 driver 阻塞在 `epoll_wait` 中，第一个 worker 则去 park。每个
-请求多两次上下文切换和四次系统调用；10 ms 的 park 超时（7 个空闲 worker 每秒 700 次唤醒）只占一小部分。
+轻负载时的 CPU 花在哪里（main，10k req/s，服务端开 `AKIO_WORK_STEALING_TRACE=1` 并用 `perf stat`）：每秒
+10,001 轮，**10,001 次 unpark 和 10,001 次 park**，1.91 万次 futex 调用，2.52 万次 `epoll_wait`，1.95 万次
+上下文切换（事件循环：0.95 万次上下文切换、0.95 万次 `epoll_wait`，没有 futex）。每个请求都唤醒了第二个
+worker：阻塞在 `epoll_wait` 中的 worker 发现一个连接，放进自己的队列，入队时唤醒一个 park 的 worker"来偷"；
+然后它自己执行了这一轮，被唤醒的 worker 什么也没找到，自旋后拿到 driver 阻塞在 `epoll_wait` 中，第一个 worker
+则去 park。每个请求多两次上下文切换和四次系统调用；10 ms 的 park 超时（7 个空闲 worker 每秒 700 次唤醒）只占
+一小部分。
 
 只做第一项修复（一次轮询不为它的 worker 接着执行的任务唤醒任何线程）后：0 次 unpark，每秒 700 次 park（10 ms
 超时），1.07 万次上下文切换，9 s 内服务端 CPU 1.10 s，修复前 1.57 s。在同一个构建上逐项切换（10k req/s 下
@@ -216,7 +229,7 @@ gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 wo
 
 **回归检查**（同一批运行）：
 
-| 场景 | Loops | Rounds main | Rounds new |
+| 场景 | 事件循环 | 工作窃取 main | 工作窃取 new |
 |---|---|---|---|
 | skew 12 个连接，深度 4，50 µs | 114k~132k/s，p99 0.84 ms | 151k/s，p99 0.39 ms | 151k/s，p99 0.39 ms |
 | skew 8 个连接，深度 8，100 µs | 30k~49k/s，p99 3.2 ms | 78.4k/s，p99 0.82 ms | 78.4k/s，p99 0.82 ms |
@@ -228,14 +241,14 @@ gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 wo
 
 本次修订的结论：
 
-- accept 和关闭移出 driver 之后，短连接场景用满所有 CPU，与 loops 相当（-2% 到 +19%），而不再慢 28%~50%。
-- 轻负载时一轮不再唤醒第二个线程：10k req/s 下每请求 CPU 11.3 µs，修复前 16.3 µs（loops 9.1），延迟不变。
+- accept 和关闭移出 driver 之后，短连接场景用满所有 CPU，与事件循环相当（-2% 到 +19%），而不再慢 28%~50%。
+- 轻负载时一轮不再唤醒第二个线程：10k req/s 下每请求 CPU 11.3 µs，修复前 16.3 µs（事件循环 9.1），延迟不变。
   剩下的差距来自自旋前的非阻塞轮询、自旋本身，以及队列锁和连接表的锁。
 - 连接少或不均、类似 h2c 的负载不变；大量连接上的 echo 再慢 2%~3%。
 
 ### 第三次修订：运行时的 listener、accept 过滤器、实时的写超时（2026-11-24）
 
-轮次模式的 listener 现在支持 loops listener 在 ADR-099 和 ADR-108 中支持的功能；API 不变。
+工作窃取模式的 listener 现在支持事件循环 listener 在 ADR-099 和 ADR-108 中支持的功能；API 不变。
 
 - **移除 listener**（`Engine::remove_listener` / `shutdown_listener`，即 group 的 `stop_listening`）：
   group 在调用线程上、返回之前自己关闭全部监听 socket：在 Linux 上是它每个 worker 一个的全部
@@ -247,36 +260,36 @@ gpu51，环境同上（服务端 8 个 CPU；loops 8 个线程；rounds 8 个 wo
   `StopListening { drain, exit }`：已打开的连接继续运行；有排空时，每个连接立即收到 `on_shutdown`，到
   截止时间仍未关闭的被关闭（`Duration::ZERO`：下一次轮询时）；有 `exit` 时（除了线程还服务 `dial` 的
   builder listener 之外的所有 listener），driver 在连接表变空后结束（连接离开表时唤醒它，与关闭时相同），
-  所有 driver 都结束后 group 即为 `finished`。之后 engine 像回收 loops group 一样回收它：join 各 worker，
+  所有 driver 都结束后 group 即为 `finished`。之后 engine 像回收事件循环 group 一样回收它：join 各 worker，
   并把 worker 和 driver 的行从指标中移除。仍有打开连接的已移除 listener 继续占用 `max_listeners` 的名额。
   服务 `dial` 的 builder listener 保留它的 worker 和 driver 直到关闭。
 - **accept 过滤器**：accept 任务在打开连接之前执行 group 的过滤器（`FilterCell`，通过保存在任务锁下的
-  `FilterView` 读取：每个被 accept 的连接一次原子读取，与 loops 相同）；被拒绝的计入 `filtered`。因此
-  `AKIO_DEFAULT_SCHEDULING=rounds` 也适用于带过滤器的 listener。
+  `FilterView` 读取：每个被 accept 的连接一次原子读取，与事件循环相同）；被拒绝的计入 `filtered`。因此
+  `AKIO_DEFAULT_SCHEDULING=work-stealing` 也适用于带过滤器的 listener。
 - **运行时修改的写超时**（`Engine::reload`、`Live::set_write_timeout`）：一轮结束时和写超时检查读取实时值，
   而不是构建时的 `Config`，所以打开的写超时会在已打开连接下一次留下待发数据的写入时生效，关闭的写超时会
   结束挂起的检查（之后再设置会重新启用）。
-- 轮次模式仍不支持：`set_threads`（以及 `set_listener_threads`）、UDP、io_uring、BPF 调度。
+- 工作窃取模式仍不支持：`set_threads`（以及 `set_listener_threads`）、UDP、io_uring、BPF 调度。
 
 代价：轮次循环没有增加工作。一轮结束时从 `Live` 读取写超时（一次 relaxed 原子读取），而不是从 `Config`；
-driver 的等待多读一个 `Option`；连接离开表时多读一个标志。在 gpu51 上测量（服务端 8 个 CPU，rounds 8 个
-worker 和 1 个 driver，loops 8 个线程；`skew-bench`，两个构建交替各两轮）：
+driver 的等待多读一个 `Option`；连接离开表时多读一个标志。在 gpu51 上测量（服务端 8 个 CPU，工作窃取 8 个
+worker 和 1 个 driver，事件循环 8 个线程；`skew-bench`，两个构建交替各两轮）：
 
 | 场景 | 修改前 | 修改后 |
 |---|---|---|
-| rounds，256 个连接，深度 1，无计算（类似 echo） | 817.7k~820.0k req/s，p99 478~483 µs | 817.5k~819.1k req/s，p99 480~481 µs |
-| rounds，12 个连接，深度 4，50 µs | 152.4k~152.6k req/s，p99 391 µs | 152.5k~152.7k req/s，p99 389~391 µs |
-| rounds，churn 512 个客户端 x 10 个请求（3 s） | 330.2k~330.3k req/s，33.0k 连接/s | 330.2k~330.8k req/s，33.0k~33.1k 连接/s |
-| loops，256 个连接，深度 1，无计算 | 888k~964k req/s | 919k~967k req/s |
+| 工作窃取，256 个连接，深度 1，无计算（类似 echo） | 817.7k~820.0k req/s，p99 478~483 µs | 817.5k~819.1k req/s，p99 480~481 µs |
+| 工作窃取，12 个连接，深度 4，50 µs | 152.4k~152.6k req/s，p99 391 µs | 152.5k~152.7k req/s，p99 389~391 µs |
+| 工作窃取，churn 512 个客户端 x 10 个请求（3 s） | 330.2k~330.3k req/s，33.0k 连接/s | 330.2k~330.8k req/s，33.0k~33.1k 连接/s |
+| 事件循环，256 个连接，深度 1，无计算 | 888k~964k req/s | 919k~967k req/s |
 
 均在噪声范围内：两种模式都没有退化。
 
 ### Unix 域拨号（2026-11-25）
 
-`Engine::dial_unix`（ADR-120）交给服务 `dial` 的 group；在 `AKIO_DEFAULT_SCHEDULING=rounds`
-下（或构建器 listener 设了 `Scheduling::Rounds` 时）它是一个 rounds group。该 group 没有实现
-`Group::dial_unix`，于是默认实现返回 `Unsupported`，rounds 模式下所有 Unix 拨号都失败。现在
-rounds group 像 loops 一样拨号 Unix 域套接字，而不是回退到 loops：这种连接只是普通的流套接字，
+`Engine::dial_unix`（ADR-120）交给服务 `dial` 的 group；在 `AKIO_DEFAULT_SCHEDULING=work-stealing`
+下（或构建器 listener 设了 `Scheduling::WorkStealing` 时）它是一个工作窃取 group。该 group 没有实现
+`Group::dial_unix`，于是默认实现返回 `Unsupported`，工作窃取模式下所有 Unix 拨号都失败。现在
+工作窃取 group 像事件循环一样拨号 Unix 域套接字，而不是回退到事件循环：这种连接只是普通的流套接字，
 driver 本来就负责每次拨号的连接阶段，连接建立后它的轮次与 TCP 连接没有区别。`RCmd::Dial`（以及
 driver 的连接中条目）带一个 `unix` 标志；连接完成后 driver 把 `UNIX_ADDR` 作为两端地址，而不向
 套接字询问（它没有 `SocketAddr`），`open` 对它跳过 `TCP_NODELAY` 和 `local_addr()`，与 epoll

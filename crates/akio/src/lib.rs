@@ -155,21 +155,22 @@ pub enum Scheduling {
     /// Thread-per-core (ADR-001, the default): each connection belongs to one I/O thread, which
     /// reads it, runs its handler inline and writes it, for the connection's whole life.
     #[default]
-    Loops,
+    EventLoops,
     /// A pool of workers, one per CPU, runs each round of a connection (read, handler, write) on
     /// whichever worker is free, one round of a connection at a time; a worker with nothing to
     /// run waits for readiness in `epoll_wait` itself (as Tokio's runtime does). Spreads load by work rather than by connection, at the cost of a hand-off per
     /// round. epoll/kqueue only (not io_uring or DPDK); TCP only (UDP listeners keep their
     /// loops); [`Engine::set_threads`] is refused. Listeners added, removed and drained at run
-    /// time and accept filters work as with loops (ADR-099).
-    Rounds(RoundsConfig),
+    /// time and accept filters work as with event loops (ADR-099).
+    WorkStealing(WorkStealingConfig),
 }
 
-/// Thread counts of [`Scheduling::Rounds`]. `#[non_exhaustive]`: start from
-/// `RoundsConfig::default()` (or [`RoundsConfig::new`]) and set fields; 0 picks the default.
+/// Thread counts of [`Scheduling::WorkStealing`]. `#[non_exhaustive]`: start from
+/// `WorkStealingConfig::default()` (or [`WorkStealingConfig::new`]) and set fields; 0 picks the
+/// default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct RoundsConfig {
+pub struct WorkStealingConfig {
     /// epoll/kqueue instances the workers poll (default: 1). Each listener socket and
     /// connection belongs to one of them; more than one rarely helps (ADR-104).
     pub pollers: usize,
@@ -177,15 +178,15 @@ pub struct RoundsConfig {
     pub workers: usize,
 }
 
-impl RoundsConfig {
+impl WorkStealingConfig {
     /// `pollers` pollers and `workers` workers (0: the default).
-    pub fn new(pollers: usize, workers: usize) -> RoundsConfig {
-        RoundsConfig { pollers, workers }
+    pub fn new(pollers: usize, workers: usize) -> WorkStealingConfig {
+        WorkStealingConfig { pollers, workers }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn epoll(self) -> akio_epoll::RoundsConfig {
-        akio_epoll::RoundsConfig::new(self.pollers, self.workers)
+    fn epoll(self) -> akio_epoll::WorkStealingConfig {
+        akio_epoll::WorkStealingConfig::new(self.pollers, self.workers)
     }
 }
 
@@ -435,10 +436,10 @@ impl Listener {
     /// shares the engine's I/O threads for its kind with the other such listeners
     /// ([`EngineBuilder::io_threads`], one per core by default), as one on io_uring does with
     /// the io_uring listeners of the same [`UringConfig`] ring options, and one with
-    /// [`Scheduling::Rounds`] shares the workers of the other rounds listeners with the same
-    /// [`RoundsConfig`]; UDP, datagram, DPDK and BPF-steered listeners always have their own
-    /// (one per core by default). With rounds the count itself is ignored, [`RoundsConfig`]
-    /// sizes the threads: it only keeps the listener's workers to itself.
+    /// [`Scheduling::WorkStealing`] shares the workers of the other work-stealing listeners with
+    /// the same [`WorkStealingConfig`]; UDP, datagram, DPDK and BPF-steered listeners always have
+    /// their own (one per core by default). With work stealing the count itself is ignored,
+    /// [`WorkStealingConfig`] sizes the threads: it only keeps the listener's workers to itself.
     #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = Some(n.max(1));
@@ -456,8 +457,9 @@ impl Listener {
     }
 
     /// Chooses how this listener's connections are scheduled onto threads (default:
-    /// [`Scheduling::Loops`], or what `AKIO_DEFAULT_SCHEDULING` says when this is not called:
-    /// `rounds` or `loops`, a test and diagnostic knob like `AKIO_DEFAULT_BACKEND`). ADR-104.
+    /// [`Scheduling::EventLoops`], or what `AKIO_DEFAULT_SCHEDULING` says when this is not
+    /// called: `work-stealing` or `event-loops`, a test and diagnostic knob like
+    /// `AKIO_DEFAULT_BACKEND`). ADR-104.
     #[must_use]
     pub fn scheduling(mut self, s: Scheduling) -> Self {
         self.scheduling = Some(s);
@@ -652,7 +654,7 @@ fn bind_one(
     let explicit_scheduling = l.scheduling.is_some();
     // The environment's default never overrides what the listener asked for explicitly
     // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s) and BPF steering need
-    // per-thread loops. (Rounds runs accept filters too.)
+    // per-thread loops. (Work stealing runs accept filters too.)
     let env_applies = matches!(l.backend, Backend::Epoll)
         && (l.backend_explicit || env_backend.is_none())
         && matches!(l.accel, Accel::None);
@@ -685,15 +687,15 @@ fn bind_one(
     }
     // ADR-130: a TCP listener on epoll/kqueue loops that did not ask for threads of its own
     // joins the shared group of its kind.
-    // Rounds listeners share a group per `RoundsConfig`.
-    let rounds = match &scheduling {
-        Scheduling::Rounds(rc) => Some(*rc),
-        Scheduling::Loops => None,
+    // Work-stealing listeners share a group per `WorkStealingConfig`.
+    let work_stealing = match &scheduling {
+        Scheduling::WorkStealing(rc) => Some(*rc),
+        Scheduling::EventLoops => None,
     };
     // io_uring listeners (per-thread loops) share a group per ring options.
     let backend_shares = match &l.backend {
         Backend::Epoll => true,
-        Backend::IoUring(_) => rounds.is_none(),
+        Backend::IoUring(_) => work_stealing.is_none(),
         #[cfg(feature = "dpdk")]
         Backend::Dpdk(_) => false,
     };
@@ -704,24 +706,24 @@ fn bind_one(
         && matches!(l.accel, Accel::None)
         && cfg!(any(target_os = "linux", target_os = "macos"));
     if shares {
-        let g = bind_shared(l, balance, rounds, cfg, pool, sharing)?;
+        let g = bind_shared(l, balance, work_stealing, cfg, pool, sharing)?;
         if filter.is_some() {
             g.set_filter(filter)?;
         }
         return Ok((g, Kind::Tcp, accel, balance, true));
     }
-    if l.udp && explicit_scheduling && scheduling != Scheduling::Loops {
+    if l.udp && explicit_scheduling && scheduling != Scheduling::EventLoops {
         log_or_stderr(
             akio_log::Level::Warn,
             format_args!(
-                "rounds scheduling is TCP-only; UDP listener {} keeps its loops",
+                "work-stealing scheduling is TCP-only; UDP listener {} keeps its event loops",
                 l.addr
             ),
         );
     }
     let (group, kind) = match &scheduling {
-        Scheduling::Rounds(rc) if !l.udp && l.datagrams.is_none() => {
-            (bind_rounds(l, *rc, cfg, pool)?, Kind::Tcp)
+        Scheduling::WorkStealing(rc) if !l.udp && l.datagrams.is_none() => {
+            (bind_work_stealing(l, *rc, cfg, pool)?, Kind::Tcp)
         }
         _ => bind_group(l, cfg, pool)?,
     };
@@ -736,7 +738,7 @@ fn bind_one(
 fn bind_shared(
     l: Listener,
     balance: bool,
-    rounds: Option<RoundsConfig>,
+    work_stealing: Option<WorkStealingConfig>,
     cfg: &Config,
     pool: &Arc<Pool>,
     sharing: Sharing<'_>,
@@ -768,23 +770,24 @@ fn bind_shared(
     };
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let key = shared::ShareKey {
-        // Accept-time balancing is a loops feature; rounds listeners share by thread counts.
-        balance: balance && rounds.is_none(),
-        rounds: rounds.map(|rc| rc.epoll().resolved()),
+        // Accept-time balancing is an event-loops feature; work-stealing listeners share by thread
+        // counts.
+        balance: balance && work_stealing.is_none(),
+        work_stealing: work_stealing.map(|rc| rc.epoll().resolved()),
         uring: uring.as_ref().map(|u| (u.entries, u.sqpoll)),
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let key = shared::ShareKey {
         balance,
-        rounds: None,
+        work_stealing: None,
         uring: None,
     };
     let threads = sharing.threads;
     let group = sharing.groups.get_or_make(key, || {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            let g: Arc<dyn Group> = match (rounds, &uring) {
-                (Some(rc), _) => Arc::new(akio_epoll::RoundsGroup::shared(
+            let g: Arc<dyn Group> = match (work_stealing, &uring) {
+                (Some(rc), _) => Arc::new(akio_epoll::WorkStealingGroup::shared(
                     rc.epoll(),
                     cfg.clone(),
                     pool.clone(),
@@ -810,7 +813,7 @@ fn bind_shared(
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = (threads, pool, rounds, uring);
+            let _ = (threads, pool, work_stealing, uring);
             Err(unsupported("the epoll/kqueue backend on this platform"))
         }
     })?;
@@ -849,10 +852,10 @@ fn uring_or_epoll(u: &UringConfig) -> io::Result<Option<UringConfig>> {
     }
 }
 
-/// Binds a TCP listener with [`Scheduling::Rounds`] (ADR-104).
-fn bind_rounds(
+/// Binds a TCP listener with [`Scheduling::WorkStealing`] (ADR-104).
+fn bind_work_stealing(
     l: Listener,
-    rc: RoundsConfig,
+    rc: WorkStealingConfig,
     cfg: &Config,
     pool: &Arc<Pool>,
 ) -> io::Result<Box<dyn Group>> {
@@ -860,7 +863,7 @@ fn bind_rounds(
         if l.backend_explicit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "rounds scheduling runs on epoll/kqueue, not io_uring",
+                "work-stealing scheduling runs on epoll/kqueue, not io_uring",
             ));
         }
     }
@@ -868,7 +871,7 @@ fn bind_rounds(
     if matches!(l.backend, Backend::Dpdk(_)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "rounds scheduling runs on epoll/kqueue, not DPDK",
+            "work-stealing scheduling runs on epoll/kqueue, not DPDK",
         ));
     }
     if l.unix_mode.is_some() && !matches!(l.unix, Some(UnixSpec::Path(_))) {
@@ -890,18 +893,22 @@ fn bind_rounds(
                     UnixSpec::Path(path) => listen_unix(&path, cfg.backlog, l.unix_mode)?,
                     UnixSpec::Std(u) => std::net::TcpListener::from(std::os::fd::OwnedFd::from(u)),
                 };
-                akio_epoll::RoundsGroup::bind_unix_listener(listener, acceptor, rc, cfg, pool)?
+                akio_epoll::WorkStealingGroup::bind_unix_listener(
+                    listener, acceptor, rc, cfg, pool,
+                )?
             }
             (None, Some(listener)) => {
-                akio_epoll::RoundsGroup::bind_listener(listener, acceptor, rc, cfg, pool)?
+                akio_epoll::WorkStealingGroup::bind_listener(listener, acceptor, rc, cfg, pool)?
             }
-            (None, None) => akio_epoll::RoundsGroup::bind(Some((l.addr, acceptor)), rc, cfg, pool)?,
+            (None, None) => {
+                akio_epoll::WorkStealingGroup::bind(Some((l.addr, acceptor)), rc, cfg, pool)?
+            }
         }))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (rc, acceptor, cfg, pool);
-        Err(unsupported("rounds scheduling on this platform"))
+        Err(unsupported("work-stealing scheduling on this platform"))
     }
 }
 
@@ -1075,7 +1082,7 @@ impl EngineBuilder {
     /// continuing from group to group and starting over when there are more threads than CPUs;
     /// threads added later by [`Engine::set_threads`] and groups of listeners added at run time
     /// continue the round. Groups that NUMA placement ([`numa`](Self::numa)) or BPF steering
-    /// with [`EbpfConfig::pin_threads`] already pin are left as they are, and rounds workers
+    /// with [`EbpfConfig::pin_threads`] already pin are left as they are, and work-stealing workers
     /// are not pinned. Linux only (elsewhere it does nothing).
     ///
     /// With as many busy I/O threads as CPUs (one shared group sized to the CPUs, say), the
@@ -1702,13 +1709,13 @@ fn env_default_scheduling() -> Option<Scheduling> {
 
 fn parse_default_scheduling(v: Option<&str>) -> Option<Scheduling> {
     match v? {
-        "rounds" => Some(Scheduling::Rounds(RoundsConfig::default())),
-        "" | "loops" => None,
+        "work-stealing" => Some(Scheduling::WorkStealing(WorkStealingConfig::default())),
+        "" | "event-loops" => None,
         other => {
             log_or_stderr(
                 akio_log::Level::Warn,
                 format_args!(
-                    "AKIO_DEFAULT_SCHEDULING={other:?} is not `rounds` or `loops`; ignored"
+                    "AKIO_DEFAULT_SCHEDULING={other:?} is not `work-stealing` or `event-loops`; ignored"
                 ),
             );
             None
@@ -2563,7 +2570,7 @@ impl Engine {
     /// bounds this dial's TCP handshake in place of [`Config::connect_timeout`] (shorter or
     /// longer), so that each upstream of a proxy is dialed within its own timeout on one engine;
     /// past it `on_error` gets `TimedOut`. Every TCP backend honours it (epoll/kqueue loops,
-    /// rounds scheduling, io_uring, DPDK, where `None` means its stack's own 10 s).
+    /// work-stealing scheduling, io_uring, DPDK, where `None` means its stack's own 10 s).
     /// [`dns::HappyEyeballs`] dials each attempt with it.
     ///
     /// ```no_run

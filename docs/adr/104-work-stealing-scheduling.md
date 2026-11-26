@@ -1,10 +1,24 @@
-# ADR-104: Two scheduling modes for TCP listeners: per-thread loops and rounds on a worker pool
+# ADR-104: Two scheduling modes for TCP listeners: event loops and work stealing on a worker pool
 
-English | [简体中文](104-rounds-scheduling.zh-CN.md)
+English | [简体中文](104-work-stealing-scheduling.zh-CN.md)
 
 Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements;
 second revision 2026-11-24: accepts and closes on the workers, fewer wake-ups at light load;
-third revision 2026-11-24: run-time listeners, accept filters, a live write timeout)
+third revision 2026-11-24: run-time listeners, accept filters, a live write timeout; renamed
+2026-11-26: `Scheduling::Loops` is `EventLoops`, `Scheduling::Rounds` is `WorkStealing`)
+
+## Update (2026-11-26): the modes renamed
+
+The two modes were first called `Loops` and `Rounds`. They are now `Scheduling::EventLoops`
+(still the default) and `Scheduling::WorkStealing(WorkStealingConfig)`. With them,
+`RoundsConfig` is now `WorkStealingConfig`, `RoundsGroup` is `WorkStealingGroup`, the module
+`akio_epoll::rounds` is `akio_epoll::work_stealing`, the `AKIO_ROUNDS_*` variables are
+`AKIO_WORK_STEALING_*`, and `AKIO_DEFAULT_SCHEDULING` takes `work-stealing` or `event-loops`.
+"Rounds" named the internal unit of work, a round of a connection, not what a user chooses:
+connections bound to one thread each, or a pool of workers that steal work from each other. No
+release had the old names, so there are no aliases. A *round* below still means one round of a
+connection (read, handler, write); the measurements keep the names their runs had where they are
+labels of the time (the HttpArena entries).
 
 ## Context
 
@@ -26,16 +40,16 @@ handler, write) runs on whichever worker is idle.
 
 ## Decision
 
-1. **A listener chooses its scheduling**: `akio::Scheduling::Loops` (the default, ADR-001
-   unchanged) or `Scheduling::Rounds(RoundsConfig)`. `Listener::scheduling` sets it; the
-   environment variable `AKIO_DEFAULT_SCHEDULING=rounds` sets it for listeners that did not (a
-   test knob, like `AKIO_DEFAULT_BACKEND`, ADR-029), except where the listener asked for
-   something only per-thread loops do: io_uring (its own choice or `AKIO_DEFAULT_BACKEND`'s) or
-   BPF steering (`Accel::Ebpf`).
-2. **Rounds mode** (`akio-epoll`, epoll on Linux and kqueue on macOS):
+1. **A listener chooses its scheduling**: `akio::Scheduling::EventLoops` (the default, ADR-001
+   unchanged) or `Scheduling::WorkStealing(WorkStealingConfig)`. `Listener::scheduling` sets
+   it; the environment variable `AKIO_DEFAULT_SCHEDULING=work-stealing` sets it for listeners
+   that did not (a test knob, like `AKIO_DEFAULT_BACKEND`, ADR-029), except where the listener
+   asked for something only event loops do: io_uring (its own choice or
+   `AKIO_DEFAULT_BACKEND`'s) or BPF steering (`Accel::Ebpf`).
+2. **Work-stealing mode** (`akio-epoll`, epoll on Linux and kqueue on macOS):
    - **Drivers, polled by the workers** (as Tokio's multi-thread runtime). There are no poller
-     threads: each epoll/kqueue instance (`RoundsConfig::pollers`, default 1) is a *driver*
-     behind a lock. A worker with nothing to run takes a free driver and waits in its
+     threads: each epoll/kqueue instance (`WorkStealingConfig::pollers`, default 1) is a
+     *driver* behind a lock. A worker with nothing to run takes a free driver and waits in its
      `epoll_wait`; the connections it finds ready go to its own queue, and parked workers are
      woken to steal them. A busy worker polls the drivers without blocking every 61 rounds
      (Tokio's `event_interval`), so under load events are collected with no thread waking
@@ -43,7 +57,7 @@ handler, write) runs on whichever worker is idle.
      accepts, reads, writes or runs user code. A connection is registered once,
      edge-triggered for reads and writes (`EPOLLET` / `EV_CLEAR`), so a round makes no
      `epoll_ctl`. Dedicated poller threads (the first prototype) remain behind
-     `AKIO_ROUNDS_POLLERS=dedicated` for comparison; they lose (see Measurements).
+     `AKIO_WORK_STEALING_POLLERS=dedicated` for comparison; they lose (see Measurements).
    - **Accepting and closing are spread over the workers** (2026-11-24, second revision). On
      Linux a listener has one `SO_REUSEPORT` socket per worker (elsewhere one, cloned per
      driver), registered edge-triggered with a driver. Its readiness queues an *accept job* on
@@ -63,11 +77,11 @@ handler, write) runs on whichever worker is idle.
      closes the sockets under their job's lock, so every connection an accept job opened is in
      the table when `on_shutdown` is sent, and later ones see the drain flag; a one-shot flag per
      connection runs `on_shutdown` once whoever asks first.
-   - **Workers** (`RoundsConfig::workers`, 0 = auto: one per CPU) run rounds. A round of a
-     connection runs `on_open` if it has not run, the `spawn_blocking` completions posted to it,
-     flushes its queue, reads until the socket is drained (at most 16 reads, then it yields to
-     the back of the queue), calls `on_data` for each read with the output corked, and writes
-     what the round queued in one go.
+   - **Workers** (`WorkStealingConfig::workers`, 0 = auto: one per CPU) run rounds. A round of
+     a connection runs `on_open` if it has not run, the `spawn_blocking` completions posted to
+     it, flushes its queue, reads until the socket is drained (at most 16 reads, then it yields
+     to the back of the queue), calls `on_data` for each read with the output corked, and
+     writes what the round queued in one go.
    - **Order per connection**: each connection folds events into a pending bit set and has a
      `scheduled` flag; only the poster that sets the flag queues the connection, so at most one
      worker runs it at a time, and a round started after an event sees it. This is what lets
@@ -96,10 +110,10 @@ handler, write) runs on whichever worker is idle.
    TLS offload, listeners added, removed and drained at run time and accept filters (ADR-099;
    see the third revision below). Every protocol crate runs unmodified: their thread-local
    caches are only borrowed within one callback.
-4. **Not in rounds mode** (prototype scope): UDP listeners (they keep their loops; a warning is
-   logged), io_uring (`Backend::IoUring` with rounds is rejected), `set_threads` (returns
-   `Unsupported`), BPF steering (it steers to pollers, which is pointless). The workers are one
-   pool per listener group.
+4. **Not in work-stealing mode** (prototype scope): UDP listeners (they keep their event loops;
+   a warning is logged), io_uring (`Backend::IoUring` with work stealing is rejected),
+   `set_threads` (returns `Unsupported`), BPF steering (it steers to pollers, which is
+   pointless). The workers are one pool per listener group.
 
 ## Consequences
 
@@ -107,29 +121,30 @@ handler, write) runs on whichever worker is idle.
   but the other connections of "its" poller go to other workers.
 - Every round costs a hand-off: a queue push by the poller, possibly a wake-up of a parked
   worker, and the connection's state moving between cores. For many small, evenly spread
-  connections, per-thread loops stay the faster choice; that is why they stay the default.
+  connections, event loops stay the faster choice; that is why they stay the default.
 - Handler state may be touched by different threads in successive rounds (never at once), so a
   handler must not rely on thread-locals across callbacks. None of ours does.
 
 ## Measurements
 
-gpu51 (Ryzen 7 7800X3D, Linux 7.0), 2026-11-24. Server on CPUs 0-3,8-11 (8 logical CPUs; loops:
-8 threads; rounds: 8 workers, 1 driver), clients on the other 8. 10 s per case; two or three
-rounds, which agree within a few percent for rounds and vary up to 20% for loops (the kernel's
-hash differs per run). "CPU" is server CPU seconds per run (about 88 is all 8 CPUs).
+gpu51 (Ryzen 7 7800X3D, Linux 7.0), 2026-11-24. Server on CPUs 0-3,8-11 (8 logical CPUs; event
+loops: 8 threads; work stealing: 8 workers, 1 driver), clients on the other 8. 10 s per case;
+two or three rounds, which agree within a few percent for work stealing and vary up to 20% for
+event loops (the kernel's hash differs per run). "CPU" is server CPU seconds per run (about 88
+is all 8 CPUs).
 
 `skew-bench` (CPU-bound requests; `conns`, in-flight `depth`, `work` per request):
 
-| Case | Loops | Rounds | Requests per connection, min-max | CPU |
+| Case | Event loops | Work stealing | Requests per connection, min-max | CPU |
 |---|---|---|---|---|
-| 12 conns, depth 4, 50 µs | 114k-132k/s, p99 0.85-1.27 ms | **151k/s, p99 0.39 ms** | loops 32k-189k, rounds 126k-126k | 66-77 → 88 |
-| 8 conns, depth 8, 100 µs | 39k-59k/s, p99 1.6-3.2 ms | **78k/s, p99 0.82 ms** | loops 25k-98k, rounds 98k-98k | 44-66 → 87 |
-| 64 conns (4 at 500 µs, rest 20 µs), depth 2 | 210k-258k/s, p99 2.4-2.8 ms | 217k/s, **p99 1.5 ms** | loops 4k-134k, rounds 14k-35k | 88 both |
-| 256 conns, depth 1, 10 µs | **481k/s**, p99 1.1 ms | 450k/s (-6%), **p99 0.92 ms** | loops 11k-26k, rounds 17.5k-17.6k | 87 / 85 |
+| 12 conns, depth 4, 50 µs | 114k-132k/s, p99 0.85-1.27 ms | **151k/s, p99 0.39 ms** | event loops 32k-189k, work stealing 126k-126k | 66-77 → 88 |
+| 8 conns, depth 8, 100 µs | 39k-59k/s, p99 1.6-3.2 ms | **78k/s, p99 0.82 ms** | event loops 25k-98k, work stealing 98k-98k | 44-66 → 87 |
+| 64 conns (4 at 500 µs, rest 20 µs), depth 2 | 210k-258k/s, p99 2.4-2.8 ms | 217k/s, **p99 1.5 ms** | event loops 4k-134k, work stealing 14k-35k | 88 both |
+| 256 conns, depth 1, 10 µs | **481k/s**, p99 1.1 ms | 450k/s (-6%), **p99 0.92 ms** | event loops 11k-26k, work stealing 17.5k-17.6k | 87 / 85 |
 
 TCP echo (`echo-bench`, 8 client threads; `bench-server`):
 
-| Case | Loops | Rounds | CPU |
+| Case | Event loops | Work stealing | CPU |
 |---|---|---|---|
 | 64 conns x 64 B | 840k-915k/s | **983k/s** | 57-62 → 76 |
 | 1024 conns x 64 B | **1.01M-1.09M/s** | 978k-988k/s (-6%) | 67-72 → 71 |
@@ -151,20 +166,22 @@ What was tried on the way, same host:
 
 Conclusions:
 
-- Where loops leave CPUs idle because of how the kernel spread the connections (few connections
-  per thread), rounds use all of them: 15-100% more throughput and tails 2-4x shorter.
-- Where loops already saturate every CPU with evenly spread connections, rounds cost about 6% of
-  throughput (the hand-off per round), with equal or shorter tails.
-- So loops stay the default; rounds are the choice for few or uneven connections.
+- Where event loops leave CPUs idle because of how the kernel spread the connections (few
+  connections per thread), work stealing uses all of them: 15-100% more throughput and tails
+  2-4x shorter.
+- Where event loops already saturate every CPU with evenly spread connections, work stealing
+  costs about 6% of throughput (the hand-off per round), with equal or shorter tails.
+- So event loops stay the default; work stealing is the choice for few or uneven connections.
 
 ### HttpArena
 
 gpu51, unified batch, 2026-11-24 09:16-11:43, after the stop and panic fixes. Each profile ran
-twice, best of three runs each, and the two are averaged. Rounds use 8 workers and 1 driver. Two
-pairs: `akio-rounds` against `akio-loops` (the rounds branch alone, same source), and
-`akio-all-rounds` against `akio-all` (every merged optimisation, only the scheduling differs).
+twice, best of three runs each, and the two are averaged. Work stealing uses 8 workers and 1
+driver. Two pairs (HttpArena entries named as they were then): `akio-rounds` against
+`akio-loops` (the work-stealing branch alone, same source), and `akio-all-rounds` against
+`akio-all` (every merged optimisation, only the scheduling differs).
 
-| Profile | Loops | Rounds | Change |
+| Profile | Event loops | Work stealing | Change |
 |---|---|---|---|
 | baseline 4096c | 1.083M | 1.038M | -4.1% |
 | pipelined 4096c | 7.15M | 6.95M | -2.8% |
@@ -183,39 +200,40 @@ Fixed-rate profiles:
 
 - latency-10k: same p99 (about 0.05 ms), but 17.2 µs of CPU per request against 9.5 µs. The likely cause: an idle
   worker parks for at most 10 ms and the driver wakes it through the eventfd, so a light load pays
-  for wakeups that loops do not have. (Measured later: the cause was a worker woken per request,
-  not the parking; see the second revision.)
-- latency-1m: p99 7.8-10.4 ms against 3.3-4.4 ms for `akio-all` (loops with the ADR-105 tail
-  fixes), with slightly less CPU per request (7.5 against 7.7 µs). Main without those fixes had
-  0.9-1.1 s.
+  for wakeups that event loops do not have. (Measured later: the cause was a worker woken per
+  request, not the parking; see the second revision.)
+- latency-1m: p99 7.8-10.4 ms against 3.3-4.4 ms for `akio-all` (event loops with the ADR-105
+  tail fixes), with slightly less CPU per request (7.5 against 7.7 µs). Main without those fixes
+  had 0.9-1.1 s.
 - 8gbit: same throughput, 24 µs of CPU per request against 18 µs.
 
-echo-ws-limited at 512 connections used only 5.7 of 8 CPUs under rounds. That profile reconnects
-constantly, and every accept, registration and close goes through the one driver, so the driver
-becomes the bottleneck when connections are short-lived.
+echo-ws-limited at 512 connections used only 5.7 of 8 CPUs under work stealing. That profile
+reconnects constantly, and every accept, registration and close goes through the one driver, so
+the driver becomes the bottleneck when connections are short-lived.
 
 So, on real HTTP traffic with evenly spread connections:
 
-- Rounds win where a request holds a thread for long and the load is uneven (async, +12%), and tie
-  on h2c and gRPC.
-- They lose 3-10% on many small requests over many connections, up to 32% when connections are
-  short-lived, and spend more CPU at light load.
-- Loops stay the default. Next for rounds: take accept and close off the driver, and cut the
-  wake-ups at light load (done in the second revision below; HttpArena not rerun yet).
+- Work stealing wins where a request holds a thread for long and the load is uneven (async,
+  +12%), and ties on h2c and gRPC.
+- It loses 3-10% on many small requests over many connections, up to 32% when connections are
+  short-lived, and spends more CPU at light load.
+- Event loops stay the default. Next for work stealing: take accept and close off the driver,
+  and cut the wake-ups at light load (done in the second revision below; HttpArena not rerun
+  yet).
 
 ### Second revision: accepts and closes on the workers, fewer wake-ups (2026-11-24)
 
-gpu51 as above (server on 8 CPUs; loops 8 threads; rounds 8 workers, 1 driver), two rounds of
-every case, `skew-bench` and `echo-bench`. "main" is rounds before this revision, "new" after it.
-Server CPU is read from `/proc` around each run. The short-lived cases run 5 s each and wait
-until the kernel's conntrack table has room first: at 200k connections a second it fills up
-(2M entries, 120 s each in TIME_WAIT) and then drops SYNs, which had made earlier churn runs
-meaningless for whichever mode ran next.
+gpu51 as above (server on 8 CPUs; event loops 8 threads; work stealing 8 workers, 1 driver), two
+rounds of every case, `skew-bench` and `echo-bench`. "main" is work stealing before this
+revision, "new" after it. Server CPU is read from `/proc` around each run. The short-lived cases
+run 5 s each and wait until the kernel's conntrack table has room first: at 200k connections a
+second it fills up (2M entries, 120 s each in TIME_WAIT) and then drops SYNs, which had made
+earlier churn runs meaningless for whichever mode ran next.
 
 **Short-lived connections** (`skew-bench churn`: each client connects, sends N 16-byte requests
 one at a time, closes, starts over):
 
-| Case | Loops | Rounds main | Rounds new | Server CPU s: loops / main / new |
+| Case | Event loops | Work stealing main | Work stealing new | Server CPU s: event loops / main / new |
 |---|---|---|---|---|
 | 512 clients x 10 requests | 713k-720k req/s | 513k-519k (-28%) | **693k-712k** (-2%) | 46-47 / 36 / 47-48 |
 | 512 clients x 1 request | 205k-206k conn/s | 102k-103k (-50%) | **207k-208k** (+1%) | 43 / 22 / 47-48 |
@@ -224,21 +242,21 @@ one at a time, closes, starts over):
 **Fixed low rate** (`skew-bench rate`: 1024 open connections, requests at a fixed total rate,
 16-byte echo; CPU per request = server CPU / requests sent):
 
-| Case | Loops | Rounds main | Rounds new |
+| Case | Event loops | Work stealing main | Work stealing new |
 |---|---|---|---|
 | 10k req/s: CPU per request | 9.1 µs | 16.3 µs | **11.3 µs** |
 | 10k req/s: context switches per request | 1.11 | 2.27 | **1.18** |
 | 10k req/s: p50 / p99 | 17 / 20 µs | 18 / 20 µs | 17 / 19-20 µs |
 | 50k req/s: CPU per request | 8.7 µs | 15.6 µs | **9.9 µs** |
 
-Where the light-load CPU went (main, 10k req/s, `AKIO_ROUNDS_TRACE=1` and `perf stat` on the
-server): per second 10,001 rounds, **10,001 unparks and 10,001 parks**, 19.1k futex calls, 25.2k
-`epoll_wait` calls, 19.5k context switches (loops: 9.5k context switches, 9.5k `epoll_wait`, no
-futex). Every request woke a second worker: the worker blocked in `epoll_wait` found one
-connection, queued it on its own queue, and the submit woke a parked worker "to steal it"; then it
-ran the round itself, the woken worker found nothing, spun, took the driver and blocked in
-`epoll_wait`, and the first one parked. Two context switches and four extra syscalls per
-request; the 10 ms park timeouts (700 wake-ups a second for 7 idle workers) were a small part.
+Where the light-load CPU went (main, 10k req/s, `AKIO_WORK_STEALING_TRACE=1` and `perf stat` on
+the server): per second 10,001 rounds, **10,001 unparks and 10,001 parks**, 19.1k futex calls,
+25.2k `epoll_wait` calls, 19.5k context switches (event loops: 9.5k context switches, 9.5k
+`epoll_wait`, no futex). Every request woke a second worker: the worker blocked in `epoll_wait`
+found one connection, queued it on its own queue, and the submit woke a parked worker "to steal
+it"; then it ran the round itself, the woken worker found nothing, spun, took the driver and
+blocked in `epoll_wait`, and the first one parked. Two context switches and four extra syscalls
+per request; the 10 ms park timeouts (700 wake-ups a second for 7 idle workers) were a small part.
 
 With only the first fix (a poll wakes no one for the job its worker runs next): 0 unparks, 700
 parks a second (the 10 ms timeouts), 10.7k context switches, 1.10 s of server CPU over 9 s against
@@ -252,7 +270,7 @@ costs about 0.6 µs per request at light load and is worth 7% on echo, so it sta
 
 **Regression checks** (same runs):
 
-| Case | Loops | Rounds main | Rounds new |
+| Case | Event loops | Work stealing main | Work stealing new |
 |---|---|---|---|
 | skew 12 conns, depth 4, 50 µs | 114k-132k/s, p99 0.84 ms | 151k/s, p99 0.39 ms | 151k/s, p99 0.39 ms |
 | skew 8 conns, depth 8, 100 µs | 30k-49k/s, p99 3.2 ms | 78.4k/s, p99 0.82 ms | 78.4k/s, p99 0.82 ms |
@@ -264,17 +282,18 @@ costs about 0.6 µs per request at light load and is worth 7% on echo, so it sta
 
 Conclusions of the revision:
 
-- With accepts and closes off the driver, short-lived connections use every CPU and match loops
-  (-2% to +19%) instead of losing 28-50%.
+- With accepts and closes off the driver, short-lived connections use every CPU and match event
+  loops (-2% to +19%) instead of losing 28-50%.
 - At light load a round no longer wakes a second thread: 11.3 µs of CPU per request at 10k req/s
-  instead of 16.3 (loops 9.1), with the same latency. The rest of the gap is the non-blocking
-  poll before spinning, the spin itself, and the queue and table locks.
+  instead of 16.3 (event loops 9.1), with the same latency. The rest of the gap is the
+  non-blocking poll before spinning, the spin itself, and the queue and table locks.
 - Few or uneven connections and h2c-like work are unchanged; echo over many connections loses
   another 2-3%.
 
 ### Third revision: run-time listeners, accept filters, a live write timeout (2026-11-24)
 
-Rounds listeners now do what loops listeners do for ADR-099 and ADR-108; no API change.
+Work-stealing listeners now do what event-loop listeners do for ADR-099 and ADR-108; no API
+change.
 
 - **Removing a listener** (`Engine::remove_listener` / `shutdown_listener`, the group's
   `stop_listening`): the group closes every listening socket itself, on the calling thread,
@@ -290,46 +309,48 @@ Rounds listeners now do what loops listeners do for ADR-099 and ADR-108; no API 
   closed (`Duration::ZERO`: at the next poll); with `exit` (every listener but the builder
   listener whose threads serve `dial`) a driver finishes once its connection table is empty (a
   connection leaving the table wakes it, as during a shutdown), and the group is `finished` once
-  every driver is. The engine then reaps it like a loops group: it joins the workers and takes
-  the workers' and drivers' rows out of the metrics. A removed listener with open connections
-  keeps its place under `max_listeners`. The builder listener that serves `dial` keeps its
-  workers and drivers until shutdown.
+  every driver is. The engine then reaps it like an event-loops group: it joins the workers and
+  takes the workers' and drivers' rows out of the metrics. A removed listener with open
+  connections keeps its place under `max_listeners`. The builder listener that serves `dial`
+  keeps its workers and drivers until shutdown.
 - **Accept filters**: an accept job runs the group's filter (`FilterCell`, read through a
-  `FilterView` kept under the job's lock: one atomic load per accepted connection, as in loops)
-  before it opens a connection; refused ones count in `filtered`. `AKIO_DEFAULT_SCHEDULING=rounds`
-  therefore applies to listeners with a filter too.
+  `FilterView` kept under the job's lock: one atomic load per accepted connection, as with event
+  loops) before it opens a connection; refused ones count in `filtered`.
+  `AKIO_DEFAULT_SCHEDULING=work-stealing` therefore applies to listeners with a filter too.
 - **Write timeout changed at run time** (`Engine::reload`, `Live::set_write_timeout`): the end
   of a round and the write-timeout check read the live value instead of the build-time
   `Config`, so a timeout turned on applies to open connections at their next write that leaves
   output queued, and one turned off ends the pending checks (and a later value arms them again).
-- Still not in rounds mode: `set_threads` (and `set_listener_threads`), UDP, io_uring, BPF
-  steering.
+- Still not in work-stealing mode: `set_threads` (and `set_listener_threads`), UDP, io_uring,
+  BPF steering.
 
 Cost: the round loop gains no work. The end of a round reads the write timeout from `Live` (a
 relaxed atomic load) instead of from `Config`; a driver's wait reads one more `Option`; a
-connection leaving the table reads one more flag. Measured on gpu51 (server on 8 CPUs, rounds 8
-workers and 1 driver, loops 8 threads; `skew-bench`, two alternating rounds of each build):
+connection leaving the table reads one more flag. Measured on gpu51 (server on 8 CPUs, work
+stealing 8 workers and 1 driver, event loops 8 threads; `skew-bench`, two alternating rounds of
+each build):
 
 | Case | Before | After |
 |---|---|---|
-| rounds, 256 conns, depth 1, no work (echo-like) | 817.7k-820.0k req/s, p99 478-483 µs | 817.5k-819.1k req/s, p99 480-481 µs |
-| rounds, 12 conns, depth 4, 50 µs | 152.4k-152.6k req/s, p99 391 µs | 152.5k-152.7k req/s, p99 389-391 µs |
-| rounds, churn 512 clients x 10 requests (3 s) | 330.2k-330.3k req/s, 33.0k conn/s | 330.2k-330.8k req/s, 33.0k-33.1k conn/s |
-| loops, 256 conns, depth 1, no work | 888k-964k req/s | 919k-967k req/s |
+| work stealing, 256 conns, depth 1, no work (echo-like) | 817.7k-820.0k req/s, p99 478-483 µs | 817.5k-819.1k req/s, p99 480-481 µs |
+| work stealing, 12 conns, depth 4, 50 µs | 152.4k-152.6k req/s, p99 391 µs | 152.5k-152.7k req/s, p99 389-391 µs |
+| work stealing, churn 512 clients x 10 requests (3 s) | 330.2k-330.3k req/s, 33.0k conn/s | 330.2k-330.8k req/s, 33.0k-33.1k conn/s |
+| event loops, 256 conns, depth 1, no work | 888k-964k req/s | 919k-967k req/s |
 
 Within noise: no regression in either mode.
 
 ### Unix-domain dials (2026-11-25)
 
 `Engine::dial_unix` (ADR-120) goes to the group that serves `dial`, which under
-`AKIO_DEFAULT_SCHEDULING=rounds` (or a builder listener with `Scheduling::Rounds`) is a rounds
-group. That group did not implement `Group::dial_unix`, so the default answered `Unsupported`
-and every Unix dial failed in rounds mode. A rounds group now dials a Unix-domain socket as the
-loops do, rather than falling back to loops: the connection is an ordinary stream socket, the
-driver already owns the connect phase of every dial, and once connected the connection's rounds
-are no different from a TCP one's. `RCmd::Dial` (and the driver's connecting entry) carries a
-`unix` flag; once the connect completes the driver takes `UNIX_ADDR` as both addresses instead of
-asking the socket (which has no `SocketAddr`), and `open` skips `TCP_NODELAY` and
-`local_addr()` for it, exactly as the epoll loop's `open` does. Bytes, connection reuse, a cut
-reported as an error, the connect timeout and shutdown behave as for a dialed TCP connection. The
-round loop is unchanged; accepted connections pass `None` for the new `open` argument.
+`AKIO_DEFAULT_SCHEDULING=work-stealing` (or a builder listener with `Scheduling::WorkStealing`)
+is a work-stealing group. That group did not implement `Group::dial_unix`, so the default
+answered `Unsupported` and every Unix dial failed in work-stealing mode. A work-stealing group
+now dials a Unix-domain socket as the event loops do, rather than falling back to event loops:
+the connection is an ordinary stream socket, the driver already owns the connect phase of every
+dial, and once connected the connection's rounds are no different from a TCP one's. `RCmd::Dial`
+(and the driver's connecting entry) carries a `unix` flag; once the connect completes the driver
+takes `UNIX_ADDR` as both addresses instead of asking the socket (which has no `SocketAddr`), and
+`open` skips `TCP_NODELAY` and `local_addr()` for it, exactly as the epoll loop's `open` does.
+Bytes, connection reuse, a cut reported as an error, the connect timeout and shutdown behave as
+for a dialed TCP connection. The round loop is unchanged; accepted connections pass `None` for
+the new `open` argument.

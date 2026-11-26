@@ -106,8 +106,8 @@ fn quick() -> Config {
 
 #[test]
 fn io_threads_get_one_cpu_each_in_turn() {
-    if common::rounds() || std::env::var("AKIO_DEFAULT_BACKEND").is_ok() {
-        return; // rounds workers are not pinned; another default backend changes the groups
+    if common::work_stealing() || std::env::var("AKIO_DEFAULT_BACKEND").is_ok() {
+        return; // work-stealing workers are not pinned; another default backend changes the groups
     }
     let cpus = allowed();
     if cpus.len() < 2 {

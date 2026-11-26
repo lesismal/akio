@@ -225,8 +225,9 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     assert_eq!(infos[0].local_addr, first);
     for info in &infos[1..] {
         assert_ne!(info.local_addr.port(), 0);
-        if !common::rounds() {
-            // Rounds: the workers are sized by `RoundsConfig`, not `threads` (ADR-104).
+        if !common::work_stealing() {
+            // Work stealing: the workers are sized by `WorkStealingConfig`, not `threads`
+            // (ADR-104).
             assert_eq!(info.threads, 2);
         }
         assert!(!info.udp);
@@ -236,9 +237,9 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     // The builder's view is unchanged.
     assert_eq!(e.local_addrs(), vec![first]);
     echo_once(&mut a, b"after");
-    // A runtime listener's thread count changes by id (loops only: rounds has no
-    // `set_threads`, ADR-104).
-    if !common::rounds() {
+    // A runtime listener's thread count changes by id (event loops only: work stealing
+    // has no `set_threads`, ADR-104).
+    if !common::work_stealing() {
         e.set_listener_threads(ids[0], 3).unwrap();
         assert_eq!(e.listeners()[1].threads, 3);
         for _ in 0..8 {
@@ -655,9 +656,9 @@ fn the_filter_refuses_and_accepts_and_is_swapped_at_run_time() {
     for _ in 0..10 {
         assert!(served(addr));
     }
-    // Threads added later take the current filter (rounds cannot add threads, ADR-104).
+    // Threads added later take the current filter (work stealing cannot add threads, ADR-104).
     e.set_listener_filter(id, |_| false).unwrap();
-    if !common::rounds() {
+    if !common::work_stealing() {
         e.set_listener_threads(id, 4).unwrap();
     }
     for _ in 0..8 {

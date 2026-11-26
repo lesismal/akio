@@ -10,10 +10,24 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：调度模式改名：`Scheduling::Rounds` 改为 `WorkStealing`，`Scheduling::Loops` 改为 `EventLoops`（akio、akio-epoll）
+
+ADR-104 的 2026-11-26 更新。`Scheduling::Rounds(RoundsConfig)` 现在是
+`Scheduling::WorkStealing(WorkStealingConfig)`，`Scheduling::Loops` 现在是 `Scheduling::EventLoops`
+（仍是默认）；akio-epoll 中 `RoundsConfig` 改为 `WorkStealingConfig`，`RoundsGroup` 改为
+`WorkStealingGroup`，模块 `rounds` 改为 `work_stealing`。环境变量 `AKIO_ROUNDS_POLLERS`、
+`AKIO_ROUNDS_TRACE`、`AKIO_ROUNDS_SPIN` 和 `AKIO_ROUNDS_POLL_INTERVAL` 改为 `AKIO_WORK_STEALING_*`，
+`AKIO_DEFAULT_SCHEDULING` 的取值改为 `work-stealing` 或 `event-loops`（原为 `rounds` 或 `loops`），
+指标中的后端标签改为 `epoll-work-stealing` / `kqueue-work-stealing`，跟踪输出的行以 `work-stealing-trace`
+开头，`http-bench` 和 `tools/bench/shared.sh` 用 `work-stealing` 代替 `rounds`，`skew-bench server` 的模式
+改为 `event-loops` 或 `work-stealing`（原为 `loops` 或 `rounds`）。旧名字没有出现在任何发布版本中，
+所以没有保留别名。原因："rounds" 说的是内部的工作单位，即连接的一轮，而不是用户选择的东西：每个连接
+绑定在一个线程上，还是由一组互相窃取工作的 worker 执行。"一轮"仍指连接的一轮。
+
 ### 变更：走线程池的 HTTP/2 响应由连接自己的线程写出（akio-http、akio-core）
 
 开启 `H2Config::handlers_on_logical_pool` 时，在线程池任务里作答的 handler 不再自己锁住连接、写出
-响应：它只把响应放进队列，每批一个任务（新增的 `ConnInner::run_on_loop`）在连接的 I/O 线程（rounds
+响应：它只把响应放进队列，每批一个任务（新增的 `ConnInner::run_on_loop`）在连接的 I/O 线程（工作窃取
 模式下是处理它下一轮的 worker）上一次编码并写出整批。handler 自己投递到线程池的工作
 （`detach_to_pool`、`executor`）、其他线程和定时器仍自己写出。gpu51 实测（docs/BENCHMARKS.zh-CN.md）：
 走线程池的 h2c 提升 30%–39%（每秒 49 万到 65 万–67 万请求）；inline 不变。剩下的是逻辑线程池自身的
@@ -24,7 +38,7 @@ akio 的所有重要变更都记录在这里。格式遵循
 ADR-154。`Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)` 用自己的
 超时约束一次拨号的 TCP 握手，可比引擎的 `Config::connect_timeout` 短或长（超时后 `on_error` 收到
 `TimedOut`），这样代理的每个上游都能在同一个引擎上按自己的超时拨号。所有 TCP 后端都支持：epoll/kqueue
-事件循环、轮次调度、io_uring，以及 DPDK（代替其协议栈的 10 s）。`HappyEyeballs::dial` 和 `connect` 现在
+事件循环、工作窃取调度、io_uring，以及 DPDK（代替其协议栈的 10 s）。`HappyEyeballs::dial` 和 `connect` 现在
 每次尝试都使用其 `connect_timeout`，包括单个地址和竞速线程已满时依次拨的地址（过去用引擎的），经由它们
 拨号的客户端（akio-http 的 `Client`、`H2Client::connect`、akio-ws）也是如此；`H2Client::dial` 同样使用
 `H2Options::happy_eyeballs.connect_timeout`。`dial_udp` 没有连接超时：UDP 没有握手。
@@ -50,7 +64,7 @@ ADR-154。`timer::after_send(delay, f: FnOnce() + Send)` 在 akio 唯一的进�
 `Telemetry::open_accepted()`（以及 `Metrics::open_accepted`、`Metrics::to_json` 中的
 `"open_accepted"`）统计当前打开的、由各 TCP listener accept 的连接，不含 `open_connections` 同样
 计入的拨出连接、接管的流（adopt）、UDP 对端和 TUN 设备：网关在同一个引擎上拨上游时，这正是它要报告
-的客户端连接数。每个后端（epoll/kqueue 事件循环、轮次调度、io_uring、DPDK）在关闭时说明连接的种类
+的客户端连接数。每个后端（epoll/kqueue 事件循环、工作窃取调度、io_uring、DPDK）在关闭时说明连接的种类
 （面向后端的 `Telemetry::conn_closed` 接收它）；一次 accept 仍然只做一次原子更新。
 ### 新增：被排空的空闲 HTTP/1 连接在宽限期后关闭（akio-http；akit A54）
 
@@ -87,7 +101,7 @@ ADR-155。`Conn::set_idle_timeout(Option<Duration>)` 让一个 TCP 连接或 UDP
 自己的空闲超时代替引擎的（`Config::idle_timeout`、`Config::udp_idle_timeout`）：`None` 表示无论空闲
 多久都保持打开。可在任何线程调用；连接在自己的 I/O 线程上以 `ErrorKind::TimedOut` "idle timeout" 关闭，
 与引擎的空闲关闭相同。`Conn::set_idle_counts_writes(bool)` 把发出的数据也算作活动（每隔超时的八分之一
-检查一次），供两边都不发送才算空闲的转发使用。支持 epoll/kqueue 事件循环、轮次调度、io_uring 和 UDP
+检查一次），供两边都不发送才算空闲的转发使用。支持 epoll/kqueue 事件循环、工作窃取调度、io_uring 和 UDP
 事件循环；DPDK 与 TUN 返回 `Unsupported`。不设置的连接行为与以前完全相同：事件循环只在设置改变时才读取
 它（`LoopLink::retime_conn`）。
 
@@ -164,7 +178,7 @@ socket 的本地地址，没有时为未指定地址（`Request::new`、Unix 域
 `EngineBuilder::reserve_pool_cpus(n)`（或 `AKIO_POOL_CPUS=n`），配合 `pin_io_threads`：进程可用
 CPU 中的最后 `n` 个运行逻辑线程池的线程，I/O 线程绑到其余 CPU 上。未开启绑核、NUMA 放置时以及
 线程池已有启动钩子时忽略。仅 Linux。`http-bench` 新增 `AKIO_BENCH_H2_POOL=1`（HTTP/2 handler
-在逻辑线程池上执行）、`AKIO_BENCH_POOL_MAX=n`（线程池线程数上限）和 `rounds` 后端参数，
+在逻辑线程池上执行）、`AKIO_BENCH_POOL_MAX=n`（线程池线程数上限）和 `work-stealing` 后端参数，
 `tools/bench/shared.sh` 新增 `-h2pool`、`-cap<N>` 和 `-pool<N>` 模式。
 
 实测（docs/BENCHMARKS.zh-CN.md）：绑核后 h2c 的下降来自逻辑线程池（inline 执行时，绑核的 h2c
@@ -196,7 +210,7 @@ akit 的 A214、A215 和 A168，对应 fit 的 `limits.max_pending_bytes`、`lim
 
 `EngineBuilder::pin_io_threads(bool)`（或 `AKIO_PIN_IO_THREADS=1`），默认关闭，把每个 I/O 线程
 绑到进程可用 CPU 中的一个，在各线程组之间轮流分配（共享和独占的 listener、客户端线程；`set_threads`
-新增的线程和运行时新增的线程组接着轮转）。NUMA 放置或 BPF 引流已绑定的线程组保持不变；轮次调度的
+新增的线程和运行时新增的线程组接着轮转）。NUMA 放置或 BPF 引流已绑定的线程组保持不变；工作窃取调度的
 worker 不绑核。仅 Linux。
 
 原因（docs/BENCHMARKS.zh-CN.md，“共享 I/O 线程组与 I/O 线程绑核”）：忙碌 I/O 线程数与 CPU 数相同
@@ -239,18 +253,18 @@ akit 的 A171，由 akit I25 的基准测试发现：akit 的代理每个请求�
 
 akit 的 A172，由 akit I25 的基准测试发现：wrk 对 `https://127.0.0.1/` 的 HTTPS 请求全部失败。wrk（OpenSSL）即使在主机是 IP 地址时也把 URL 的主机作为 SNI 发送（RFC 6066 不允许），akio-tls 的服务端随即以 `decode_error` 应答。现在这样的名字被视为没有名字，与 Go、OpenSSL 和 nginx 的服务端一致；主机名末尾的点被去掉，而不再使握手失败。空名字或非 ASCII 名字仍会使握手失败。
 
-### 修复：使用轮次调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
+### 修复：使用工作窃取调度的 Unix 域 listener 能正常服务（akio、akio-epoll）
 
-使用 `Scheduling::Rounds` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在
-`AKIO_DEFAULT_SCHEDULING=rounds` 下的任何 Unix 域 listener，过去被当作 TCP listener 绑定在其未指定
-地址上：socket 文件从未出现，连接它会失败，TCP listener 上的 `unix_mode` 也没有被拒绝。轮次调度组
-现在服务 Unix 域 socket（`RoundsGroup::bind_unix_listener`；accept 任务 accept 时不读取地址，连接的
-地址为 `UNIX_ADDR`），`unix_mode` 也像每线程事件循环一样被校验。akio-http 的 `unix_listener` 测试在
-轮次调度下通过。
+使用 `Scheduling::WorkStealing` 的 `Listener::unix`（或 `unix_from_std`）listener，以及在
+`AKIO_DEFAULT_SCHEDULING=work-stealing` 下的任何 Unix 域 listener，过去被当作 TCP listener 绑定在其未指定
+地址上：socket 文件从未出现，连接它会失败，TCP listener 上的 `unix_mode` 也没有被拒绝。工作窃取调度组
+现在服务 Unix 域 socket（`WorkStealingGroup::bind_unix_listener`；accept 任务 accept 时不读取地址，连接的
+地址为 `UNIX_ADDR`），`unix_mode` 也像事件循环一样被校验。akio-http 的 `unix_listener` 测试在
+工作窃取调度下通过。
 
 ### 变更：TCP listener 默认共享一组 I/O 线程（akio、akio-epoll、akio-uring、akio-core）
 
-ADR-130 第一至三阶段。epoll/kqueue 每线程事件循环上的 TCP listener（绑定的、继承的或 Unix 域的）
+ADR-130 第一至三阶段。epoll/kqueue 事件循环上的 TCP listener（绑定的、继承的或 Unix 域的）
 不再各自获得每核一个 I/O 线程，而是共享一组，大小由新增的 `EngineBuilder::io_threads(n)` 决定
 （默认每核一个线程）。8 核上的 HTTP、gRPC 和管理三个端口现在运行 8 个 I/O 线程，而不是 24 个。
 每个线程监听所有 listener 的 socket，并运行该 listener 的 acceptor 和 accept 过滤器；连接留在
@@ -263,7 +277,7 @@ ADR-130 第一至三阶段。epoll/kqueue 每线程事件循环上的 TCP listen
   `io_threads` 决定；每个监听 socket 有自己的 multishot accept，其 `user_data` 标明 listener 和
   socket。移除一个 listener 会取消它的 accept，并只排空它的连接。io_uring 不可用时它们退回 epoll
   的共享组（或在 `strict` 时报错）。
-- 轮次调度（ADR-104）：`RoundsConfig`（解析后的 poller 数和 worker 数）相同的 listener 共享其
+- 工作窃取调度（ADR-104）：`WorkStealingConfig`（解析后的 poller 数和 worker 数）相同的 listener 共享其
   worker 和 poller，而不是各自一个池；每个 listener 保留自己的 accept 任务和过滤器，之后加入的
   listener 的 accept 任务投递给 poller，移除一个 listener 只关闭它的任务、只排空它的连接。Unix
   域 listener 也一样共享。
@@ -276,7 +290,7 @@ ADR-130 第一至三阶段。epoll/kqueue 每线程事件循环上的 TCP listen
   的连接来自哪个 listener。
 - 面向后端：`Group::add_listener`、`remove_listener`、`await_listener_removed`、
   `set_listener_filter` 和 `akio_core::ListenSocket`；`EpollGroup::shared`、
-  `RoundsGroup::shared` 和 `UringGroup::shared`。一个 epoll/kqueue
+  `WorkStealingGroup::shared` 和 `UringGroup::shared`。一个 epoll/kqueue
   事件循环现在保存所在组的 listener 表。
 
 ### 修复：在逻辑线程池上调用 HTTP 客户端不再使线程池死锁（akio-core、akio-http、akio-ws）
@@ -304,7 +318,7 @@ HTTP/1.1 客户端（复用 keep-alive 连接时）和 HTTP/2 客户端（每个
 `Routes::handlers_on_logical_pool(bool)`（arpc），原名都是 `run_on_pool`（尚未随任何版本发布，所以不保留
 deprecated 别名）。`H2Config` 的开关自 2026-11-25 起默认开启，现在改回关闭（ADR-094 的 2026-11-26
 更新；同轮 A/B 和 profile 见 ADR-176）：同样 4 个 CPU 上，线程池交接让很轻的 HTTP/2 handler 从每秒 320 万–400 万请求降到约 49 万
-（docs/BENCHMARKS.zh-CN.md；Rounds 模式下、线程池限制为 16 个线程时上限相同，线程更少则更低）。
+（docs/BENCHMARKS.zh-CN.md；工作窃取模式下、线程池限制为 16 个线程时上限相同，线程更少则更低）。
 除非服务自己打开开关，HTTP/2 stream 重新在 I/O 线程上 inline 执行；
 单个请求仍可用 `Context::detach_to_pool` 放到线程池。
 
@@ -320,12 +334,12 @@ deprecated 别名）。`H2Config` 的开关自 2026-11-25 起默认开启，现�
   退役或排空时的回调）可能为同一循环上的其他连接投递命令，这些命令要等到别的事情唤醒循环才会处理：
   在一个没有剩余定时器的空闲循环上，永远等不到。现在循环若给自己投递过命令，会在阻塞之前再排空一次
   （epoll/kqueue 的 TCP 与 UDP 循环，以及 io_uring）。
-- **rounds 调度下，接受过滤器可以停止自己的监听器。** 过滤器在监听套接字的锁下运行，而
+- **工作窃取调度下，接受过滤器可以停止自己的监听器。** 过滤器在监听套接字的锁下运行，而
   `stop_listening` 关闭套接字时要拿这把锁：移除自身监听器的过滤器会让 worker 死锁。现在过滤器在
   这把锁之外运行；监听器关闭时正在检查的连接会被丢弃。
-- **driver 模式的 rounds 调度会轮询每个 poller。** worker 总是先尝试第一个 driver，其他线程排入的
+- **driver 模式的工作窃取调度会轮询每个 poller。** worker 总是先尝试第一个 driver，其他线程排入的
   工作也总是唤醒第一个 driver，不管是否有 worker 在其中等待；于是空闲 worker 少于 poller 时（例如
-  `RoundsConfig::new(2, 1)`），第二个 poller 的监听器、拨号和连接可能永远得不到轮询。现在 worker
+  `WorkStealingConfig::new(2, 1)`），第二个 poller 的监听器、拨号和连接可能永远得不到轮询。现在 worker
   轮流使用各个 driver；只要另有 driver 无人等待，阻塞中的 worker 每 10 ms 醒来轮询下一个；投递者会
   打断确实有 worker 阻塞其中的 driver；即将阻塞的 worker 会先运行它上次查看之后排入的工作。
 
@@ -524,56 +538,56 @@ ADR-106。行为不变；公开 API 没有变化：
 - `ConnInner` 为此新增了 `#[doc(hidden)]` 的后端接口（`set_ring_sends`、`uncork_flush_ring`、
   `flush_queue_ring`、`ring_redescribe`、`ring_sent`、`ring_release`、`RingSend`、`RingSent`、`RING_IOV`）。
 
-### 新增：TCP listener 的轮次调度，默认关闭（akio、akio-epoll、akio-sys）
+### 新增：TCP listener 的工作窃取调度，默认关闭（akio、akio-epoll、akio-sys）
 
 ADR-104，均为新增：
 
-- `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`：连接的每一轮（读、handler、写）在 worker
+- `Listener::scheduling(Scheduling::WorkStealing(WorkStealingConfig))`：连接的每一轮（读、handler、写）在 worker
   池中任意空闲的 worker 上执行，同一连接同一时刻只执行一轮；空闲的 worker 自己在 `epoll_wait` 中等待，
-  与 Tokio 的 runtime 相同。负载按工作量而不是按连接分摊。`RoundsConfig { pollers, workers }`，0 表示
-  默认值（1 个 epoll 实例；每个 CPU 一个 worker）。默认仍是 `Scheduling::Loops`
+  与 Tokio 的 runtime 相同。负载按工作量而不是按连接分摊。`WorkStealingConfig { pollers, workers }`，0 表示
+  默认值（1 个 epoll 实例；每个 CPU 一个 worker）。默认仍是 `Scheduling::EventLoops`
   （thread-per-core，ADR-001）。
-- `AKIO_DEFAULT_SCHEDULING=rounds|loops` 为没有显式选择的 listener 指定调度方式（测试开关）。
+- `AKIO_DEFAULT_SCHEDULING=work-stealing|event-loops` 为没有显式选择的 listener 指定调度方式（测试开关）。
 - 只支持 epoll/kqueue 和 TCP（UDP listener 继续使用事件循环）；`Engine::set_threads` 会被拒绝。
 - `akio_sys::Registry`（可在任意线程做边沿触发注册）与 `Event::hup`。
 - 示例 `skew-bench`：CPU 密集的请求、连接少或负载不均，用于对比两种模式；另有 `churn`（短连接）和
   `rate`（固定的低请求速率）两种客户端。
 
-### 变更：轮次调度在 worker 上 accept 和关闭连接，轻负载时唤醒更少的线程（akio-epoll）
+### 变更：工作窃取调度在 worker 上 accept 和关闭连接，轻负载时唤醒更少的线程（akio-epoll）
 
 ADR-104 第二次修订，API 不变：
 
-- accept 不再在 driver 上执行：在 Linux 上，轮次模式的 listener 每个 worker 一个 `SO_REUSEPORT`
+- accept 不再在 driver 上执行：在 Linux 上，工作窃取模式的 listener 每个 worker 一个 `SO_REUSEPORT`
   socket，socket 就绪时投递一个 accept 任务，由某个 worker 执行（accept、创建、注册、第一轮）。连接
   及其空闲 / 写 / 握手定时器从 driver 移到一张按 id 分片的表中，由 worker 直接更新：关闭连接时把它从表中
   移除，不再向 driver 发消息，也不写 eventfd。
 - 轻负载时（其它 worker 都在 park），一次轮询为它发现的第一个连接不唤醒其它 worker（由轮询的 worker
   接着执行）；通过搜索找到任务的 worker 在还有任务排队时唤醒另一个；只有一个 park 的 worker 每 10 ms 值守
   一次，而不是每个 park 的 worker 都每 10 ms 醒一次。
-- `AKIO_ROUNDS_TRACE=1` 还会报告每秒的 unpark、driver 唤醒和 park 次数。
+- `AKIO_WORK_STEALING_TRACE=1` 还会报告每秒的 unpark、driver 唤醒和 park 次数。
 - 连接创建时就处于已调度状态，所以注册与第一轮之间的边沿事件不会让它入队两次；关闭开始时被 accept 的连接
   只执行一次 `on_shutdown`；因有任务被唤醒的值守会把值守交给别的 worker；被对端中止或重置的 accept 不再
   让监听 socket 暂停。
-- gpu51，服务端 8 个 CPU，与本次修改前的 rounds（以及 loops）对比：短连接 512 x 10 个请求 513k → 703k req/s
-  （loops 716k），512 x 1 个请求 103k → 207k 连接/s（loops 205k），2048 x 10 个请求 691k → 905k req/s（loops
-  757k~878k）；1024 个连接上 10k 请求/s 时每请求服务端 CPU 16.3 → 11.3 µs（loops 9.1），延迟不变；50k/s 时
+- gpu51，服务端 8 个 CPU，与本次修改前的工作窃取（以及事件循环）对比：短连接 512 x 10 个请求 513k → 703k req/s
+  （事件循环 716k），512 x 1 个请求 103k → 207k 连接/s（事件循环 205k），2048 x 10 个请求 691k → 905k req/s（事件循环
+  757k~878k）；1024 个连接上 10k 请求/s 时每请求服务端 CPU 16.3 → 11.3 µs（事件循环 9.1），延迟不变；50k/s 时
   15.6 → 9.9 µs。skew 场景和 64 个连接的 echo 不变，256~1024 个连接的 echo -2.5%。
 
-### 新增：轮次模式的 listener 可在运行时添加、移除和排空，支持 accept 过滤器和运行时修改的写超时（akio、akio-epoll）
+### 新增：工作窃取模式的 listener 可在运行时添加、移除和排空，支持 accept 过滤器和运行时修改的写超时（akio、akio-epoll）
 
 ADR-104 第三次修订，API 不变：
 
-- `Engine::remove_listener` 和 `shutdown_listener` 对轮次模式的 listener 与对 loops 的一样工作（ADR-099）：
+- `Engine::remove_listener` 和 `shutdown_listener` 对工作窃取模式的 listener 与对事件循环的一样工作（ADR-099）：
   调用返回之前关闭每个 worker 的全部 `SO_REUSEPORT` socket（之后执行的 accept 任务找不到 socket），所以端口
   可以重新绑定，同地址替换之后紧接着的连接会被服务；已打开的连接继续运行，排空时发送 `on_shutdown` 并在截止
   时间关闭剩下的连接，最后一个连接关闭后 worker 和 driver 结束（线程还服务 `dial` 的 builder listener 除外），
   由 engine 回收；仍在服务的已移除 listener 计入 `max_listeners`。
-- accept 过滤器（`Listener::filter`、`set_listener_filter`）在轮次模式的 listener 上执行，所以
-  `AKIO_DEFAULT_SCHEDULING=rounds` 不再让带过滤器的 listener 留在 loops 上。
-- 用 `Engine::reload` / `Live::set_write_timeout` 设置或清除的写超时对已打开的轮次模式连接生效（ADR-108）；
+- accept 过滤器（`Listener::filter`、`set_listener_filter`）在工作窃取模式的 listener 上执行，所以
+  `AKIO_DEFAULT_SCHEDULING=work-stealing` 不再让带过滤器的 listener 留在事件循环上。
+- 用 `Engine::reload` / `Live::set_write_timeout` 设置或清除的写超时对已打开的工作窃取模式连接生效（ADR-108）；
   之前只读取构建时的 `Config`。
-- 轮次模式的 listener 仍然拒绝 `set_listener_threads`。在 gpu51 上没有测到吞吐变化（rounds 的类 echo、skew
-  和 churn 场景，loops 的 echo）。
+- 工作窃取模式的 listener 仍然拒绝 `set_listener_threads`。在 gpu51 上没有测到吞吐变化（工作窃取的类 echo、skew
+  和 churn 场景，事件循环的 echo）。
 ### 新增：HTTP/2 和 HTTP/3 流上的 CONNECT，以及关闭连接的发送方向（akio-http、akio-h3、akio-socks、akio-core）
 
 ADR-122，由 akit 提出（A134）：
@@ -636,7 +650,7 @@ ADR-123，由 akit 提出（A57、A58）：
 ADR-120，由 akit 提出（A135）：
 
 - `Engine::dial_unix(path, acceptor, on_error)`：像拨出的 TCP 连接一样服务的 Unix 域流连接，
-  支持 epoll 和 io_uring，loops 和 rounds 调度（ADR-104）都支持；它的 `peer_addr` 和 `local_addr` 是新常量 `UNIX_ADDR`（`0.0.0.0:0`）。
+  支持 epoll 和 io_uring，事件循环和工作窃取调度（ADR-104）都支持；它的 `peer_addr` 和 `local_addr` 是新常量 `UNIX_ADDR`（`0.0.0.0:0`）。
   `Group::dial_unix`（默认不支持）。
 - `Client::with_unix_socket(Option<PathBuf>)`：该客户端的每个请求都发往这个套接字，URL 的主机
   仍是 `Host` 字段，也仍是空闲连接的键。

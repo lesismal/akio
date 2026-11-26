@@ -13,8 +13,8 @@
 # Every case is the sum of the per-listener requests/s. Servers ($MODES): `dedicated` (N x
 # $THREADS I/O threads) and `shared` ($THREADS I/O threads), each also `-pinned`
 # (`AKIO_PIN_IO_THREADS=1`: one CPU per I/O thread), on epoll and, where it runs, io_uring
-# ($BACKENDS, default "epoll uring"; `rounds` is epoll with one poller and $THREADS workers, which
-# are never pinned). Further suffixes: `-h2pool` runs HTTP/2 handlers on the logical pool
+# ($BACKENDS, default "epoll uring"; `work-stealing` is epoll with one poller and $THREADS workers,
+# which are never pinned). Further suffixes: `-h2pool` runs HTTP/2 handlers on the logical pool
 # (`handlers_on_logical_pool`, `AKIO_BENCH_H2_POOL=1`; they run inline on the I/O threads
 # otherwise); `-cap<N>` caps the logical pool at N threads (`AKIO_BENCH_POOL_MAX=N`); `-pool<N>`
 # keeps N of the server's CPUs for the logical pool and pins $THREADS - N I/O threads to the

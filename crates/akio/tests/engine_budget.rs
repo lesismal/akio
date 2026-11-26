@@ -1,8 +1,8 @@
 //! Engine-wide limits (akit's A214 and A215): the budget of bytes queued across every
 //! connection (`Config::max_pending_bytes`, ADR-172) and the limit on accepted connections that
 //! dialed ones do not count against (`Config::max_accepted_connections`, ADR-173). Run on both
-//! backends (`AKIO_TEST_BACKEND=uring` for io_uring) and with rounds scheduling
-//! (`AKIO_DEFAULT_SCHEDULING=rounds`).
+//! backends (`AKIO_TEST_BACKEND=uring` for io_uring) and with work-stealing scheduling
+//! (`AKIO_DEFAULT_SCHEDULING=work-stealing`).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 

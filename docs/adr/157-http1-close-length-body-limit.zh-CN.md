@@ -80,4 +80,4 @@ HTTP/1.1 和 HTTP/2 上是连接的本地地址，HTTP/3 上是 UDP socket 的�
   每个 chunk 的开销是一次加法和一次比较。尚未测量：DEV-PLAN 第 4 节有对应的行和要测的内容。
 - 测试：`akio-http/tests/body_limit.rs`（A24、HTTP/1 和 HTTP/2 上的 A49、A148）、
   `akio-http/tests/sized_stream.rs`（A35）、`akio-h3/tests/limit_body.rs`（HTTP/3 上的 A49、
-  A148），在 kqueue、epoll、io_uring 和轮次调度上运行。
+  A148），在 kqueue、epoll、io_uring 和工作窃取调度上运行。

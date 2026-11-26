@@ -306,8 +306,8 @@ impl core::marker::Unpin for akio::numa::NumaStatus
 impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaStatus
 impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaStatus
 #[non_exhaustive] pub enum akio::Scheduling
-pub akio::Scheduling::Loops
-pub akio::Scheduling::Rounds(akio::RoundsConfig)
+pub akio::Scheduling::EventLoops
+pub akio::Scheduling::WorkStealing(akio::WorkStealingConfig)
 impl core::clone::Clone for akio::Scheduling
 pub fn akio::Scheduling::clone(&self) -> Self
 impl core::cmp::Eq for akio::Scheduling
@@ -532,27 +532,6 @@ impl core::marker::Sync for akio::numa::NumaReport
 impl core::marker::Unpin for akio::numa::NumaReport
 impl core::panic::unwind_safe::RefUnwindSafe for akio::numa::NumaReport
 impl core::panic::unwind_safe::UnwindSafe for akio::numa::NumaReport
-#[non_exhaustive] pub struct akio::RoundsConfig
-pub akio::RoundsConfig::pollers: usize
-pub akio::RoundsConfig::workers: usize
-impl akio::RoundsConfig
-pub fn akio::RoundsConfig::new(usize, usize) -> akio::RoundsConfig
-impl core::clone::Clone for akio::RoundsConfig
-pub fn akio::RoundsConfig::clone(&self) -> Self
-impl core::cmp::Eq for akio::RoundsConfig
-impl core::cmp::PartialEq for akio::RoundsConfig
-pub fn akio::RoundsConfig::eq(&self, &Self) -> bool
-impl core::default::Default for akio::RoundsConfig
-pub fn akio::RoundsConfig::default() -> Self
-impl core::fmt::Debug for akio::RoundsConfig
-pub fn akio::RoundsConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for akio::RoundsConfig
-impl core::marker::StructuralPartialEq for akio::RoundsConfig
-impl core::marker::Send for akio::RoundsConfig
-impl core::marker::Sync for akio::RoundsConfig
-impl core::marker::Unpin for akio::RoundsConfig
-impl core::panic::unwind_safe::RefUnwindSafe for akio::RoundsConfig
-impl core::panic::unwind_safe::UnwindSafe for akio::RoundsConfig
 #[non_exhaustive] pub struct akio::ThreadPlacement
 pub akio::ThreadPlacement::cpus: alloc::vec::Vec<usize>
 pub akio::ThreadPlacement::incoming_cpu: core::option::Option<usize>
@@ -586,3 +565,24 @@ impl core::marker::Sync for akio::UringConfig
 impl core::marker::Unpin for akio::UringConfig
 impl core::panic::unwind_safe::RefUnwindSafe for akio::UringConfig
 impl core::panic::unwind_safe::UnwindSafe for akio::UringConfig
+#[non_exhaustive] pub struct akio::WorkStealingConfig
+pub akio::WorkStealingConfig::pollers: usize
+pub akio::WorkStealingConfig::workers: usize
+impl akio::WorkStealingConfig
+pub fn akio::WorkStealingConfig::new(usize, usize) -> akio::WorkStealingConfig
+impl core::clone::Clone for akio::WorkStealingConfig
+pub fn akio::WorkStealingConfig::clone(&self) -> Self
+impl core::cmp::Eq for akio::WorkStealingConfig
+impl core::cmp::PartialEq for akio::WorkStealingConfig
+pub fn akio::WorkStealingConfig::eq(&self, &Self) -> bool
+impl core::default::Default for akio::WorkStealingConfig
+pub fn akio::WorkStealingConfig::default() -> Self
+impl core::fmt::Debug for akio::WorkStealingConfig
+pub fn akio::WorkStealingConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for akio::WorkStealingConfig
+impl core::marker::StructuralPartialEq for akio::WorkStealingConfig
+impl core::marker::Send for akio::WorkStealingConfig
+impl core::marker::Sync for akio::WorkStealingConfig
+impl core::marker::Unpin for akio::WorkStealingConfig
+impl core::panic::unwind_safe::RefUnwindSafe for akio::WorkStealingConfig
+impl core::panic::unwind_safe::UnwindSafe for akio::WorkStealingConfig

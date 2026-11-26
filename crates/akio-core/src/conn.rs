@@ -2586,8 +2586,8 @@ impl ConnInner {
         }
     }
 
-    /// Runs `f` on the thread that owns this connection (its I/O thread, or with rounds
-    /// scheduling the worker of its next round), after the current batch of events and
+    /// Runs `f` on the thread that owns this connection (its I/O thread, or with work
+    /// stealing the worker of its next round), after the current batch of events and
     /// without going through the logical pool: [`Conn::run_on_loop`] for code that holds only
     /// the shared state (a protocol session's responses finished on the pool, handed back to
     /// be written together). `false`, with `f` dropped, when the connection is closed; if it
@@ -3334,8 +3334,8 @@ impl<H> Conn<H> {
     /// Only inbound data counts as activity, unless
     /// [`set_idle_counts_writes`](Self::set_idle_counts_writes).
     ///
-    /// Served by the epoll/kqueue and io_uring loops, rounds scheduling and the UDP loops (the
-    /// peers of UDP listeners and of [`UdpBinding`](crate::UdpBinding)s, and `dial_udp`'s
+    /// Served by the epoll/kqueue and io_uring loops, work-stealing scheduling and the UDP loops
+    /// (the peers of UDP listeners and of [`UdpBinding`](crate::UdpBinding)s, and `dial_udp`'s
     /// connections); elsewhere (DPDK, TUN) it fails with `ErrorKind::Unsupported` and the
     /// engine's timeout applies. `Err(Closed)` once the connection is closed.
     pub fn set_idle_timeout(&self, timeout: Option<std::time::Duration>) -> Result<()> {

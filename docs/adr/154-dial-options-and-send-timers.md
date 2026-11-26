@@ -25,12 +25,12 @@ its own with a bounded heap (akit A45).
    `DialOptions::new().connect_timeout(d)`; `connect_timeout: None` means the engine's.
    **`Engine::dial_with(addr, opts, acceptor, on_error)`** is `dial` with them.
 2. The backend-facing `Group` trait gains `dial_with`; its default ignores the options and
-   calls `dial`. The TCP groups implement it: epoll/kqueue loops and io_uring carry the timeout
-   in their dial command and arm the connect deadline with it in place of
-   `Config::connect_timeout`; rounds scheduling likewise; DPDK uses it in place of its stack's own
-   10 s. Shared listener groups (ADR-130) forward it. The deadline is the same wheel entry as
-   before (whole milliseconds, at least one, clamped to `timer::MAX_DELAY`), so a dial costs
-   nothing more.
+   calls `dial`. The TCP groups implement it: epoll/kqueue event loops and io_uring carry the
+   timeout in their dial command and arm the connect deadline with it in place of
+   `Config::connect_timeout`; work-stealing scheduling likewise; DPDK uses it in place of its
+   stack's own 10 s. Shared listener groups (ADR-130) forward it. The deadline is the same wheel
+   entry as before (whole milliseconds, at least one, clamped to `timer::MAX_DELAY`), so a dial
+   costs nothing more.
 3. **`HappyEyeballs`** dials every attempt within its `connect_timeout`: a lone address and the
    addresses dialed in turn go through `dial_with`. The clients that dial through it (akio-http's
    `Client`, `H2Client::connect`, akio-ws) thus bound a lone address too; `H2Client::dial` (one

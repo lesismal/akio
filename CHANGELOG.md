@@ -10,28 +10,45 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: scheduling modes renamed: `Scheduling::Rounds` is `WorkStealing`, `Scheduling::Loops` is `EventLoops` (akio, akio-epoll)
+
+ADR-104, update of 2026-11-26. `Scheduling::Rounds(RoundsConfig)` is now
+`Scheduling::WorkStealing(WorkStealingConfig)` and `Scheduling::Loops` is `Scheduling::EventLoops`
+(still the default); in akio-epoll `RoundsConfig` is `WorkStealingConfig`, `RoundsGroup` is
+`WorkStealingGroup` and the module `rounds` is `work_stealing`. The environment variables
+`AKIO_ROUNDS_POLLERS`, `AKIO_ROUNDS_TRACE`, `AKIO_ROUNDS_SPIN` and `AKIO_ROUNDS_POLL_INTERVAL` are
+`AKIO_WORK_STEALING_*`, `AKIO_DEFAULT_SCHEDULING` takes `work-stealing` or `event-loops` (was
+`rounds` or `loops`), the metrics backend label is `epoll-work-stealing` / `kqueue-work-stealing`,
+trace lines start with `work-stealing-trace`, `http-bench` and `tools/bench/shared.sh` take
+`work-stealing` in place of `rounds`, and `skew-bench server` takes `event-loops` or
+`work-stealing` (was `loops` or `rounds`). No release had the old names, so there are no
+aliases. Why: "rounds" named the internal unit of work, one round of a connection, not what a
+user chooses: connections bound to one thread each, or a pool of workers that steal work from
+each other. A round still means one round of a connection.
+
 ### Changed: pooled HTTP/2 responses are written by the connection's own thread (akio-http, akio-core)
 
 With `H2Config::handlers_on_logical_pool`, a handler that answers on its pool job no longer
 locks the connection and writes its response itself: it queues the response, and one task per
 batch (`ConnInner::run_on_loop`, new) encodes and writes the batch on the connection's I/O
-thread, or with rounds the worker of its next round, in one write. Work a handler posts to the
-pool itself (`detach_to_pool`, `executor`), other threads and timers still write their own.
-Measured on gpu51 (docs/BENCHMARKS.md): h2c through the pool +30% to +39% (0.49M to
-0.65M–0.67M requests/s); inline unchanged. What remains is the logical pool's own hand-off
-(a futex wake and a context switch per job).
+thread, or with work stealing the worker of its next round, in one write. Work a handler posts to
+the pool itself (`detach_to_pool`, `executor`), other threads and timers still write their own.
+Measured on gpu51 (docs/BENCHMARKS.md): h2c through the pool +30% to +39% (0.49M to 0.65M–0.67M
+requests/s); inline unchanged. What remains is the logical pool's own hand-off (a futex wake and a
+context switch per job).
 
 ### Added: a connect timeout per dial, `Engine::dial_with` (akio, akio-core, backends, akio-http; akit A12, A79)
 
 ADR-154. `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)`
 bounds one dial's TCP handshake by its own timeout, shorter or longer than the engine's
 `Config::connect_timeout` (`TimedOut` to `on_error` past it), so each upstream of a proxy is
-dialed within its own on one engine. Every TCP backend honours it: epoll/kqueue loops, rounds
-scheduling, io_uring, and DPDK (in place of its stack's 10 s). `HappyEyeballs::dial` and
-`connect` now dial every attempt with their `connect_timeout`, a lone address and the addresses
-dialed in turn when the racer is full included (they used the engine's), and so do the clients
-that dial through them (akio-http `Client`, `H2Client::connect`, akio-ws); `H2Client::dial` uses
-`H2Options::happy_eyeballs.connect_timeout` too. `dial_udp` takes none: UDP has no handshake.
+dialed within its own on one engine. Every TCP backend honours it: epoll/kqueue event loops,
+work-stealing scheduling, io_uring, and DPDK (in place of its stack's 10 s).
+`HappyEyeballs::dial` and `connect` now dial every attempt with their `connect_timeout`, a lone
+address and the addresses dialed in turn when the racer is full included (they used the
+engine's), and so do the clients that dial through them (akio-http `Client`,
+`H2Client::connect`, akio-ws); `H2Client::dial` uses `H2Options::happy_eyeballs.connect_timeout`
+too. `dial_udp` takes none: UDP has no handshake.
 
 ### Added: `akio::timer::after_send`, a timer any thread may set (akio-core; akit A45)
 
@@ -58,9 +75,9 @@ say), and submits jobs with `Pool::try_execute`, which never blocks and gives th
 `Metrics::to_json`) counts the accepted TCP connections open now, on every TCP listener,
 without the dialed connections, adopted streams, UDP peers and TUN devices that
 `open_connections` also counts: what a gateway reports as its client connections when it dials
-its upstreams on the same engine. Every backend (epoll/kqueue loops, rounds, io_uring, DPDK)
-tells the kind on close (the backend-facing `Telemetry::conn_closed` takes it); an accept still
-costs one atomic update.
+its upstreams on the same engine. Every backend (epoll/kqueue event loops, work stealing,
+io_uring, DPDK) tells the kind on close (the backend-facing `Telemetry::conn_closed` takes it); an
+accept still costs one atomic update.
 ### Added: idle HTTP/1 connections drained after a grace (akio-http; akit A54)
 
 `HttpConfig::idle_drain_grace` (250 ms by default): when a listener is drained
@@ -104,9 +121,9 @@ ADR-155. `Conn::set_idle_timeout(Option<Duration>)` gives one TCP connection or 
 thread; the connection is closed on its I/O thread with `ErrorKind::TimedOut` "idle timeout",
 as the engine's idle close does. `Conn::set_idle_counts_writes(bool)` counts data sent as
 activity too (checked every eighth of the timeout), for a relay that is idle only when neither
-side sends. epoll/kqueue loops, rounds scheduling, io_uring and the UDP loop; DPDK and TUN answer
-`Unsupported`. Connections that set none run exactly as before: the loops read the setting only
-when it changes (`LoopLink::retime_conn`).
+side sends. epoll/kqueue event loops, work-stealing scheduling, io_uring and the UDP loop; DPDK and
+TUN answer `Unsupported`. Connections that set none run exactly as before: the loops read the
+setting only when it changes (`LoopLink::retime_conn`).
 
 ### Added: UDP listeners added, removed and drained at run time (akio, akio-epoll, akio-core, akio-quic, akio-h3; akit A22)
 
@@ -195,7 +212,7 @@ UDP socket's on HTTP/3, unspecified where there is none (`Request::new`, a Unix-
 `n` of the CPUs the process may use run the logical pool's threads, the I/O threads are pinned to
 the others. Ignored without pinning, under NUMA placement and when the pool has a start hook.
 Linux only. `http-bench` gains `AKIO_BENCH_H2_POOL=1` (HTTP/2 handlers on the logical pool),
-`AKIO_BENCH_POOL_MAX=n` (pool thread cap) and the `rounds` backend argument, and
+`AKIO_BENCH_POOL_MAX=n` (pool thread cap) and the `work-stealing` backend argument, and
 `tools/bench/shared.sh` the `-h2pool`, `-cap<N>` and `-pool<N>` modes.
 
 Measured (docs/BENCHMARKS.md): the drop of pinned h2c is the logical pool's (served inline, h2c
@@ -236,8 +253,8 @@ of `h2c` alone:
 `EngineBuilder::pin_io_threads(bool)` (or `AKIO_PIN_IO_THREADS=1`), off by default, pins each I/O
 thread to one CPU of those the process may use, in turn over the groups (shared and dedicated
 listeners, client threads; threads added by `set_threads` and groups added at run time continue
-the round). Groups pinned by NUMA placement or BPF steering are left alone; rounds workers are
-not pinned. Linux only.
+the round). Groups pinned by NUMA placement or BPF steering are left alone; work-stealing workers
+are not pinned. Linux only.
 
 Why (docs/BENCHMARKS.md, "Shared I/O groups and I/O thread pinning"): with as many busy I/O
 threads as CPUs, as in a shared group sized to the CPUs, the scheduler sometimes stacks two of
@@ -302,19 +319,19 @@ RFC 6066 does not allow, and akio-tls's server answered `decode_error`. Such a n
 as no name, as Go's, OpenSSL's and nginx's servers take it, and a trailing dot is dropped from a
 host name rather than failing the handshake. An empty or non-ASCII name still fails it.
 
-### Fixed: Unix-domain listeners with rounds scheduling are served (akio, akio-epoll)
+### Fixed: Unix-domain listeners with work-stealing scheduling are served (akio, akio-epoll)
 
-A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::Rounds`, or any Unix-domain
-listener under `AKIO_DEFAULT_SCHEDULING=rounds`, was bound as a TCP listener at its unspecified
-address: the socket file never appeared and connections to it failed, and `unix_mode` on a TCP
-listener was not refused. Rounds groups now serve Unix-domain sockets
-(`RoundsGroup::bind_unix_listener`; accept jobs accept without reading an address, and the
-connections' addresses are `UNIX_ADDR`), and `unix_mode` is checked as with loops. The
-`unix_listener` tests of akio-http pass under rounds scheduling.
+A `Listener::unix` (or `unix_from_std`) listener with `Scheduling::WorkStealing`, or any Unix-domain
+listener under `AKIO_DEFAULT_SCHEDULING=work-stealing`, was bound as a TCP listener at its
+unspecified address: the socket file never appeared and connections to it failed, and `unix_mode` on
+a TCP listener was not refused. Work-stealing groups now serve Unix-domain sockets
+(`WorkStealingGroup::bind_unix_listener`; accept jobs accept without reading an address, and the
+connections' addresses are `UNIX_ADDR`), and `unix_mode` is checked as with event loops. The
+`unix_listener` tests of akio-http pass under work-stealing scheduling.
 
 ### Changed: TCP listeners share one group of I/O threads by default (akio, akio-epoll, akio-uring, akio-core)
 
-ADR-130, phases 1 to 3. TCP listeners on epoll/kqueue with per-thread loops (bound, inherited or
+ADR-130, phases 1 to 3. TCP listeners on epoll/kqueue with event loops (bound, inherited or
 Unix-domain) no longer get one I/O thread per core each: they share one group, sized by the new
 `EngineBuilder::io_threads(n)` (one thread per core by default). An HTTP, a gRPC and an admin
 port on 8 cores now run 8 I/O threads instead of 24. Each thread polls every listener's sockets
@@ -329,11 +346,10 @@ accepted them.
   `user_data` names listener and socket. Removing one cancels its accepts and drains its
   connections only. Where io_uring is unavailable they fall back to the shared epoll group (or
   fail with `strict`).
-- Rounds scheduling (ADR-104): listeners with the same `RoundsConfig` (resolved pollers and
-  workers) share its workers and pollers instead of one pool each; each listener keeps its own
-  accept jobs and filter, a listener added later gets its accept jobs posted to the pollers,
-  and removing one closes its jobs and drains its connections only. Unix-domain listeners
-  share too.
+- Work-stealing scheduling (ADR-104): listeners with the same `WorkStealingConfig` (resolved
+  pollers and workers) share its workers and pollers instead of one pool each; each listener keeps
+  its own accept jobs and filter, a listener added later gets its accept jobs posted to the pollers,
+  and removing one closes its jobs and drains its connections only. Unix-domain listeners share too.
 - The per-listener API keeps one entry per listener: `local_addrs`, `listeners`, `threads` and
   the `ListenerId`s. `threads()` reports the shared group's size for each of its listeners (0 once
   removed), and `set_threads` / `set_listener_threads` on a shared listener resize the shared
@@ -344,7 +360,8 @@ accepted them.
   the listener each accepted connection came from.
 - Backend-facing: `Group::add_listener`, `remove_listener`, `await_listener_removed`,
   `set_listener_filter` and `akio_core::ListenSocket`; `EpollGroup::shared`,
-  `RoundsGroup::shared` and `UringGroup::shared`. One epoll/kqueue loop now keeps a table of its group's listeners.
+  `WorkStealingGroup::shared` and `UringGroup::shared`. One epoll/kqueue loop now keeps a table of
+  its group's listeners.
 
 ### Fixed: HTTP clients called from the logical pool no longer deadlock it (akio-core, akio-http, akio-ws)
 
@@ -374,9 +391,9 @@ renamed after what it moves: `HttpConfig::handlers_on_logical_pool`,
 all formerly `run_on_pool` (no release had it, so no deprecated alias). `H2Config`'s was on by
 default from 2026-11-25 and is off again (ADR-094, update of 2026-11-26; ADR-176 has the same-run A/B and the profile): the pool hand-off cut
 trivial HTTP/2 handlers from 3.2M–4.0M to about 0.49M requests/s on the same 4 CPUs
-(docs/BENCHMARKS.md; the same ceiling on Rounds and with the pool capped at 16 threads, less
-with fewer). HTTP/2 streams run inline on the I/O thread again unless a service turns
-the switch on; a single request can still go to the pool with `Context::detach_to_pool`.
+(docs/BENCHMARKS.md; the same ceiling with work stealing and with the pool capped at 16 threads,
+less with fewer). HTTP/2 streams run inline on the I/O thread again unless a service turns the
+switch on; a single request can still go to the pool with `Context::detach_to_pool`.
 
 ### Fixed: four engine hangs (akio-epoll, akio-uring, akio-http, akio-ws, akio-h3, akio-quic, akio-webrtc, akio-turn, akio-kcp)
 
@@ -394,17 +411,17 @@ the switch on; a single request can still go to the pool with `Context::detach_t
   waited until something else woke the loop: on an idle loop with no timer left, never. The
   loop now drains again before it blocks when it posted to itself (epoll/kqueue TCP and UDP
   loops, and io_uring).
-- **An accept filter may stop its own listener with rounds scheduling.** The filter ran under
+- **An accept filter may stop its own listener with work-stealing scheduling.** The filter ran under
   the listening socket's lock, which `stop_listening` takes to close the socket: a filter that
   removed its own listener deadlocked the worker. It now runs without that lock; a connection
   whose check was running when the listener closed is dropped.
-- **Rounds scheduling in driver mode polls every poller.** Workers always tried the first driver
-  first, and work queued from other threads woke the first driver whether or not a worker waited
-  in it, so with fewer idle workers than pollers (`RoundsConfig::new(2, 1)`, say) a second
-  poller's listeners, dials and connections could go unpolled for good. Workers now take the
+- **Work-stealing scheduling in driver mode polls every poller.** Workers always tried the first
+  driver first, and work queued from other threads woke the first driver whether or not a worker
+  waited in it, so with fewer idle workers than pollers (`WorkStealingConfig::new(2, 1)`, say) a
+  second poller's listeners, dials and connections could go unpolled for good. Workers now take the
   drivers in turn, a blocked worker wakes every 10 ms to poll the next while another driver has
-  nobody waiting in it, a poster interrupts the driver a worker is actually blocked in, and a
-  worker about to block runs work queued since it last looked.
+  nobody waiting in it, a poster interrupts the driver a worker is actually blocked in, and a worker
+  about to block runs work queued since it last looked.
 
 ### Fixed: client deadlines, connection losses and full pools no longer hang or duplicate (akio-grpc, akio-arpc, akio-h3, akio-http)
 
@@ -666,64 +683,67 @@ ADR-106. Behaviour is unchanged; no public API changed:
   `uncork_flush_ring`, `flush_queue_ring`, `ring_redescribe`, `ring_sent`, `ring_release`,
   `RingSend`, `RingSent`, `RING_IOV`).
 
-### Added: rounds scheduling for TCP listeners, off by default (akio, akio-epoll, akio-sys)
+### Added: work-stealing scheduling for TCP listeners, off by default (akio, akio-epoll, akio-sys)
 
 ADR-104, additive:
 
-- `Listener::scheduling(Scheduling::Rounds(RoundsConfig))`: each round of a connection (read,
-  handler, write) runs on whichever worker of a pool is free, one round of a connection at a
+- `Listener::scheduling(Scheduling::WorkStealing(WorkStealingConfig))`: each round of a connection
+  (read, handler, write) runs on whichever worker of a pool is free, one round of a connection at a
   time; idle workers wait in `epoll_wait` themselves, as Tokio's runtime. Load spreads by work
-  rather than by connection. `RoundsConfig { pollers, workers }`, 0 = default (1 epoll instance;
-  one worker per CPU). `Scheduling::Loops` (thread-per-core,
-  ADR-001) stays the default.
-- `AKIO_DEFAULT_SCHEDULING=rounds|loops` picks it for listeners that do not choose (a test knob).
-- epoll/kqueue only; TCP only (UDP listeners keep their loops); `Engine::set_threads` is refused.
+  rather than by connection. `WorkStealingConfig { pollers, workers }`, 0 = default (1 epoll
+  instance; one worker per CPU). `Scheduling::EventLoops` (thread-per-core, ADR-001) stays the
+  default.
+- `AKIO_DEFAULT_SCHEDULING=work-stealing|event-loops` picks it for listeners that do not choose (a
+  test knob).
+- epoll/kqueue only; TCP only (UDP listeners keep their event loops); `Engine::set_threads` is
+  refused.
 - `akio_sys::Registry` (edge-triggered registration from any thread) and `Event::hup`.
 - Example `skew-bench`: CPU-bound requests with few or uneven connections, for comparing the modes;
   `churn` (short-lived connections) and `rate` (a fixed low request rate) clients.
 
-### Changed: rounds scheduling accepts and closes on the workers, and wakes fewer threads at light load (akio-epoll)
+### Changed: work-stealing scheduling accepts and closes on the workers, and wakes fewer threads at light load (akio-epoll)
 
 ADR-104, second revision; no API change:
 
-- Accepting no longer runs on the driver: on Linux a rounds listener has one `SO_REUSEPORT`
-  socket per worker, and a socket's readiness queues an accept job that a worker runs (accept,
-  create, register, first round). The connections and their idle / write / handshake timers moved
-  from the driver into a table sharded by id, which workers update directly: a close removes its
-  connection with no message to the driver and no eventfd write.
+- Accepting no longer runs on the driver: on Linux a work-stealing listener has one
+  `SO_REUSEPORT` socket per worker, and a socket's readiness queues an accept job that a worker runs
+  (accept, create, register, first round). The connections and their idle / write / handshake timers
+  moved from the driver into a table sharded by id, which workers update directly: a close removes
+  its connection with no message to the driver and no eventfd write.
 - At light load (every other worker parked) a poll wakes no other worker for the first connection
   it found, which its worker runs next; a worker that found work by searching wakes another if more
   is queued; one parked worker keeps a 10 ms watch instead of every parked worker waking every
   10 ms.
-- `AKIO_ROUNDS_TRACE=1` also reports unparks, driver wake-ups and parks per second.
+- `AKIO_WORK_STEALING_TRACE=1` also reports unparks, driver wake-ups and parks per second.
 - A connection is born scheduled, so an edge between its registration and its first round cannot
   queue it twice; `on_shutdown` runs once for a connection accepted while the shutdown starts; a
   watch woken for work hands the watch on; an accept aborted or reset by the peer no longer pauses
   the listening socket.
-- gpu51, 8 server CPUs, against rounds before this change (and loops): short-lived connections
-  512 x 10 requests 513k → 703k req/s (loops 716k), 512 x 1 request 103k → 207k connections/s
-  (loops 205k), 2048 x 10 requests 691k → 905k req/s (loops 757k-878k); at 10k requests/s over
-  1024 connections 16.3 → 11.3 µs of server CPU per request (loops 9.1) with the same latency; at
-  50k/s 15.6 → 9.9 µs. Skew cases and echo with 64 connections unchanged, echo with 256-1024
-  connections -2.5%.
+- gpu51, 8 server CPUs, against work stealing before this change (and event loops): short-lived
+  connections 512 x 10 requests 513k → 703k req/s (event loops 716k), 512 x 1 request 103k →
+  207k connections/s (event loops 205k), 2048 x 10 requests 691k → 905k req/s (event loops
+  757k-878k); at 10k requests/s over 1024 connections 16.3 → 11.3 µs of server CPU per request
+  (event loops 9.1) with the same latency; at 50k/s 15.6 → 9.9 µs. Skew cases and echo with 64
+  connections unchanged, echo with 256-1024 connections -2.5%.
 
-### Added: rounds listeners added, removed and drained at run time, accept filters, a write timeout changed at run time (akio, akio-epoll)
+### Added: work-stealing listeners added, removed and drained at run time, accept filters, a write timeout changed at run time (akio, akio-epoll)
 
 ADR-104, third revision; no API change:
 
-- `Engine::remove_listener` and `shutdown_listener` work on rounds listeners as on loops ones
-  (ADR-099): every per-worker `SO_REUSEPORT` socket is closed before the call returns (an accept
-  job that runs later finds no socket), so the port can be bound again and a connection right
-  after a same-address replacement is served; open connections keep running, a drain sends
-  `on_shutdown` and closes what is left at the deadline, the workers and drivers finish once the
-  last connection is gone (except the builder listener whose threads serve `dial`), and the engine
-  reaps them; removed listeners still serving count under `max_listeners`.
-- Accept filters (`Listener::filter`, `set_listener_filter`) run on rounds listeners, so
-  `AKIO_DEFAULT_SCHEDULING=rounds` no longer leaves a listener with a filter on loops.
+- `Engine::remove_listener` and `shutdown_listener` work on work-stealing listeners as on
+  event-loop ones (ADR-099): every per-worker `SO_REUSEPORT` socket is closed before the call
+  returns (an accept job that runs later finds no socket), so the port can be bound again and a
+  connection right after a same-address replacement is served; open connections keep running, a
+  drain sends `on_shutdown` and closes what is left at the deadline, the workers and drivers finish
+  once the last connection is gone (except the builder listener whose threads serve `dial`), and the
+  engine reaps them; removed listeners still serving count under `max_listeners`.
+- Accept filters (`Listener::filter`, `set_listener_filter`) run on work-stealing listeners,
+  so `AKIO_DEFAULT_SCHEDULING=work-stealing` no longer leaves a listener with a filter on event
+  loops.
 - A write timeout set or cleared with `Engine::reload` / `Live::set_write_timeout` applies to open
-  rounds connections (ADR-108); it was read only from the build-time `Config`.
-- `set_listener_threads` is still refused for rounds listeners. No throughput change measured on
-  gpu51 (rounds echo-like, skew and churn cases, loops echo).
+  work-stealing connections (ADR-108); it was read only from the build-time `Config`.
+- `set_listener_threads` is still refused for work-stealing listeners. No throughput change
+  measured on gpu51 (work-stealing echo-like, skew and churn cases, event-loops echo).
 ### Added: CONNECT on HTTP/2 and HTTP/3 streams, and a connection's send direction shut down (akio-http, akio-h3, akio-socks, akio-core)
 
 ADR-122, requested by akit (A134):
@@ -794,9 +814,9 @@ ADR-123, requested by akit (A57, A58):
 ADR-120, requested by akit (A135):
 
 - `Engine::dial_unix(path, acceptor, on_error)`: a Unix-domain stream connection served like a
-  dialed TCP one, on epoll and io_uring, in loops and in rounds scheduling (ADR-104); its
-  `peer_addr` and `local_addr` are the new `UNIX_ADDR` (`0.0.0.0:0`). `Group::dial_unix`
-  (unsupported by default).
+  dialed TCP one, on epoll and io_uring, with event loops and with work-stealing scheduling
+  (ADR-104); its `peer_addr` and `local_addr` are the new `UNIX_ADDR` (`0.0.0.0:0`).
+  `Group::dial_unix` (unsupported by default).
 - `Client::with_unix_socket(Option<PathBuf>)`: every request of the client goes to that socket,
   the URL's host still its `Host` and the key of its idle connections.
 - `akio_sys::connect_unix_nonblocking`, `ffi::AF_UNIX` and `ffi::sockaddr_un`.

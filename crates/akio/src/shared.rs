@@ -1,6 +1,6 @@
 //! Listeners that share an I/O thread group (ADR-130): the engine keeps one shared group per
-//! backend and scheduling (epoll or io_uring loops with or without balancing, rounds per
-//! thread counts), and gives each listener served by one a
+//! backend and scheduling (epoll or io_uring loops with or without balancing, work stealing
+//! per thread counts), and gives each listener served by one a
 //! [`SharedListener`], so its per-listener API (`local_addrs`, `threads`, `remove_listener`, ...)
 //! keeps one entry per listener.
 
@@ -17,13 +17,13 @@ use std::{
 use akio_core::{AcceptFilter, DynAcceptor, Group, LoopStats};
 
 /// What listeners of one shared group have in common: per-thread loops on epoll/kqueue or on
-/// io_uring (with one set of ring options), with or without accept-time balancing, or rounds
+/// io_uring (with one set of ring options), with or without accept-time balancing, or work-stealing
 /// scheduling with one poller and worker count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ShareKey {
     pub(crate) balance: bool,
-    /// Rounds scheduling (ADR-104): its resolved pollers and workers.
-    pub(crate) rounds: Option<(usize, usize)>,
+    /// Work-stealing scheduling (ADR-104): its resolved pollers and workers.
+    pub(crate) work_stealing: Option<(usize, usize)>,
     /// io_uring loops: their ring options (entries, SQPOLL).
     pub(crate) uring: Option<(u32, bool)>,
 }
