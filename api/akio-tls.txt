@@ -244,6 +244,7 @@ pub fn akio_tls::ClientConfigBuilder::ktls(self, akio_tls::Ktls) -> Self
 pub fn akio_tls::ClientConfigBuilder::ktls_zerocopy_sendfile(self, bool) -> Self
 pub fn akio_tls::ClientConfigBuilder::ocsp_policy(self, akio_tls::RevocationPolicy) -> Self
 pub fn akio_tls::ClientConfigBuilder::ocsp_stapling(self, bool) -> Self
+pub fn akio_tls::ClientConfigBuilder::pin_sha256(self, alloc::vec::Vec<[u8; 32]>) -> Self
 pub fn akio_tls::ClientConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn akio_tls::ClientConfigBuilder::resumption(self, bool) -> Self
 pub fn akio_tls::ClientConfigBuilder::roots(self, akio_tls::RootCerts) -> Self

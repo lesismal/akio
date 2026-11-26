@@ -1,6 +1,7 @@
 //! The WebSocket connection driver and the application-facing types.
 
 use std::{
+    net::SocketAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -26,6 +27,18 @@ pub trait WsLink: Send + Sync + 'static {
     fn is_open(&self) -> bool;
     /// Bytes queued but not yet sent.
     fn queued_bytes(&self) -> usize;
+    /// Holds (`true`) or resumes (`false`) reading the transport: the stream's flow-control
+    /// window is not given back while held ([`WsSender::hold_reads`]). Default: nothing.
+    fn hold_reads(&self, _hold: bool) {}
+    /// Calls `f` once what is queued is out (at once if nothing is), or when the transport goes
+    /// ([`WsSender::on_drain`]); replaces an earlier waiter. Default: at once.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        f();
+    }
+    /// The peer's address. Default: `None`.
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        None
+    }
 }
 
 /// Where a session's frames go: a TCP (or TLS) connection, or another transport.
@@ -80,6 +93,27 @@ impl Link {
         match self {
             Link::Tcp(c) => c.queued_bytes(),
             Link::Ext(l) => l.queued_bytes(),
+        }
+    }
+
+    fn hold_reads(&self, hold: bool) {
+        match self {
+            Link::Tcp(c) => c.hold_reads(hold),
+            Link::Ext(l) => l.hold_reads(hold),
+        }
+    }
+
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        match self {
+            Link::Tcp(c) => c.on_drain(f),
+            Link::Ext(l) => l.on_drain(f),
+        }
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        match self {
+            Link::Tcp(c) => Some(c.peer_addr()),
+            Link::Ext(l) => l.peer_addr(),
         }
     }
 
@@ -880,9 +914,81 @@ impl WsSender {
     }
 
     /// Bytes sent but not yet written to the socket, for pacing a producer (a sender that
-    /// streams to a slow peer drops or waits while this is high).
+    /// streams to a slow peer drops or waits while this is high). Over HTTP/2, the bytes not
+    /// yet framed (waiting for the stream's or the connection's window); over HTTP/3, the
+    /// bytes in the QUIC stream's send buffer not yet sent.
     pub fn queued_bytes(&self) -> usize {
         self.conn.queued_bytes()
+    }
+
+    /// Holds (`true`) or resumes (`false`) reading from the peer, for backpressure linked to
+    /// what this connection's messages are written to (rule 8): while held, no more is read,
+    /// so the peer is stopped by its transport's flow control. Over TCP or TLS it holds the
+    /// connection's reads (`Conn::hold_reads`); messages already read are still delivered.
+    /// Over HTTP/2 and HTTP/3 it holds the stream alone, as a streamed request body's reads
+    /// are held: its receive window is not given back (HTTP/3: what arrives stays in the QUIC
+    /// stream's buffer), so the peer stops once it has sent the window it had; frames already
+    /// in flight still arrive and are delivered. The connection's other streams go on.
+    /// Callable from any thread, from the handler's callbacks too; nothing once closed.
+    pub fn hold_reads(&self, hold: bool) {
+        self.conn.hold_reads(hold);
+    }
+
+    /// Calls `f` once, when what is queued for the peer is out ([`queued_bytes`] back to 0),
+    /// or when the connection closes: at once, on this thread, if that is so already,
+    /// otherwise on the connection's I/O thread. Replaces an earlier waiter (only the last one
+    /// set runs). For pacing what feeds this connection: past a high water of
+    /// [`queued_bytes`], hold the feeders and resume them from `f`, as with `Conn::on_drain`.
+    ///
+    /// Over TCP or TLS the queue is the connection's (frames sent from inside the handler's
+    /// callbacks join it first). Over HTTP/2 it is the stream's bytes not yet framed. Over
+    /// HTTP/3 it is the QUIC stream's send buffer, and `f` runs once that buffer has room
+    /// again (at once if it has, as for a streamed response's `BodyStream::on_drain`), not
+    /// when it is empty: QUIC refuses writes past it (`Overloaded`) and reports room at three
+    /// quarters of it.
+    ///
+    /// [`queued_bytes`]: Self::queued_bytes
+    pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
+        if self.tx.plain {
+            // Inside the session's `on_data` on its I/O thread: what the handler sent so far
+            // joins the connection's queue first.
+            self.flush_owned();
+        }
+        self.conn.on_drain(Box::new(f));
+    }
+
+    /// The peer's address: the TCP connection's, or the HTTP/2 or QUIC connection's that
+    /// carries the stream. `None` only for a transport that does not know it.
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        self.conn.peer_addr()
+    }
+
+    /// Marks (`true`) or unmarks (`false`) this WebSocket's connection as one end of a relay
+    /// (`Conn::set_relayed`): its reads no longer pause because its own output is queued past
+    /// `Config::write_high_watermark`, so a relay that writes what it reads here to another
+    /// connection, and paces it with [`hold_reads`](Self::hold_reads) and
+    /// [`on_drain`](Self::on_drain), cannot stall with its peer. Over TCP or TLS. Over
+    /// HTTP/2 and HTTP/3 a stream's reads never pause for its own output, and the setting
+    /// does nothing (the connection is shared with other streams).
+    pub fn set_relayed(&self, relayed: bool) {
+        if let Link::Tcp(c) = &self.conn {
+            c.set_relayed(relayed);
+        }
+    }
+
+    /// Gives this WebSocket's connection a bound of its own on the bytes queued for it
+    /// (`Conn::set_max_queued_bytes`, akit A234), in place of the engine's
+    /// `Config::max_queued_bytes`; `None` restores the engine's. Over TCP or TLS. Over HTTP/2
+    /// and HTTP/3 the stream's queue is bounded by its connection's options (`H2Config`,
+    /// `H2WsOptions`, QUIC's send buffers): `Err` with `ErrorKind::Unsupported`.
+    pub fn set_max_queued_bytes(&self, n: Option<usize>) -> Result<()> {
+        match &self.conn {
+            Link::Tcp(c) => {
+                c.set_max_queued_bytes(n);
+                Ok(())
+            }
+            Link::Ext(_) => Err(Error::Io(std::io::ErrorKind::Unsupported.into())),
+        }
     }
 }
 

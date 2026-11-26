@@ -10,6 +10,42 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a WebSocket's reads held, its drain heard, and its peer's address (akio-ws, akio-http, akio-h3)
+
+akit's A236, for its tunnel's WebSocket links and its LLM mesh; ADR-183. `WsSender` gets
+`hold_reads(bool)` (the connection's reads over TCP or TLS; the stream's over HTTP/2 and HTTP/3,
+whose window is then not given back), `on_drain(f)` (once `queued_bytes()` is back to 0, or the
+connection closes; over HTTP/3 once the QUIC stream's send buffer has room), `peer_addr()`,
+`set_relayed(bool)` and `set_max_queued_bytes(Option<usize>)` (the connection's, over TCP or TLS;
+over HTTP/2 and HTTP/3 the first does nothing and the second fails with `Unsupported`). On the
+server (`Context::upgrade_websocket`, HTTP/1.1, HTTP/2 and HTTP/3) and the client sides
+(`akio_ws::client`, `H2Client::websocket`, `H3Client::websocket`), from any thread.
+
+### Fixed: `akio_ws::client::dial_blocking` forwards `on_message_ref` (akio-ws)
+
+The wrapper that hands the sender back forwarded `on_message` only, so a handler implementing
+`on_message_ref` alone got no messages through `dial_blocking`.
+
+### Added: a pinned server certificate in the TLS client (akio-tls, akio-quic)
+
+akit's A235, for its tunnel's and LLM mesh's links to self-signed hubs; ADR-182.
+`ClientConfigBuilder::pin_sha256(pins)`: the SHA-256 of the server's leaf certificate must be one of
+`pins` (compared in constant time), in place of the chain, the name and the dates, as Go's
+`VerifyPeerCertificate` under `InsecureSkipVerify`; otherwise the handshake fails with
+`bad_certificate`. The leaf's key still verifies the server's handshake signature. QUIC clients
+built from such a configuration (`akio_quic::client_config_from`) are pinned too; an empty list
+fails `build`.
+
+### Added: a connection's own bound of its send queue (akio-core, akio)
+
+akit's A234, for its tunnel's and LLM mesh's links, whose queues hold their streams' windows;
+ADR-181. `Conn::set_max_queued_bytes(Some(n))` (also on `ConnHandle`) gives a connection a bound
+of its own in place of the engine's `Config::max_queued_bytes`, `None` restores the engine's, and
+`Conn::max_queued_bytes()` reads the bound in force. Callable from any thread; the next send is
+checked against it (as are `send_room`, HTTP/1.1's held-back ordered responses and files sent
+through a transport). Lowering it below what is queued drops nothing; `write_high_watermark` is
+unchanged. `WriteState` is 16 bytes larger.
+
 ### Added: connection handles, close deadlines, and a listener's accept and close hooks (akio-core, akio, akio-http)
 
 akit's A232, for its console's connection rules (fit's: no login, closed 5 s after accept; a

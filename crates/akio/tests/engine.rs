@@ -1064,10 +1064,14 @@ fn mixed_buffers_in_one_callback_arrive_whole_and_in_order() {
 
 /// Echoes every 8-byte record from the loop and hands it to `Relay`'s thread, which sends it
 /// again from there: output of the loop and of another thread interleaves on one connection.
-struct Relay(std::sync::mpsc::Sender<(Conn<Relay>, Vec<u8>)>);
+/// A read may end inside a record; its start waits for the next read.
+struct Relay(std::sync::mpsc::Sender<(Conn<Relay>, Vec<u8>)>, Vec<u8>);
 impl Handler for Relay {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        for rec in data.chunks(8) {
+        self.1.extend_from_slice(data);
+        let whole = self.1.len() / 8 * 8;
+        let recs: Vec<u8> = self.1.drain(..whole).collect();
+        for rec in recs.chunks(8) {
             let mut out = rec.to_vec();
             out[0] = 1; // from the loop
             c.send(&out).unwrap();
@@ -1092,7 +1096,7 @@ fn loop_and_other_thread_sends_keep_their_order() {
             Listener::tcp(localhost())
                 .backend(common::backend())
                 .threads(1)
-                .serve(fn_acceptor(move |_c: &Conn<Relay>| Relay(tx.clone()))),
+                .serve(fn_acceptor(move |_c: &Conn<Relay>| Relay(tx.clone(), Vec::new()))),
         )
         .build()
         .unwrap();

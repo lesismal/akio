@@ -321,6 +321,8 @@ impl ServerSettings {
 pub(crate) struct ClientSettings {
     pub(crate) roots: Arc<RootStore>,
     pub(crate) insecure: bool,
+    /// SHA-256 pins of the server's leaf: when not empty, they replace chain verification.
+    pub(crate) pins: Vec<[u8; 32]>,
     pub(crate) alpn: Vec<Vec<u8>>,
     pub(crate) cert: Option<Arc<CertKey>>,
     pub(crate) sni: bool,
@@ -489,6 +491,29 @@ fn check_signing_usage(leaf: &akio_x509::Certificate) -> Result<(), Fatal> {
         )),
         _ => Ok(()),
     }
+}
+
+/// The leaf's public key when the leaf's SHA-256 is one of `pins` (compared in constant time,
+/// every pin looked at); `bad_certificate` otherwise. Chain, name and dates are not checked.
+pub(crate) fn pinned_leaf_key(
+    pins: &[[u8; 32]],
+    chain: &[Vec<u8>],
+) -> Result<akio_crypto::pkey::PublicKey, Fatal> {
+    let leaf_der = chain
+        .first()
+        .ok_or_else(|| Fatal::new(Alert::DecodeError, "empty certificate chain"))?;
+    let digest = akio_crypto::hash::Sha256::digest(leaf_der);
+    let mut found = false;
+    for pin in pins {
+        found |= akio_crypto::ct_eq(&digest[..], pin);
+    }
+    if !std::hint::black_box(found) {
+        return Err(Fatal::new(
+            Alert::BadCertificate,
+            "server certificate does not match a pin",
+        ));
+    }
+    leaf_key(chain)
 }
 
 /// The leaf's public key without verifying anything (insecure mode).

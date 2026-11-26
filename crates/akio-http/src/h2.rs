@@ -2182,25 +2182,49 @@ pub(crate) struct H2Reads {
 
 impl H2Reads {
     pub(crate) fn hold(&self, hold: bool) {
-        let Some(core) = self.core.upgrade() else {
-            return;
-        };
-        let mut c = lock(&core);
-        let Some(st) = c.streams.get_mut(&self.sid) else {
-            return;
-        };
-        if st.held == hold {
-            return;
+        hold_stream(&self.core, self.sid, hold);
+    }
+}
+
+/// Holds (`true`) or resumes (`false`) the reads of stream `sid`: while held, the window its
+/// DATA consumes is not given back; resumed, what is owed goes back at once.
+fn hold_stream(core: &Weak<CoreCell>, sid: u32, hold: bool) {
+    let Some(core) = core.upgrade() else {
+        return;
+    };
+    let mut c = lock(&core);
+    let Some(st) = c.streams.get_mut(&sid) else {
+        return;
+    };
+    if st.held == hold {
+        return;
+    }
+    st.held = hold;
+    if hold || st.recv_owed == 0 || !matches!(st.state, SState::Open | SState::HalfClosedLocal) {
+        return;
+    }
+    let inc = std::mem::take(&mut st.recv_owed);
+    st.recv_window += inc;
+    c.window_update(sid, inc as u32);
+    c.flush();
+}
+
+/// Runs `f` once the queued bytes of stream `sid` are all framed (at once if they are), or when
+/// the stream or the connection goes away. Replaces an earlier waiter.
+fn drain_stream(core: &Weak<CoreCell>, sid: u32, f: Box<dyn FnOnce() + Send>) {
+    let Some(core) = core.upgrade() else {
+        return f();
+    };
+    let mut c = lock(&core);
+    let mut f = Some(f);
+    if let Some(st) = c.streams.get_mut(&sid).filter(|s| s.out_bytes > 0) {
+        if let Some(mut old) = st.drain.replace(Waiter(f.take())) {
+            old.0 = None; // replaced, not run
         }
-        st.held = hold;
-        if hold || st.recv_owed == 0 || !matches!(st.state, SState::Open | SState::HalfClosedLocal)
-        {
-            return;
-        }
-        let inc = std::mem::take(&mut st.recv_owed);
-        st.recv_window += inc;
-        c.window_update(self.sid, inc as u32);
-        c.flush();
+    }
+    drop(c);
+    if let Some(f) = f {
+        f();
     }
 }
 
@@ -2244,20 +2268,7 @@ impl H2Stream {
     /// Runs `f` once the stream's queued bytes are all framed (at once if they are), or when
     /// the stream or the connection goes away. Replaces an earlier waiter.
     pub(crate) fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
-        let Some(core) = self.core.upgrade() else {
-            return f();
-        };
-        let mut c = lock(&core);
-        let mut f = Some(f);
-        if let Some(st) = c.streams.get_mut(&self.sid).filter(|s| s.out_bytes > 0) {
-            if let Some(mut old) = st.drain.replace(Waiter(f.take())) {
-                old.0 = None; // replaced, not run
-            }
-        }
-        drop(c);
-        if let Some(f) = f {
-            f();
-        }
+        drain_stream(&self.core, self.sid, f);
     }
 
     pub(crate) fn finish(self) {
@@ -2390,6 +2401,21 @@ impl WsLink for H2WsLink {
         self.core.upgrade().map_or(0, |c| {
             lock(&c).streams.get(&self.sid).map_or(0, |s| s.out_bytes)
         })
+    }
+
+    /// The stream's reads, as a streamed request body's (`BodyReads::hold`): its window is not
+    /// given back while held.
+    fn hold_reads(&self, hold: bool) {
+        hold_stream(&self.core, self.sid, hold);
+    }
+
+    /// Once the stream's queued bytes are all framed, as a streamed response's.
+    fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        drain_stream(&self.core, self.sid, f);
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        self.core.upgrade().map(|c| lock(&c).peer)
     }
 }
 

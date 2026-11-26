@@ -45,9 +45,11 @@ impl Table {
     fn len(&self) -> usize {
         self.open.lock().unwrap().len()
     }
-    fn nth(&self, i: usize) -> ConnHandle {
-        let id = self.accepted.lock().unwrap()[i];
-        self.open.lock().unwrap()[&id].clone()
+    /// The open connection whose peer is the client socket `s`.
+    fn of(&self, s: &TcpStream) -> ConnHandle {
+        let peer = s.local_addr().unwrap();
+        let open = self.open.lock().unwrap();
+        open.values().find(|h| h.peer_addr() == peer).unwrap().clone()
     }
     fn was_closed(&self, id: u64) -> bool {
         self.closed.lock().unwrap().contains(&id)
@@ -115,9 +117,16 @@ fn echo(s: &mut TcpStream, b: &[u8]) {
     assert_eq!(got, b);
 }
 
+/// Whether the server closed `s`: an end of stream or a reset, not the read timeout.
 fn eof(s: &mut TcpStream) -> bool {
     let mut b = [0u8; 16];
-    matches!(common::read_retry(s, &mut b), Ok(0) | Err(_))
+    match common::read_retry(s, &mut b) {
+        Ok(n) => n == 0,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
 }
 
 #[test]
@@ -130,8 +139,10 @@ fn table_of_connections_and_close_from_another_thread() {
     for s in &mut conns {
         echo(s, b"x");
     }
-    // The application closes the first one it accepted, from this thread.
-    let first = table.nth(0);
+    // The application closes the first one connected, from this thread. It finds it by its
+    // peer's address, not as the first accepted: on Linux each I/O thread accepts from its own
+    // `SO_REUSEPORT` socket, so the order of `on_accept`s is not the order of the connects.
+    let first = table.of(&conns[0]);
     let local = first.local_addr();
     assert_eq!(local, addr);
     first.close();

@@ -54,7 +54,14 @@ impl QuicHandler for Client {
 }
 
 fn setup() -> (Arc<Engine>, SocketAddr) {
+    let (e, addr, _) = setup_with_cert();
+    (e, addr)
+}
+
+/// [`setup`], and the server certificate's DER.
+fn setup_with_cert() -> (Arc<Engine>, SocketAddr, Vec<u8>) {
     let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let der = ck.0.as_der().to_vec();
     let cert = akio::tls::Certificate::from_der(ck.0.as_der().to_vec());
     let key = akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let cfg = akio_quic::server_config(vec![cert], key, &[b"echo"]).unwrap();
@@ -70,7 +77,7 @@ fn setup() -> (Arc<Engine>, SocketAddr) {
         .unwrap();
     e.start().unwrap();
     let addr = e.local_addrs()[0];
-    (Arc::new(e), addr)
+    (Arc::new(e), addr, der)
 }
 
 #[test]
@@ -171,6 +178,61 @@ fn bad_certificate_fails_the_handshake() {
             Got::Closed(ConnectionError::TransportError { .. }) => break,
             Got::Closed(r) => panic!("unexpected {r}"),
             _ => {}
+        }
+    }
+    e.shutdown();
+}
+
+/// akit's A235: a client pinned to the server's certificate by its SHA-256 connects with no
+/// roots and a name the certificate does not carry; pinned to another, the handshake fails
+/// with `bad_certificate` (transport error 0x12a).
+#[test]
+fn a_pinned_certificate_replaces_roots_and_name() {
+    let (e, addr, der) = setup_with_cert();
+    let other = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    for (pin, ok) in [(&der[..], true), (other.0.as_der(), false)] {
+        let tls = akio::tls::ClientConfig::builder()
+            .pin_sha256(vec![akio_crypto::hash::Sha256::digest(pin)])
+            .alpn([b"echo"])
+            .tls13_only(true)
+            .build()
+            .unwrap();
+        let cfg = akio_quic::client_config_from(&tls).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let c = akio_quic::dial(
+            &e,
+            addr,
+            "not-the-name.test",
+            cfg,
+            Client {
+                tx,
+                bufs: HashMap::new(),
+            },
+        )
+        .unwrap();
+        match rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("an outcome")
+        {
+            Got::Connected if ok => {
+                let id = c.open_bi().expect("stream");
+                c.send(id, Bytes::from_static(b"pinned")).unwrap();
+                c.finish(id).unwrap();
+                loop {
+                    match rx.recv_timeout(Duration::from_secs(10)).expect("echo") {
+                        Got::Stream(_, b) => break assert_eq!(b, b"pinned"),
+                        Got::Closed(r) => panic!("closed: {r}"),
+                        _ => {}
+                    }
+                }
+                c.close(0, b"");
+            }
+            Got::Closed(ConnectionError::TransportError { code, .. }) if !ok => {
+                assert_eq!(code, 0x100 + 42, "bad_certificate");
+            }
+            Got::Connected => panic!("connected with the wrong pin"),
+            Got::Closed(r) => panic!("unexpected close: {r}"),
+            _ => panic!("unexpected event"),
         }
     }
     e.shutdown();

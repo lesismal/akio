@@ -43,7 +43,7 @@ use akio::{
 use akio_core::ConnInner;
 
 use crate::{
-    Message, WsConfig, WsHandler, WsSender, WsSession, accept_key,
+    Message, MessageRef, WsConfig, WsHandler, WsSender, WsSession, accept_key,
     deflate::PmdOffer,
     http1,
     proxy::{Connect, Proxy, Refusal},
@@ -596,6 +596,11 @@ impl WsHandler for Notify {
     }
     fn on_message(&mut self, ws: &WsSender, msg: Message) {
         self.inner.on_message(ws, msg);
+    }
+    // Forwarded as it came, so that a handler that implements `on_message_ref` alone gets it
+    // (the default would hand the inner handler an owned copy through `on_message`).
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        self.inner.on_message_ref(ws, msg);
     }
     fn on_pong(&mut self, ws: &WsSender, payload: &[u8]) {
         self.inner.on_pong(ws, payload);

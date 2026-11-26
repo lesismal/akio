@@ -512,6 +512,8 @@ pub struct ClientParts {
     pub client_cert: Option<(Vec<Vec<u8>>, Vec<u8>)>,
     /// Skip verification.
     pub insecure: bool,
+    /// SHA-256 pins of the server's leaf ([`ClientConfigBuilder::pin_sha256`]); empty: none.
+    pub pins: Vec<[u8; 32]>,
     /// Send SNI.
     pub sni: bool,
     /// Resume sessions.
@@ -1313,6 +1315,7 @@ impl ClientConfig {
             client_cert: None,
             client_cert_ocsp: None,
             insecure: false,
+            pins: None,
             sni: true,
             resumption: true,
             tls13_only: false,
@@ -1350,6 +1353,7 @@ pub struct ClientConfigBuilder {
     client_cert: Option<(Vec<Certificate>, PrivateKey)>,
     client_cert_ocsp: Option<Vec<u8>>,
     insecure: bool,
+    pins: Option<Vec<[u8; 32]>>,
     sni: bool,
     resumption: bool,
     tls13_only: bool,
@@ -1377,6 +1381,7 @@ impl fmt::Debug for ClientConfigBuilder {
                 &self.client_cert_ocsp.is_some(),
             )
             .field("insecure", &self.insecure)
+            .field("pins", &self.pins.as_ref().map(Vec::len))
             .field("sni", &self.sni)
             .field("resumption", &self.resumption)
             .field("tls13_only", &self.tls13_only)
@@ -1563,6 +1568,24 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// Pins the server's certificate: the SHA-256 of its leaf certificate (the DER bytes, as
+    /// `sha256sum` of a DER file or `openssl x509 -outform der | sha256sum` gives it) must be
+    /// one of `pins`, compared in constant time; otherwise the handshake fails with
+    /// `bad_certificate`. In place of the chain, the name and the validity dates, none of
+    /// which is checked (a self-signed certificate, as Go's `VerifyPeerCertificate` with
+    /// `InsecureSkipVerify` checks it). The leaf's key must still allow signing and still
+    /// verifies the server's handshake signature (CertificateVerify, or the TLS 1.2
+    /// ServerKeyExchange), so a server that only has the certificate cannot pass. Replaces
+    /// [`roots`](Self::roots) and [`insecure_skip_verify`](Self::insecure_skip_verify) for
+    /// this configuration; OCSP and CRL checks ([`ocsp_policy`](Self::ocsp_policy),
+    /// [`crls`](Self::crls)) are not applied. QUIC clients built from this configuration
+    /// (`akio_quic::client_config_from`) check the pin too. [`build`](Self::build) fails
+    /// for an empty list.
+    pub fn pin_sha256(mut self, pins: Vec<[u8; 32]>) -> Self {
+        self.pins = Some(pins);
+        self
+    }
+
     /// Accepts TLS 1.2 only (default: TLS 1.2 and 1.3; ADR-121), as Go's
     /// `tls.Config.MaxVersion = tls.VersionTLS12`: for network cards that offload TLS 1.2
     /// alone, or peers that must not negotiate 1.3. The TLS 1.3 suites are left out, and the
@@ -1613,6 +1636,9 @@ impl ClientConfigBuilder {
                 Some(Arc::new(ck))
             }
         };
+        if self.pins.as_ref().is_some_and(Vec::is_empty) {
+            return Err(Error::new("pin_sha256 with no pins"));
+        }
         if self.client_cert_ocsp.is_some() && cert.is_none() {
             return Err(Error::new(
                 "client OCSP response without a client certificate",
@@ -1648,6 +1674,7 @@ impl ClientConfigBuilder {
                 .as_ref()
                 .map(|c| (c.chain.clone(), c.key.to_pkcs8_der())),
             insecure: self.insecure,
+            pins: self.pins.clone().unwrap_or_default(),
             sni: self.sni,
             resumption: self.resumption,
             tls13_only: self.tls13_only,
@@ -1655,6 +1682,7 @@ impl ClientConfigBuilder {
         let settings = ClientSettings {
             roots: Arc::new(self.roots.0),
             insecure: self.insecure,
+            pins: self.pins.unwrap_or_default(),
             alpn: self.alpn,
             cert,
             sni: self.sni,

@@ -795,6 +795,102 @@ fn certificate_verification_failures() {
     assert!(c.server_name().is_none() && s.server_name().is_none());
 }
 
+/// The SHA-256 of a certificate's DER (a pin, A235).
+fn pin_of(c: &Certificate) -> [u8; 32] {
+    akio_crypto::hash::Sha256::digest(c.as_der())
+}
+
+#[test]
+fn pinned_server_certificate() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let other = pki(Kind::P256, &["localhost"]);
+    let s = server(&p).build().unwrap();
+    // A self-signed certificate long expired, for a name the client does not ask for.
+    let old_key = private_key(Kind::Ed25519);
+    let mut params = akio_x509::CertificateParams::new(["hub.internal"]);
+    params.not_before = 1_000_000_000;
+    params.not_after = 1_000_086_400;
+    let old = Certificate::from_der(params.self_signed(&old_key).unwrap().as_der().to_vec());
+    let s_old = ServerConfig::builder(
+        vec![old.clone()],
+        PrivateKey::from_pkcs8_der(old_key.to_pkcs8_der()),
+    )
+    .build()
+    .unwrap();
+    for tls12 in [false, true] {
+        let pinned = |pins: Vec<[u8; 32]>| {
+            ClientConfig::builder()
+                .pin_sha256(pins)
+                .__tls12_only(tls12)
+                .build()
+                .unwrap()
+        };
+        // The pin replaces the chain and the name: no roots, any name.
+        let (mut c, mut sv) = connect(&s, &pinned(vec![pin_of(&p.chain[0])]), "x.test").unwrap();
+        exchange(&mut c, &mut sv);
+        // One of several.
+        let pins = vec![pin_of(&other.chain[0]), pin_of(&p.chain[0])];
+        connect(&s, &pinned(pins), "localhost").unwrap();
+        // Nor are the dates checked.
+        connect(&s_old, &pinned(vec![pin_of(&old)]), "localhost").unwrap();
+        // Another certificate fails the handshake, even one that chains to the roots and
+        // carries the name, and with insecure_skip_verify set too.
+        let e = connect(&s, &pinned(vec![pin_of(&other.chain[0])]), "localhost").unwrap_err();
+        assert!(matches!(e, Side::Client(_)), "{e:?}");
+        assert_eq!(e.alert(), Alert::BadCertificate);
+        let c = client(&p)
+            .insecure_skip_verify()
+            .pin_sha256(vec![pin_of(&other.chain[0])])
+            .__tls12_only(tls12)
+            .build()
+            .unwrap();
+        assert_eq!(
+            connect(&s, &c, "localhost").unwrap_err().alert(),
+            Alert::BadCertificate
+        );
+    }
+    assert!(
+        ClientConfig::builder()
+            .pin_sha256(Vec::new())
+            .build()
+            .is_err()
+    );
+}
+
+/// A server that shows the pinned certificate without its key: the TLS 1.2 flight (in the
+/// clear) of a server with another certificate of the same size, the pinned one put in its
+/// place. The pin matches; the ServerKeyExchange signature, checked with the pinned leaf's key,
+/// does not.
+#[test]
+fn pinned_certificate_without_its_key_fails() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let mut other = pki(Kind::P256, &["localhost"]);
+    while other.chain[0].as_der().len() != p.chain[0].as_der().len() {
+        other = pki(Kind::P256, &["localhost"]);
+    }
+    let s = server(&other).__tls12_only(true).build().unwrap();
+    let ccfg = ClientConfig::builder()
+        .pin_sha256(vec![pin_of(&p.chain[0])])
+        .__tls12_only(true)
+        .build()
+        .unwrap();
+    let mut c = crate::__proto::client(&ccfg, "localhost").unwrap();
+    let mut sv = crate::__proto::server(&s);
+    let (mut c2s, mut plain) = (Vec::new(), Vec::new());
+    c.recv(&[], &mut plain, &mut c2s).unwrap();
+    let mut s2c = Vec::new();
+    sv.recv(&c2s, &mut plain, &mut s2c).unwrap();
+    let (fake, real) = (other.chain[0].as_der(), p.chain[0].as_der());
+    let at = s2c
+        .windows(fake.len())
+        .position(|w| w == fake)
+        .expect("the certificate in the flight");
+    s2c[at..at + fake.len()].copy_from_slice(real);
+    let e = c.recv(&s2c, &mut plain, &mut Vec::new()).unwrap_err();
+    // The pin matched; the signature did not verify.
+    assert_eq!(e.alert, Alert::DecryptError, "{e:?}");
+}
+
 #[test]
 fn fragmentation_and_coalescing() {
     let p = pki(Kind::P256, &["localhost"]);

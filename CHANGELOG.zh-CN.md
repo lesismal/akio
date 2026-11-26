@@ -10,6 +10,38 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：WebSocket 的读取暂停、排空通知与对端地址（akio-ws、akio-http、akio-h3）
+
+akit 的 A236，用于其隧道的 WebSocket 链路和 LLM 网格；ADR-183。`WsSender` 新增
+`hold_reads(bool)`（在 TCP 或 TLS 上暂停连接的读取；在 HTTP/2 和 HTTP/3 上暂停流的读取，期间不归还
+其窗口）、`on_drain(f)`（`queued_bytes()` 回到 0 或连接关闭时运行；在 HTTP/3 上为 QUIC 流的发送缓冲区
+有空间时）、`peer_addr()`、`set_relayed(bool)` 和 `set_max_queued_bytes(Option<usize>)`（在 TCP 或
+TLS 上作用于连接；在 HTTP/2 和 HTTP/3 上前者不做任何事，后者以 `Unsupported` 失败）。服务端
+（`Context::upgrade_websocket`，HTTP/1.1、HTTP/2 和 HTTP/3）与客户端（`akio_ws::client`、
+`H2Client::websocket`、`H3Client::websocket`）都支持，可在任意线程调用。
+
+### 修复：`akio_ws::client::dial_blocking` 转发 `on_message_ref`（akio-ws）
+
+交回 sender 的包装只转发 `on_message`，因此只实现 `on_message_ref` 的 handler 通过 `dial_blocking`
+收不到任何消息。
+
+### 新增：TLS 客户端的固定服务端证书（akio-tls、akio-quic）
+
+akit 的 A235，用于其隧道和 LLM 网格到自签名 hub 的链路；ADR-182。
+`ClientConfigBuilder::pin_sha256(pins)`：服务端叶子证书的 SHA-256 必须是 `pins` 之一（常数时间
+比较），代替证书链、名称和有效期检查，与 Go 在 `InsecureSkipVerify` 下的 `VerifyPeerCertificate`
+相同；否则握手以 `bad_certificate` 失败。叶子证书的公钥仍要验证服务端的握手签名。由这样的配置得到的
+QUIC 客户端（`akio_quic::client_config_from`）同样固定；空列表使 `build` 失败。
+
+### 新增：连接自己的发送队列上限（akio-core、akio）
+
+akit 的 A234，用于其隧道和 LLM 网格的链路，这些链路的队列要容纳各个流的窗口；ADR-181。
+`Conn::set_max_queued_bytes(Some(n))`（`ConnHandle` 上也有）为连接设置自己的上限，代替引擎的
+`Config::max_queued_bytes`；`None` 恢复引擎的；`Conn::max_queued_bytes()` 读出生效的上限。可在
+任意线程调用；下一次发送即按它检查（`send_room`、HTTP/1.1 被扣住的有序响应以及经由 transport 发送的
+文件也一样）。把它降到已排队字节数以下不会丢弃任何内容；`write_high_watermark` 不变。`WriteState`
+大 16 字节。
+
 ### 新增：连接句柄、关闭期限，以及监听器的接受与关闭钩子（akio-core、akio、akio-http）
 
 akit 的 A232，用于其控制台的连接规则（fit 的规则：未登录的连接在接受 5 秒后关闭；有会话的连接空闲

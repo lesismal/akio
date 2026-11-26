@@ -144,3 +144,6 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-178: An accept filter on UDP listeners, bound sockets and QUIC servers](178-udp-accept-filter.md) (accepted 2026-11-26; akit A220)
 - [ADR-179: Argon2id in akio-crypto, its lanes on scoped threads](179-argon2id.md) (accepted 2026-11-26; akit A230, A231)
 - [ADR-180: Connection handles, close deadlines and a listener's accept and close hooks](180-connection-handles-and-accept-hooks.md) (accepted 2026-11-26; akit A232)
+- [ADR-181: A connection's own bound of its send queue](181-own-send-queue-bound.md) (accepted 2026-11-27; akit A234)
+- [ADR-182: A pinned server certificate in akio-tls's client](182-pinned-server-certificate.md) (accepted 2026-11-27; akit A235)
+- [ADR-183: A WebSocket's reads held, its drain heard, and its peer's address](183-websocket-pacing.md) (accepted 2026-11-27; akit A236)

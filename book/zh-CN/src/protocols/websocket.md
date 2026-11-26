@@ -110,6 +110,21 @@ extended CONNECT，`ctx.req().protocol` 为 `Some("websocket")`。`H2Config::ena
 告诉生产者何时该等待。close 帧结束我方这一半流，`RST_STREAM` 或连接丢失以 1006 到达 `on_close`，优雅
 关闭以 1001 关闭。
 
+## 为 WebSocket 调速
+
+消息来自其他连接或要写往其他连接的中继或隧道，通过 `WsSender` 在任意线程上联动它们的背压（规则 8）：
+
+- `queued_bytes()`：等待发出的字节；超过高水位时，暂停向这个 WebSocket 供数据的一方。
+- `on_drain(f)`：这个队列重新变空时（已经为空则立即）或连接关闭时运行 `f`；以最后设置的为准。在
+  HTTP/3 上，与流式响应一样，在 QUIC 流的发送缓冲区有空间时运行。
+- `hold_reads(true)` / `hold_reads(false)`：停止和恢复读取对端，使得在这个 WebSocket 交付的内容无法
+  继续写出时，由对端的流量控制让它停下。在 TCP 或 TLS 上是连接的读取；在 HTTP/2 和 HTTP/3 上是流的
+  读取（不归还其窗口），连接上的其他流照常进行。
+- `peer_addr()`：对端地址（流的话为 HTTP/2 或 QUIC 连接的对端）。
+- `set_relayed(true)`：在 TCP 或 TLS 上，连接的读取不再因为自己的输出超过 `write_high_watermark` 而
+  暂停（`Conn::set_relayed`）；`set_max_queued_bytes(Some(n))` 给它自己的发送队列上限
+  （`Conn::set_max_queued_bytes`）。在 HTTP/2 和 HTTP/3 上前者不做任何事，后者以 `Unsupported` 失败。
+
 ## 尚未完成
 
 客户端：跨重定向携带 cookie（可以自行用 `akio_http::cookie::CookieJar::header` 设置 `Cookie` 头；

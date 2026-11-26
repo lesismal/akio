@@ -312,6 +312,78 @@ fn akio_dials_only_over_tls() {
     stop(&server);
 }
 
+/// akit's A235: a client pinned to the server's certificate by its SHA-256 dials without roots
+/// and with a name the certificate does not carry; pinned to another, the handshake fails and
+/// nothing it sent reaches the server.
+#[test]
+fn a_pinned_certificate_replaces_roots_and_name() {
+    let p = pki();
+    let other = pki();
+    let server = echo_engine(&p, &[]);
+    let addr = server.local_addrs()[0];
+
+    #[derive(Default)]
+    struct Seen {
+        data: Vec<u8>,
+        closed: Option<String>,
+    }
+    struct Client(Arc<Mutex<Seen>>);
+    impl Handler for Client {
+        fn on_data(&mut self, _c: &Conn<Self>, data: &[u8]) {
+            self.0.lock().unwrap().data.extend_from_slice(data);
+        }
+        fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
+            self.0.lock().unwrap().closed = Some(format!("{err:?}"));
+        }
+    }
+    struct ClientAcceptor(Arc<Mutex<Seen>>);
+    impl akio::Acceptor for ClientAcceptor {
+        type Handler = Client;
+        fn on_open(&self, c: &Conn<Client>) -> Client {
+            c.send(b"pinned").unwrap();
+            Client(self.0.clone())
+        }
+    }
+    let client = Engine::builder()
+        .config(quick())
+        .client_threads(1)
+        .build()
+        .unwrap();
+    client.start().unwrap();
+    let dial = |pin: &CertificateDer<'static>| {
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let cfg = ftls::ClientConfig::builder()
+            .pin_sha256(vec![akio_crypto::hash::Sha256::digest(pin)])
+            .build()
+            .unwrap();
+        let acceptor = Tls::client(cfg, "not-the-name.test", ClientAcceptor(seen.clone())).unwrap();
+        client.dial(addr, acceptor, |e| panic!("dial failed: {e}"));
+        seen
+    };
+    let wait = |what: &str, f: &dyn Fn() -> bool| {
+        let t = std::time::Instant::now();
+        while !f() {
+            assert!(t.elapsed() < Duration::from_secs(10), "{what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    let ok = dial(&p.cert);
+    wait("no echo through the pinned connection", &|| {
+        ok.lock().unwrap().data.len() >= 6
+    });
+    assert_eq!(ok.lock().unwrap().data, b"pinned");
+
+    let bad = dial(&other.cert);
+    wait("the mismatched pin did not fail the handshake", &|| {
+        bad.lock().unwrap().closed.is_some()
+    });
+    // Nothing came back: what it sent never reached the echo server.
+    assert!(bad.lock().unwrap().data.is_empty());
+    stop(&client);
+    stop(&server);
+}
+
 #[test]
 fn local_close_after_send_ends_with_close_notify() {
     struct Bye;

@@ -94,6 +94,7 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 | OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`; `.ocsp_policy(RevocationPolicy::HardFail)` to validate it |
 | CRLs ([revocation](#revocation-checking)) | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
 | the client's OCSP response (TLS 1.3) | `.client_ocsp_policy(policy)` asks for and validates it | `.client_cert_ocsp_response(der)` sends it when asked |
+| a pinned server certificate (its SHA-256, in place of roots, name and dates; self-signed hubs) | | `.pin_sha256(vec![sha256_of_leaf_der])` |
 | tests only | | `.insecure_skip_verify()` |
 
 `.build()` checks the certificates and key (including that the key belongs to the leaf

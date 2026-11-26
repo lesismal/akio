@@ -415,7 +415,10 @@ impl core::panic::unwind_safe::UnwindSafe for akio_ws::WsConfig
 pub struct akio_ws::WsSender
 impl akio_ws::WsSender
 pub fn akio_ws::WsSender::close(&self, u16, &str)
+pub fn akio_ws::WsSender::hold_reads(&self, bool)
 pub fn akio_ws::WsSender::is_open(&self) -> bool
+pub fn akio_ws::WsSender::on_drain(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static)
+pub fn akio_ws::WsSender::peer_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn akio_ws::WsSender::ping(&self, &[u8]) -> akio_core::error::Result<()>
 pub fn akio_ws::WsSender::pong(&self, &[u8]) -> akio_core::error::Result<()>
 pub fn akio_ws::WsSender::queued_bytes(&self) -> usize
@@ -424,6 +427,8 @@ pub fn akio_ws::WsSender::send_binary_fragmented(&self, &[u8], usize) -> akio_co
 pub fn akio_ws::WsSender::send_prepared(&self, &akio_ws::PreparedMessage) -> akio_core::error::Result<()>
 pub fn akio_ws::WsSender::send_text(&self, &str) -> akio_core::error::Result<()>
 pub fn akio_ws::WsSender::send_text_fragmented(&self, &str, usize) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::set_max_queued_bytes(&self, core::option::Option<usize>) -> akio_core::error::Result<()>
+pub fn akio_ws::WsSender::set_relayed(&self, bool)
 pub fn akio_ws::WsSender::subprotocol(&self) -> core::option::Option<alloc::string::String>
 impl core::clone::Clone for akio_ws::WsSender
 pub fn akio_ws::WsSender::clone(&self) -> Self

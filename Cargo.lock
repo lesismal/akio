@@ -52,6 +52,7 @@ version = "1.0.0-rc.1"
 dependencies = [
  "akio-buf",
  "akio-core",
+ "akio-crypto",
  "akio-dpdk",
  "akio-ebpf",
  "akio-epoll",

@@ -86,6 +86,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 与 secp256
 | OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`；`.ocsp_policy(RevocationPolicy::HardFail)` 校验它 |
 | CRL（[吊销检查](#吊销检查)） | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
 | 客户端的 OCSP 响应（TLS 1.3） | `.client_ocsp_policy(policy)` 请求并校验 | `.client_cert_ocsp_response(der)` 在被请求时发送 |
+| 固定服务端证书（按其 SHA-256，代替根证书、名称和有效期检查；自签名的 hub） | | `.pin_sha256(vec![sha256_of_leaf_der])` |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
 `.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `akio::tls::Error`；配置克隆开销
