@@ -771,6 +771,28 @@ back to the loop), still to be profiled. (3) Inline, rounds is the fastest unpin
 h2c (4.12M ±1%, against 3.5M ±5–8% for unpinned loops and 4.0M for pinned loops); for HTTP/1.1
 it is steadier but slower than loops.
 
+**Profile of the pool path** (2026-11-26, same setup on epoll, `perf record -g` for 6 s,
+`perf stat` for 5 s, `offcputime`; a build with frame pointers and line tables). Through the pool
+the server serves about 455k requests/s at 407% CPU, about 9 µs of CPU per request; inline 3.17M at
+306%, about 1 µs. 84% of the pool run's CPU is on the pool threads, 69% of it in the kernel.
+Of all samples:
+
+| Where | Share |
+|---|---:|
+| one `send()` per response from the pool thread (`H2Responder::send` → `Core::flush` → `ConnInner::send_owned`, a TCP segment each) | 41% |
+| the connection's `Mutex<Core>`: futex sleeps and wake-ups, spinning (`H2Responder::send` locking it) | 30% |
+| the logical pool itself (`try_execute`, `notify_one`) | 2–3% |
+| HTTP/2 framing, HPACK, routing, TCP receive and the rest | 25% |
+
+Per 5 s: 1.0M context switches and 4.5M futex calls (none inline), 55k CPU migrations (7
+inline). **So the ceiling is not the pool's queue but what a pooled response does on its way
+out.** Every response locks its connection's core from a pool thread, where up to 16 streams of
+the connection finish at once and contend with each other and with the I/O thread feeding it.
+Then it flushes on its own, one syscall and one segment per response, where inline the
+responses of a read leave in one `writev`. Handing pooled responses back to the I/O thread
+(queued, one wake-up per batch, encoded and written there together) would remove both;
+replacing the pool's queue with per-thread queues would not.
+
 ### Cryptography (`akio-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

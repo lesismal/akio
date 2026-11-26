@@ -664,6 +664,25 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 h2c 最快的（412 万 ±1%；不绑核的 loops 为 350 万左右、±5–8%，绑核的 loops 为 400 万）；HTTP/1.1
 上它比 loops 稳定，但更慢。
 
+**线程池路径的 profile**（2026-11-26，相同设置，epoll；`perf record -g` 6 秒、`perf stat` 5 秒、
+`offcputime`；构建带 frame pointer 和行号表）。走线程池时服务端约每秒 45.5 万请求、CPU 407%，每个
+请求约 9 µs CPU；inline 为 317 万、306%，约 1 µs。线程池路径 84% 的 CPU 花在线程池线程上，其中 69%
+在内核里。按全部采样：
+
+| 位置 | 占比 |
+|---|---:|
+| 线程池线程为每个响应单独调用一次 `send()`（`H2Responder::send` → `Core::flush` → `ConnInner::send_owned`，每个响应一个 TCP 段） | 41% |
+| 连接的 `Mutex<Core>`：futex 睡眠与唤醒、自旋（`H2Responder::send` 加锁） | 30% |
+| 逻辑线程池本身（`try_execute`、`notify_one`） | 2–3% |
+| HTTP/2 分帧、HPACK、路由、TCP 接收及其他 | 25% |
+
+每 5 秒：上下文切换 100 万次、futex 调用 450 万次（inline 都为 0），CPU 迁移 5.5 万次（inline 为 7 次）。
+**所以上限不在线程池的队列，而在走线程池的响应写出去的过程。** 每个响应都在线程池线程上锁住所属
+连接的 core：同一连接最多 16 个 stream 同时完成，它们之间、以及与正在喂数据的 I/O 线程之间互相竞争。
+随后每个响应各自 flush，一次系统调用、一个 TCP 段；inline 时一次 read 的所有响应合成一次 `writev`
+发出。把走线程池的响应交回 I/O 线程（排队、每批唤醒一次、在 I/O 线程上一起编码和写出），两项开销都会
+消失；把线程池的队列换成每线程队列则没有帮助。
+
 ### 密码学（`akio-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +
