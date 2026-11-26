@@ -639,6 +639,7 @@ pub fn akio_core::Conn<H>::attachment<T: core::any::Any>(&self) -> core::option:
 pub fn akio_core::Conn<H>::close(&self)
 pub fn akio_core::Conn<H>::close_after_send(&self)
 pub fn akio_core::Conn<H>::cork(&self)
+pub fn akio_core::Conn<H>::filter_allows(&self, core::net::socket_addr::SocketAddr) -> bool
 pub fn akio_core::Conn<H>::flush(&self) -> akio_core::Result<()>
 pub fn akio_core::Conn<H>::hold_reads(&self, bool)
 pub fn akio_core::Conn<H>::id(&self) -> u64
@@ -1096,6 +1097,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for akio_core::TransportWaker
 impl !core::panic::unwind_safe::UnwindSafe for akio_core::TransportWaker
 pub struct akio_core::UdpBinding
 impl akio_core::UdpBinding
+pub fn akio_core::UdpBinding::clear_filter(&self) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::close(&self)
 pub fn akio_core::UdpBinding::join_multicast(&self, core::net::ip_addr::IpAddr, u32) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::leave_multicast(&self, core::net::ip_addr::IpAddr, u32) -> core::io::error::Result<()>
@@ -1103,6 +1105,7 @@ pub fn akio_core::UdpBinding::local_addr(&self) -> core::net::socket_addr::Socke
 pub fn akio_core::UdpBinding::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::send_to_on(&self, &[u8], core::net::socket_addr::SocketAddr, u32) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_dont_fragment(&self, bool) -> core::io::error::Result<()>
+pub fn akio_core::UdpBinding::set_filter(&self, impl core::ops::function::Fn(&core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_recv_interface(&self, bool) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::set_unicast_hops(&self, u32) -> core::io::error::Result<()>
 pub fn akio_core::UdpBinding::shutdown(&self, core::time::Duration)

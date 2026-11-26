@@ -38,6 +38,12 @@ TCP 服务端就是一个服务某个 acceptor 的 `Listener::tcp(addr)`；见[�
 `Engine::set_listener_filter(id, f)` 与 `clear_listener_filter(id)` 在运行时替换它；调用返回后的
 每次 `accept` 都使用新的过滤器。
 
+UDP 监听器使用同样的过滤器（ADR-178）：对来自尚无连接的对端的每个数据报，在 `udp_max_peers` 和
+`on_open` 之前询问它，被拒绝的数据报被丢弃，不保留对端的任何记录（按数据报计数）。已有连接的对端
+不再询问；QUIC 服务端（akio-quic、akio-h3）在每个新的 QUIC 连接之前、任何 TLS 计算之前，经
+`Conn::filter_allows` 再询问一次。数据报监听器上每个数据报都询问。运行时绑定的套接字用
+`Engine::bind_udp_filtered` 带上过滤器，用 `UdpBinding::set_filter` / `clear_filter` 替换。
+
 ## TCP 客户端
 
 ```rust,ignore

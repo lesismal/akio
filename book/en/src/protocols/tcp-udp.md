@@ -42,6 +42,14 @@ it in `akio_connections_filtered_total`. Allow / deny lists belong here: keep it
 `Engine::set_listener_filter(id, f)` and `clear_listener_filter(id)` swap it while the engine
 runs; every `accept` after the call returns uses the new one.
 
+UDP listeners take the same filter (ADR-178): it is asked for each datagram from a peer that has
+no connection yet, before `udp_max_peers` and `on_open`, and a refused datagram is dropped with
+nothing kept of the peer (counted per datagram). Peers already connected are not asked again; a
+QUIC server (akio-quic, akio-h3) asks it again before each new QUIC connection, through
+`Conn::filter_allows`, ahead of any TLS work. On a datagram listener every datagram is asked.
+Sockets bound at run time take one with `Engine::bind_udp_filtered` and swap it with
+`UdpBinding::set_filter` / `clear_filter`.
+
 ## TCP clients
 
 ```rust,ignore
