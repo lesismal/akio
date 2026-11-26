@@ -63,6 +63,32 @@ thread_local! {
     /// rather than doing its work. (A refused job comes back as an opaque `FnOnce`, so this
     /// is how it learns; it runs right away, on this thread, and clears the flag.)
     static REFUSED: Cell<bool> = const { Cell::new(false) };
+    /// Set while a pool job runs the service of a request dispatched to the pool
+    /// (`handlers_on_logical_pool`): an HTTP/2 response sent meanwhile goes back to the I/O
+    /// thread to be written with the others of its connection (`h2::Deferred`); work the
+    /// handler posts to the pool itself (`detach_to_pool`, `executor`) answers on its own.
+    static DEFERRING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether this thread is running a pooled request's service (see [`DEFERRING`]).
+pub(crate) fn deferring() -> bool {
+    DEFERRING.get()
+}
+
+/// Clears [`DEFERRING`] when the service returns or panics.
+struct Deferring;
+
+impl Deferring {
+    fn on() -> Deferring {
+        DEFERRING.set(true);
+        Deferring
+    }
+}
+
+impl Drop for Deferring {
+    fn drop(&mut self) {
+        DEFERRING.set(false);
+    }
 }
 
 /// Queues `job` on `exec`; when the pool refuses it, runs it here with [`REFUSED`] set.
@@ -96,12 +122,14 @@ pub(crate) fn call_on_pool<S: Service + ?Sized>(svc: Arc<S>, mut ctx: Context, e
             if REFUSED.get() {
                 return ctx.respond(busy());
             }
+            let on = Deferring::on();
             let g = crate::trace::begin(&mut ctx);
             svc.call(&mut ctx);
             drop(g);
             if !ctx.responded() && !ctx.is_detached() {
                 ctx.respond(Response::text(500, "handler did not respond"));
             }
+            drop(on);
         }),
     );
 }

@@ -320,6 +320,57 @@ fn h2_handlers_on_logical_pool_serves_one_connections_blocking_streams_at_once()
     }
 }
 
+/// Pooled HTTP/2 handlers answer on the pool thread, and their responses go back to the
+/// connection's thread to be written together (`h2::Deferred`); work they post to the pool
+/// themselves, or answer from threads of their own, writes by itself. Many streams of one
+/// connection at once, every kind mixed, a body larger than the stream window among them.
+#[test]
+fn h2_pooled_responses_of_one_connection_all_arrive_whoever_writes_them() {
+    let big = "x".repeat(200 << 10);
+    let big2 = big.clone();
+    let app = mixed_app().get("/big", move |ctx: &mut Context| {
+        assert!(on_pool_thread());
+        ctx.text(200, big2.clone());
+    });
+    let mut cfg = HttpConfig::default();
+    let mut h2 = H2Config::default();
+    h2.handlers_on_logical_pool = true;
+    cfg.h2 = Some(h2);
+    let e = start(app, cfg, None);
+    let addr = e.local_addrs()[0];
+    let c = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
+    for round in 0..5 {
+        // Within the server's 128 concurrent streams.
+        let paths: Vec<String> = (0..120)
+            .map(|i| match i % 5 {
+                0 => format!("/inline/{i}"),
+                1 => format!("/pool/{}", i % 3),
+                2 => format!("/thread/{}", i % 3),
+                3 => "/block/0".to_owned(),
+                _ => "/big".to_owned(),
+            })
+            .collect();
+        let futs: Vec<_> = paths
+            .iter()
+            .map(|p| c.send(ClientRequest::get(&format!("http://{addr}{p}"))))
+            .collect();
+        for (p, f) in paths.iter().zip(futs) {
+            let r = f.wait().unwrap();
+            assert_eq!(r.status, 200, "{p} in round {round}");
+            let body = String::from_utf8(r.body).unwrap();
+            let want = match p.split('/').nth(1).unwrap() {
+                "inline" => format!("inline {}", &p[8..]),
+                "pool" => format!("pool {}", &p[6..]),
+                "thread" => format!("thread {}", &p[8..]),
+                "block" => "block 0 pool=true".to_owned(),
+                _ => big.clone(),
+            };
+            assert!(body == want, "{p} in round {round}: {} bytes", body.len());
+        }
+    }
+    stop(&e);
+}
+
 /// A handler on a full pool (here its only thread) that calls a client and waits: the client
 /// reaches its connection's loop directly, so it never needs a pool thread of its own (rules
 /// §1; it used to queue a no-op job on the pool and wait for it, which deadlocked).

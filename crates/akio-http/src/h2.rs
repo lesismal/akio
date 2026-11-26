@@ -11,7 +11,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, MutexGuard, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -432,7 +432,7 @@ struct Core {
     early: bool,
     push_hook: Option<PushHook>,
     mode_of: Option<ModeFn>,
-    me: Weak<Mutex<Core>>,
+    me: Weak<CoreCell>,
     /// A stream error to raise once the header block it came with has been decoded.
     pending_rst: Option<(u32, u32)>,
     /// Peer-opened streams not yet finished (for the concurrency limit and graceful close).
@@ -444,6 +444,9 @@ struct Core {
     /// While the I/O thread works through one read, frames are only appended to `out`; the
     /// whole batch is handed to the connection once at the end (one write, one TLS record).
     batching: bool,
+    /// Handlers run on the logical pool (`H2Config::handlers_on_logical_pool`): their complete
+    /// responses come back to be written by the I/O thread (see [`Deferred`]).
+    deferring: bool,
     /// The header block being decoded.
     fields: Fields,
     /// Scratch for encoding a header block: lowercased names and cleaned values.
@@ -472,7 +475,21 @@ impl Drop for Core {
     }
 }
 
-type Shared = Arc<Mutex<Core>>;
+/// A connection's core, and beside its lock the responses its pooled handlers finished
+/// ([`Deferred`]), which pool threads queue without taking the lock.
+struct CoreCell {
+    core: Mutex<Core>,
+    deferred: Option<Deferred>,
+}
+
+impl std::ops::Deref for CoreCell {
+    type Target = Mutex<Core>;
+    fn deref(&self) -> &Mutex<Core> {
+        &self.core
+    }
+}
+
+type Shared = Arc<CoreCell>;
 
 /// Write batching for one read (see [`Core::flush`]): the queued frames go out when this is
 /// dropped, also when the service panics.
@@ -1625,7 +1642,7 @@ impl Core {
                 return self.peer_rst(sid, err::PROTOCOL);
             }
             // A request without a body: dispatched right away, nothing parked on the stream.
-            let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
+            let resp = self.dispatch_responder(sid, req.method == Method::Head);
             actions.push(Action::Dispatch(req, resp));
             return Ok(());
         }
@@ -1711,12 +1728,20 @@ impl Core {
         Ok(())
     }
 
+    /// The responder of a complete request: one that hands its response back to the I/O thread
+    /// when sent from a pooled handler ([`Deferred`]).
+    fn dispatch_responder(&self, sid: u32, head_only: bool) -> H2Responder {
+        let mut r = H2Responder::new(self.me.clone(), sid, head_only);
+        r.deferred = self.deferring;
+        r
+    }
+
     /// Turns the assembled request into a context to dispatch.
     fn complete_request(&mut self, sid: u32) -> Option<Action> {
         let st = self.streams.get_mut(&sid)?;
         let mut req = st.head.take()?;
         req.body = std::mem::take(&mut st.body);
-        let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
+        let resp = self.dispatch_responder(sid, req.method == Method::Head);
         Some(Action::Dispatch(req, resp))
     }
 
@@ -1868,24 +1893,102 @@ fn request_fields(fields: &Fields, connect_protocol: bool) -> Result<(Pseudo<'_>
 
 // ---- response side, usable from any thread ---------------------------------------------------
 
+/// The complete responses of a connection's handlers that ran on the logical pool
+/// (`H2Config::handlers_on_logical_pool`), on their way back to the connection's owning thread
+/// (its I/O thread, or the worker of its next round). A pool thread only queues its response
+/// and, if no drain is pending, posts one ([`ConnInner::run_on_loop`]); the drain locks the
+/// core once and encodes and writes the whole batch, as an inline read does. Written from the
+/// pool threads themselves, every response cost a `send` (and a TCP segment) and a fight over
+/// the core's lock with the connection's other streams finishing at the same time: about 9 us
+/// of CPU per request against 1 us inline (docs/BENCHMARKS.md).
+struct Deferred {
+    conn: Arc<ConnInner>,
+    queue: Mutex<Vec<(u32, Response)>>,
+    /// A drain is posted and has not yet taken the queue.
+    posted: AtomicBool,
+    /// The drain's spare vector (only the owning thread touches it).
+    spare: Mutex<Vec<(u32, Response)>>,
+}
+
+impl Deferred {
+    fn new(conn: Arc<ConnInner>) -> Deferred {
+        Deferred {
+            conn,
+            queue: Mutex::new(Vec::new()),
+            posted: AtomicBool::new(false),
+            spare: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn push(cell: &Shared, sid: u32, resp: Response) {
+        let Some(d) = &cell.deferred else { return };
+        d.queue
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((sid, resp));
+        // Queued before the flag is looked at, and the drain clears the flag before it takes
+        // the queue: a response is either taken by a pending drain or posts a new one.
+        if !d.posted.swap(true, Ordering::SeqCst) {
+            let cell = cell.clone();
+            if !d.conn.run_on_loop(move || Deferred::drain(&cell)) {
+                // Closed: nothing will write them; the streams went with the connection.
+                d.queue.lock().unwrap_or_else(|p| p.into_inner()).clear();
+            }
+        }
+    }
+
+    /// On the connection's owning thread: writes everything queued, in one go.
+    fn drain(cell: &Shared) {
+        let Some(d) = &cell.deferred else { return };
+        d.posted.store(false, Ordering::SeqCst);
+        let mut batch = std::mem::take(&mut *d.spare.lock().unwrap_or_else(|p| p.into_inner()));
+        std::mem::swap(
+            &mut batch,
+            &mut *d.queue.lock().unwrap_or_else(|p| p.into_inner()),
+        );
+        {
+            let mut c = lock(cell);
+            let batching = c.batching;
+            c.batching = true;
+            for (sid, resp) in batch.drain(..) {
+                c.send_response(sid, resp);
+            }
+            c.batching = batching;
+            c.flush();
+        }
+        *d.spare.lock().unwrap_or_else(|p| p.into_inner()) = batch;
+    }
+}
+
 /// Sends the response of one HTTP/2 stream.
 #[derive(Clone)]
 pub(crate) struct H2Responder {
-    core: Weak<Mutex<Core>>,
+    core: Weak<CoreCell>,
     sid: u32,
     head_only: bool,
+    /// Set on the responders of requests dispatched to the logical pool (see [`Deferred`]).
+    deferred: bool,
 }
 
 impl H2Responder {
-    fn new(core: Weak<Mutex<Core>>, sid: u32, head_only: bool) -> H2Responder {
+    fn new(core: Weak<CoreCell>, sid: u32, head_only: bool) -> H2Responder {
         H2Responder {
             core,
             sid,
             head_only,
+            deferred: false,
         }
     }
 
     pub(crate) fn send(&self, resp: Response) {
+        // From the handler of a request dispatched to the pool, on its pool job: back to the
+        // I/O thread. Anything else (detached work, other threads, timers) writes it here.
+        if self.deferred && crate::pool::deferring() {
+            if let Some(cell) = self.core.upgrade() {
+                Deferred::push(&cell, self.sid, resp);
+            }
+            return;
+        }
         if let Some(core) = self.core.upgrade() {
             lock(&core).send_response(self.sid, resp);
         }
@@ -2068,7 +2171,7 @@ impl H2Responder {
 /// ([`BodyReads`](crate::BodyReads)): its flow-control window is not given back meanwhile.
 #[derive(Clone)]
 pub(crate) struct H2Reads {
-    core: Weak<Mutex<Core>>,
+    core: Weak<CoreCell>,
     sid: u32,
 }
 
@@ -2098,7 +2201,7 @@ impl H2Reads {
 
 /// A response body being written in pieces on an HTTP/2 stream.
 pub(crate) struct H2Stream {
-    core: Weak<Mutex<Core>>,
+    core: Weak<CoreCell>,
     sid: u32,
     head_only: bool,
     done: bool,
@@ -2194,7 +2297,7 @@ impl Drop for H2Stream {
 /// size when nothing is queued) or `max_conn_pending_bytes` on the connection; closing ends the
 /// stream (END_STREAM), or resets it (`CANCEL`) when the peer has not ended its half.
 struct H2WsLink {
-    core: Weak<Mutex<Core>>,
+    core: Weak<CoreCell>,
     sid: u32,
 }
 
@@ -2317,6 +2420,7 @@ impl<S: Service> H2Session<S> {
         let pool = cfg
             .handlers_on_logical_pool
             .then(|| crate::pool::Executor::conn(conn.clone()));
+        let deferred = pool.as_ref().map(|_| Deferred::new(conn.clone()));
         let svc_mode = service.clone();
         let svc_push = service.clone();
         let obs_push = observer.clone();
@@ -2334,7 +2438,7 @@ impl<S: Service> H2Session<S> {
         let core: Shared = Arc::new_cyclic(|me| {
             let mut dec = Decoder::new();
             dec.set_max_allowed_table_size(local.header_table as usize);
-            Mutex::new(Core {
+            let core = Mutex::new(Core {
                 conn,
                 cfg,
                 out: Vec::new(),
@@ -2377,6 +2481,7 @@ impl<S: Service> H2Session<S> {
                 dropped: Vec::new(),
                 waiters: Vec::new(),
                 batching: false,
+                deferring: deferred.is_some(),
                 fields: Fields::default(),
                 enc_fields: Fields::default(),
                 conn_recv_owed: 0,
@@ -2386,7 +2491,8 @@ impl<S: Service> H2Session<S> {
                 control: 0,
                 at: 0,
                 finished: false,
-            })
+            });
+            CoreCell { core, deferred }
         });
         let s = H2Session {
             core,

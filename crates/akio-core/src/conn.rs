@@ -419,6 +419,9 @@ impl TransportWaker {
 /// The [`Task`] a [`TransportWaker`] posts.
 pub(crate) struct TransportPoll;
 
+/// The [`Task`] [`ConnInner::run_on_loop`] posts: a closure that needs no handler.
+pub(crate) struct LoopFn(pub(crate) Box<dyn FnOnce() + Send>);
+
 #[derive(Default)]
 struct WriteState {
     /// UDP: every chunk is one datagram; never coalesced, never partially written.
@@ -2581,6 +2584,20 @@ impl ConnInner {
             Some(pool) => pool.try_execute(job).map_err(|r| r.0),
             None => Err(job),
         }
+    }
+
+    /// Runs `f` on the thread that owns this connection (its I/O thread, or with rounds
+    /// scheduling the worker of its next round), after the current batch of events and
+    /// without going through the logical pool: [`Conn::run_on_loop`] for code that holds only
+    /// the shared state (a protocol session's responses finished on the pool, handed back to
+    /// be written together). `false`, with `f` dropped, when the connection is closed; if it
+    /// closes before `f` runs, `f` is dropped unrun.
+    pub fn run_on_loop(&self, f: impl FnOnce() + Send + 'static) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        self.link.post_task(self.id, Box::new(LoopFn(Box::new(f))));
+        true
     }
 
     /// Reserves the next response position. Call in request order (on the I/O thread).

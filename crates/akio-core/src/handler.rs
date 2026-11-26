@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     Conn, ConnInner, Error, Task, Transport,
-    conn::{Completion, TransportPoll, TransportWaker},
+    conn::{Completion, LoopFn, TransportPoll, TransportWaker},
 };
 
 /// Per-connection state *and* event callbacks (ADR-003).
@@ -215,6 +215,10 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
             }
             return;
         }
+        let task = match task.downcast::<LoopFn>() {
+            Ok(f) => return (f.0)(),
+            Err(task) => task,
+        };
         if let Ok(f) = task.downcast::<Completion<H>>() {
             (*f)(&mut self.h, &self.conn);
         }
