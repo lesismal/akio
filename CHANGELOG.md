@@ -10,6 +10,21 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: an accept filter on UDP listeners, bound UDP sockets and QUIC servers (akio, akio-core, akio-epoll, akio-uring, akio-quic; akit A220)
+
+ADR-178. `Listener::filter` now works on UDP listeners: it is asked for each datagram from a
+peer that has no connection yet, before `udp_max_peers` and `on_open`, and a refused datagram is
+dropped with nothing kept of the peer and counted in `LoopCounters::filtered`. On a datagram
+listener (`serve_datagrams`) every datagram is asked, and those refused never reach the handler
+(epoll, kqueue and io_uring). `Engine::set_listener_filter` / `clear_listener_filter` swap it on a
+running UDP or datagram listener without binding anew (they answered `Unsupported`, and a filter
+on a UDP listener failed `build`). Sockets bound at run time take one with the new
+`Engine::bind_udp_filtered`, in force from the first datagram, and swap it with
+`UdpBinding::set_filter` / `clear_filter`. akio-quic's server asks the filter again, through the
+new `Conn::filter_allows`, before an Initial packet makes a new connection (before any TLS work;
+nothing is sent back), so a filter swapped after a UDP peer was opened applies to its new QUIC
+connections; akio-h3's listeners get it through `QuicServer`. DPDK listeners still take no filter.
+
 ### Changed: scheduling modes renamed: `Scheduling::Rounds` is `WorkStealing`, `Scheduling::Loops` is `EventLoops` (akio, akio-epoll)
 
 ADR-104, update of 2026-11-26. `Scheduling::Rounds(RoundsConfig)` is now

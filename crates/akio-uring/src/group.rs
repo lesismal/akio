@@ -127,6 +127,8 @@ pub struct UringGroup {
     /// thread count (a socket added to or removed from the `SO_REUSEPORT` group would move
     /// peers between threads, as for the UDP listeners).
     sender: Option<DatagramSender>,
+    /// A datagram listener's accept filter (ADR-178), read by every loop's port.
+    dgram_filter: Option<Arc<FilterCell>>,
     /// Serves TCP listeners (not a client-only or datagram group).
     listens: bool,
     /// A shared group (ADR-130): listeners are added and removed, the threads stay until the
@@ -418,6 +420,7 @@ impl UringGroup {
             pool,
             opts,
             sender: None,
+            dgram_filter: None,
             listens,
             shared,
         })
@@ -485,11 +488,13 @@ impl UringGroup {
         g.fds = fds;
         let cfg = g.cfg.0.clone();
         let mut sender = None;
+        let filter = Arc::new(FilterCell::default());
         {
             let mut st = lock(&g.state);
             for (slot, sock) in st.slots.iter_mut().zip(socks) {
                 let port =
-                    DatagramPort::new(sock, &factory, slot.shared.stats.clone(), cfg.clone())?;
+                    DatagramPort::new(sock, &factory, slot.shared.stats.clone(), cfg.clone())?
+                        .with_filter(filter.clone());
                 sender.get_or_insert_with(|| port.sender());
                 if let Some(lp) = slot.pending.as_mut() {
                     lp.add_port(port);
@@ -497,6 +502,7 @@ impl UringGroup {
             }
         }
         g.sender = sender;
+        g.dgram_filter = Some(filter);
         Ok(g)
     }
 
@@ -835,6 +841,10 @@ impl Group for UringGroup {
     }
 
     fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
+        if let Some(cell) = &self.dgram_filter {
+            cell.set(filter);
+            return Ok(());
+        }
         if !self.listens {
             return Err(not_listening());
         }

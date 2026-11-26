@@ -560,7 +560,7 @@ fn max_listeners_under_at_and_over_counting_removed_ones_still_serving() {
 }
 
 #[test]
-fn what_cannot_be_added_removed_or_filtered() {
+fn what_cannot_be_added_or_removed() {
     struct Drop0;
     impl akio::DatagramsHandler for Drop0 {
         fn on_datagrams(&mut self, _b: &akio::Datagrams<'_>, _out: &mut akio::Replies) {}
@@ -587,10 +587,9 @@ fn what_cannot_be_added_removed_or_filtered() {
             .kind(),
         ErrorKind::Unsupported
     );
-    assert_eq!(
-        e.set_listener_filter(udp.id, |_| false).unwrap_err().kind(),
-        ErrorKind::Unsupported
-    );
+    // Both take an accept filter (ADR-178).
+    e.set_listener_filter(udp.id, |_| false).unwrap();
+    e.clear_listener_filter(dgram.id).unwrap();
     let add_dgram = e.add_listener(datagrams());
     assert_eq!(add_dgram.unwrap_err().kind(), ErrorKind::InvalidInput);
     let no_serve = e.add_listener(Listener::tcp(localhost()));
@@ -601,15 +600,6 @@ fn what_cannot_be_added_removed_or_filtered() {
     assert!(busy.is_err());
     assert_eq!(e.listeners().len(), 2);
     stop(&e);
-    // A filter on a UDP listener is refused by the builder.
-    let built = Engine::builder()
-        .listen(
-            Listener::udp(localhost())
-                .filter(|_| true)
-                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
-        )
-        .build();
-    assert_eq!(built.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
 #[test]

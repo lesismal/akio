@@ -152,7 +152,9 @@ loop_counters! {
     closed: "counter", "akio_connections_closed_total", "Connections closed.";
     /// Connections refused because `max_connections` or `max_accepted_connections` was reached.
     rejected: "counter", "akio_connections_rejected_total", "Connections refused by max_connections or max_accepted_connections.";
-    /// Connections refused by the listener's accept filter (`Listener::filter`).
+    /// Connections refused by the listener's accept filter (`Listener::filter`); on UDP
+    /// (ADR-178), datagrams dropped because it refused their peer, and new QUIC connections
+    /// refused (`Conn::filter_allows`).
     filtered: "counter", "akio_connections_filtered_total", "Connections refused by the listener's accept filter.";
     /// `accept(2)` failures (EMFILE...).
     accept_errors: "counter", "akio_accept_errors_total", "accept(2) failures.";

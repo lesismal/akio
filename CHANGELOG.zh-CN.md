@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：UDP 监听器、运行时绑定的 UDP 套接字和 QUIC 服务端的接入过滤器（akio、akio-core、akio-epoll、akio-uring、akio-quic；akit A220）
+
+ADR-178。`Listener::filter` 现在可用于 UDP 监听器：对来自尚无连接的对端的每个数据报，在 `udp_max_peers`
+和 `on_open` 之前询问它，被拒绝的数据报被丢弃，不保留对端的任何记录，并计入 `LoopCounters::filtered`。
+在数据报监听器（`serve_datagrams`）上每个数据报都询问，被拒绝的不会到达 handler（epoll、kqueue 和
+io_uring）。`Engine::set_listener_filter` / `clear_listener_filter` 可在运行中的 UDP 或数据报监听器上替换它，
+无需重新绑定（此前答 `Unsupported`，在 UDP 监听器上设置过滤器会让 `build` 失败）。运行时绑定的套接字用新增的
+`Engine::bind_udp_filtered` 带上过滤器，从第一个数据报起生效，并用 `UdpBinding::set_filter` / `clear_filter`
+替换。akio-quic 的服务端在 Initial 包建立新连接之前，经新增的 `Conn::filter_allows` 再询问一次过滤器（在任何
+TLS 计算之前，不回送任何东西），所以 UDP 对端建立之后替换的过滤器对其新的 QUIC 连接生效；akio-h3 的监听器
+经 `QuicServer` 得到同样的效果。DPDK 监听器仍不支持过滤器。
+
 ### 变更：调度模式改名：`Scheduling::Rounds` 改为 `WorkStealing`，`Scheduling::Loops` 改为 `EventLoops`（akio、akio-epoll）
 
 ADR-104 的 2026-11-26 更新。`Scheduling::Rounds(RoundsConfig)` 现在是

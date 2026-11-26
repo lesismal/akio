@@ -1001,15 +1001,17 @@ impl Ep {
     /// `route` is the peer's remembered route (its UDP handler's, so one I/O thread's): a
     /// short-header datagram to the same connection ID goes straight to that connection,
     /// without the endpoint's and the connection table's locks, which every I/O thread shares.
+    ///
+    /// A server asks the accept filter of the UDP listener or bound socket `sock` came to
+    /// (`Conn::filter_allows`, ADR-178) before it makes a connection for an Initial packet.
     fn on_datagram(
         self: &Arc<Ep>,
-        peer: SocketAddr,
-        local: SocketAddr,
-        ecn: u8,
+        sock: &Conn<Udp>,
         data: Rx<'_>,
         batch: Option<&mut Vec<Connection>>,
         route: &mut Option<Route>,
     ) {
+        let (peer, local, ecn) = (sock.peer_addr(), sock.local_addr(), sock.rx_ecn());
         let now = Instant::now();
         if let Some(r) = route.as_ref() {
             if r.matches(&data) && r.epoch == self.routes_gen.load(Ordering::Acquire) {
@@ -1023,7 +1025,7 @@ impl Ep {
             let mut e = lock(&self.endpoint);
             match e.route_short(&data) {
                 Some((cid, h)) => Ok((cid, h)),
-                None => Err(e.handle_ecn(now, peer, ecn, &data)),
+                None => Err(e.handle_gated(now, peer, ecn, &data, &|p| sock.filter_allows(*p))),
             }
         };
         let ev = match ev {
@@ -1351,14 +1353,8 @@ impl std::ops::Deref for Rx<'_> {
 impl Handler for Udp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep.on_datagram(
-            c.peer_addr(),
-            c.local_addr(),
-            c.rx_ecn(),
-            Rx::Slice(data),
-            batch,
-            &mut self.route,
-        );
+        self.ep
+            .on_datagram(c, Rx::Slice(data), batch, &mut self.route);
     }
 
     /// Datagrams arrive as their own range of the receive slab: decrypted in place there, and
@@ -1367,14 +1363,8 @@ impl Handler for Udp {
 
     fn on_data_owned(&mut self, c: &Conn<Self>, data: akio_buf::slab::ChunkMut) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep.on_datagram(
-            c.peer_addr(),
-            c.local_addr(),
-            c.rx_ecn(),
-            Rx::Owned(data),
-            batch,
-            &mut self.route,
-        );
+        self.ep
+            .on_datagram(c, Rx::Owned(data), batch, &mut self.route);
     }
 
     fn on_batch_end(&mut self, _c: &Conn<Self>) {

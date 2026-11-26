@@ -176,12 +176,27 @@ impl Endpoint {
     }
 
     /// Routes a datagram from `from` that arrived with ECN codepoint `ecn`.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn handle_ecn(
         &mut self,
         now: Instant,
         from: SocketAddr,
         ecn: u8,
         data: &[u8],
+    ) -> Option<DatagramEvent> {
+        self.handle_gated(now, from, ecn, data, &|_| true)
+    }
+
+    /// [`handle_ecn`](Self::handle_ecn), asking `admit` before a new connection is made for
+    /// an Initial packet (ADR-178: the listener's accept filter): refused, the datagram is
+    /// dropped with nothing kept and nothing sent (no Retry, no CONNECTION_REFUSED).
+    pub fn handle_gated(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        ecn: u8,
+        data: &[u8],
+        admit: &dyn Fn(&SocketAddr) -> bool,
     ) -> Option<DatagramEvent> {
         let first = *data.first()?;
         if first & 0x80 == 0 {
@@ -228,6 +243,10 @@ impl Endpoint {
             return None;
         }
         let version = h.version;
+        // Before the connection limit, as a TCP listener's filter runs before its own.
+        if !admit(&from) {
+            return None;
+        }
         if self
             .server
             .as_ref()

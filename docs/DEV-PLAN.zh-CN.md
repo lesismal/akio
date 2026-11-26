@@ -373,6 +373,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 事件循环，kqueue | akio-epoll（macOS，M1） | 否 | 否 | 开发/调试用后端；规则 17 不采用 macOS 数字。需要决定它是否要基准测试（一台空闲的 macOS 主机，或者不测）。 |
 | TCP echo 与每连接内存 | akio-core | 是（测评，`tools/bench/echo.sh`、`mem.sh`） | 是（内联队列头、装箱的会话状态、装箱的 deflate 状态） | 受客户端限制，平台期在 0.65–0.8 M req/s；没有延迟分位数。 |
 | UDP：按对端、无连接、GRO/GSO、自有缓冲区 | akio-core、akio-sys（ADR-024、ADR-065、ADR-093） | 是（“无连接 UDP”“绑定 UDP 套接字接收”，测评 UDP echo） | 是（默认 GRO、`recvmmsg` 槽位来自池化 slab、`sendmmsg` + GSO，数据报监听器 1.08x） | – |
+| UDP 接入过滤器：按对端和数据报监听器、绑定的套接字、QUIC Initial | akio-core、akio-epoll、akio-uring、akio-quic（ADR-178） | 否 | 否 | 待测，在安静主机上与 main 同轮 A/B：数据报监听器 64 B echo，分别不带过滤器、带全放行过滤器和带查找过滤器（过滤器按数据报调用；每批一次原子读）；按对端 UDP 的新对端速率（大量短命的客户端端口），带与不带过滤器；被拒绝数据报的丢弃速率（来自被拒绝对端的洪泛每秒数据报数、每个数据报的服务端 CPU），对比 main 上按对端打开再关闭的做法；带全放行过滤器的 QUIC 每秒握手数（每个新连接取一次单元的锁）。 |
 | 逻辑池（`spawn_blocking`） | akio-pool（M2） | 部分（M2：比在线程上直接阻塞恢复约 58x；2026-11-26：池上的 h2c 每请求 8.3 µs CPU，内联 0.87，`perf` 中排第一的是 `Mutex::lock_contended`） | 否 | 没有每个任务提交/完成成本的同轮微基准。队列是一把共享的 `Mutex` + `Condvar`：按线程或成批交接可以减少竞争（ADR-176，未做）。 |
 | NUMA 放置 | akio-core（ADR-088） | 部分（“NUMA 放置”：只测了开销，gpu51 只有一个节点） | 否 | 跨节点的收益需要多节点主机。 |
 | 热重载（prefork 分流：已删除，ADR-129） | akio-core（ADR-028） | 是（“热重载”，引擎 A/B） | 是（未测出开销） | prefork 的 BPF 分流从未单独测过；已随 akio-prefork 删除（ADR-129）。 |

@@ -52,9 +52,9 @@ use std::{
 
 use akio_buf::slab::ChunkMut;
 use akio_core::{
-    Config, ConnInfo, ConnInner, DatagramPort, DatagramSender, DatagramsFactory, DynAcceptor,
-    DynHandler, Error, Group, IdHasher, IdMap, IdleCheck, IdleRule, LoopMeta, Pool, Task, UdpStats,
-    hash::KeyedMap, telemetry::LoopCmd,
+    AcceptFilter, Config, ConnInfo, ConnInner, DatagramPort, DatagramSender, DatagramsFactory,
+    DynAcceptor, DynHandler, Error, FilterCell, FilterView, Group, IdHasher, IdMap, IdleCheck,
+    IdleRule, LoopMeta, Pool, Task, UdpStats, hash::KeyedMap, telemetry::LoopCmd,
 };
 use akio_sys::{Event, Poller, RecvInfo};
 use akio_timer::{TimerId, Wheel};
@@ -152,6 +152,8 @@ struct Bound {
     /// Draining (`UdpBinding::shutdown`, ADR-155): no new peers; closed once its peers are gone
     /// or at this deadline.
     kill: Option<Instant>,
+    /// Its accept filter (ADR-178): asked before a peer is opened.
+    filter: FilterView,
 }
 
 /// Counters shared by the loops of one UDP group.
@@ -168,6 +170,9 @@ struct UdpLoop {
     sock: Option<Arc<UdpSocket>>,
     local: Option<SocketAddr>,
     acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// The listener's accept filter (ADR-178, the group's cell): asked before a peer of the
+    /// server socket is opened.
+    filter: Option<FilterView>,
     peers: KeyedMap<SocketAddr, u64>,
     conns: IdMap<Peer>,
     /// Sockets bound at run time, by poll token.
@@ -279,7 +284,9 @@ impl UdpLoop {
         server: Option<(UdpSocket, Arc<dyn DynAcceptor>)>,
         cfg: Arc<Config>,
         stats: Arc<Stats>,
+        filter: Option<Arc<FilterCell>>,
     ) -> io::Result<UdpLoop> {
+        let filter = server.as_ref().and(filter).map(FilterView::new);
         let (sock, local, acceptor) = match server {
             Some((sock, acceptor)) => {
                 sock.set_nonblocking(true)?;
@@ -302,6 +309,7 @@ impl UdpLoop {
             sock,
             local,
             acceptor,
+            filter,
             peers: KeyedMap::default(),
             conns: Default::default(),
             binds: IdMap::default(),
@@ -345,7 +353,7 @@ impl UdpLoop {
         stats: Arc<Stats>,
     ) -> io::Result<UdpLoop> {
         poller.add(port.fd(), SOCK, true, false)?;
-        let mut l = UdpLoop::new(poller, shared, None, cfg, stats)?;
+        let mut l = UdpLoop::new(poller, shared, None, cfg, stats, None)?;
         l.dgram = Some(port);
         l.dgram_interest = (true, false);
         Ok(l)
@@ -754,7 +762,31 @@ impl UdpLoop {
             Some(id) => Some(id),
             // Removed or draining (ADR-155): known peers only.
             None if self.unlisting && self.stopped(src) => None,
+            // ADR-178: a refused peer's datagram is dropped, nothing kept of the peer.
+            None if !self.filter_allows(src, &peer) => {
+                self.shared.stats.filtered.add_local(1);
+                None
+            }
             None => self.open(src, peer),
+        }
+    }
+
+    /// Whether the accept filter of the server socket (`src` = `None`) or of bound socket
+    /// `src` allows a new peer `peer` (ADR-178).
+    fn filter_allows(&mut self, src: Option<u64>, peer: &SocketAddr) -> bool {
+        let view = match src {
+            None => self.filter.as_mut(),
+            Some(b) => self.binds.get_mut(&b).map(|b| &mut b.filter),
+        };
+        view.is_none_or(|v| v.allows(peer))
+    }
+
+    /// The cell of the accept filter a peer of the server socket (`None`) or of bound socket
+    /// `bind` is opened under, for `Conn::filter_allows`.
+    fn filter_cell(&self, bind: Option<u64>) -> Option<Arc<FilterCell>> {
+        match bind {
+            None => self.filter.as_ref().map(|v| v.cell().clone()),
+            Some(b) => self.binds.get(&b).map(|b| b.filter.cell().clone()),
         }
     }
 
@@ -852,6 +884,7 @@ impl UdpLoop {
             peer,
             self.shared.clone(),
             self.cfg.clone(),
+            self.filter_cell(bind),
         );
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             if bind.is_none() {
@@ -927,6 +960,7 @@ impl UdpLoop {
             peer,
             self.shared.clone(),
             self.cfg.clone(),
+            None,
         );
         let acc = acceptor.clone();
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acc.on_open(&inner))) else {
@@ -1199,6 +1233,7 @@ impl UdpLoop {
         sock: Arc<UdpSocket>,
         acceptor: Arc<dyn DynAcceptor>,
         icmp: Option<akio_core::IcmpHandler>,
+        filter: Arc<FilterCell>,
     ) {
         if self.draining.is_some() {
             return;
@@ -1229,6 +1264,7 @@ impl UdpLoop {
                 blocked: IdSet::default(),
                 write_reg: false,
                 kill: None,
+                filter: FilterView::new(filter),
             },
         );
     }
@@ -1591,7 +1627,8 @@ impl UdpLoop {
                         sock,
                         acceptor,
                         icmp,
-                    } => self.open_bound(id, sock, acceptor, icmp),
+                        filter,
+                    } => self.open_bound(id, sock, acceptor, icmp, filter),
                     Cmd::Unbind(id) => self.unbind(id),
                     Cmd::DrainBind { id, drain } => self.drain_bound(id, drain),
                     Cmd::OpenPeer {
@@ -1740,6 +1777,8 @@ pub struct UdpGroup {
     pins: Mutex<Vec<Vec<usize>>>,
     rr: AtomicUsize,
     stats: Arc<Stats>,
+    /// The listener's accept filter (ADR-178), read by every loop.
+    filter: Arc<FilterCell>,
     /// A datagram listener's sender (on thread 0's socket).
     sender: Option<DatagramSender>,
     /// The listener was removed (`Group::stop_listening`, ADR-155), and the countdown of the
@@ -1762,10 +1801,16 @@ impl UdpGroup {
         sock: UdpSocket,
         acceptor: Arc<dyn DynAcceptor>,
         icmp: Option<akio_core::IcmpHandler>,
+        filter: Option<AcceptFilter>,
     ) -> io::Result<akio_core::UdpBinding> {
         sock.set_nonblocking(true)?;
         let local = sock.local_addr()?;
         let sock = Arc::new(sock);
+        // Installed before the loop learns of the socket: in force from its first datagram.
+        let cell = Arc::new(FilterCell::default());
+        if filter.is_some() {
+            cell.set(filter);
+        }
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.shared.len();
         let shared = self.shared[i].clone();
@@ -1774,6 +1819,7 @@ impl UdpGroup {
             sock: sock.clone(),
             acceptor,
             icmp,
+            filter: cell.clone(),
         });
         // 0: open, 1: draining, 2: closed. A close ends a drain early; a drain after a close or
         // another drain does nothing.
@@ -1792,7 +1838,9 @@ impl UdpGroup {
                 shared.post(Cmd::DrainBind { id, drain });
             }
         });
-        Ok(akio_core::UdpBinding::new(sock, local, closer).with_drainer(drainer))
+        Ok(akio_core::UdpBinding::new(sock, local, closer)
+            .with_drainer(drainer)
+            .with_filter_cell(cell))
     }
 
     /// Binds `addr` and prepares `threads` loops. On Linux every loop gets its own
@@ -1835,6 +1883,7 @@ impl UdpGroup {
         let mut loops = Vec::new();
         let listener = (bound.port() != 0).then_some(bound);
         let stats = Arc::new(Stats::default());
+        let filter = Arc::new(FilterCell::default());
         for (thread, server) in socks.into_iter().enumerate() {
             let poller = Poller::new()?;
             let meta = LoopMeta::new("udp", listener, thread);
@@ -1845,6 +1894,7 @@ impl UdpGroup {
                 server,
                 cfg.clone(),
                 stats.clone(),
+                Some(filter.clone()),
             )?);
             shared.push(sh);
         }
@@ -1858,6 +1908,7 @@ impl UdpGroup {
             pins: Mutex::new(Vec::new()),
             rr: AtomicUsize::new(0),
             stats,
+            filter,
             sender: None,
             unlisted: AtomicBool::new(false),
             unlisting: Mutex::new(None),
@@ -1894,12 +1945,14 @@ impl UdpGroup {
             Vec::new()
         };
         let stats = Arc::new(Stats::default());
+        let filter = Arc::new(FilterCell::default());
         let (mut shared, mut loops, mut sender) = (Vec::new(), Vec::new(), None);
         for (thread, sock) in socks.into_iter().enumerate() {
             let poller = Poller::new()?;
             let meta = LoopMeta::new("udp", Some(bound), thread);
             let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
-            let port = DatagramPort::new(sock, &factory, sh.stats.clone(), cfg.clone())?;
+            let port = DatagramPort::new(sock, &factory, sh.stats.clone(), cfg.clone())?
+                .with_filter(filter.clone());
             sender.get_or_insert_with(|| port.sender());
             loops.push(UdpLoop::with_port(
                 poller,
@@ -1920,6 +1973,7 @@ impl UdpGroup {
             pins: Mutex::new(Vec::new()),
             rr: AtomicUsize::new(0),
             stats,
+            filter,
             sender,
             unlisted: AtomicBool::new(false),
             unlisting: Mutex::new(None),
@@ -1968,6 +2022,17 @@ impl Group for UdpGroup {
             });
         }
         *self.unlisting.lock().unwrap_or_else(|p| p.into_inner()) = Some(done);
+        Ok(())
+    }
+
+    fn set_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
+        if self.addr.port() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this UDP group has no listener (filter bound sockets with UdpBinding::set_filter)",
+            ));
+        }
+        self.filter.set(filter);
         Ok(())
     }
 
@@ -2068,7 +2133,16 @@ impl Group for UdpGroup {
         sock: UdpSocket,
         acceptor: Arc<dyn DynAcceptor>,
     ) -> io::Result<akio_core::UdpBinding> {
-        self.register_bound(sock, acceptor, None)
+        self.register_bound(sock, acceptor, None, None)
+    }
+
+    fn bind_udp_filtered(
+        &self,
+        sock: UdpSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+        filter: Option<AcceptFilter>,
+    ) -> io::Result<akio_core::UdpBinding> {
+        self.register_bound(sock, acceptor, None, filter)
     }
 
     fn bind_udp_icmp(
@@ -2080,18 +2154,18 @@ impl Group for UdpGroup {
         #[cfg(target_os = "linux")]
         if akio_sys::enable_recverr(sock.as_raw_fd()) {
             return self
-                .register_bound(sock, acceptor, Some(on_icmp))
+                .register_bound(sock, acceptor, Some(on_icmp), None)
                 .map(akio_core::UdpBinding::with_recverr);
         }
         // macOS: the loop reads ICMP errors from an ICMP socket of its own (no pending errors
         // on the bound socket).
         #[cfg(target_os = "macos")]
-        return self.register_bound(sock, acceptor, Some(on_icmp));
+        return self.register_bound(sock, acceptor, Some(on_icmp), None);
         // No error queue here: a plain binding.
         #[cfg(not(target_os = "macos"))]
         {
             let _ = on_icmp;
-            self.register_bound(sock, acceptor, None)
+            self.register_bound(sock, acceptor, None, None)
         }
     }
 

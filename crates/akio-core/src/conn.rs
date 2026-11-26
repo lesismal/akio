@@ -896,6 +896,9 @@ enum Sock {
         /// The socket is `connect`ed to `peer` (a dialed client): use `send`, not `send_to`
         /// (BSD rejects `sendto` on a connected socket).
         connected: bool,
+        /// The accept filter of the listener or bound socket the peer came to (ADR-178), for
+        /// protocols that open connections within the peer's ([`ConnInner::filter_allows`]).
+        filter: Option<Arc<crate::FilterCell>>,
     },
     /// No kernel socket: a userspace network stack (`akio-dpdk`) owns the wire. Writes are
     /// never attempted from `send`; everything is queued and the owning loop moves it into the
@@ -1011,6 +1014,8 @@ impl ConnInner {
 
     /// A "connection" to `peer` over the UDP socket `sock` shared with other peers. Each `send`
     /// is one datagram to `peer`; reads are delivered by the backend as whole datagrams.
+    /// `filter`: the accept filter of the listener or bound socket `peer` came to (ADR-178).
+    #[allow(clippy::too_many_arguments)]
     pub fn new_udp(
         id: u64,
         sock: Arc<UdpSocket>,
@@ -1019,6 +1024,7 @@ impl ConnInner {
         peer: SocketAddr,
         link: Arc<dyn LoopLink>,
         cfg: Arc<Config>,
+        filter: Option<Arc<crate::FilterCell>>,
     ) -> Arc<ConnInner> {
         Arc::new(ConnInner {
             id,
@@ -1048,6 +1054,7 @@ impl ConnInner {
                 sock,
                 peer,
                 connected,
+                filter,
             },
             link,
             cfg,
@@ -1203,6 +1210,7 @@ impl ConnInner {
                 sock,
                 peer,
                 connected,
+                ..
             } => {
                 if *connected {
                     sock.send(data)
@@ -1225,6 +1233,7 @@ impl ConnInner {
                 sock,
                 peer,
                 connected,
+                ..
             } => akio_sys::send_to_ip(
                 sock.as_raw_fd(),
                 data,
@@ -1381,6 +1390,24 @@ impl ConnInner {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Sock::Udp { sock, .. } = &self.sock {
             return akio_sys::enable_recv_ttl(std::os::fd::AsRawFd::as_raw_fd(&**sock));
+        }
+        false
+    }
+
+    /// UDP (ADR-178): whether the accept filter of the listener or bound socket this peer came
+    /// to allows `peer` now; a refusal is counted in the loop's `filtered`. True without one.
+    pub fn filter_allows(&self, peer: &SocketAddr) -> bool {
+        let Sock::Udp {
+            filter: Some(cell), ..
+        } = &self.sock
+        else {
+            return true;
+        };
+        if cell.allows(peer) {
+            return true;
+        }
+        if let Some(st) = self.link.stats() {
+            st.filtered.add(1);
         }
         false
     }
@@ -2062,6 +2089,7 @@ impl ConnInner {
                 sock,
                 peer,
                 connected,
+                ..
             } => ((!connected).then_some(peer), sock.as_raw_fd()),
             Sock::Tcp(_) | Sock::Virtual { .. } => {
                 unreachable!("datagram queue on a connection without a UDP socket")
@@ -3169,6 +3197,21 @@ impl<H> Conn<H> {
     /// Peer address.
     pub fn peer_addr(&self) -> SocketAddr {
         self.inner.peer_addr()
+    }
+
+    /// UDP (ADR-178): whether the accept filter of the listener or bound socket this peer's
+    /// datagrams arrive on (`akio::Listener::filter`, [`UdpBinding::set_filter`]) allows `peer`
+    /// now. The loop asks the filter only before it makes a connection for a new peer; a
+    /// protocol that opens connections of its own within one peer's datagrams asks it again for
+    /// each (akio-quic's server, on a new connection's first Initial packet), so a filter
+    /// swapped meanwhile applies to them. A refusal is counted in `LoopCounters::filtered`.
+    /// True when there is no filter, and on TCP and dialed connections. The filter runs on the
+    /// calling thread (it should be the connection's I/O thread); with one installed, the call
+    /// takes a lock, so ask it once per new connection, not per datagram.
+    ///
+    /// [`UdpBinding::set_filter`]: crate::UdpBinding::set_filter
+    pub fn filter_allows(&self, peer: SocketAddr) -> bool {
+        self.inner.filter_allows(&peer)
     }
 
     /// Writes `data` now if the socket takes it, queues the rest (copying). Never blocks.
