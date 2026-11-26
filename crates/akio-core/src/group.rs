@@ -8,8 +8,9 @@ use std::{
 use crate::{DatagramSender, DialOptions, DynAcceptor, LoopStats};
 
 /// A listener's accept filter (ADR-099): called on the I/O thread with the peer's address
-/// right after `accept`; `false` closes the connection before anything else runs.
-/// Backend-facing.
+/// right after `accept`; `false` closes the connection before anything else runs. On a UDP
+/// listener or bound socket (ADR-178), with the address of a peer that has no connection yet;
+/// `false` drops its datagram. Backend-facing.
 #[doc(hidden)]
 pub type AcceptFilter = Arc<dyn Fn(&SocketAddr) -> bool + Send + Sync>;
 
@@ -38,6 +39,22 @@ impl FilterCell {
         // Under the lock: a loop that sees the new generation reads the new filter.
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the filter in force allows `peer` (none: allowed), read without a view (ADR-178):
+    /// no lock while no filter was ever installed, else one to take the filter. For checks
+    /// made seldom (a QUIC server's new connection, `Conn::filter_allows`); loops keep a
+    /// [`FilterView`]. A filter that panics refuses.
+    pub fn allows(&self, peer: &SocketAddr) -> bool {
+        if self.generation.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            return true;
+        }
+        let f = self
+            .filter
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        filter_allows(f.as_ref(), peer)
     }
 }
 
@@ -72,6 +89,31 @@ impl FilterView {
     /// A filter that panics refuses the connection.
     #[inline]
     pub fn allows(&mut self, peer: &SocketAddr) -> bool {
+        self.refresh();
+        filter_allows(self.filter.as_ref(), peer)
+    }
+
+    /// The filter in force, if any (one atomic load; the lock only when it changed): what a
+    /// loop checks a batch of datagrams with (ADR-178), each through [`check`](Self::check).
+    #[inline]
+    pub fn current(&mut self) -> Option<&AcceptFilter> {
+        self.refresh();
+        self.filter.as_ref()
+    }
+
+    /// Runs `filter` for `peer`; a filter that panics refuses (and is logged).
+    #[inline]
+    pub fn check(filter: &AcceptFilter, peer: &SocketAddr) -> bool {
+        filter_allows(Some(filter), peer)
+    }
+
+    /// The cell this view reads.
+    pub fn cell(&self) -> &Arc<FilterCell> {
+        &self.cell
+    }
+
+    #[inline]
+    fn refresh(&mut self) {
         let g = self
             .cell
             .generation
@@ -85,7 +127,6 @@ impl FilterView {
                 .clone();
             self.generation = g;
         }
-        filter_allows(self.filter.as_ref(), peer)
     }
 }
 
@@ -192,8 +233,10 @@ pub trait Group: Send + Sync {
     /// not wait on an I/O thread. Backend-facing.
     #[doc(hidden)]
     fn await_unlisted(&self, _limit: Duration) {}
-    /// Installs (or with `None` removes) the accept filter of a TCP listener group: every
-    /// `accept` its threads start after this returns runs it.
+    /// Installs (or with `None` removes) the accept filter of a listener group: every
+    /// `accept` its threads start after this returns runs it, and on a UDP group (ADR-178) every
+    /// datagram received after it returns from a peer without a connection (on a datagram
+    /// listener: every datagram).
     fn set_filter(&self, _filter: Option<AcceptFilter>) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -285,6 +328,25 @@ pub trait Group: Send + Sync {
         on_icmp: IcmpHandler,
     ) -> io::Result<UdpBinding> {
         let _ = on_icmp;
+        self.bind_udp(sock, acceptor)
+    }
+
+    /// [`bind_udp`](Self::bind_udp) with an accept filter (ADR-178) in force from the socket's
+    /// first datagram: a datagram from a peer without a connection that `filter` refuses is
+    /// dropped. The binding swaps it ([`UdpBinding::set_filter`]). Default: `bind_udp` when
+    /// there is no filter, else `Unsupported`.
+    fn bind_udp_filtered(
+        &self,
+        sock: std::net::UdpSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+        filter: Option<AcceptFilter>,
+    ) -> io::Result<UdpBinding> {
+        if filter.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this group has no accept filter on bound sockets",
+            ));
+        }
         self.bind_udp(sock, acceptor)
     }
 
@@ -446,6 +508,8 @@ pub struct UdpBinding {
     /// The socket has `IP_RECVERR` (`bind_udp_icmp`): a send may fail once with the error an
     /// ICMP message left pending, having sent nothing.
     recverr: bool,
+    /// Its accept filter (ADR-178), where the backend has one.
+    filter: Option<Arc<FilterCell>>,
 }
 
 impl std::fmt::Debug for UdpBinding {
@@ -470,6 +534,51 @@ impl UdpBinding {
             closer,
             drainer: None,
             recverr: false,
+            filter: None,
+        }
+    }
+
+    /// Backend-facing: the cell holding the socket's accept filter (ADR-178), which its loop
+    /// reads.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_filter_cell(mut self, cell: Arc<FilterCell>) -> UdpBinding {
+        self.filter = Some(cell);
+        self
+    }
+
+    /// Installs or replaces the socket's accept filter (ADR-178), as `akio::Listener::filter`
+    /// does on a UDP listener: every datagram received after this returns from a peer that has
+    /// no connection yet is passed to `filter` with the peer's address, on the socket's I/O
+    /// thread, before anything is made for the peer; `false` drops the datagram, remembering
+    /// nothing of the peer, and counts it in `LoopCounters::filtered`. Peers already connected
+    /// are not checked again, but a QUIC server asks the filter again for each new connection
+    /// ([`Conn::filter_allows`](crate::Conn::filter_allows)). Keep it to a lookup, never block;
+    /// a filter that panics refuses. `Unsupported` on a backend without filters on bound
+    /// sockets.
+    pub fn set_filter(
+        &self,
+        filter: impl Fn(&SocketAddr) -> bool + Send + Sync + 'static,
+    ) -> io::Result<()> {
+        self.swap_filter(Some(Arc::new(filter)))
+    }
+
+    /// Removes the socket's accept filter: every peer is served again. Errors as for
+    /// [`set_filter`](Self::set_filter).
+    pub fn clear_filter(&self) -> io::Result<()> {
+        self.swap_filter(None)
+    }
+
+    fn swap_filter(&self, filter: Option<AcceptFilter>) -> io::Result<()> {
+        match &self.filter {
+            Some(cell) => {
+                cell.set(filter);
+                Ok(())
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this bound socket has no accept filter",
+            )),
         }
     }
 
@@ -513,6 +622,8 @@ impl UdpBinding {
     /// non-blocking: when its send buffer is full the datagram is dropped with
     /// `ErrorKind::WouldBlock` (UDP semantics; protocols on top retransmit).
     pub fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<()> {
+        // macOS: not while `send_to_on` has switched the multicast interface (akio-sys).
+        let _g = akio_sys::multicast_send_guard(&addr);
         let mut retried = false;
         loop {
             match self.sock.send_to(data, addr) {
@@ -529,8 +640,10 @@ impl UdpBinding {
     /// interface goes with the datagram (`IP_PKTINFO` / `IPV6_PKTINFO`), so a datagram to a
     /// multicast group leaves on that link, as `IP_MULTICAST_IF` would make every datagram of
     /// the socket do. What IPv4 multicast on several interfaces needs (IPv6 can name the link
-    /// in the destination's scope id instead). Linux and macOS; elsewhere a non-zero
-    /// `interface` fails with [`io::ErrorKind::Unsupported`].
+    /// in the destination's scope id instead). Linux and macOS (where IPv4 multicast switches
+    /// the socket's `IP_MULTICAST_IFINDEX` for the send instead, under a lock the binding's other
+    /// IPv4 multicast sends take too); elsewhere a non-zero `interface` fails with
+    /// [`io::ErrorKind::Unsupported`].
     pub fn send_to_on(&self, data: &[u8], addr: SocketAddr, interface: u32) -> io::Result<()> {
         if interface == 0 {
             return self.send_to(data, addr);
@@ -576,6 +689,9 @@ impl UdpBinding {
         {
             let tos = if akio_sys::ecn_available() { tos } else { 0 };
             if tos != 0 || ttl != 0 {
+                // macOS: not while `send_to_on` has switched the multicast interface
+                // (akio-sys); held here only, `send_to` below takes it itself.
+                let _g = akio_sys::multicast_send_guard(&addr);
                 use std::os::fd::AsRawFd;
                 let fd = self.sock.as_raw_fd();
                 let v6 = self.local.is_ipv6();

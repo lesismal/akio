@@ -141,5 +141,6 @@
 - [ADR-174：只服务 HTTP/2 的 HTTP 服务端](174-http2-alone.zh-CN.md)（2026-11-26 采纳；akit A168）
 - [ADR-176：HTTP/2 handler 默认重新 inline 执行](176-http2-handlers-inline-by-default.zh-CN.md)（2026-11-26 采纳；撤销 ADR-094 在 2026-11-25 设的默认值）
 - [ADR-177：按源服务器的方式处理绝对形式的请求目标](177-absolute-form-request-targets.zh-CN.md)（2026-11-26 采纳；akit A200）
-- [ADR-178：akio-crypto 中的 Argon2id，其 lane 在作用域线程上运行](178-argon2id.zh-CN.md)（2026-11-26 采纳；akit A230、A231）
-- [ADR-179：连接句柄、关闭期限，以及监听器的接受与关闭钩子](179-connection-handles-and-accept-hooks.zh-CN.md)（2026-11-26 采纳；akit A232）
+- [ADR-178：UDP 监听器、绑定的套接字和 QUIC 服务端的接入过滤器](178-udp-accept-filter.zh-CN.md)（2026-11-26 采纳；akit A220）
+- [ADR-179：akio-crypto 中的 Argon2id，其 lane 在作用域线程上运行](179-argon2id.zh-CN.md)（2026-11-26 采纳；akit A230、A231）
+- [ADR-180：连接句柄、关闭期限，以及监听器的接受与关闭钩子](180-connection-handles-and-accept-hooks.zh-CN.md)（2026-11-26 采纳；akit A232）

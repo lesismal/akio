@@ -1,6 +1,6 @@
-# ADR-179：连接句柄、关闭期限，以及监听器的接受与关闭钩子
+# ADR-180：连接句柄、关闭期限，以及监听器的接受与关闭钩子
 
-[English](179-connection-handles-and-accept-hooks.md) | 简体中文
+[English](180-connection-handles-and-accept-hooks.md) | 简体中文
 
 状态：已采纳（2026-11-26）。akit 的 A232。
 

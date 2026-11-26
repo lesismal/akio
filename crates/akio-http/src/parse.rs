@@ -35,15 +35,22 @@ pub(crate) fn parse_head(
 ) -> Result<Option<(Head, usize)>, ParseError> {
     // Most heads have a handful of fields: try with room for 32 (filling the storage costs per
     // request), and only parse again with room for the limit when that is not enough. A failed
-    // parse resets `resume`, so the second one starts from scratch.
+    // parse resets `resume`, so the second one starts from scratch. Once a head arriving in
+    // pieces has shown more fields than 32, its next pieces go to the second parse at once:
+    // the progress `resume` carries is that parse's, and checked against 32 it would refuse
+    // with 431 and parse from scratch on every piece, or (before `fields` compared with `>=`)
+    // never stop at the limit and answer 400 for a malformed line after it, where the head in
+    // one piece is answered 431.
     const FEW_HEADERS: usize = 32;
     const MAX_HEADERS: usize = 100;
-    let mut few = [Header::EMPTY; FEW_HEADERS];
-    match http1::parse_request(buf, &mut few, resume) {
-        Ok(http1::Status::Complete(r)) => return head(r),
-        Ok(http1::Status::Partial) => return Ok(None),
-        Err(http1::Error::TooManyHeaders) => {}
-        Err(e) => return Err(parse_error(e)),
+    if resume.fields() < FEW_HEADERS {
+        let mut few = [Header::EMPTY; FEW_HEADERS];
+        match http1::parse_request(buf, &mut few, resume) {
+            Ok(http1::Status::Complete(r)) => return head(r),
+            Ok(http1::Status::Partial) => return Ok(None),
+            Err(http1::Error::TooManyHeaders) => {}
+            Err(e) => return Err(parse_error(e)),
+        }
     }
     let mut storage = [Header::EMPTY; MAX_HEADERS];
     match http1::parse_request(buf, &mut storage, resume) {
@@ -500,5 +507,76 @@ mod tests {
         ] {
             assert_eq!(parse(bad), Err(ParseError::Bad), "{bad}");
         }
+    }
+
+    /// `head` fed in two pieces split at every offset, and one byte at a time: the outcome
+    /// (fields parsed and length, or the error) is the one-shot parse's.
+    fn same_in_pieces(head: &[u8]) {
+        let summary = |r: Result<Option<(Head, usize)>, ParseError>| {
+            r.map(|o| o.map(|(h, n)| (h.headers.len(), n)))
+        };
+        let once = summary(parse_head_once(head));
+        let fed = |cuts: &mut dyn Iterator<Item = usize>| {
+            let mut resume = Resume::default();
+            for end in cuts {
+                let r = summary(parse_head(&head[..end], &mut resume));
+                if !matches!(r, Ok(None)) || end == head.len() {
+                    return r;
+                }
+            }
+            Ok(None)
+        };
+        for at in 1..head.len() {
+            assert_eq!(
+                fed(&mut [at, head.len()].into_iter()),
+                once,
+                "split at {at}"
+            );
+        }
+        assert_eq!(fed(&mut (1..=head.len())), once, "one byte at a time");
+    }
+
+    /// A head of more fields than the 32 tried first is parsed, or refused past the limit,
+    /// alike in one piece and in many: resumed parsing used to carry the count of the larger
+    /// attempt into the 32-field one, which then never stopped at a limit and refused a later
+    /// malformed line with 400 where the one-shot parse answered 431 (fuzzing, `http1_request`).
+    #[test]
+    fn heads_with_many_fields_parse_alike_in_pieces() {
+        let head = |fields: usize, tail: &str| {
+            let mut h = String::from("GET / HTTP/1.1\r\n");
+            for i in 0..fields {
+                h.push_str(&format!("H{i}: v\r\n"));
+            }
+            h.push_str(tail);
+            h.into_bytes()
+        };
+        // Under, at and over 32, and up to the limit of 100: complete.
+        for n in [31, 32, 33, 40, 99, 100] {
+            let h = head(n, "\r\n");
+            assert_eq!(parse_head_once(&h).unwrap().unwrap().0.headers.len(), n);
+            same_in_pieces(&h);
+        }
+        // Over 100, whatever follows: 431, never the 400 of a later malformed line.
+        for tail in ["\r\n", "H: v\r\n\x01bad\r\n\r\n", "bad\r\n\r\n"] {
+            let h = head(101, tail);
+            assert_eq!(
+                parse_head_once(&h).unwrap_err(),
+                ParseError::TooManyHeaders,
+                "{tail:?}"
+            );
+            same_in_pieces(&h);
+        }
+        // The input fuzzing found (its first byte chose the read sizes), where the corpus is.
+        let Ok(found) = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fuzz/corpus/http1_request/88384545389e3f1aa6173eedd6c6557a2ffd47c5"
+        )) else {
+            return;
+        };
+        assert_eq!(
+            parse_head_once(&found[1..]).unwrap_err(),
+            ParseError::TooManyHeaders
+        );
+        same_in_pieces(&found[1..]);
     }
 }

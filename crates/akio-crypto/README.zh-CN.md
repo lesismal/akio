@@ -25,7 +25,7 @@
 |---|---|
 | `hash` | SHA-1、SHA-224、SHA-256、SHA-384、SHA-512、MD5、BLAKE2b-512（流式与一次性，`Hash` trait）；摘要长度最长 64 字节任选、可带密钥的 BLAKE2b（RFC 7693）；SHAKE128、SHAKE256（FIPS 202，`squeeze` 任意长度） |
 | `mac` | 基于任意 `Hash` 的 HMAC（常数时间 `verify`） |
-| `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018）、Argon2id（RFC 9106，与 Go 的 `argon2.IDKey` 相同；内存可失败地分配，lane 在作用域线程上运行；ADR-178） |
+| `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018）、Argon2id（RFC 9106，与 Go 的 `argon2.IDKey` 相同；内存可失败地分配，lane 在作用域线程上运行；ADR-179） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR、CBC（可带 PKCS #7 填充，用于 HLS `AES-128`） |
 | `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时同样用 256 位寄存器处理整条消息（尾部、AAD 与长度块经补零的栈缓冲区：AVX2 没有字节掩码），否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |

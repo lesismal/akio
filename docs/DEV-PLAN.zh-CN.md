@@ -373,6 +373,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 事件循环，kqueue | akio-epoll（macOS，M1） | 否 | 否 | 开发/调试用后端；规则 17 不采用 macOS 数字。需要决定它是否要基准测试（一台空闲的 macOS 主机，或者不测）。 |
 | TCP echo 与每连接内存 | akio-core | 是（测评，`tools/bench/echo.sh`、`mem.sh`） | 是（内联队列头、装箱的会话状态、装箱的 deflate 状态） | 受客户端限制，平台期在 0.65–0.8 M req/s；没有延迟分位数。 |
 | UDP：按对端、无连接、GRO/GSO、自有缓冲区 | akio-core、akio-sys（ADR-024、ADR-065、ADR-093） | 是（“无连接 UDP”“绑定 UDP 套接字接收”，测评 UDP echo） | 是（默认 GRO、`recvmmsg` 槽位来自池化 slab、`sendmmsg` + GSO，数据报监听器 1.08x） | – |
+| UDP 接入过滤器：按对端和数据报监听器、绑定的套接字、QUIC Initial | akio-core、akio-epoll、akio-uring、akio-quic（ADR-178） | 否 | 否 | 待测，在安静主机上与 main 同轮 A/B：数据报监听器 64 B echo，分别不带过滤器、带全放行过滤器和带查找过滤器（过滤器按数据报调用；每批一次原子读）；按对端 UDP 的新对端速率（大量短命的客户端端口），带与不带过滤器；被拒绝数据报的丢弃速率（来自被拒绝对端的洪泛每秒数据报数、每个数据报的服务端 CPU），对比 main 上按对端打开再关闭的做法；带全放行过滤器的 QUIC 每秒握手数（每个新连接取一次单元的锁）。 |
 | 逻辑池（`spawn_blocking`） | akio-pool（M2） | 部分（M2：比在线程上直接阻塞恢复约 58x；2026-11-26：池上的 h2c 每请求 8.3 µs CPU，内联 0.87，`perf` 中排第一的是 `Mutex::lock_contended`） | 否 | 没有每个任务提交/完成成本的同轮微基准。队列是一把共享的 `Mutex` + `Condvar`：按线程或成批交接可以减少竞争（ADR-176，未做）。 |
 | NUMA 放置 | akio-core（ADR-088） | 部分（“NUMA 放置”：只测了开销，gpu51 只有一个节点） | 否 | 跨节点的收益需要多节点主机。 |
 | 热重载（prefork 分流：已删除，ADR-129） | akio-core（ADR-028） | 是（“热重载”，引擎 A/B） | 是（未测出开销） | prefork 的 BPF 分流从未单独测过；已随 akio-prefork 删除（ADR-129）。 |
@@ -381,7 +382,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | 内核 TLS | akio-tls、akio-uring（ADR-067） | 是（“内核 TLS 评估”“引擎中的内核 TLS”） | 是（软件 kTLS 更慢，未采用） | TLS 卸载网卡没有测过（没有这类网卡）。 |
 | 加密：AEAD、哈希、CRC（TLS/QUIC 批量数据） | akio-crypto | 是（“密码学”“AES-GCM”“ChaCha20-Poly1305”各节） | 是（VAES/AVX-512/AVX2 内核、SHA-NI、CRC 折叠、Poly1305 IFMA/AVX2） | – |
 | 加密：公钥（P-256、X25519、Ed25519、RSA、P-384、P-521、Ed448） | akio-crypto | 是（`pk_bench`、`tls-bench handshakes`） | 是（x86-64 汇编、IFMA RSA；P-256 为 ring 的 1.12–1.57x，RSA 最高 3.7x） | P-384 / P-521 / Ed448 没有专门优化过。 |
-| 加密：Argon2id、BLAKE2b、XChaCha20-Poly1305（fit 的存储） | akio-crypto（akit A230、A231；ADR-178） | 否 | 否 | 测量 Argon2id 在 fit 的设置（time 3、64 MiB、4 个 lane）和单 lane 下与 Go 的 `argon2.IDKey`、RustCrypto 的 `argon2` 的对比（压缩函数为可移植实现，尚无 SIMD；每个 slice 启动作用域线程的开销）；BLAKE2b-512 与 `blake2` crate 对比（64 B 到 16 KiB）；XChaCha20-Poly1305 加解密与 ChaCha20-Poly1305 在 64 B 和 16 KiB 下的对比（每条消息一次 HChaCha20 子密钥）。 |
+| 加密：Argon2id、BLAKE2b、XChaCha20-Poly1305（fit 的存储） | akio-crypto（akit A230、A231；ADR-179） | 否 | 否 | 测量 Argon2id 在 fit 的设置（time 3、64 MiB、4 个 lane）和单 lane 下与 Go 的 `argon2.IDKey`、RustCrypto 的 `argon2` 的对比（压缩函数为可移植实现，尚无 SIMD；每个 slice 启动作用域线程的开销）；BLAKE2b-512 与 `blake2` crate 对比（64 B 到 16 KiB）；XChaCha20-Poly1305 加解密与 ChaCha20-Poly1305 在 64 B 和 16 KiB 下的对比（每条消息一次 HChaCha20 子密钥）。 |
 | 加密：其他原语（AES-CTR / 单块、SHA-512、MD5、base64、PBKDF2、HMAC-SHA1） | akio-crypto（KCP、SRTP、STUN、kcptun 密钥） | 是（“密码学”表） | 否 | 落后于 RustCrypto：AES-128-CTR 16 KiB 0.73x、SHA-512 0.66x、base64 0.75x、MD5 0.84x、HMAC-SHA1 100 B 0.94x、PBKDF2 0.83 对 0.57 ms。 |
 | aarch64 上的加密 | akio-crypto（性能优化第二轮） | 部分（P-256 / X25519 在共享的 Apple M4 Pro 上测过一次） | 部分（汇编有测试，未调优） | 没有 ARM 基准主机；aarch64 上的 AES-GCM / ChaCha / RSA 未测。 |
 | HTTP/1.1 服务端 | akio-http（M3） | 是（测评，对比 hyper / fib / monoio） | 是（请求头先用 32 个槽位解析，ADR-081 每请求分配） | keep-alive 受内核限制。 |
@@ -423,7 +424,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | TURN 中继 | akio-turn（ADR-083、ADR-091） | 是（`turn-relay-bench`） | 是（按客户端分片分配，3.7x；`028d61d2`） | 没有与 coturn 的吞吐对比。 |
 | 媒体服务器（RTMP、RTSP、HLS、hub） | akio-media | 部分（`bench_segmenting`，各 ADR 的接入 A/B） | 部分（2026-11-21/22 的 `perf(media)`） | 没有与参考服务器对比（SRS、mediamtx）。 |
 | BitTorrent | akio-bittorrent | 部分（`bt-bench` A/B：回环 2,180 MiB/s） | 部分（SHA-1 分片哈希） | 没有与其他客户端对比。 |
-| 连接句柄、关闭期限、接受与关闭钩子 | akio-core、akio、akio-http（ADR-179，akit A232） | 否 | 否 | 与 main 同次 A/B：TCP 接受速率（连接、一次 echo、关闭）与 HTTP/1.1 短连接，分别在没有钩子（不应变化：`ConnInner` 大 8 字节）、设置 `on_accept` + `on_close`（每连接一个装箱包装）、在 `on_accept` 中设置 `close_after`（每连接一个投递任务和一个时间轮定时器）时测量；10 万个各带期限的空闲连接的每连接内存。 |
+| 连接句柄、关闭期限、接受与关闭钩子 | akio-core、akio、akio-http（ADR-180，akit A232） | 否 | 否 | 与 main 同次 A/B：TCP 接受速率（连接、一次 echo、关闭）与 HTTP/1.1 短连接，分别在没有钩子（不应变化：`ConnInner` 大 8 字节）、设置 `on_accept` + `on_close`（每连接一个装箱包装）、在 `on_accept` 中设置 `close_after`（每连接一个投递任务和一个时间轮定时器）时测量；10 万个各带期限的空闲连接的每连接内存。 |
 | 每个连接的空闲超时；UDP listener 移除；HTTP/3 GOAWAY | akio-core、akio-epoll、akio-uring、akio-quic、akio-h3（ADR-155，akit A78、A22） | 否 | 否 | 与 main 同次 A/B、交替轮次：HTTP/1.1 keep-alive 与 pipelined plaintext、设置 `Config::idle_timeout` 的 TCP echo（epoll、io_uring、工作窃取调度）、64 B 按对端 UDP echo，以及 HTTP/3 请求（请求流 id 检查、QUIC 投递循环的 shutdown 标志）。读路径不变；事件循环的每连接记录大 16 字节（每连接内存）。 |
 | 绝对形式的 HTTP/1 请求目标；`:path` 形式检查 | akio-http、akio-h3（ADR-177，akit A200） | 否 | 否 | 与 main 同次 A/B、交替轮次：HTTP/1.1 pipelined 与 keep-alive plaintext（origin 形式：每个目标多一次字节判断，每个 `Request` 多 16 字节），h2c 和 HTTP/3 请求（`:path` 多一次字节判断）。预计没有变化；绝对形式的请求（一次拆分和一次分配）很少见。 |
 

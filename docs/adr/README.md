@@ -141,5 +141,6 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-174: An HTTP server of HTTP/2 alone](174-http2-alone.md) (accepted 2026-11-26; akit A168)
 - [ADR-176: HTTP/2 handlers inline by default again](176-http2-handlers-inline-by-default.md) (accepted 2026-11-26; reverses the 2026-11-25 default of ADR-094)
 - [ADR-177: Request targets in absolute form, taken as an origin server takes them](177-absolute-form-request-targets.md) (accepted 2026-11-26; akit A200)
-- [ADR-178: Argon2id in akio-crypto, its lanes on scoped threads](178-argon2id.md) (accepted 2026-11-26; akit A230, A231)
-- [ADR-179: Connection handles, close deadlines and a listener's accept and close hooks](179-connection-handles-and-accept-hooks.md) (accepted 2026-11-26; akit A232)
+- [ADR-178: An accept filter on UDP listeners, bound sockets and QUIC servers](178-udp-accept-filter.md) (accepted 2026-11-26; akit A220)
+- [ADR-179: Argon2id in akio-crypto, its lanes on scoped threads](179-argon2id.md) (accepted 2026-11-26; akit A230, A231)
+- [ADR-180: Connection handles, close deadlines and a listener's accept and close hooks](180-connection-handles-and-accept-hooks.md) (accepted 2026-11-26; akit A232)

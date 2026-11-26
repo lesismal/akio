@@ -1,4 +1,4 @@
-//! A listener's table of its connections (ADR-179, akit A232): `Listener::on_accept` and
+//! A listener's table of its connections (ADR-180, akit A232): `Listener::on_accept` and
 //! `on_close`, and `ConnHandle`'s close, deadline and idle timeout, from the connection's I/O
 //! thread and from others (on the backend under test: epoll/kqueue, io_uring with
 //! `AKIO_TEST_BACKEND=uring`, work stealing with `AKIO_DEFAULT_SCHEDULING=work-stealing`).

@@ -77,7 +77,7 @@ DATE 2017), written from scratch in the tool (no dependency besides `akio-crypto
 | `ct-word` | `ct.rs` `mask`, `is_zero`, `eq`, `select` over 64 words: zeros vs random |
 | `ct-limbs` | `ct.rs` `add_limbs`, `sub_limbs`, `lt_limbs`, `is_zero_limbs`, `assign`, `swap` on 2048-bit limb arrays: zeros vs random |
 
-Argon2id (`kdf::argon2id`, ADR-178) has no target, on purpose: after the first half of its first
+Argon2id (`kdf::argon2id`, ADR-179) has no target, on purpose: after the first half of its first
 pass it reads memory at indices derived from the password, as RFC 9106 designs it (Argon2d's
 defence against time-memory trade-offs), so its timing and cache footprint depend on the password
 by construction. Its parts are constant time: BLAKE2b (`blake2b-key`) and the compression

@@ -61,7 +61,7 @@
 | `backend(Backend)` | `Epoll` | `Epoll`（macOS 上为 kqueue）或 `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | 用于分流的 `Ebpf(EbpfConfig)` |
 | `balance(Balance)` | `LeastConnections` | 接受连接时在线程间均衡（ADR-105）；`Kernel` 保持内核 `SO_REUSEPORT` 的分配 |
-| `filter(Fn(&SocketAddr) -> bool)` | 无 | TCP：在 `accept` 之后、acceptor 与 TLS 之前拒绝连接（允许 / 拒绝列表） |
+| `filter(Fn(&SocketAddr) -> bool)` | 无 | TCP：在 `accept` 之后、acceptor 与 TLS 之前拒绝连接（允许 / 拒绝列表）；UDP：在为尚无连接的对端建立连接之前丢弃其数据报（ADR-178） |
 
 TCP listener 可以在 engine 运行时增加和移除（ADR-099）：`Engine::add_listener` 像 `build` 一样绑定
 （同样的后端、线程、accel 与过滤器选项）并返回其 `ListenerId`；`remove_listener(id)` 停止接受连接，

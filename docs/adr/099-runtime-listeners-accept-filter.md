@@ -137,7 +137,7 @@ borrowed slice, so they cannot grow at run time without a breaking change.
 - `wait` on an engine without listeners blocks until `shutdown` (it returned at once).
 
 Not done: run-time UDP and datagram listeners (use `bind_udp`); removing listeners of the DPDK
-backend; a filter on UDP peers.
+backend; a filter on UDP peers (done in ADR-178).
 
 ## Verification
 

@@ -1,6 +1,6 @@
-# ADR-179: Connection handles, close deadlines and a listener's accept and close hooks
+# ADR-180: Connection handles, close deadlines and a listener's accept and close hooks
 
-English | [简体中文](179-connection-handles-and-accept-hooks.zh-CN.md)
+English | [简体中文](180-connection-handles-and-accept-hooks.zh-CN.md)
 
 Status: accepted (2026-11-26). akit's A232.
 

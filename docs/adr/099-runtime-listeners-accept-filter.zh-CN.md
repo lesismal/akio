@@ -97,7 +97,7 @@ acceptor 之间除了 `max_connections` 检查也没有其他逻辑。
 - 读写路径不变。accept 多一个分支，在监听器组上多一次原子读。
 - 没有监听器的引擎上的 `wait` 会阻塞到 `shutdown`（之前立即返回）。
 
-未做：运行时的 UDP 与数据报监听器（用 `bind_udp`）；移除 DPDK 后端的监听器；UDP 对端的过滤器。
+未做：运行时的 UDP 与数据报监听器（用 `bind_udp`）；移除 DPDK 后端的监听器；UDP 对端的过滤器（已在 ADR-178 中完成）。
 
 ## 验证
 

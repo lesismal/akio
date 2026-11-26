@@ -1,6 +1,6 @@
-# ADR-178：akio-crypto 中的 Argon2id，其 lane 在作用域线程上运行
+# ADR-179：akio-crypto 中的 Argon2id，其 lane 在作用域线程上运行
 
-[English](178-argon2id.md) | 简体中文
+[English](179-argon2id.md) | 简体中文
 
 状态：已采纳（2026-11-26）。akit 的 A230（连同 A231 XChaCha20-Poly1305，后者没有新增设计）。
 

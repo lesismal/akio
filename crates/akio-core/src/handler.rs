@@ -258,7 +258,7 @@ pub type ConnHook = Arc<dyn Fn(&ConnHandle) + Send + Sync>;
 
 /// Wraps `acceptor` so that `on_accept` is told of each connection it opens, before its
 /// `on_open`, and `on_close` of each one that closes, after its handler's `on_close` (akit
-/// A232, ADR-179). Backend-facing: `akio`'s `Listener::on_accept` and `on_close`.
+/// A232, ADR-180). Backend-facing: `akio`'s `Listener::on_accept` and `on_close`.
 #[doc(hidden)]
 pub fn hooked(
     acceptor: Arc<dyn DynAcceptor>,

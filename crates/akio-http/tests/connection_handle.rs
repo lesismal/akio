@@ -1,4 +1,4 @@
-//! A handler's hold on its connection (ADR-179, akit A232): `Context::connection` with
+//! A handler's hold on its connection (ADR-180, akit A232): `Context::connection` with
 //! `Listener::on_accept`, as akit's console uses them: a connection is closed 300 ms after it
 //! was accepted, whatever it sends, unless a request "logs in", which cancels the deadline and
 //! gives the connection an idle timeout of its own. HTTP/1.1 and HTTP/2, on the native backend

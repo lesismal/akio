@@ -346,6 +346,7 @@ pub fn akio::Engine::accel_status(&self) -> &[akio::AccelStatus]
 pub fn akio::Engine::add_listener(&self, akio::Listener) -> core::io::error::Result<akio::ListenerId>
 pub fn akio::Engine::adopt_tcp<A: akio_core::handler::Acceptor>(&self, std::net::tcp::TcpStream, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn akio::Engine::bind_udp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<akio_core::group::UdpBinding>
+pub fn akio::Engine::bind_udp_filtered<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::Fn(&core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::bind_udp_icmp<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::Fn(&akio_core::group::IcmpError) + core::marker::Send + core::marker::Sync + 'static) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::bind_udp_multicast<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<akio_core::group::UdpBinding>
 pub fn akio::Engine::bind_udp_multicast_on<A: akio_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, &[u32], A) -> core::io::error::Result<akio_core::group::UdpBinding>

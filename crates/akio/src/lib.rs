@@ -292,7 +292,7 @@ pub struct Listener {
     unix: Option<UnixSpec>,
     /// The socket file's mode ([`Listener::unix_mode`]).
     unix_mode: Option<u32>,
-    /// Told of every connection accepted, and of every one closed (akit A232, ADR-179).
+    /// Told of every connection accepted, and of every one closed (akit A232, ADR-180).
     on_accept: Option<akio_core::ConnHook>,
     on_close: Option<akio_core::ConnHook>,
 }
@@ -512,7 +512,7 @@ impl Listener {
         self
     }
 
-    /// Filters this TCP listener's connections (ADR-099): `filter` is called on the I/O thread
+    /// Filters this listener's connections (ADR-099): `filter` is called on the I/O thread
     /// with the peer's address right after `accept`, before the `max_connections` check, the
     /// acceptor's `on_open` and any transport (TLS) work; `false` closes the connection at once.
     /// Allow / deny lists go here. It runs for every connection, on the hot path of accepting:
@@ -521,16 +521,28 @@ impl Listener {
     /// (`akio_connections_filtered_total`). Swap or clear it while the engine runs with
     /// [`Engine::set_listener_filter`] / [`Engine::clear_listener_filter`].
     ///
-    /// TCP listeners on epoll, kqueue and io_uring: on a UDP or datagram listener `build` /
-    /// [`Engine::add_listener`] fail with `InvalidInput`, on the DPDK backend with
-    /// `Unsupported`.
+    /// On a UDP listener (ADR-178) it is asked for each datagram from a peer that has no
+    /// connection yet, before the `udp_max_peers` check and the acceptor's `on_open`: `false`
+    /// drops the datagram, nothing is kept of the peer (its next datagram asks again, so a
+    /// swapped filter applies at once and nothing grows with the peers refused), and each
+    /// refused datagram is counted in `filtered`. Peers already connected are not asked again,
+    /// as accepted TCP connections are not; a QUIC server (akio-quic, so akio-h3) asks it again
+    /// for each new QUIC connection ([`Conn::filter_allows`]). On a datagram listener
+    /// ([`serve_datagrams`](Self::serve_datagrams)) every datagram is asked, and those refused
+    /// never reach the handler's batch.
+    ///
+    /// TCP listeners on epoll, kqueue and io_uring; UDP listeners on the epoll / kqueue UDP loop
+    /// (whatever backend or scheduling they asked for); datagram listeners on epoll, kqueue and
+    /// io_uring. On the DPDK backend `build` / [`Engine::add_listener`] fail with
+    /// `Unsupported`. Sockets bound at run time take one with [`Engine::bind_udp_filtered`] or
+    /// [`UdpBinding::set_filter`].
     #[must_use]
     pub fn filter(mut self, filter: impl Fn(&SocketAddr) -> bool + Send + Sync + 'static) -> Self {
         self.filter = Some(Arc::new(filter));
         self
     }
 
-    /// Tells `f` of every connection this listener accepts (akit A232, ADR-179), with a
+    /// Tells `f` of every connection this listener accepts (akit A232, ADR-180), with a
     /// [`ConnHandle`] it may keep: to close the connection later from any thread, set its idle
     /// timeout or a deadline ([`ConnHandle::close_after`]), or keep a table of the connections
     /// open (with [`on_close`](Self::on_close) to take them out) and choose one to close when
@@ -593,7 +605,7 @@ pub struct ListenerInfo {
     pub threads: usize,
     /// What [`Accel`] it got.
     pub accel: AccelStatus,
-    /// A UDP or datagram listener (no accept filter; a datagram listener cannot be removed).
+    /// A UDP or datagram listener (a datagram listener cannot be removed).
     pub udp: bool,
 }
 
@@ -709,17 +721,9 @@ fn bind_one(
     }
     let accel = l.accel.clone();
     let filter = l.filter.take();
-    if filter.is_some() {
-        #[cfg(feature = "dpdk")]
-        if matches!(l.backend, Backend::Dpdk(_)) {
-            return Err(unsupported("an accept filter on the DPDK backend"));
-        }
-        if l.udp {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "an accept filter applies to TCP listeners",
-            ));
-        }
+    #[cfg(feature = "dpdk")]
+    if filter.is_some() && matches!(l.backend, Backend::Dpdk(_)) {
+        return Err(unsupported("an accept filter on the DPDK backend"));
     }
     // ADR-130: a TCP listener on epoll/kqueue loops that did not ask for threads of its own
     // joins the shared group of its kind.
@@ -2132,9 +2136,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Installs or replaces the accept filter of TCP listener `id` (see [`Listener::filter`]):
-    /// every `accept` that starts after this returns runs it, on every I/O thread. `NotFound` for an unknown
-    /// or removed id, `Unsupported` for UDP, datagram and DPDK listeners.
+    /// Installs or replaces the accept filter of listener `id` (see [`Listener::filter`]):
+    /// every `accept` that starts after this returns runs it, on every I/O thread, and on a UDP
+    /// or datagram listener (ADR-178) every datagram received after it returns from a peer
+    /// without a connection (on a datagram listener: every datagram). Nothing is bound anew.
+    /// `NotFound` for an unknown or removed id, `Unsupported` for DPDK listeners.
     pub fn set_listener_filter(
         &self,
         id: ListenerId,
@@ -2143,7 +2149,7 @@ impl Engine {
         self.swap_filter(id, Some(Arc::new(filter)))
     }
 
-    /// Removes the accept filter of TCP listener `id`: every connection is accepted again.
+    /// Removes the accept filter of listener `id`: every connection is accepted again.
     /// Errors as for [`set_listener_filter`](Self::set_listener_filter).
     pub fn clear_listener_filter(&self, id: ListenerId) -> io::Result<()> {
         self.swap_filter(id, None)
@@ -2151,10 +2157,8 @@ impl Engine {
 
     fn swap_filter(&self, id: ListenerId, filter: Option<AcceptFilter>) -> io::Result<()> {
         let (g, _, kind) = self.entry_group(id)?;
-        if kind != Kind::Tcp {
-            return Err(unsupported(
-                "an accept filter on a UDP, datagram or DPDK listener",
-            ));
+        if matches!(kind, Kind::Dpdk { .. }) {
+            return Err(unsupported("an accept filter on a DPDK listener"));
         }
         g.set_filter(filter)
     }
@@ -2371,6 +2375,31 @@ impl Engine {
                 let sock = std::net::UdpSocket::bind(addr)?;
                 sock.set_nonblocking(true)?;
                 g.bind_udp(sock, Arc::new(acceptor))
+            }
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no UDP I/O threads (use udp_client_threads or a UDP listener)",
+            )),
+        }
+    }
+
+    /// [`bind_udp`](Self::bind_udp) with an accept filter (ADR-178) in force from the socket's
+    /// first datagram, as [`Listener::filter`] on a UDP listener: a datagram from a peer that
+    /// has no connection yet is passed to `filter` with the peer's address, and dropped when it
+    /// returns `false` (counted in [`LoopCounters::filtered`]). Swap or clear it with
+    /// [`UdpBinding::set_filter`] / [`UdpBinding::clear_filter`] (which work on any binding,
+    /// but a filter set after `bind_udp` returned misses what arrived before).
+    pub fn bind_udp_filtered<A: Acceptor>(
+        &self,
+        addr: SocketAddr,
+        acceptor: A,
+        filter: impl Fn(&SocketAddr) -> bool + Send + Sync + 'static,
+    ) -> io::Result<UdpBinding> {
+        match self.udp_client.and_then(|i| self.groups.get(i)) {
+            Some(g) => {
+                let sock = std::net::UdpSocket::bind(addr)?;
+                sock.set_nonblocking(true)?;
+                g.bind_udp_filtered(sock, Arc::new(acceptor), Some(Arc::new(filter)))
             }
             None => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

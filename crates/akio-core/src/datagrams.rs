@@ -22,7 +22,7 @@ use std::{
     time::Instant,
 };
 
-use crate::{Config, LoopStats, telemetry::log_or_stderr};
+use crate::{Config, FilterCell, FilterView, LoopStats, telemetry::log_or_stderr};
 
 /// Datagrams taken from the socket per receive batch (one `recvmmsg`).
 const BATCH: usize = 32;
@@ -541,6 +541,9 @@ pub struct DatagramPort {
     entries: Vec<Entry>,
     rb: usize,
     shut: bool,
+    /// The listener's accept filter (ADR-178): datagrams from peers it refuses are dropped
+    /// before the handler sees the batch.
+    filter: Option<FilterView>,
 }
 
 impl std::fmt::Debug for DatagramPort {
@@ -584,7 +587,17 @@ impl DatagramPort {
             entries: Vec::with_capacity(BATCH),
             rb,
             shut: false,
+            filter: None,
         })
+    }
+
+    /// Filters the datagrams by their sender with the filter `cell` holds (ADR-178): each one
+    /// received while a filter is in force is passed to it, and those it refuses are dropped
+    /// (counted in `filtered`, not in the datagrams received) before the handler's batch is made.
+    #[must_use]
+    pub fn with_filter(mut self, cell: Arc<FilterCell>) -> DatagramPort {
+        self.filter = Some(FilterView::new(cell));
+        self
     }
 
     /// The socket's descriptor.
@@ -717,10 +730,16 @@ impl DatagramPort {
                 }
             }
         };
+        let filter = self.filter.as_mut().and_then(FilterView::current);
+        let mut refused = 0;
         for i in 0..n {
             let (Some(peer), Some((d, seg))) = (rx.addr(i), rx.data(i)) else {
                 continue;
             };
+            if filter.is_some_and(|f| !FilterView::check(f, &peer)) {
+                refused += 1;
+                continue;
+            }
             if seg > 0 && seg < d.len() {
                 // GRO coalesced several datagrams of this peer: restore the boundaries.
                 let mut off = 0;
@@ -743,6 +762,9 @@ impl DatagramPort {
                 });
             }
         }
+        if refused > 0 {
+            self.out.sender.stats.filtered.add_local(refused);
+        }
         Some(n == BATCH)
     }
 
@@ -751,10 +773,20 @@ impl DatagramPort {
     fn receive(&mut self, _fd: i32) -> Option<bool> {
         let buf = &mut self.rx;
         let sock = &self.out.sender.sock;
+        let filter = self.filter.as_mut().and_then(FilterView::current).cloned();
         let mut off = 0;
-        while self.entries.len() < BATCH && buf.len() - off >= self.rb {
+        let mut received = 0;
+        while received < BATCH && buf.len() - off >= self.rb {
             match sock.recv_from(&mut buf[off..off + self.rb]) {
                 Ok((n, peer)) => {
+                    received += 1;
+                    if filter
+                        .as_ref()
+                        .is_some_and(|f| !FilterView::check(f, &peer))
+                    {
+                        self.out.sender.stats.filtered.add_local(1);
+                        continue;
+                    }
                     self.entries.push(Entry {
                         peer,
                         slot: 0,
@@ -771,10 +803,10 @@ impl DatagramPort {
                 }
             }
         }
-        if self.entries.is_empty() {
+        if received == 0 {
             None
         } else {
-            Some(self.entries.len() == BATCH || buf.len() - off < self.rb)
+            Some(received == BATCH || buf.len() - off < self.rb)
         }
     }
 }

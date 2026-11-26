@@ -1067,7 +1067,7 @@ impl Context {
         self.req.local
     }
 
-    /// A handle to the connection the request came on (akit A232, ADR-179): to change its idle
+    /// A handle to the connection the request came on (akit A232, ADR-180): to change its idle
     /// timeout ([`ConnHandle::set_idle_timeout`]), cancel or set a deadline for it
     /// ([`ConnHandle::cancel_close`], [`ConnHandle::close_after`]) or close it, now or later
     /// from any thread; its [`id`](ConnHandle::id) is the one `Listener::on_accept` saw. On

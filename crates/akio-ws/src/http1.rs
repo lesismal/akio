@@ -441,7 +441,8 @@ fn fields<'b>(
         let Some(next) = eol(b, v1, Error::HeaderValue)? else {
             return Ok(Fields::Partial(line, count));
         };
-        if count == max {
+        // `>=`: a resumed count may already be past `max`, when the call before had more room.
+        if count >= max {
             return Err(Error::TooManyHeaders);
         }
         if store {
@@ -460,6 +461,15 @@ fn fields<'b>(
 }
 
 impl Resume {
+    /// The header fields validated so far in the head being parsed (0 before the first call
+    /// and after a head completed or failed). A caller that retries with more room for fields
+    /// when the first attempt overflows can use it to start with that room once more fields
+    /// than the smaller one holds were seen, so the limit it parses with stays the same from
+    /// one call to the next.
+    pub fn fields(&self) -> usize {
+        self.fields
+    }
+
     /// Whether the head is certainly still incomplete, judging only bytes not examined yet.
     /// `Ok(false)`: parse from scratch now.
     fn still_partial(&mut self, b: &[u8], max: usize) -> Result<bool, Error> {
@@ -826,5 +836,27 @@ mod tests {
             parse_request(b"GET / HTTP/1.1\r\nA: 1\r\n\x01", &mut h, &mut resume),
             Err(Error::HeaderName)
         );
+        // A count carried over from a call with more room is held to the smaller limit, before
+        // a malformed line after it (`akio-http` retries a head with more room, fuzzing).
+        let mut resume = Resume::default();
+        let mut four = [Header::EMPTY; 4];
+        assert_eq!(
+            parse_request(&b[..], &mut four, &mut resume),
+            Ok(Status::Partial)
+        );
+        assert_eq!(resume.fields(), 2);
+        let mut c = b.to_vec();
+        c.extend_from_slice(b"C: 3\r\nD: 4\r\n");
+        assert_eq!(
+            parse_request(&c, &mut four, &mut resume),
+            Ok(Status::Partial)
+        );
+        assert_eq!(resume.fields(), 4);
+        c.extend_from_slice(b"E: 5\r\n\x01\r\n\r\n");
+        assert_eq!(
+            parse_request(&c, &mut h, &mut resume),
+            Err(Error::TooManyHeaders)
+        );
+        assert_eq!(resume.fields(), 0);
     }
 }

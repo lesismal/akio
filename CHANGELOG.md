@@ -14,7 +14,7 @@ All notable changes to `akio` are documented here. The format follows
 
 akit's A232, for its console's connection rules (fit's: no login, closed 5 s after accept; a
 session, 2 minutes idle; past `max_conns`, the oldest unauthenticated connection evicted);
-ADR-179. `ConnHandle` (akio-core, re-exported by `akio`; `Conn::handle()`) is a cloneable,
+ADR-180. `ConnHandle` (akio-core, re-exported by `akio`; `Conn::handle()`) is a cloneable,
 thread-safe handle without the handler type: `id`, `is_open`, addresses, `close`,
 `set_idle_timeout`, and a close deadline, `close_at` / `close_after` (closed then whatever the
 connection sends; the last one set is in force) and `cancel_close`, run by a timer on the
@@ -38,7 +38,7 @@ pseudo-terminal.
 
 ### Added: Argon2id, BLAKE2b and XChaCha20-Poly1305 (akio-crypto)
 
-akit's A230 and A231, for fit's encrypted store; ADR-178. `kdf::argon2id(password, salt, time,
+akit's A230 and A231, for fit's encrypted store; ADR-179. `kdf::argon2id(password, salt, time,
 memory_kib, lanes, out)` is Argon2id (RFC 9106, version 0x13) as Go's `argon2.IDKey`: RFC 9106's
 bounds are errors (`Error::InvalidLength`, the new `Error::InvalidParameter`), the memory is one
 fallible allocation (the new `Error::OutOfMemory`), and the lanes run on scoped threads (up to one
@@ -51,6 +51,18 @@ Tested against RFC 9106, RFC 7693, the XChaCha draft, Wycheproof's XChaCha20-Pol
 Go's golang.org/x/crypto output (fit's Argon2id setting among them); `ct-dudect` has two new
 targets, `xchacha20poly1305-open-tag` and `blake2b-key`. Argon2id reads memory at
 password-dependent indices after its first half pass, by design (docs/constant-time.md).
+
+### Fixed: IPv4 multicast out of a chosen interface on macOS (akio-sys, akio-core)
+
+`UdpBinding::send_to_on` (and `akio_sys::send_to_on`) named the interface in an `IP_PKTINFO`
+control message, which macOS turns into a route lookup scoped to that interface: an interface
+without a route for 224.0.0.0/4 (`lo0`, or any but the one the multicast route names) failed
+with `ENETUNREACH`, so mDNS (akio-webrtc) could not answer on it, and
+`ipv4_group_reports_the_interface_each_datagram_arrived_on` failed on every Mac with one network
+interface. There an IPv4 multicast send now sets the socket's `IP_MULTICAST_IFINDEX` (which picks
+the interface without a route) for the send and puts it back, under a lock that the binding's
+other IPv4 multicast sends (`send_to`, `send_to_tos`) take too, so none leaves on the interface
+another named. Linux, IPv6 and unicast are unchanged.
 
 ### Fixed: connections reset when the thread count shrinks again soon after growing (akio-epoll, akio-uring)
 
@@ -75,6 +87,32 @@ HTTP/2 hands the requests of one read to the pool that way; before sleeping, one
 looks for work for 10 µs, yielding the CPU between looks, but only while looking has lately found
 work. h2c through the pool on gpu51 (4 CPUs): +12% on epoll, +16% on io_uring and +20% with work stealing (0.68M to 0.76M–0.81M requests/s), and the same CPU as before at light load (docs/BENCHMARKS.md, which also records
 the variants tried: a busy-spinning thread cost 4–12% by taking a CPU from the I/O threads).
+
+### Fixed: a request head of many fields read in pieces is answered as in one piece (akio-http, akio-ws)
+
+A head of more than 32 fields is parsed again with room for the limit (100); arriving in pieces,
+the 32-field attempt resumed with the count of the larger one, which `fields` compared with `==`
+and so never stopped at a limit: a head past 100 fields with a malformed line after them was
+answered 400, where the same head read in one piece is answered 431 (fuzzing, `http1_request`).
+`parse_head` now goes straight to the larger parse once a head has shown more than 32 fields
+(through the new `Resume::fields`), which also keeps such heads from being parsed from scratch
+on every piece, and akio-ws's field loop checks the limit with `>=`. The input is a corpus seed
+of `http1_request`, and a test feeds heads split at every offset.
+
+### Added: an accept filter on UDP listeners, bound UDP sockets and QUIC servers (akio, akio-core, akio-epoll, akio-uring, akio-quic; akit A220)
+
+ADR-178. `Listener::filter` now works on UDP listeners: it is asked for each datagram from a
+peer that has no connection yet, before `udp_max_peers` and `on_open`, and a refused datagram is
+dropped with nothing kept of the peer and counted in `LoopCounters::filtered`. On a datagram
+listener (`serve_datagrams`) every datagram is asked, and those refused never reach the handler
+(epoll, kqueue and io_uring). `Engine::set_listener_filter` / `clear_listener_filter` swap it on a
+running UDP or datagram listener without binding anew (they answered `Unsupported`, and a filter
+on a UDP listener failed `build`). Sockets bound at run time take one with the new
+`Engine::bind_udp_filtered`, in force from the first datagram, and swap it with
+`UdpBinding::set_filter` / `clear_filter`. akio-quic's server asks the filter again, through the
+new `Conn::filter_allows`, before an Initial packet makes a new connection (before any TLS work;
+nothing is sent back), so a filter swapped after a UDP peer was opened applies to its new QUIC
+connections; akio-h3's listeners get it through `QuicServer`. DPDK listeners still take no filter.
 
 ### Changed: scheduling modes renamed: `Scheduling::Rounds` is `WorkStealing`, `Scheduling::Loops` is `EventLoops` (akio, akio-epoll)
 

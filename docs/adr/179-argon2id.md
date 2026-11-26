@@ -1,6 +1,6 @@
-# ADR-178: Argon2id in akio-crypto, its lanes on scoped threads
+# ADR-179: Argon2id in akio-crypto, its lanes on scoped threads
 
-English | [简体中文](178-argon2id.zh-CN.md)
+English | [简体中文](179-argon2id.zh-CN.md)
 
 Status: accepted (2026-11-26). akit's A230 (with A231, XChaCha20-Poly1305, which adds no design).
 

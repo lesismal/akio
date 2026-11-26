@@ -178,6 +178,8 @@ fn io_threads_get_one_cpu_each_in_turn() {
     wait_affinity(&want);
     let mut s = std::net::TcpStream::connect(e.local_addrs()[0]).unwrap();
     std::io::Write::write_all(&mut s, b"x").unwrap();
+    // A pool thread pins itself as it starts: until it has, it reads as running anywhere.
+    let want_pool = &cpus[n - keep..];
     let t0 = std::time::Instant::now();
     let pool = loop {
         let found = std::fs::read_dir("/proc/self/task").unwrap().find_map(|t| {
@@ -195,13 +197,15 @@ fn io_threads_get_one_cpu_each_in_turn() {
                     .to_owned(),
             )
         });
-        if let Some(f) = found {
-            break f;
+        match found {
+            Some(f) if cpu_set(&f) == want_pool => break f,
+            Some(f) if t0.elapsed() >= Duration::from_secs(5) => break f,
+            None => assert!(t0.elapsed() < Duration::from_secs(5), "no pool thread"),
+            Some(_) => {}
         }
-        assert!(t0.elapsed() < Duration::from_secs(5), "no pool thread");
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert_eq!(cpu_set(&pool), cpus[n - keep..], "pool on {pool}");
+    assert_eq!(cpu_set(&pool), want_pool, "pool on {pool}");
     drop(s);
     e.shutdown();
     e.wait();

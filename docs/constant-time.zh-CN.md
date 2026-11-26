@@ -65,7 +65,7 @@ release 构建经过反汇编，所有条件分支都已列出（`crates/akio-cr
 | `ct-word` | `ct.rs` 的 `mask`、`is_zero`、`eq`、`select`，64 个字：全零对随机 |
 | `ct-limbs` | `ct.rs` 的 `add_limbs`、`sub_limbs`、`lt_limbs`、`is_zero_limbs`、`assign`、`swap`，2048 位 limb 数组：全零对随机 |
 
-Argon2id（`kdf::argon2id`，ADR-178）故意没有目标：从第一遍的后半部分起，它按由口令派生的下标读取内存，
+Argon2id（`kdf::argon2id`，ADR-179）故意没有目标：从第一遍的后半部分起，它按由口令派生的下标读取内存，
 这是 RFC 9106 的设计（Argon2d 抵御时间-内存折中的方式），因此其耗时和缓存占用按构造就依赖口令。其组成部分是
 常数时间的：BLAKE2b（`blake2b-key`）和压缩函数（64 位加法、32×32 位乘法、循环移位和异或）。
 `xchacha20poly1305-open-tag` 和 `blake2b-key` 于 2026-11-26 加入，尚未在安静主机上运行（在 macOS 上 2 秒的

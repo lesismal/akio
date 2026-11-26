@@ -72,6 +72,8 @@ pub(crate) enum Cmd {
         acceptor: Arc<dyn DynAcceptor>,
         /// Takes the socket's ICMP errors (`Engine::bind_udp_icmp`; Linux `IP_RECVERR`).
         icmp: Option<akio_core::IcmpHandler>,
+        /// The socket's accept filter (ADR-178), swapped through its `UdpBinding`.
+        filter: Arc<akio_core::FilterCell>,
     },
     /// UDP only: closes the socket bound under `id` and its connections.
     Unbind(u64),

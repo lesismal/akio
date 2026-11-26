@@ -6,7 +6,7 @@ use std::net::{
 };
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
-fn cvt(r: ffi::c_int) -> io::Result<ffi::c_int> {
+pub(crate) fn cvt(r: ffi::c_int) -> io::Result<ffi::c_int> {
     if r < 0 {
         Err(io::Error::last_os_error())
     } else {

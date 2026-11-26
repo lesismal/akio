@@ -13,7 +13,7 @@ akio 的所有重要变更都记录在这里。格式遵循
 ### 新增：连接句柄、关闭期限，以及监听器的接受与关闭钩子（akio-core、akio、akio-http）
 
 akit 的 A232，用于其控制台的连接规则（fit 的规则：未登录的连接在接受 5 秒后关闭；有会话的连接空闲
-2 分钟；超过 `max_conns` 时驱逐最早的未认证连接）；ADR-179。`ConnHandle`（akio-core，由 `akio`
+2 分钟；超过 `max_conns` 时驱逐最早的未认证连接）；ADR-180。`ConnHandle`（akio-core，由 `akio`
 重新导出；`Conn::handle()`）是不带 handler 类型的可克隆、线程安全的句柄：`id`、`is_open`、地址、
 `close`、`set_idle_timeout`，以及关闭期限 `close_at` / `close_after`（到期即关闭，无论连接发送什么；
 最后设置的生效）和 `cancel_close`，由连接自己的 I/O 线程上的定时器执行。`Listener::on_accept` 告诉
@@ -33,7 +33,7 @@ raw 模式（与 `cfmakeraw` 和 Go 的 `term.MakeRaw` 相同：逐键读取、�
 
 ### 新增：Argon2id、BLAKE2b 和 XChaCha20-Poly1305（akio-crypto）
 
-akit 的 A230 和 A231，用于 fit 的加密存储；ADR-178。`kdf::argon2id(password, salt, time,
+akit 的 A230 和 A231，用于 fit 的加密存储；ADR-179。`kdf::argon2id(password, salt, time,
 memory_kib, lanes, out)` 是与 Go 的 `argon2.IDKey` 相同的 Argon2id（RFC 9106，0x13 版）：违反 RFC
 9106 界限的参数返回错误（`Error::InvalidLength`、新增的 `Error::InvalidParameter`），内存一次性
 可失败地分配（新增的 `Error::OutOfMemory`），lane 在作用域线程上运行（每个 lane、每个 CPU 至多一个
@@ -45,6 +45,16 @@ draft-irtf-cfrg-xchacha，与 Go 的 `chacha20poly1305.NewX` 相同）提供与 
 XChaCha20-Poly1305 向量以及 Go 的 golang.org/x/crypto 输出（含 fit 的 Argon2id 设置）；`ct-dudect`
 新增两个目标 `xchacha20poly1305-open-tag` 和 `blake2b-key`。Argon2id 在第一遍的前半之后按依赖口令的
 下标读取内存，这是设计使然（docs/constant-time.md）。
+
+### 修复：macOS 上从指定接口发送 IPv4 组播（akio-sys、akio-core）
+
+`UdpBinding::send_to_on`（以及 `akio_sys::send_to_on`）用 `IP_PKTINFO` 控制消息指定接口，而 macOS 会把它
+当作限定在该接口上的路由查找：没有 224.0.0.0/4 路由的接口（`lo0`，或组播路由所在接口以外的任何接口）
+返回 `ENETUNREACH`，于是 mDNS（akio-webrtc）无法在这些接口上应答，
+`ipv4_group_reports_the_interface_each_datagram_arrived_on` 在只有一个网络接口的 Mac 上总是失败。现在在
+macOS 上发送 IPv4 组播时，为这次发送设置 socket 的 `IP_MULTICAST_IFINDEX`（它不经路由直接选定接口），
+发完再恢复，并持有一把锁；binding 的其他 IPv4 组播发送（`send_to`、`send_to_tos`）也拿这把锁，所以不会
+有发送从别人指定的接口发出。Linux、IPv6 和单播不受影响。
 
 ### 修复：线程扩容后很快又缩容时连接被重置（akio-epoll、akio-uring）
 
@@ -65,6 +75,27 @@ XChaCha20-Poly1305 向量以及 Go 的 golang.org/x/crypto 输出（含 fit 的 
 每次查看之间让出 CPU，并且只在最近这样做找到过活时才这样做。gpu51（4 个 CPU）上 h2c 走线程池：epoll +12%、io_uring +16%、工作窃取 +20%（每秒 68 万到 76 万–81 万请求），低负载下 CPU 与改动前相同
 （docs/BENCHMARKS.zh-CN.md，其中也记录了试过的变体：忙等自旋的线程从 I/O 线程那里占走一个 CPU，慢了
 4%–12%）。
+
+### 修复：分段读到的多字段请求头与一次读到时得到相同应答（akio-http、akio-ws）
+
+超过 32 个字段的请求头会用能容纳上限（100）的空间再解析一次；分段到达时，32 个字段的那次尝试会沿用
+较大那次的计数继续，而 `fields` 用 `==` 比较，于是永远不会停在上限：超过 100 个字段、其后还有一行畸形
+内容的请求头被以 400 应答，而一次读到的同一个请求头以 431 应答（模糊测试 `http1_request` 发现）。现在
+一旦请求头已出现超过 32 个字段，`parse_head` 直接进行较大的那次解析（借助新增的 `Resume::fields`），
+这也避免了此类请求头在每一段到达时都从头解析；akio-ws 的字段循环用 `>=` 检查上限。该输入已加入
+`http1_request` 的语料种子，并有测试把请求头在每个偏移处切开喂入。
+
+### 新增：UDP 监听器、运行时绑定的 UDP 套接字和 QUIC 服务端的接入过滤器（akio、akio-core、akio-epoll、akio-uring、akio-quic；akit A220）
+
+ADR-178。`Listener::filter` 现在可用于 UDP 监听器：对来自尚无连接的对端的每个数据报，在 `udp_max_peers`
+和 `on_open` 之前询问它，被拒绝的数据报被丢弃，不保留对端的任何记录，并计入 `LoopCounters::filtered`。
+在数据报监听器（`serve_datagrams`）上每个数据报都询问，被拒绝的不会到达 handler（epoll、kqueue 和
+io_uring）。`Engine::set_listener_filter` / `clear_listener_filter` 可在运行中的 UDP 或数据报监听器上替换它，
+无需重新绑定（此前答 `Unsupported`，在 UDP 监听器上设置过滤器会让 `build` 失败）。运行时绑定的套接字用新增的
+`Engine::bind_udp_filtered` 带上过滤器，从第一个数据报起生效，并用 `UdpBinding::set_filter` / `clear_filter`
+替换。akio-quic 的服务端在 Initial 包建立新连接之前，经新增的 `Conn::filter_allows` 再询问一次过滤器（在任何
+TLS 计算之前，不回送任何东西），所以 UDP 对端建立之后替换的过滤器对其新的 QUIC 连接生效；akio-h3 的监听器
+经 `QuicServer` 得到同样的效果。DPDK 监听器仍不支持过滤器。
 
 ### 变更：调度模式改名：`Scheduling::Rounds` 改为 `WorkStealing`，`Scheduling::Loops` 改为 `EventLoops`（akio、akio-epoll）
 
