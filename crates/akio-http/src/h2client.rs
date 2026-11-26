@@ -287,6 +287,9 @@ enum LinkEnd {
     Graceful,
     /// END_STREAM if the server ended its half, else `RST_STREAM CANCEL`.
     Now,
+    /// `RST_STREAM CANCEL` whatever the server did, what is queued dropped
+    /// ([`WsSender::abort`]).
+    Abort,
 }
 
 /// The stream of a WebSocket over HTTP/2, client side.
@@ -362,6 +365,10 @@ impl WsLink for ClientLink {
 
     fn close(&self) {
         self.end(LinkEnd::Now);
+    }
+
+    fn abort(&self) {
+        self.end(LinkEnd::Abort);
     }
 
     fn is_open(&self) -> bool {
@@ -1993,6 +2000,13 @@ impl H2Conn {
             sh.emptied();
             return;
         };
+        if end == LinkEnd::Abort {
+            // What was queued goes with the stream (`cancel` drops it, and its WebSocket hears
+            // 1006 as it goes).
+            drop(chunks);
+            sh.emptied();
+            return self.cancel(c, sid);
+        }
         for ch in chunks {
             st.upload.extend(ch);
         }
@@ -2000,7 +2014,7 @@ impl H2Conn {
             LinkEnd::No => {}
             LinkEnd::Graceful => st.upload_open = false,
             LinkEnd::Now if st.ended => st.upload_open = false,
-            LinkEnd::Now => {
+            LinkEnd::Now | LinkEnd::Abort => {
                 sh.emptied();
                 return self.cancel(c, sid);
             }

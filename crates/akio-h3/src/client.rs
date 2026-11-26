@@ -20,8 +20,8 @@ use akio_quic::{Connection, ConnectionError, Dir, QuicHandler, StreamId};
 use crate::frame::{self, Piece, Reader, StreamReader};
 use crate::qpack::{self, FieldBuf, SectionError};
 use crate::{
-    Blocked, Drains, EncShared, H3Config, Peer, Settings, StreamLink, StreamMap, Uni, code, lock,
-    run_drain, sid,
+    Aborted, Blocked, Drains, EncShared, H3Config, Peer, Settings, StreamLink, StreamMap, Uni,
+    code, lock, run_drain, sid,
 };
 
 type Callback = Box<dyn FnOnce(Result<Response, H3Error>) + Send>;
@@ -712,6 +712,7 @@ impl H3Client {
             uni: StreamMap::default(),
             ws: StreamMap::default(),
             ws_drains: Arc::default(),
+            ws_aborted: Arc::default(),
             ws_answer: None,
             dl_start: None,
             dl: StreamMap::default(),
@@ -1223,6 +1224,8 @@ struct ClientConn {
     ws: StreamMap<(StreamReader, WsSession)>,
     /// Their drain waiters (`WsSender::on_drain`), run once their stream has room.
     ws_drains: Arc<Drains>,
+    /// Those aborted from any thread (`WsSender::abort`), ended in `on_notify`.
+    ws_aborted: Arc<Aborted>,
     /// A streamed response's head `on_resp` just took off its stream, for `report`.
     dl_start: Option<Box<DlStart>>,
     /// Streamed responses past their head, by stream.
@@ -1779,7 +1782,12 @@ impl ClientConn {
                 return (w.done)(Err(e));
             }
         };
-        let link = Arc::new(StreamLink::new(c.clone(), id, self.ws_drains.clone()));
+        let link = Arc::new(StreamLink::new(
+            c.clone(),
+            id,
+            self.ws_drains.clone(),
+            self.ws_aborted.clone(),
+        ));
         let mut ws =
             WsSession::client_with_link(link, &w.cfg, pmd, w.handler, protocol, w.close_timeout);
         let sender = ws.sender().clone();
@@ -1989,6 +1997,18 @@ impl QuicHandler for ClientConn {
     fn on_stream_stopped(&mut self, _c: &Connection, id: StreamId, _code: u64) {
         // A WebSocket's writes are not wanted any more: its drain waiter runs.
         run_drain(&self.ws_drains, id);
+    }
+
+    fn on_notify(&mut self, _c: &Connection) {
+        // WebSockets aborted (`WsSender::abort`, their stream reset both ways): their sessions
+        // end, hearing 1006, and their drain waiters run.
+        let ids = std::mem::take(&mut *lock(&self.ws_aborted));
+        for id in ids {
+            if let Some((_, mut ws)) = self.ws.remove(&id) {
+                ws.on_transport_closed();
+                run_drain(&self.ws_drains, id);
+            }
+        }
     }
 
     fn on_stream_writable(&mut self, _c: &Connection, id: StreamId) {

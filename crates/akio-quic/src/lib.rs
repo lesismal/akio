@@ -191,6 +191,10 @@ pub trait QuicHandler: Send + 'static {
     /// sends `GOAWAY`. Called at most once. The default does nothing: the connection ends with
     /// the socket's drain deadline or its idle timeout.
     fn on_shutdown(&mut self, _c: &Connection) {}
+    /// [`Connection::notify`] was called: the handler looks at what other threads left for it
+    /// (akio-h3: the WebSocket streams aborted from them). After the events queued before the
+    /// call; several calls before it runs make one.
+    fn on_notify(&mut self, _c: &Connection) {}
 }
 
 struct State {
@@ -222,6 +226,8 @@ struct Shared {
     /// `QuicHandler::on_shutdown` is due (ADR-155); `shut` once it was asked for.
     shutdown: AtomicBool,
     shut: AtomicBool,
+    /// `QuicHandler::on_notify` is due ([`Connection::notify`]).
+    notified: AtomicBool,
 }
 
 /// A QUIC connection. Cheap to clone and usable from any thread.
@@ -282,6 +288,7 @@ impl Connection {
                 woken: AtomicBool::new(false),
                 shutdown: AtomicBool::new(false),
                 shut: AtomicBool::new(false),
+                notified: AtomicBool::new(false),
             }
         }))
     }
@@ -543,8 +550,22 @@ impl Connection {
         self.kick();
     }
 
+    /// Has the handler's [`QuicHandler::on_notify`] run, on the thread that delivers this
+    /// connection's events, after the events already queued: for work another thread leaves
+    /// to the handler, which owns its state. Called from the handler's own callbacks, it runs
+    /// once the callback returns; from another thread, the connection is driven as by `send`
+    /// (in [`without_driving`](Self::without_driving), by the timer thread). Several calls
+    /// before it runs make one; nothing once the connection is closed.
+    pub fn notify(&self) {
+        if self.0.done.load(Ordering::Acquire) {
+            return;
+        }
+        self.0.notified.store(true, Ordering::Release);
+        self.kick();
+    }
+
     /// Runs `f`, in which this connection's calls (`send`, `finish`, `reset`, `stop`, resuming
-    /// reads, `close`) leave driving the connection to its timer thread, which does it at once,
+    /// reads, `close`, `notify`) leave driving the connection to its timer thread, which does it at once,
     /// instead of driving it on this thread.
     ///
     /// A call from outside the connection's handler normally drives the connection on the
@@ -769,7 +790,10 @@ impl Connection {
             return;
         }
         loop {
-            if lock(&self.0.events).is_empty() && !self.0.shutdown.load(Ordering::Acquire) {
+            if lock(&self.0.events).is_empty()
+                && !self.0.shutdown.load(Ordering::Acquire)
+                && !self.0.notified.load(Ordering::Acquire)
+            {
                 return;
             }
             let Some(mut h) = lock(&self.0.handler).take() else {
@@ -802,6 +826,9 @@ impl Connection {
             }
             if !closed && self.0.shutdown.swap(false, Ordering::AcqRel) {
                 h.on_shutdown(self);
+            }
+            if !closed && self.0.notified.swap(false, Ordering::AcqRel) {
+                h.on_notify(self);
             }
             DELIVERING.with(|d| d.set(prev));
             if closed {

@@ -44,11 +44,13 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 akio-http `Service`。与 qui
 
 `QuicHandler` 回调：`on_connected`、`on_stream_opened`、`on_stream_data(c, id, data, fin)`
 （必须实现）、`on_stream_reset`、`on_stream_stopped`、`on_streams_available`、
-`on_stream_writable`、`on_datagram`、`on_close(reason)`。
+`on_stream_writable`、`on_datagram`、`on_close(reason)`，以及 `on_notify`：在（任意线程）调用
+`Connection::notify()` 之后运行，用于其他线程留给 handler 的工作，因为状态归 handler 所有（运行前的
+多次调用合为一次；绝不在 `on_close` 之后）。
 
 `Connection`（可克隆，可在任何线程使用）：`open_bi`、`open_uni`、`send(id, data)`、`finish`、
 `reset`、`stop`、`queued_bytes(id)`、`send_capacity(id)`、`send_datagram`、
-`spawn_blocking(work)`、`close(code, reason)`、`remote_addr`、`alpn`、`server_name`、`rtt`、
+`spawn_blocking(work)`、`notify`、`close(code, reason)`、`remote_addr`、`alpn`、`server_name`、`rtt`、
 `stats`、`is_closed`。负载类型是 `akio_quic::Bytes`（引用计数、可切片；收到的数据是解密后数据包
 的切片，不再复制）。写永不阻塞：`send` 把数据排队，按流量控制与拥塞控制允许的速度发出。
 

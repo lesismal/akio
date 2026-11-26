@@ -10,6 +10,18 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a WebSocket ended at once, what is queued dropped (akio-ws, akio-http, akio-h3, akio-quic)
+
+akit's A238, for its tunnel's WebSocket links (a failed link, a kicked peer, a revoked token, a role
+stopped); ADR-184. `WsSender::abort()` ends a WebSocket now, without a close frame: what is queued
+and not yet written is dropped, later sends fail with `Closed`, nothing more reaches the handler,
+and both ends' `on_close` hear 1006. Over TCP or TLS the connection is closed; over HTTP/2 the
+stream is reset (`CANCEL`) and over HTTP/3 reset both ways (`H3_REQUEST_CANCELLED`), the connection
+going on. Server and client sides, from any thread or the handler's callbacks; it also cuts short a
+close handshake under way. For it, akio-quic's `Connection::notify()` has the handler's new
+`QuicHandler::on_notify` run on the thread that delivers the connection's events (several calls
+before it runs make one; never after `on_close`).
+
 ### Fixed: waiting for the engine from a thread-local's destructor (akio-pool, akio)
 
 akit's A237. `Engine::wait` asks `Pool::is_current` whether it runs on a logical-pool thread, which

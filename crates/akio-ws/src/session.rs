@@ -23,6 +23,12 @@ pub trait WsLink: Send + Sync + 'static {
     fn close_after_send(&self);
     /// Ends the transport now (the client after its close timeout, or the peer went away).
     fn close(&self);
+    /// Ends the transport at once, dropping what is queued, and resets it where it can be
+    /// ([`WsSender::abort`]); the session is told (`on_transport_closed`) on its own thread.
+    /// Default: [`close`](Self::close).
+    fn abort(&self) {
+        self.close();
+    }
     /// Whether the transport can still send.
     fn is_open(&self) -> bool;
     /// Bytes queued but not yet sent.
@@ -79,6 +85,14 @@ impl Link {
         match self {
             Link::Tcp(c) => c.close_after_send(),
             Link::Ext(l) => l.close_after_send(),
+        }
+    }
+
+    fn abort(&self) {
+        match self {
+            // Unsent bytes are dropped; `on_close` follows on the I/O thread.
+            Link::Tcp(c) => c.close(),
+            Link::Ext(l) => l.abort(),
         }
     }
 
@@ -398,6 +412,8 @@ struct TxShared {
     /// without it by the lock-free path, where the connection's own write lock keeps a data
     /// frame from following the close frame (`ConnInner::send_then_close`).
     closed: AtomicBool,
+    /// [`WsSender::abort`] ended the connection: nothing more is delivered to the handler.
+    aborted: AtomicBool,
     /// A server over TCP with no compression: unfragmented messages are sent without taking
     /// `m` (nothing in `Tx` is needed to encode them, and the connection orders the frames).
     plain: bool,
@@ -527,6 +543,7 @@ impl WsSender {
             conn,
             tx: Arc::new(TxShared {
                 closed: AtomicBool::new(false),
+                aborted: AtomicBool::new(false),
                 plain,
                 batching: AtomicBool::new(false),
                 late: Mutex::new(Late::default()),
@@ -856,6 +873,40 @@ impl WsSender {
         self.close_with(Some(code), reason, false);
     }
 
+    /// Ends the WebSocket at once, without a close frame: what is queued for the peer and not
+    /// yet written is dropped, and the transport is closed now (the TCP or TLS connection's
+    /// `close`; over HTTP/2 the stream reset with `CANCEL`, over HTTP/3 with
+    /// `H3_REQUEST_CANCELLED` both ways). For a link that failed, a peer kicked or a service
+    /// stopping, where [`close`](Self::close) would first send everything queued and, on a
+    /// client, wait for the peer. Later sends fail with `Closed`, and no message reaches the
+    /// handler after it (an abort inside a callback drops the rest of that read).
+    /// [`WsHandler::on_close`] follows with 1006 on the connection's I/O thread (over HTTP/3,
+    /// the QUIC connection's), unless a close handshake already ended the session; drain
+    /// waiters run. Callable from any thread, from the handler's callbacks too, and after
+    /// [`close`](Self::close) (cutting its handshake short); nothing once the transport is gone.
+    pub fn abort(&self) {
+        self.tx.aborted.store(true, Ordering::Release);
+        self.tx.closed.store(true, Ordering::Release);
+        if self.tx.plain {
+            // What the handler's batch or other threads collected is not sent.
+            let id = self.id();
+            BATCH.with(|b| {
+                let mut b = b.borrow_mut();
+                if b.owner == id {
+                    b.buf.clear();
+                }
+            });
+            let mut l = self.late_lock();
+            l.bytes.clear();
+            l.close = None;
+        }
+        self.conn.abort();
+    }
+
+    fn aborted(&self) -> bool {
+        self.tx.aborted.load(Ordering::Acquire)
+    }
+
     /// Sends a close frame unless one was sent. `drop_tcp`: close the transport once it is
     /// written even on the client side (failing the connection after a protocol error).
     fn close_with(&self, code: Option<u16>, reason: &str, drop_tcp: bool) {
@@ -1120,7 +1171,7 @@ impl WsSession {
 
     /// Processes bytes read from the connection.
     pub fn on_data(&mut self, data: &[u8]) {
-        if self.ended {
+        if self.ended || self.sender.aborted() {
             return;
         }
         // A plain session collects what its handler sends during this read and sends it to
@@ -1151,10 +1202,11 @@ impl WsSession {
                     handler.on_close(code, reason);
                 }
             }
-            !*ended
+            // An abort from the handler stops the rest of this read.
+            !*ended && !sender.aborted()
         });
         if let Err(e) = res {
-            if !self.ended {
+            if !self.ended && !self.sender.aborted() {
                 self.sender.close_with(Some(e.code), e.reason, true);
                 self.end(Some(e.code), e.reason);
             }

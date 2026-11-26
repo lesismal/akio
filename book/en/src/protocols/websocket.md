@@ -145,6 +145,18 @@ backpressure (rule 8) through the `WsSender`, from any thread:
   gives it a send-queue bound of its own (`Conn::set_max_queued_bytes`). Over HTTP/2 and HTTP/3
   the first does nothing and the second fails with `Unsupported`.
 
+## Ending a WebSocket at once
+
+`WsSender::close(code, reason)` sends a close frame behind what is queued, and a client then waits
+for the server's answer (up to `close_timeout`). For a link that failed, a peer kicked or a
+service stopping, `WsSender::abort()` ends it now, from any thread or from the handler's
+callbacks: no close frame, what is queued and not yet written dropped, later sends failing with
+`Closed`, nothing more delivered to the handler. Over TCP or TLS the connection is closed; over
+HTTP/2 the stream is reset (`CANCEL`); over HTTP/3 it is reset both ways
+(`H3_REQUEST_CANCELLED`); the HTTP/2 or QUIC connection and its other streams go on. Both ends'
+`on_close` hear 1006 (the aborting side's on its connection's I/O thread), unless a close
+handshake had already ended the session. An abort also cuts short a close handshake under way.
+
 ## Not done
 
 Client: cookies across redirects (set a `Cookie` header from `akio_http::cookie::CookieJar::header`

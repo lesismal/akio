@@ -2387,6 +2387,19 @@ impl WsLink for H2WsLink {
         c.flush();
     }
 
+    /// Resets the stream (`CANCEL`) whatever the state of its halves: what is queued on it is
+    /// dropped, and its WebSocket hears 1006 as the stream goes (`WsPark`).
+    fn abort(&self) {
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        let mut c = lock(&core);
+        if c.streams.contains_key(&self.sid) {
+            c.rst(self.sid, err::CANCEL);
+            c.flush();
+        }
+    }
+
     fn is_open(&self) -> bool {
         self.core.upgrade().is_some_and(|core| {
             let c = lock(&core);

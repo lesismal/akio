@@ -219,6 +219,7 @@ fn serve_inner<S: Service>(
             certs: PeerCerts::new(),
             next_req: 0,
             goaway: None,
+            aborted: Arc::default(),
         }
     })
 }
@@ -700,6 +701,8 @@ struct ServerConn<S> {
     next_req: u64,
     /// Since `GOAWAY` (ADR-155): request streams from this id on are refused.
     goaway: Option<u64>,
+    /// WebSocket streams aborted from any thread (`WsSender::abort`), ended in `on_notify`.
+    aborted: Arc<Aborted>,
 }
 
 /// A connection's verified client certificate chain (`Request::peer_certificates`), asked of
@@ -733,6 +736,8 @@ struct ServerHost<'a, S> {
     sink: &'a SharedSink,
     /// The connection's drain waiters (a WebSocket's `on_drain`).
     drains: &'a Arc<Drains>,
+    /// The connection's WebSocket streams aborted (`WsSender::abort`).
+    aborted: &'a Arc<Aborted>,
     certs: &'a PeerCerts,
     local: SocketAddr,
 }
@@ -756,6 +761,7 @@ impl<S: Service> Host for ServerHost<'_, S> {
                 self.c.clone(),
                 self.id,
                 self.drains.clone(),
+                self.aborted.clone(),
             ));
             if let Some(mut w) = st.take_websocket(link) {
                 w.open();
@@ -810,6 +816,7 @@ impl<S: Service> ServerConn<S> {
             id,
             sink: &self.sink,
             drains: &self.out.drains,
+            aborted: &self.aborted,
             certs: &self.certs,
             local: self.local,
         };
@@ -941,6 +948,7 @@ impl<S: Service> ServerConn<S> {
             id,
             sink: &self.sink,
             drains: &self.out.drains,
+            aborted: &self.aborted,
             certs: &self.certs,
             local: self.local,
         };
@@ -1460,6 +1468,18 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         run_drain(&self.out.drains, id);
     }
 
+    fn on_notify(&mut self, c: &Connection) {
+        // WebSockets aborted (`WsSender::abort`, their stream reset both ways): their sessions
+        // end, hearing 1006, and their drain waiters run.
+        let ids = std::mem::take(&mut *lock(&self.aborted));
+        for id in ids {
+            if let Some(mut r) = self.reqs.remove(&id) {
+                self.forget(id, &mut r);
+            }
+        }
+        self.conn.flush(c);
+    }
+
     fn on_shutdown(&mut self, c: &Connection) {
         // RFC 9114 section 5.2: the first request stream we will not process.
         let first = self.next_req;
@@ -1499,7 +1519,7 @@ impl<S: Service> QuicHandler for ServerConn<S> {
 }
 
 /// A request stream carrying a WebSocket (RFC 9220): frames go out in DATA frames, closing
-/// ends the stream.
+/// ends the stream, aborting resets it both ways.
 pub(crate) struct StreamLink {
     c: Connection,
     id: StreamId,
@@ -1507,15 +1527,28 @@ pub(crate) struct StreamLink {
     /// The connection's drain waiters, run when a stream becomes writable, is stopped or reset,
     /// or the connection closes.
     drains: Arc<Drains>,
+    /// The connection's WebSocket streams aborted from any thread, for its handler to end
+    /// (`QuicHandler::on_notify`).
+    aborted: Arc<Aborted>,
 }
 
+/// WebSocket streams aborted ([`WsSender::abort`](akio_http::ws::WsSender::abort)) whose
+/// sessions the connection's handler has not ended yet.
+pub(crate) type Aborted = Mutex<Vec<StreamId>>;
+
 impl StreamLink {
-    pub(crate) fn new(c: Connection, id: StreamId, drains: Arc<Drains>) -> StreamLink {
+    pub(crate) fn new(
+        c: Connection,
+        id: StreamId,
+        drains: Arc<Drains>,
+        aborted: Arc<Aborted>,
+    ) -> StreamLink {
         StreamLink {
             c,
             id,
             done: AtomicBool::new(false),
             drains,
+            aborted,
         }
     }
 
@@ -1548,6 +1581,23 @@ impl WsLink for StreamLink {
 
     fn close(&self) {
         self.end();
+    }
+
+    /// Resets the stream both ways (`RESET_STREAM` and `STOP_SENDING` with
+    /// `H3_REQUEST_CANCELLED`), dropping what its send buffer holds, even after a close began;
+    /// the connection's handler then ends the session (`on_notify`), which hears 1006.
+    fn abort(&self) {
+        if self.c.is_closed() {
+            return; // the session ends with the connection
+        }
+        self.done.store(true, Ordering::Release);
+        lock(&self.aborted).push(self.id);
+        // Not driven here: the caller may hold a lock the handler's callbacks take.
+        self.c.without_driving(|| {
+            let _ = self.c.reset(self.id, code::REQUEST_CANCELLED);
+            let _ = self.c.stop(self.id, code::REQUEST_CANCELLED);
+            self.c.notify();
+        });
     }
 
     fn is_open(&self) -> bool {

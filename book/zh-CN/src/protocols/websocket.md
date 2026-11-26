@@ -125,6 +125,15 @@ extended CONNECT，`ctx.req().protocol` 为 `Some("websocket")`。`H2Config::ena
   暂停（`Conn::set_relayed`）；`set_max_queued_bytes(Some(n))` 给它自己的发送队列上限
   （`Conn::set_max_queued_bytes`）。在 HTTP/2 和 HTTP/3 上前者不做任何事，后者以 `Unsupported` 失败。
 
+## 立即结束 WebSocket
+
+`WsSender::close(code, reason)` 把关闭帧排在已排队的数据之后发送，客户端随后等待服务端回应（最多
+`close_timeout`）。对于出错的链路、被踢出的对端或正在停止的服务，`WsSender::abort()` 立即结束它，可在
+任意线程或 handler 的回调中调用：不发关闭帧，丢弃已排队但尚未写出的数据，之后的发送以 `Closed` 失败，
+handler 不再收到任何内容。在 TCP 或 TLS 上关闭连接；在 HTTP/2 上重置流（`CANCEL`）；在 HTTP/3 上双向
+重置流（`H3_REQUEST_CANCELLED`）；HTTP/2 或 QUIC 连接及其上的其他流继续存在。两端的 `on_close` 都收到
+1006（中止一方在其连接的 I/O 线程上收到），除非关闭握手已经结束了会话。中止也会截断进行中的关闭握手。
+
 ## 尚未完成
 
 客户端：跨重定向携带 cookie（可以自行用 `akio_http::cookie::CookieJar::header` 设置 `Cookie` 头；

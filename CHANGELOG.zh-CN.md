@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：立即结束 WebSocket，丢弃排队的数据（akio-ws、akio-http、akio-h3、akio-quic）
+
+akit 的 A238，用于其隧道的 WebSocket 链路（链路出错、对端被踢出、令牌吊销、角色停止）；ADR-184。
+`WsSender::abort()` 立即结束 WebSocket，不发关闭帧：丢弃已排队但尚未写出的数据，之后的发送以 `Closed`
+失败，handler 不再收到任何内容，两端的 `on_close` 都收到 1006。在 TCP 或 TLS 上关闭连接；在 HTTP/2
+上重置流（`CANCEL`），在 HTTP/3 上双向重置流（`H3_REQUEST_CANCELLED`），连接继续存在。服务端和客户端
+都支持，可在任意线程或 handler 的回调中调用；它也会截断进行中的关闭握手。为此，akio-quic 的
+`Connection::notify()` 让 handler 新增的 `QuicHandler::on_notify` 在投递该连接事件的线程上运行
+（运行前的多次调用合为一次；绝不在 `on_close` 之后）。
+
 ### 修复：在线程局部变量的析构函数里等待引擎（akio-pool、akio）
 
 akit 的 A237。`Engine::wait` 先用 `Pool::is_current` 判断自己是否在逻辑池线程上，它以 `with`

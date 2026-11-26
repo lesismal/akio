@@ -50,11 +50,13 @@ How it fits on `akio`:
 
 `QuicHandler` callbacks: `on_connected`, `on_stream_opened`, `on_stream_data(c, id, data, fin)`
 (required), `on_stream_reset`, `on_stream_stopped`, `on_streams_available`,
-`on_stream_writable`, `on_datagram`, `on_close(reason)`.
+`on_stream_writable`, `on_datagram`, `on_close(reason)`, and `on_notify`, which runs after
+`Connection::notify()` (from any thread) for work other threads leave to the handler, which owns
+its state (several calls before it runs make one; never after `on_close`).
 
 `Connection` (cloneable, usable from any thread): `open_bi`, `open_uni`, `send(id, data)`,
 `finish`, `reset`, `stop`, `queued_bytes(id)`, `send_capacity(id)`, `send_datagram`,
-`spawn_blocking(work)`, `close(code, reason)`, `remote_addr`, `alpn`, `server_name`, `rtt`,
+`spawn_blocking(work)`, `notify`, `close(code, reason)`, `remote_addr`, `alpn`, `server_name`, `rtt`,
 `stats`, `is_closed`. Payloads are `akio_quic::Bytes` (reference counted and sliceable; received
 data is a slice of the decrypted packet, so it is not copied again). Writes never block: `send`
 queues the bytes, which go out as flow and congestion control allow.

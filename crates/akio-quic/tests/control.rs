@@ -1,5 +1,6 @@
 //! QUIC stream control: RESET_STREAM and STOP_SENDING in both directions, sending on finished or
-//! stopped streams, connection introspection, and error formatting.
+//! stopped streams, connection introspection, error formatting, and the handler notified from
+//! other threads (`Connection::notify`).
 #![allow(missing_docs)]
 
 use std::net::SocketAddr;
@@ -47,6 +48,7 @@ enum Got {
     Reset(StreamId, u64),
     Stopped(StreamId, u64),
     Opened(StreamId),
+    Notified,
 }
 
 struct Client(mpsc::Sender<Got>);
@@ -58,8 +60,16 @@ impl QuicHandler for Client {
     fn on_stream_opened(&mut self, _c: &Connection, id: StreamId) {
         let _ = self.0.send(Got::Opened(id));
     }
-    fn on_stream_data(&mut self, _c: &Connection, id: StreamId, data: Bytes, fin: bool) {
+    fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
         let _ = self.0.send(Got::Data(id, data.to_vec(), fin));
+        if &data[..] == b"notify" {
+            // From the handler: once, after this callback.
+            c.notify();
+            c.notify();
+        }
+    }
+    fn on_notify(&mut self, _c: &Connection) {
+        let _ = self.0.send(Got::Notified);
     }
     fn on_stream_reset(&mut self, _c: &Connection, id: StreamId, code: u64) {
         let _ = self.0.send(Got::Reset(id, code));
@@ -288,6 +298,50 @@ fn configs_from_tls_with_transport_settings() {
     assert!(
         matches!(r, akio_quic::ConnectionError::TransportError { .. }),
         "{r}"
+    );
+    e.shutdown();
+    e.wait();
+}
+
+#[test]
+fn the_handler_notified() {
+    let (e, addr, _names) = setup();
+    let (tx, rx) = mpsc::channel();
+    let cfg = akio_quic::client_config_insecure(&[b"ctl"]).unwrap();
+    let c = akio_quic::dial(&e, addr, "localhost", cfg, Client(tx)).unwrap();
+    assert_eq!(next(&rx, |g| *g == Got::Connected), Got::Connected);
+    // From another thread: driven here, or by the timer thread.
+    c.notify();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Got::Notified
+    );
+    c.without_driving(|| c.notify());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Got::Notified
+    );
+    // From the handler's own callback (the server echoes `notify`): once, after it.
+    let id = c.open_bi().unwrap();
+    c.send(id, Bytes::from_static(b"notify")).unwrap();
+    c.finish(id).unwrap();
+    assert!(matches!(
+        next(&rx, |g| matches!(g, Got::Data(..))),
+        Got::Data(_, ref d, _) if d == b"notify"
+    ));
+    let mut notified = 0;
+    while let Ok(g) = rx.recv_timeout(Duration::from_millis(300)) {
+        if g == Got::Notified {
+            notified += 1;
+        }
+    }
+    assert_eq!(notified, 1);
+    // Closed: nothing.
+    c.close(0, b"");
+    c.notify();
+    assert!(
+        !std::iter::from_fn(|| rx.recv_timeout(Duration::from_millis(200)).ok())
+            .any(|g| g == Got::Notified)
     );
     e.shutdown();
     e.wait();
