@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: a WebAssembly guest call 44% cheaper (akio-wasm; akit A180)
+
+ADR-125's W5. A call of fit's Go `headers` guest on a warm instance takes 5.1 µs instead of
+9.1 on the benchmark host (wazero's compiler 3.5 µs, its interpreter 42 µs), a typed host call
+17.5 ns instead of 28. The translator folds and fuses what Go's `wasm` code does needlessly
+(`i64.extend_i32_u`, address wraps, constants stored, returned and passed, double `eqz`
+tests, the stack pointer's update), branches take their target block's fuel, and typed host
+functions (`Linker::func_wrap`) run over slots instead of `Value`s. Fuel is metered exactly as
+before. No public API change; `examples/wasm-bench.rs` measures a call and its parts.
+
 ### Added: a connect timeout per dial, `Engine::dial_with` (akio, akio-core, backends, akio-http; akit A12, A79)
 
 ADR-154. `Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)`

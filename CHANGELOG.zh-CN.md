@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：WebAssembly guest 调用便宜 44%（akio-wasm；akit A180）
+
+ADR-125 的 W5。在基准机上，于热实例上调用一次 fit 的 Go `headers` guest 由 9.1 µs 降到 5.1 µs（wazero 编译器
+3.5 µs，其解释器 42 µs），一次类型化宿主调用由 28 ns 降到 17.5 ns。翻译器折叠并融合 Go 的 `wasm` 代码中不必要
+的部分（`i64.extend_i32_u`、地址的 wrap、存储/返回/传递的常量、两次 `eqz` 的测试、栈指针的更新），分支收取目标
+块的燃料，类型化宿主函数（`Linker::func_wrap`）直接操作槽而不经 `Value`。燃料计量与之前完全相同。公开 API 不变；
+`examples/wasm-bench.rs` 测量一次调用及其各部分。
+
 ### 新增：每次拨号自己的连接超时，`Engine::dial_with`（akio、akio-core、各后端、akio-http；akit A12、A79）
 
 ADR-154。`Engine::dial_with(addr, DialOptions::new().connect_timeout(d), acceptor, on_error)` 用自己的
