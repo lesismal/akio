@@ -599,11 +599,15 @@ fn the_deepest_command_batch_is_recorded() {
     s.write_all(b"x").unwrap();
     assert_eq!(read_n(&mut s, 1), b"D");
     let m = e.metrics();
-    assert!(
-        m.loops[0].counters.max_cmd_batch >= POSTS as u64,
-        "{:?}",
-        m.loops[0].counters
-    );
+    // The deepest over every loop: with work stealing the batch is counted on the worker that
+    // ran the connection, which need not be the first entry.
+    let deepest = m
+        .loops
+        .iter()
+        .map(|l| l.counters.max_cmd_batch)
+        .max()
+        .unwrap_or(0);
+    assert!(deepest >= POSTS as u64, "{:?}", m.loops);
     assert!(
         m.to_prometheus()
             .contains("# TYPE akio_loop_max_command_batch gauge")
