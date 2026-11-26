@@ -12,7 +12,7 @@
 //!
 //! Handlers run on the connection's I/O thread and must not block; the [`Sink`] they get answers
 //! from any thread, so slow work goes to the logical pool or another thread, or every handler
-//! runs on the pool with [`GrpcServer::run_on_pool`].
+//! runs on the pool with [`GrpcServer::handlers_on_logical_pool`].
 //!
 //! Guide: [gRPC](https://lesismal.github.io/akio/en/protocols/grpc.html)
 //! (中文: [gRPC](https://lesismal.github.io/akio/zh-CN/protocols/grpc.html)).
@@ -522,7 +522,7 @@ pub struct GrpcServer {
     max_collect: usize,
     max_deadline: Duration,
     compress: bool,
-    run_on_pool: bool,
+    handlers_on_logical_pool: bool,
 }
 
 impl Default for GrpcServer {
@@ -534,7 +534,7 @@ impl Default for GrpcServer {
             max_collect: DEFAULT_MAX_COLLECT,
             max_deadline: DEFAULT_MAX_DEADLINE,
             compress: false,
-            run_on_pool: false,
+            handlers_on_logical_pool: false,
         }
     }
 }
@@ -699,8 +699,8 @@ impl GrpcServer {
     /// Interceptors, decoding and limits stay on the I/O thread. When the pool's queue is full
     /// the call ends with `RESOURCE_EXHAUSTED`. Default `false`.
     #[must_use]
-    pub fn run_on_pool(mut self, on: bool) -> GrpcServer {
-        self.run_on_pool = on;
+    pub fn handlers_on_logical_pool(mut self, on: bool) -> GrpcServer {
+        self.handlers_on_logical_pool = on;
         self
     }
 
@@ -755,7 +755,7 @@ impl Service for GrpcServer {
             && ctx
                 .header("grpc-accept-encoding")
                 .is_some_and(|v| v.split(',').any(|e| e.trim() == "gzip"));
-        let pool = if self.run_on_pool {
+        let pool = if self.handlers_on_logical_pool {
             ctx.executor()
         } else {
             None
@@ -840,8 +840,8 @@ impl Service for GrpcServer {
 
 // ---- calls on the logical pool -----------------------------------------------------------------
 
-/// A call whose handler runs on the logical pool ([`GrpcServer::run_on_pool`]): its request
-/// messages queue here and one pool job at a time hands them over, in order, so the handler
+/// A call whose handler runs on the logical pool ([`GrpcServer::handlers_on_logical_pool`]): its
+/// request messages queue here and one pool job at a time hands them over, in order, so the handler
 /// sees them exactly as it would inline while the connection's other calls run alongside.
 struct OnPool {
     exec: akio_http::Executor,

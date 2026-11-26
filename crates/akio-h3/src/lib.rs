@@ -137,7 +137,7 @@ pub struct H3Config {
     /// connection are served at the same time. Requests whose body the service takes as a
     /// stream, and CONNECTs (extended or not), stay on the I/O thread. When the pool's queue
     /// is full the request is answered `503`. Default `false`.
-    pub run_on_pool: bool,
+    pub handlers_on_logical_pool: bool,
 }
 
 impl Default for H3Config {
@@ -147,7 +147,7 @@ impl Default for H3Config {
             max_field_section_bytes: 64 << 10,
             qpack_max_table_capacity: 4096,
             qpack_blocked_streams: 16,
-            run_on_pool: false,
+            handlers_on_logical_pool: false,
             qpack_encoder_capacity: 4096,
         }
     }
@@ -888,7 +888,7 @@ impl<S: Service> ServerConn<S> {
             request.headers.append("early-data", "1");
         }
         let tag = tag(id, head_only);
-        if self.cfg.run_on_pool {
+        if self.cfg.handlers_on_logical_pool {
             return akio_http::transport::dispatch_conn_on_pool(
                 &self.svc, request, &self.sink, tag,
             );

@@ -200,9 +200,9 @@ fn client_gone_before_the_answer() {
 fn h2c_streams_are_answered_later_too() {
     // Inline streams get a loop timer, as HTTP/1.1 does; pooled ones (HTTP/2's default) are off
     // the I/O thread when they call `after`, so theirs runs on the crate's timer thread.
-    for run_on_pool in [false, true] {
+    for handlers_on_logical_pool in [false, true] {
         let mut http = HttpConfig::default();
-        http.h2.as_mut().unwrap().run_on_pool = run_on_pool;
+        http.h2.as_mut().unwrap().handlers_on_logical_pool = handlers_on_logical_pool;
         let (e, n) = start_with(http);
         let addr = e.local_addrs()[0];
         let c = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
@@ -218,8 +218,16 @@ fn h2c_streams_are_answered_later_too() {
             n.same.load(Ordering::Relaxed),
             n.other.load(Ordering::Relaxed),
         );
-        let want = if run_on_pool { (0, 1) } else { (1, 0) };
-        assert_eq!((same, other), want, "run_on_pool={run_on_pool}");
+        let want = if handlers_on_logical_pool {
+            (0, 1)
+        } else {
+            (1, 0)
+        };
+        assert_eq!(
+            (same, other),
+            want,
+            "handlers_on_logical_pool={handlers_on_logical_pool}"
+        );
         e.shutdown();
         e.wait();
     }

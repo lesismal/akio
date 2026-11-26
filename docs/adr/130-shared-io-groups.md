@@ -56,8 +56,8 @@ on one loop.
 - Fewer threads by default: one set per backend instead of one per listener, so the cores are
   not oversubscribed by idle loops and a busy listener can use every thread.
 - Less isolation by default: a slow inline handler of one listener delays the connections of
-  the others on its thread. Blocking work belongs on the logical pool anyway (rules §1; HTTP/2
-  handlers run there by default since 2026-11-25); `Listener::dedicated()` restores isolation.
+  the others on its thread. Blocking work belongs on the logical pool anyway (rules §1,
+  `handlers_on_logical_pool`); `Listener::dedicated()` restores isolation.
 - Listeners with explicit `threads(n)`, the common case in tests and tuned deployments, behave
   exactly as before.
 - `set_threads` on one listener can now change the threads of others; the docs say so.
@@ -96,7 +96,7 @@ pins each I/O thread to one allowed CPU in turn over the groups; groups NUMA pla
 steering pin are left alone. It is not the default: pinned threads cannot get out of the way of
 other busy threads on their CPUs. Measured (docs/BENCHMARKS.md): pinned, HTTP/1.1 over 3
 listeners sharing 4 threads matched 12 dedicated threads with a 1% spread; h2c, whose handlers
-run on the logical pool on the same CPUs, fell by up to half. Served inline (`run_on_pool` off),
+run on the logical pool on the same CPUs, fell by up to half. Served inline (`handlers_on_logical_pool` off),
 h2c pinned was the fastest configuration (4.0M requests/s), which puts the drop on the pool.
 `EngineBuilder::reserve_pool_cpus(n)` gives the pool CPUs of its own when pinning; it helped
 pooled h2c on io_uring and not on epoll, so it is a tool to measure with, not a recommendation.

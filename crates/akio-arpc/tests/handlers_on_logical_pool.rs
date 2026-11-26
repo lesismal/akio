@@ -1,5 +1,5 @@
-//! `Routes::run_on_pool`: middleware and handlers on the logical pool, the requests of one
-//! connection served at the same time.
+//! `Routes::handlers_on_logical_pool`: middleware and handlers on the logical pool, the requests
+//! of one connection served at the same time.
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -54,7 +54,7 @@ fn routes(on: bool) -> Routes {
             let body = format!("{ms} pool={} mw={mw}", on_pool_thread());
             ctx.write(body.as_bytes());
         })
-        .run_on_pool(on)
+        .handlers_on_logical_pool(on)
 }
 
 #[test]

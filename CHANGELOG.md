@@ -183,14 +183,15 @@ UDP socket's on HTTP/3, unspecified where there is none (`Request::new`, a Unix-
 `EngineBuilder::reserve_pool_cpus(n)` (or `AKIO_POOL_CPUS=n`), with `pin_io_threads`: the last
 `n` of the CPUs the process may use run the logical pool's threads, the I/O threads are pinned to
 the others. Ignored without pinning, under NUMA placement and when the pool has a start hook.
-Linux only. `http-bench` gains `AKIO_BENCH_H2_INLINE=1` (HTTP/2 on the I/O threads) and
-`tools/bench/shared.sh` the `-inline` and `-pool<N>` modes.
+Linux only. `http-bench` gains `AKIO_BENCH_H2_POOL=1` (HTTP/2 handlers on the logical pool),
+`AKIO_BENCH_POOL_MAX=n` (pool thread cap) and the `rounds` backend argument, and
+`tools/bench/shared.sh` the `-h2pool`, `-cap<N>` and `-pool<N>` modes.
 
 Measured (docs/BENCHMARKS.md): the drop of pinned h2c is the logical pool's (served inline, h2c
 pinned is fastest, 4.0M requests/s ±1%); keeping 2 of 4 CPUs for the pool helped io_uring (496k
 to 840k) but not epoll (485k to 337k) and cost HTTP/1.1. The same runs show that the pool
 hand-off dominates trivial HTTP/2 handlers: 3.2M–4.0M requests/s inline against about 0.49M with
-`H2Config::run_on_pool`, the default since 2026-11-25.
+`H2Config::handlers_on_logical_pool` on, the default for a day (see below).
 
 ### Added: pinning I/O threads to CPUs, and a shared-group benchmark (akio, tools/bench)
 
@@ -326,14 +327,18 @@ way, so a jammed pool also stopped them.
 - docs/rules.md rule 2: a pool task never waits for another task of the same pool, blocking
   calls from pool tasks carry a timeout, and reaching a loop uses `run_on_loop`.
 
-### Changed: HTTP/2 handlers stay inline by default (akio-http)
+### Changed: `run_on_pool` is now `handlers_on_logical_pool`, off by default everywhere (akio-http, akio-h3, akio-grpc, akio-arpc)
 
-`H2Config::run_on_pool` defaults to `false` again (ADR-176), as for HTTP/1.1, HTTP/3, gRPC and
-arpc. The pool default of 2026-11-25 (ADR-094's update) never shipped in a release; while it was
-on, h2c in `http-bench` served 0.47-0.53 M requests/s against 4.4-6.1 M inline on the same host,
-each request paying two hand-offs between threads. The clients' deadlock fix of the same day
-(`Conn::run_on_loop`) does not depend on it. A service whose HTTP/2 handlers block sets
-`run_on_pool: true` (or sends those requests to the pool with `Context::detach_to_pool`).
+The switch that runs every request's middleware and handler on the engine's logical pool is
+renamed after what it moves: `HttpConfig::handlers_on_logical_pool`,
+`H2Config::handlers_on_logical_pool`, `H3Config::handlers_on_logical_pool`,
+`GrpcServer::handlers_on_logical_pool(bool)` and `Routes::handlers_on_logical_pool(bool)` (arpc),
+all formerly `run_on_pool` (no release had it, so no deprecated alias). `H2Config`'s was on by
+default from 2026-11-25 and is off again (ADR-094, update of 2026-11-26; ADR-176 has the same-run A/B and the profile): the pool hand-off cut
+trivial HTTP/2 handlers from 3.2M–4.0M to about 0.49M requests/s on the same 4 CPUs
+(docs/BENCHMARKS.md; the same ceiling on Rounds and with the pool capped at 16 threads, less
+with fewer). HTTP/2 streams run inline on the I/O thread again unless a service turns
+the switch on; a single request can still go to the pool with `Context::detach_to_pool`.
 
 ### Fixed: four engine hangs (akio-epoll, akio-uring, akio-http, akio-ws, akio-h3, akio-quic, akio-webrtc, akio-turn, akio-kcp)
 
@@ -1122,17 +1127,17 @@ ADR-098, additive (akit's A2: certificates renewed while serving, and on-demand 
 
 ADR-094, additive:
 
-- `HttpConfig::run_on_pool` (HTTP/1.1), `H2Config::run_on_pool` (HTTP/2) and
-  `H3Config::run_on_pool` (HTTP/3) run each complete request's middleware and handler on the
+- `HttpConfig::handlers_on_logical_pool` (HTTP/1.1), `H2Config::handlers_on_logical_pool` (HTTP/2) and
+  `H3Config::handlers_on_logical_pool` (HTTP/3) run each complete request's middleware and handler on the
   engine's logical pool. Handlers may block, and the requests of one connection are served at the
   same time.
   - HTTP/1.1 responses still go out in request order, however inline, pooled and detached requests
     interleave.
   - Requests that may take the connection over, and streamed request bodies, stay on the I/O
     thread.
-- `GrpcServer::run_on_pool(bool)`: each call's handler runs on the pool and gets its messages one
+- `GrpcServer::handlers_on_logical_pool(bool)`: each call's handler runs on the pool and gets its messages one
   at a time and in order; different calls run at once.
-- `Routes::run_on_pool(bool)` (arpc): requests and notifies run on the pool; streams stay inline.
+- `Routes::handlers_on_logical_pool(bool)` (arpc): requests and notifies run on the pool; streams stay inline.
   The new constant `SERVER_BUSY` is the error text when the pool refuses a request.
 - A full pool is answered at once: HTTP `503`, gRPC `RESOURCE_EXHAUSTED`, arpc `SERVER_BUSY`.
 - `Context::detach_to_pool(f)` and `Context::executor()` (akio-http, with the new `Executor`) send

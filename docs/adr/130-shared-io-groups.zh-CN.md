@@ -49,7 +49,7 @@ epoll/kqueue 事件循环可以监听任意多个监听 socket，同一后端的
 - 默认线程更少：每个后端一组，而不是每个 listener 一组，空闲的事件循环不再过度占用核，繁忙的
   listener 可以用上所有线程。
 - 默认隔离更弱：一个 listener 的慢 inline handler 会延迟同一线程上其他 listener 的连接。阻塞工作
-  本就应放在逻辑线程池上（规则 §1；自 2026-11-25 起 HTTP/2 handler 默认在线程池上执行）；
+  本就应放在逻辑线程池上（规则 §1，`handlers_on_logical_pool`）；
   `Listener::dedicated()` 可恢复隔离。
 - 显式设置 `threads(n)` 的 listener（测试和调优部署中的常见情况）行为完全不变。
 - 对一个 listener 调用 `set_threads` 现在可能改变其他 listener 的线程；文档对此有说明。
@@ -83,7 +83,7 @@ accept，其 `user_data` 标明 listener 和 socket。移除一个 listener 会�
 CPU 上；NUMA 放置或 BPF 引流已绑定的线程组保持不变。不默认开启的原因：绑核的线程无法避开同一 CPU
 上其他繁忙的线程。实测（docs/BENCHMARKS.zh-CN.md）：绑核后，3 个 listener 共享 4 个线程的
 HTTP/1.1 与 12 个独占线程相当，波动在 1% 以内；handler 在同一组 CPU 的逻辑线程池上执行的 h2c 最多
-下降一半。改为 inline 执行（关闭 `run_on_pool`）后，绑核的 h2c 是最快的配置（每秒 400 万请求），
+下降一半。改为 inline 执行（关闭 `handlers_on_logical_pool`）后，绑核的 h2c 是最快的配置（每秒 400 万请求），
 说明下降来自线程池。`EngineBuilder::reserve_pool_cpus(n)` 在绑核时给线程池单独的 CPU；它对 io_uring
 上走线程池的 h2c 有帮助，对 epoll 没有，所以它是用来测量的工具，而不是推荐配置。
 

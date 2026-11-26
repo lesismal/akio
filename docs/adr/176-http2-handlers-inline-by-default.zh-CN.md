@@ -7,8 +7,8 @@
 
 ## 背景
 
-ADR-094（2026-11-23）为每个协议加了 `run_on_pool` 开关，默认关闭。它在 2026-11-25 的更新
-（`d33d4dd3`）把 `H2Config::run_on_pool` 改为默认开启，使一个 HTTP/2 连接的各个 stream 同时处理，
+ADR-094（2026-11-23）为每个协议加了 `handlers_on_logical_pool` 开关，默认关闭。它在 2026-11-25 的更新
+（`d33d4dd3`）把 `H2Config::handlers_on_logical_pool` 改为默认开启，使一个 HTTP/2 连接的各个 stream 同时处理，
 而不是在它的 I/O 线程上逐个处理。
 
 2026-11-26 的同场 A/B（[BENCHMARKS](../BENCHMARKS.zh-CN.md)）测出了这个默认值让 handler 从不阻塞的
@@ -29,10 +29,10 @@ ADR-094（2026-11-23）为每个协议加了 `run_on_pool` 开关，默认关闭
 
 ## 决定
 
-`H2Config::run_on_pool` 的默认值改回 `false`，与 `HttpConfig::run_on_pool`、`H3Config::run_on_pool`、
-`GrpcServer::run_on_pool` 和 `Routes::run_on_pool` 一致。其余不变：开关本身、它搬走什么和留下什么、
+`H2Config::handlers_on_logical_pool` 的默认值改回 `false`，与 `HttpConfig::handlers_on_logical_pool`、`H3Config::handlers_on_logical_pool`、
+`GrpcServer::handlers_on_logical_pool` 和 `Routes::handlers_on_logical_pool` 一致。其余不变：开关本身、它搬走什么和留下什么、
 线程池满时的 `503`、针对单个请求的 `Context::detach_to_pool` 与 `Context::suspend_to_pool`。
-`http-bench` 用 `AKIO_H2_RUN_ON_POOL=1` 让 HTTP/2 在线程池上执行。
+`http-bench` 用 `AKIO_BENCH_H2_POOL=1` 让 HTTP/2 在线程池上执行。
 
 ## 为什么这样做是安全的
 
@@ -41,9 +41,9 @@ ADR-094（2026-11-23）为每个协议加了 `run_on_pool` 开关，默认关闭
   前一天为止的默认值。
 - **死锁修复保留。** 无论这个开关如何，HTTP/1.1 与 HTTP/2 客户端都通过 `Conn::run_on_loop` 进入
   事件循环，所以线程池上的 handler 调用客户端并等待结果时，仍不需要第二个线程池线程
-  （`tests/run_on_pool.rs` 自己设置该开关）。
+  （`tests/handlers_on_logical_pool.rs` 自己设置该开关）。
 - **所有协议遵循的规则。** 规则 §1：I/O 线程上的任何东西都不阻塞；只能阻塞的工作交给线程池，按请求
-  （`detach_to_pool`、`suspend_to_pool`、`spawn_blocking`）或按协议（`run_on_pool`）。HTTP/1.1、
+  （`detach_to_pool`、`suspend_to_pool`、`spawn_blocking`）或按协议（`handlers_on_logical_pool`）。HTTP/1.1、
   HTTP/3、gRPC 和 arpc 在这条规则下一直默认 inline；HTTP/2 现在重新如此。仍然阻塞的 handler 会被
   慢回调检测器（`Config::slow_callback_threshold`）报告。
 - **主要用户并不需要它。** akit 的代理 listener 使用 `HttpConfig::default()`，其 handler 从不阻塞
@@ -52,7 +52,7 @@ ADR-094（2026-11-23）为每个协议加了 `run_on_pool` 开关，默认关闭
 
 ## 影响
 
-- HTTP/2 handler 会阻塞的服务设置 `run_on_pool: true`（或把这些请求逐个交给线程池）。不这样做而又
+- HTTP/2 handler 会阻塞的服务设置 `handlers_on_logical_pool: true`（或把这些请求逐个交给线程池）。不这样做而又
   阻塞的服务，会拖住同一连接的其他 stream 和同一线程的其他连接，与 HTTP/1.1 相同；inline 等待一个由
   自己的 I/O 线程服务的客户端请求的 handler 永远等不到结果（规则 §1）。这两点在 2026-11-25 之前
   一直如此。

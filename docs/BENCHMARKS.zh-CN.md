@@ -599,9 +599,9 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 叠在一起；独占模式的 12 个线程跑在 4 个 CPU 上，无论如何都让每个 CPU 保持忙碌，代价是每个线程只
 分到约三分之一个 CPU。
 
-**为什么绑核的 HTTP/2 下降。** HTTP/2 的 handler 默认在逻辑线程池上执行（`H2Config::run_on_pool`），
+**为什么绑核的 HTTP/2 下降。** HTTP/2 的 handler 当时默认在逻辑线程池上执行（`H2Config::handlers_on_logical_pool`），
 这里线程池的线程也在 CPU 0–3 上；绑核的 I/O 线程无法再离开被线程池线程占满的 CPU。（未单独测量：
-关闭 `run_on_pool` 的 h2c。）
+关闭 `handlers_on_logical_pool` 的 h2c。）
 
 **结论。** 只要 I/O 线程留在各自的 CPU 上，共享就没有可测的代价：共享且绑核用 4 个线程达到或超过
 12 个独占线程。绑核不是默认行为：它有利于 inline 执行的 HTTP/1.1 和流水线负载，但会损害 handler 在
@@ -623,7 +623,7 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 跑在 4 个 CPU 上）。
 
 **后续：HTTP/2 inline，以及为逻辑线程池保留 CPU**（2026-11-26，相同设置，3 个 listener 共享一组，
-5 轮，`shared.sh all,h2`）。`inline` 让 HTTP/2 在 I/O 线程上执行（关闭 `run_on_pool`）；`线程池 N`
+5 轮，`shared.sh all,h2`）。`inline` 让 HTTP/2 在 I/O 线程上执行（关闭 `handlers_on_logical_pool`）；`线程池 N`
 即开启绑核时 `reserve_pool_cpus(N)`：4 个 CPU 中的 N 个给逻辑线程池，其余 CPU 上绑 4 − N 个 I/O
 线程。
 
@@ -637,8 +637,32 @@ listener 的方式），`共享` 让 3 个 listener 共用一组 4 个线程；`
 **结论。**（1）绑核后 h2c 下降来自逻辑线程池：inline 执行时，绑核的 h2c 是最快也最稳定的一列。
 （2）为线程池保留 CPU 并不能让走线程池的 h2c 在 epoll 上回到不绑核的默认水平之上（io_uring 的 2 + 2
 可以，但波动大），还会让 HTTP/1.1 因 I/O 线程变少而下降。（3）对很轻的 HTTP/2 handler 来说，线程池
-交接本身占了大头：同样 4 个 CPU 上，inline 的 h2c 每秒 320 万–400 万请求，走线程池（`H2Config::run_on_pool`，
-自 2026-11-25 起默认开启）约 49 万，给线程池更多 CPU 也提不高这个上限。
+交接本身占了大头：同样 4 个 CPU 上，inline 的 h2c 每秒 320 万–400 万请求，走线程池（`H2Config::handlers_on_logical_pool`，
+2026-11-25 至 2026-11-26 期间默认开启）约 49 万，给线程池更多 CPU 也提不高这个上限。
+
+**后续：Rounds 模式下的线程池路径，以及线程池线程数上限**（2026-11-26，相同设置，5 轮，
+`shared.sh all,h2`，不绑核）。HTTP/2 现在默认 inline；`h2pool` 打开 `handlers_on_logical_pool`，
+`上限 N` 把逻辑线程池限制为最多 N 个线程（`PoolConfig::max_threads`，这 4 个 CPU 上默认 32）。Rounds
+为 1 个 poller、4 个 worker，由 3 个 listener 共享。“h2c 后线程数”是 h2c 跑完后服务端的线程数（没有
+线程池线程时为 6）。
+
+| h2c 64 连接 × 16 流分到 3 个 | inline | h2pool（32） | 上限 16 | 上限 8 | 上限 4 |
+|---|---:|---:|---:|---:|---:|
+| epoll（loops） | 3,466,777（±5%） | 485,785 | 483,260 | 456,821 | 380,733 |
+| io_uring（loops） | 3,572,412（±8%） | 496,780 | 504,114 | 480,455 | 409,361 |
+| rounds（epoll） | 4,120,683（±1%） | 488,080 | 489,025 | 469,483 | 390,489 |
+| h2c 后线程数 | 6 | 38 | 22 | 14 | 10 |
+
+3 个 listener 上的 HTTP/1.1 plaintext（各列都是 inline 执行）：loops 为 61 万–75 万，各轮之间波动
+±5–13%；rounds 为 61.5 万–62 万（±1–2%），每百万请求约 6 CPU 秒，loops 约 5 秒。
+
+**结论。**（1）走线程池时约每秒 49 万请求的上限，在 loops（epoll、io_uring）和 rounds 上都一样，并且
+稳定在 ±1% 以内：瓶颈不在 I/O 这一侧。（2）1024 个并发 stream 下线程池确实会扩到上限（32 个线程），
+但上限也不是原因：16 个线程结果相同，更少则更低（上限 4：38 万–41 万）。handler 很轻时，这个上限既不
+随 I/O 模型变，也不随留给线程池的 CPU 和线程数变，指向交接本身（线程池唯一一把锁保护的队列、每个任务
+一次唤醒，以及完成后投递回事件循环），还有待 profile 确认。（3）inline 时，rounds 是不绑核配置里
+h2c 最快的（412 万 ±1%；不绑核的 loops 为 350 万左右、±5–8%，绑核的 loops 为 400 万）；HTTP/1.1
+上它比 loops 稳定，但更慢。
 
 ### 密码学（`akio-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
@@ -2496,7 +2520,9 @@ CPU 0–3 上运行 4 个线程，`h2load` 在 CPU 4–7 与 12–15 上运行 8
 | 客户端 HTTP/1.1，10 秒超时（对照） | epoll | 9 | 254,381 | 1.003 | 1.006（0.980–1.040） |
 | 客户端 HTTP/1.1，无超时（对照） | epoll | 9 | 302,496 | 1.006 | 1.008（0.994–1.017） |
 
-¹ `AKIO_H2_RUN_ON_POOL=0`：`http-bench` 关闭 `H2Config::run_on_pool`。
+¹ `AKIO_H2_RUN_ON_POOL=0`：`http-bench` 关闭 `H2Config::run_on_pool`。两者当天都已改名：开关现为
+`H2Config::handlers_on_logical_pool`，`http-bench` 用 `AKIO_BENCH_H2_POOL=1` 让 HTTP/2 在线程池上执行
+（ADR-094 的 2026-11-26 更新）。
 
 **A169：HTTP/1.1 上没有可测的开销，处理函数内联的 h2c 上 7–9%。** HTTP/1.1 不变。io_uring plaintext 的
 0.983 来自个别跌到平常 0.75–0.87 的运行，两个构建都有（B 三次，A 一次，另有一次 epoll 的 B），逐轮中位数为

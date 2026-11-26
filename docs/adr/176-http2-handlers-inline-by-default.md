@@ -7,8 +7,8 @@ Status: accepted (2026-11-26). Reverses the default set by the 2026-11-25 update
 
 ## Context
 
-ADR-094 (2026-11-23) added a `run_on_pool` switch to every protocol, off by default. Its update of
-2026-11-25 (`d33d4dd3`) turned `H2Config::run_on_pool` on by default, so that the streams of one
+ADR-094 (2026-11-23) added a `handlers_on_logical_pool` switch to every protocol, off by default. Its update of
+2026-11-25 (`d33d4dd3`) turned `H2Config::handlers_on_logical_pool` on by default, so that the streams of one
 HTTP/2 connection are served at the same time rather than one after another on its I/O thread.
 
 The same-run A/B of 2026-11-26 ([BENCHMARKS](../BENCHMARKS.md#request-checks-and-client-timer-cancel-akit-a169-a171-same-run-ab-2026-11-26))
@@ -35,11 +35,11 @@ depend on this default.
 
 ## Decision
 
-`H2Config::run_on_pool` defaults to `false` again, as `HttpConfig::run_on_pool`,
-`H3Config::run_on_pool`, `GrpcServer::run_on_pool` and `Routes::run_on_pool` do. Nothing else
+`H2Config::handlers_on_logical_pool` defaults to `false` again, as `HttpConfig::handlers_on_logical_pool`,
+`H3Config::handlers_on_logical_pool`, `GrpcServer::handlers_on_logical_pool` and `Routes::handlers_on_logical_pool` do. Nothing else
 changes: the switch, what it moves and what stays inline, `503` from a full pool,
 `Context::detach_to_pool` and `Context::suspend_to_pool` for single requests.
-`http-bench` takes `AKIO_H2_RUN_ON_POOL=1` to serve HTTP/2 on the pool.
+`http-bench` takes `AKIO_BENCH_H2_POOL=1` to serve HTTP/2 on the pool.
 
 ## Why it is safe
 
@@ -48,10 +48,10 @@ changes: the switch, what it moves and what stays inline, `503` from a full pool
   change; one that follows `main` sees the default it had until the day before.
 - **The deadlock fix stays.** The HTTP/1.1 and HTTP/2 clients reach their loop with
   `Conn::run_on_loop` whatever this switch says, so a handler on the pool that calls a client and
-  waits for it still needs no second pool thread (`tests/run_on_pool.rs` sets the switch itself).
+  waits for it still needs no second pool thread (`tests/handlers_on_logical_pool.rs` sets the switch itself).
 - **The rule every protocol follows.** Rules §1: nothing on an I/O thread blocks; work that can
   only block goes to the pool, per request (`detach_to_pool`, `suspend_to_pool`,
-  `spawn_blocking`) or per protocol (`run_on_pool`). HTTP/1.1, HTTP/3, gRPC and arpc have always
+  `spawn_blocking`) or per protocol (`handlers_on_logical_pool`). HTTP/1.1, HTTP/3, gRPC and arpc have always
   defaulted to inline under that rule; HTTP/2 now does again. A handler that blocks anyway is
   reported by the slow-callback detector (`Config::slow_callback_threshold`).
 - **The main user does not need it.** akit takes `HttpConfig::default()` for its proxy
@@ -61,7 +61,7 @@ changes: the switch, what it moves and what stays inline, `503` from a full pool
 
 ## Consequences
 
-- A service whose HTTP/2 handlers block sets `run_on_pool: true` (or sends those requests to the
+- A service whose HTTP/2 handlers block sets `handlers_on_logical_pool: true` (or sends those requests to the
   pool one by one). One that does not, and blocks, holds up its connection's other streams and
   its thread's other connections, as on HTTP/1.1; a handler that waits inline for a client
   request served by its own I/O thread never gets the answer (rules §1). Both were so until

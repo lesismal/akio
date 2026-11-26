@@ -115,16 +115,13 @@ pub struct H2Config {
     /// Run each stream's service (middleware and handler) on the engine's logical pool instead
     /// of the connection's I/O thread, so handlers may block and the streams of one connection
     /// are served at the same time. Requests whose body the service takes as a stream, and
-    /// CONNECTs (extended or not), stay on the I/O thread. When the pool's queue is full the stream is
-    /// answered `503`. Default `false` (ADR-176), as for every other protocol: handlers run
-    /// inline, one stream at a time on the connection's I/O thread, and must not block (a single
-    /// request can still go to the pool with [`Context::detach_to_pool`]). Turn it on for
-    /// handlers that block, so that a slow stream holds up neither its siblings nor the thread's
-    /// other connections; it costs two hand-offs between threads per request, several times
-    /// what a handler that never blocks costs inline.
-    ///
-    /// [`Context::detach_to_pool`]: crate::Context::detach_to_pool
-    pub run_on_pool: bool,
+    /// CONNECTs (extended or not), stay on the I/O thread. When the pool's queue is full the
+    /// stream is answered `503`. Default `false` (ADR-176): streams run inline, one at a time per
+    /// connection, so a handler must not block (a single request can still go to the pool with
+    /// [`Context::detach_to_pool`](crate::Context::detach_to_pool)). Inline is much faster for
+    /// handlers that never block: about 3.2M-4.0M requests/s against 0.49M through the pool on
+    /// the same 4 CPUs (docs/BENCHMARKS.md).
+    pub handlers_on_logical_pool: bool,
 }
 
 impl Default for H2Config {
@@ -142,7 +139,7 @@ impl Default for H2Config {
             reset_window: Duration::from_secs(30),
             stats: None,
             enable_connect_protocol: true,
-            run_on_pool: false,
+            handlers_on_logical_pool: false,
         }
     }
 }
@@ -2294,7 +2291,7 @@ impl WsLink for H2WsLink {
 pub(crate) struct H2Session<S> {
     core: Shared,
     service: Arc<S>,
-    /// The logical pool, when complete requests run there (`H2Config::run_on_pool`).
+    /// The logical pool, when complete requests run there (`H2Config::handlers_on_logical_pool`).
     pool: Option<crate::pool::Executor>,
     /// The deadline phase after the last read (computed under the lock it takes anyway).
     phase: std::cell::Cell<Phase>,
@@ -2318,7 +2315,7 @@ impl<S: Service> H2Session<S> {
     ) -> H2Session<S> {
         let tls = conn.has_transport();
         let pool = cfg
-            .run_on_pool
+            .handlers_on_logical_pool
             .then(|| crate::pool::Executor::conn(conn.clone()));
         let svc_mode = service.clone();
         let svc_push = service.clone();

@@ -1083,8 +1083,8 @@ impl EngineBuilder {
     /// gpu51, HTTP/1.1 plaintext over 3 listeners sharing 4 threads on 4 CPUs ran at 754k
     /// requests/s (±1%) pinned and 612k to 752k unpinned (docs/BENCHMARKS.md). But a pinned
     /// thread can no longer move away from other busy threads on its CPU: h2c on the same
-    /// setup, whose handlers run on the logical pool (`H2Config::run_on_pool`, on the same
-    /// CPUs), fell from about 490k to 250k–400k. Turn it on for handlers served inline on CPUs
+    /// setup with its handlers on the logical pool (`H2Config::handlers_on_logical_pool`, on the
+    /// same CPUs), fell from about 490k to 250k–400k. Turn it on for handlers served inline on CPUs
     /// the I/O threads have to themselves; leave it off when the logical pool or other busy
     /// processes share those CPUs.
     #[must_use]
@@ -1096,13 +1096,14 @@ impl EngineBuilder {
     /// With [`pin_io_threads`](Self::pin_io_threads): keeps the last `n` of the CPUs the process
     /// may use for the logical pool (its threads run on those, on any of them) and pins the I/O
     /// threads to the others (default: 0, or what `AKIO_POOL_CPUS` says when this is not called).
-    /// For handlers that run on the pool (HTTP/2's by default, `run_on_pool`, `spawn_blocking`):
+    /// For handlers that run on the pool (`handlers_on_logical_pool`, `spawn_blocking`):
     /// a pinned I/O thread cannot move away from a busy pool thread on its CPU, so the two get
     /// CPUs of their own. Size [`io_threads`](Self::io_threads) to the CPUs left (one per CPU).
     /// Measure before relying on it: on gpu51 (4 CPUs, h2c on the pool over 3 listeners) 2 + 2
     /// raised io_uring from 496k to 840k requests/s but lowered epoll from 485k to 337k, and
     /// HTTP/1.1 served inline lost what the fewer I/O threads could not carry; serving such
-    /// handlers inline (`run_on_pool` off) with pinning gave 4.0M (docs/BENCHMARKS.md).
+    /// handlers inline (`handlers_on_logical_pool` off) with pinning gave 4.0M
+    /// (docs/BENCHMARKS.md).
     /// Ignored without pinning, when `n` leaves no CPU for the I/O threads, under NUMA placement
     /// (whose `NumaConfig::pool` confines the pool), and when the pool already has a start hook.
     /// Linux only.

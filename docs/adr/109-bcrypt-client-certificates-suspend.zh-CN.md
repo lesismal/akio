@@ -15,7 +15,7 @@ A63、A64、A65）：
   处理器此前看不到这张证书：`TlsInfo` 不带它，处理器拿到的是 `Context` 而不是连接（A64）。
 - 一次 bcrypt 校验要花几毫秒到几十毫秒的 CPU，不能在 I/O 线程上做。fit 在一个小线程池里校验，
   请求在此期间等待，校验后继续执行下一个中间件和处理器。在 akio 中，中间件可以分离响应并在线程池
-  里作答，却无法继续执行链：下一个处理器要的是 `Context`，而分离的请求没有。`run_on_pool` 把监听器
+  里作答，却无法继续执行链：下一个处理器要的是 `Context`，而分离的请求没有。`handlers_on_logical_pool` 把监听器
   的所有请求都搬到线程池，为了偶尔一次 bcrypt 让每个请求都多一次线程切换（A65）。ForwardAuth（请求
   继续前先询问授权服务器）也有同样的需求。
 
@@ -43,7 +43,7 @@ A63、A64、A65）：
   `detach_to_pool` 一样回 `503` 并带 `Retry-After: 1`。
 - 消息体**流式**传递的请求（`BodyMode::Stream`）不能挂起（返回 `None`）：服务端在 `call` 之后把
   消息体交给该上下文。想挂起带消息体请求的服务要求整体读取消息体（`Service::body_mode`）；
-  `run_on_pool` 的界线相同。
+  `handlers_on_logical_pool` 的界线相同。
 
 ## 影响
 
@@ -58,6 +58,6 @@ A63、A64、A65）：
 - `akio-http/tests/peer_certificates.rs`：TLS 上的 HTTP/1.1 与 HTTP/2，有无客户端证书，第二个（恢复
   的）连接，以及明文；`akio-h3/tests/peer_certificates.rs` 覆盖 HTTP/3。
 - `akio-http/tests/suspend.rs`：从线程池和其他线程恢复挂起的请求，挂起两次的请求，本地值、过滤器
-  和头得以保留，流水线 HTTP/1.1 响应按序（开或不开 `run_on_pool`），丢弃或未作答时回 `500`，线程池
+  和头得以保留，流水线 HTTP/1.1 响应按序（开或不开 `handlers_on_logical_pool`），丢弃或未作答时回 `500`，线程池
   满时回 `503`，整体读取的消息体得以保留，流式消息体被拒绝，以及 HTTP/2 的流。在 epoll 与 io_uring
   上运行。

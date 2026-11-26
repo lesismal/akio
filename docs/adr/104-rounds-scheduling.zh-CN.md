@@ -72,7 +72,7 @@ ADR-105 在 accept 时平衡各线程的连接**数量**，ADR-094 按协议把 
      driver 之前，先执行自旋期间入队的任务（有 worker 自旋时投递方不唤醒任何线程）。worker 轮流使用各个
      driver；只要另有 driver 无人阻塞其中（空闲 worker 少于 driver），一次阻塞等待最多 10 ms，以保证
      每个 driver 都得到轮询。
-   - 阻塞任务仍然应该放到逻辑线程池（`spawn_blocking`、`run_on_pool`）：阻塞的 worker 会推迟排在
+   - 阻塞任务仍然应该放到逻辑线程池（`spawn_blocking`、`handlers_on_logical_pool`）：阻塞的 worker 会推迟排在
      它后面的连接，虽然其它 worker 会把它们偷走。
 3. **保持不变的部分**：`Conn` 与 `ConnInner`（本来就是线程安全的，ADR-002）、cork 与 flush 协议、
    背压、`hold_reads`、有序响应、`close_after_send`、空闲 / 写 / 握手 / 连接超时（运行时修改的空闲和写

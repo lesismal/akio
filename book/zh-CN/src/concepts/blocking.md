@@ -118,20 +118,21 @@ match disk.try_execute(Box::new(move || { /* 读文件，然后 conn.run_on_loop
 ## 让所有 handler 在线程池上执行
 
 HTTP、gRPC 和 arpc 服务端也可以把**每个**请求的 handler 都放到线程池上执行：handler 可以阻塞，
-同一连接上的多个请求同时处理，而不是一个接一个。按协议分别设置，所有协议默认都关闭（ADR-176）：从不
-阻塞的 handler 在 inline 时比走线程池快数倍，线程池每个请求要付出两次跨线程交接。handler 会阻塞时再
-打开它，尤其是 HTTP/2，否则它的各个 stream 会在所属连接的 I/O 线程上逐个处理：
+同一连接上的多个请求同时处理，而不是一个接一个。按协议分别设置，所有协议默认关闭：开启后每个请求都要
+交接一次线程池，对从不阻塞的 handler 来说这就是大部分开销（handler 很轻的 HTTP/2 stream：同样 4 个
+CPU 上，走线程池约每秒 49 万请求，inline 是 320 万–400 万）。handler 会阻塞时再打开，尤其是 HTTP/2，
+否则它的各个 stream 会在所属连接的 I/O 线程上逐个处理：
 
 ```rust,ignore
 let mut http = HttpConfig::default();
-http.run_on_pool = true;                         // HTTP/1.1
+http.handlers_on_logical_pool = true;                         // HTTP/1.1
 let mut h2 = H2Config::default();
-h2.run_on_pool = true;                           // HTTP/2 的各个 stream
+h2.handlers_on_logical_pool = true;                           // HTTP/2 的各个 stream
 http.h2 = Some(h2);
 let mut h3 = H3Config::default();
-h3.run_on_pool = true;                           // HTTP/3（akio-h3）
-let grpc = GrpcServer::new().run_on_pool(true);  // gRPC 调用
-let routes = Routes::new().run_on_pool(true);    // arpc 的请求和通知
+h3.handlers_on_logical_pool = true;                           // HTTP/3（akio-h3）
+let grpc = GrpcServer::new().handlers_on_logical_pool(true);  // gRPC 调用
+let routes = Routes::new().handlers_on_logical_pool(true);    // arpc 的请求和通知
 ```
 
 - **移到线程池的部分。** 中间件和 handler。解析、限制、流控，以及 gRPC 的拦截器和消息解码，仍在

@@ -1,5 +1,5 @@
-//! `GrpcServer::run_on_pool`: handlers on the logical pool, calls of one connection served at
-//! the same time, each call's messages still handed over in order.
+//! `GrpcServer::handlers_on_logical_pool`: handlers on the logical pool, calls of one connection
+//! served at the same time, each call's messages still handed over in order.
 #![allow(missing_docs)]
 
 use std::{
@@ -45,7 +45,7 @@ fn server(on: bool) -> GrpcServer {
             })
         })
         .unary("/test.Pool/Panic", |_md, _req, _sink| panic!("handler bug"))
-        .run_on_pool(on)
+        .handlers_on_logical_pool(on)
 }
 
 fn setup(on: bool) -> (Arc<Engine>, GrpcClient) {

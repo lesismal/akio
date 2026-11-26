@@ -1,6 +1,8 @@
 //! Server for the HTTP / WebSocket benchmarks (see docs/BENCHMARKS.md):
 //!
-//! `http-bench <addr> <threads> <epoll|uring> [tls]`
+//! `http-bench <addr> <threads> <epoll|uring|rounds> [tls]`
+//!
+//! `rounds` is epoll/kqueue with `Scheduling::Rounds`: one poller and `<threads>` workers.
 //!
 //! * `GET /plaintext`: `Hello, World!` as `text/plain` (TechEmpower style).
 //! * `GET /json`: `{"message":"Hello, World!"}`, serialised per request.
@@ -14,11 +16,12 @@
 //! same app on `n` listeners, at the ports `port`, `port + 1`, ... of `addr` (plain only). Each
 //! has `<threads>` I/O threads of its own (`Listener::threads`, as every listener had before
 //! ADR-130), or with `AKIO_BENCH_SHARED=1` they share `<threads>` (`EngineBuilder::io_threads`).
-//! `AKIO_H2_RUN_ON_POOL=1` runs HTTP/2 handlers on the logical pool (`H2Config::run_on_pool`,
-//! off by default since ADR-176), `0` inline; `AKIO_BENCH_H2_INLINE=1` is the same as `0`.
+//! `AKIO_BENCH_H2_POOL=1` runs HTTP/2 handlers on the logical pool
+//! (`H2Config::handlers_on_logical_pool`) instead of the I/O threads, and
+//! `AKIO_BENCH_POOL_MAX=n` caps the logical pool at `n` threads (`PoolConfig::max_threads`).
 
 use akio::{
-    Backend, Engine, Listener,
+    Backend, Engine, Listener, PoolConfig, RoundsConfig, Scheduling,
     tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 use akio_http::{
@@ -70,6 +73,27 @@ fn main() -> std::io::Result<()> {
         "uring" => Backend::IoUring(Default::default()),
         _ => Backend::Epoll,
     };
+    let rounds = a[2] == "rounds";
+    let listener = |at| {
+        let l = Listener::tcp(at).backend(backend.clone());
+        if rounds {
+            l.scheduling(Scheduling::Rounds(RoundsConfig::new(1, threads)))
+        } else {
+            l
+        }
+    };
+    let builder = || {
+        let mut b = Engine::builder();
+        if let Some(n) = std::env::var("AKIO_BENCH_POOL_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            let mut p = PoolConfig::default();
+            p.max_threads = n;
+            b = b.pool(p);
+        }
+        b
+    };
     let app = || {
         let opts = WsOptions::default();
         Router::new()
@@ -85,12 +109,9 @@ fn main() -> std::io::Result<()> {
     };
     let http = || {
         let mut c = HttpConfig::default();
-        if let Some(h2) = c.h2.as_mut() {
-            if let Ok(v) = std::env::var("AKIO_H2_RUN_ON_POOL") {
-                h2.run_on_pool = v != "0";
-            }
-            if std::env::var("AKIO_BENCH_H2_INLINE").as_deref() == Ok("1") {
-                h2.run_on_pool = false;
+        if std::env::var("AKIO_BENCH_H2_POOL").as_deref() == Ok("1") {
+            if let Some(h2) = c.h2.as_mut() {
+                h2.handlers_on_logical_pool = true;
             }
         }
         c
@@ -101,7 +122,7 @@ fn main() -> std::io::Result<()> {
         .unwrap_or(1);
     if listeners > 1 {
         let shared = std::env::var("AKIO_BENCH_SHARED").as_deref() == Ok("1");
-        let mut b = Engine::builder();
+        let mut b = builder();
         if shared {
             b = b.io_threads(threads);
         }
@@ -111,7 +132,7 @@ fn main() -> std::io::Result<()> {
             if base.port() != 0 {
                 at.set_port(base.port() + i as u16);
             }
-            let l = Listener::tcp(at).backend(backend.clone());
+            let l = listener(at);
             let l = if shared { l } else { l.threads(threads) };
             b = b.listen(l.serve(serve_with(http(), app())));
         }
@@ -120,7 +141,7 @@ fn main() -> std::io::Result<()> {
         return engine.run();
     }
     let app = app();
-    let l = Listener::tcp(addr).backend(backend).threads(threads);
+    let l = listener(addr).threads(threads);
     let l = if a.get(3).map(String::as_str) == Some("tls") {
         let ck =
             akio_x509::generate_simple_self_signed(["localhost"]).map_err(std::io::Error::other)?;
@@ -140,7 +161,7 @@ fn main() -> std::io::Result<()> {
     } else {
         l.serve(serve_with(http(), app))
     };
-    let engine = Engine::builder().listen(l).build()?;
+    let engine = builder().listen(l).build()?;
     println!("listening on {:?}", engine.local_addrs());
     engine.run()
 }
