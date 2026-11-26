@@ -118,12 +118,12 @@ impl core::marker::Unpin for akio_h3::H3ClientOptions
 impl core::panic::unwind_safe::RefUnwindSafe for akio_h3::H3ClientOptions
 impl core::panic::unwind_safe::UnwindSafe for akio_h3::H3ClientOptions
 #[non_exhaustive] pub struct akio_h3::H3Config
+pub akio_h3::H3Config::handlers_on_logical_pool: bool
 pub akio_h3::H3Config::max_body_bytes: usize
 pub akio_h3::H3Config::max_field_section_bytes: usize
 pub akio_h3::H3Config::qpack_blocked_streams: usize
 pub akio_h3::H3Config::qpack_encoder_capacity: usize
 pub akio_h3::H3Config::qpack_max_table_capacity: usize
-pub akio_h3::H3Config::handlers_on_logical_pool: bool
 impl core::clone::Clone for akio_h3::H3Config
 pub fn akio_h3::H3Config::clone(&self) -> Self
 impl core::default::Default for akio_h3::H3Config

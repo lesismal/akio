@@ -345,6 +345,7 @@ pub fn akio_arpc::Routes::call_timeout(self, core::option::Option<core::time::Du
 pub fn akio_arpc::Routes::coder(self, impl akio_arpc::coder::Coder) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::handle(self, &str, impl core::ops::function::Fn(&mut akio_arpc::Context) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::handle_stream<F>(self, &str, impl core::ops::function::Fn(&akio_arpc::Stream) -> F + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes where F: core::ops::function::FnMut(&akio_arpc::Stream, akio_arpc::StreamEvent<'_>) + core::marker::Send + 'static
+pub fn akio_arpc::Routes::handlers_on_logical_pool(self, bool) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::max_body_bytes(self, usize) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::max_pending_calls(self, usize) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::max_streams_per_conn(self, usize) -> akio_arpc::Routes
@@ -353,7 +354,6 @@ pub fn akio_arpc::Routes::middleware(self, impl core::ops::function::Fn(&mut aki
 pub fn akio_arpc::Routes::new() -> akio_arpc::Routes
 pub fn akio_arpc::Routes::on_connected(self, impl core::ops::function::Fn(&akio_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
 pub fn akio_arpc::Routes::on_disconnected(self, impl core::ops::function::Fn(&akio_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> akio_arpc::Routes
-pub fn akio_arpc::Routes::handlers_on_logical_pool(self, bool) -> akio_arpc::Routes
 impl core::default::Default for akio_arpc::Routes
 pub fn akio_arpc::Routes::default() -> Self
 impl core::fmt::Debug for akio_arpc::Routes

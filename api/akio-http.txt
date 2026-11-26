@@ -1201,6 +1201,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_http::FilterDone
 #[non_exhaustive] pub struct akio_http::H2Config
 pub akio_http::H2Config::conn_window: u32
 pub akio_http::H2Config::enable_connect_protocol: bool
+pub akio_http::H2Config::handlers_on_logical_pool: bool
 pub akio_http::H2Config::initial_window: u32
 pub akio_http::H2Config::max_body_bytes: usize
 pub akio_http::H2Config::max_concurrent_streams: u32
@@ -1210,7 +1211,6 @@ pub akio_http::H2Config::max_header_list: u32
 pub akio_http::H2Config::max_pending_bytes: usize
 pub akio_http::H2Config::max_resets: u32
 pub akio_http::H2Config::reset_window: core::time::Duration
-pub akio_http::H2Config::handlers_on_logical_pool: bool
 pub akio_http::H2Config::stats: core::option::Option<akio_http::observe::H2Stats>
 impl core::clone::Clone for akio_http::H2Config
 pub fn akio_http::H2Config::clone(&self) -> Self
@@ -1286,12 +1286,12 @@ impl<S> !core::panic::unwind_safe::UnwindSafe for akio_http::HttpAcceptor<S>
 #[non_exhaustive] pub struct akio_http::HttpConfig
 pub akio_http::HttpConfig::body_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::h2: core::option::Option<akio_http::H2Config>
+pub akio_http::HttpConfig::handlers_on_logical_pool: bool
 pub akio_http::HttpConfig::head_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::idle_drain_grace: core::time::Duration
 pub akio_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
 pub akio_http::HttpConfig::max_body_bytes: usize
 pub akio_http::HttpConfig::max_header_bytes: usize
-pub akio_http::HttpConfig::handlers_on_logical_pool: bool
 impl core::clone::Clone for akio_http::HttpConfig
 pub fn akio_http::HttpConfig::clone(&self) -> Self
 impl core::default::Default for akio_http::HttpConfig
