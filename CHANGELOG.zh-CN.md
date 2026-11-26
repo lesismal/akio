@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：连接句柄、关闭期限，以及监听器的接受与关闭钩子（akio-core、akio、akio-http）
+
+akit 的 A232，用于其控制台的连接规则（fit 的规则：未登录的连接在接受 5 秒后关闭；有会话的连接空闲
+2 分钟；超过 `max_conns` 时驱逐最早的未认证连接）；ADR-179。`ConnHandle`（akio-core，由 `akio`
+重新导出；`Conn::handle()`）是不带 handler 类型的可克隆、线程安全的句柄：`id`、`is_open`、地址、
+`close`、`set_idle_timeout`，以及关闭期限 `close_at` / `close_after`（到期即关闭，无论连接发送什么；
+最后设置的生效）和 `cancel_close`，由连接自己的 I/O 线程上的定时器执行。`Listener::on_accept` 告诉
+应用每个被接受的连接（在 filter 和 `max_connections` 之后、TLS 和 `on_open` 之前），
+`Listener::on_close` 告诉应用每个关闭的连接（每个恰好一次，包括 panic 和被拒绝的连接），应用因此能
+维护一张连接表并关闭它选中的那个。akio-http 中 `Context::connection()` 给出请求所在的连接（HTTP/1.1
+和 HTTP/2；HTTP/3 上为 `None`）。`ConnInner` 大 8 字节；没有钩子的监听器不变。
+
 ### 新增：关闭终端回显与 raw 模式（akio-sys）
 
 akit 的 A233，供在终端中运行的 `akit hash-password` 使用。`akio_sys::terminal::no_echo(fd)` 关闭

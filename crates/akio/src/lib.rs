@@ -72,11 +72,11 @@ pub use akio_tun as tun;
 pub use akio_wasm as wasm;
 
 pub use akio_core::{
-    Acceptor, AnyAcceptor, Config, Conn, ConnInfo, DatagramSender, Datagrams, DatagramsHandler,
-    DatagramsIter, DialOptions, Error, FnAcceptor, Handler, IcmpError, Live, LoopCounters,
-    LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, Replies,
-    ResponseSlot, ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry,
-    Transport, UNIX_ADDR, UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
+    Acceptor, AnyAcceptor, Config, Conn, ConnHandle, ConnInfo, DatagramSender, Datagrams,
+    DatagramsHandler, DatagramsIter, DialOptions, Error, FnAcceptor, Handler, IcmpError, Live,
+    LoopCounters, LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport,
+    Replies, ResponseSlot, ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord,
+    Telemetry, Transport, UNIX_ADDR, UdpBinding, UdpStats, fn_acceptor, metrics, telemetry, timer,
 };
 #[doc(hidden)]
 pub use akio_core::{DynAcceptor, DynHandler};
@@ -292,6 +292,9 @@ pub struct Listener {
     unix: Option<UnixSpec>,
     /// The socket file's mode ([`Listener::unix_mode`]).
     unix_mode: Option<u32>,
+    /// Told of every connection accepted, and of every one closed (akit A232, ADR-179).
+    on_accept: Option<akio_core::ConnHook>,
+    on_close: Option<akio_core::ConnHook>,
 }
 
 /// Where a Unix-domain listener's socket comes from (ADR-121).
@@ -326,6 +329,8 @@ impl Listener {
             balance: Balance::default(),
             unix: None,
             unix_mode: None,
+            on_accept: None,
+            on_close: None,
         }
     }
 
@@ -522,6 +527,37 @@ impl Listener {
     #[must_use]
     pub fn filter(mut self, filter: impl Fn(&SocketAddr) -> bool + Send + Sync + 'static) -> Self {
         self.filter = Some(Arc::new(filter));
+        self
+    }
+
+    /// Tells `f` of every connection this listener accepts (akit A232, ADR-179), with a
+    /// [`ConnHandle`] it may keep: to close the connection later from any thread, set its idle
+    /// timeout or a deadline ([`ConnHandle::close_after`]), or keep a table of the connections
+    /// open (with [`on_close`](Self::on_close) to take them out) and choose one to close when
+    /// there are too many. Called on the connection's I/O thread after the
+    /// [`filter`](Self::filter) and the `max_connections` check, before any transport (TLS)
+    /// work and the acceptor's `on_open`; for a UDP listener, on each peer's first datagram; a
+    /// datagram listener ([`serve_datagrams`](Self::serve_datagrams)) has no connections and
+    /// never calls it. It runs for every connection on the accepting path: keep it short,
+    /// never block (rules 1, 12); a panic in it refuses the connection as one in `on_open`
+    /// does (and [`on_close`](Self::on_close) is told of it).
+    #[must_use]
+    pub fn on_accept(mut self, f: impl Fn(&ConnHandle) + Send + Sync + 'static) -> Self {
+        self.on_accept = Some(Arc::new(f));
+        self
+    }
+
+    /// Tells `f` of every connection of this listener that closes, after its handler's
+    /// `on_close`, on its I/O thread: the other half of [`on_accept`](Self::on_accept)'s
+    /// table. Called once for every connection `on_accept` was told of, whoever closed it:
+    /// also when `on_accept`, the acceptor's `on_open` or the handler's `on_close` panics, and
+    /// when the backend drops a connection it could not register. It is never called from
+    /// inside [`ConnHandle::close`] (closing is posted to the connection's loop), so
+    /// `on_accept` may close another connection while it holds the table's lock. Keep it
+    /// short, never block.
+    #[must_use]
+    pub fn on_close(mut self, f: impl Fn(&ConnHandle) + Send + Sync + 'static) -> Self {
+        self.on_close = Some(Arc::new(f));
         self
     }
 }
@@ -752,6 +788,7 @@ fn bind_shared(
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
+    let acceptor = akio_core::hooked(acceptor, l.on_accept, l.on_close);
     // io_uring when it is available here; else epoll, as `bind_group` falls back (or fails,
     // `strict`).
     let uring = match &l.backend {
@@ -883,6 +920,7 @@ fn bind_work_stealing(
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
+    let acceptor = akio_core::hooked(acceptor, l.on_accept, l.on_close);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let rc = rc.epoll();
@@ -933,6 +971,7 @@ fn bind_group(l: Listener, cfg: &Config, pool: &Arc<Pool>) -> io::Result<(Box<dy
     let acceptor = l.acceptor.ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
     })?;
+    let acceptor = akio_core::hooked(acceptor, l.on_accept, l.on_close);
     let threads = l.threads.unwrap_or_else(default_threads);
     if let Some(spec) = l.unix {
         #[cfg(feature = "dpdk")]

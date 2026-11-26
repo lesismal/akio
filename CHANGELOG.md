@@ -10,6 +10,21 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: connection handles, close deadlines, and a listener's accept and close hooks (akio-core, akio, akio-http)
+
+akit's A232, for its console's connection rules (fit's: no login, closed 5 s after accept; a
+session, 2 minutes idle; past `max_conns`, the oldest unauthenticated connection evicted);
+ADR-179. `ConnHandle` (akio-core, re-exported by `akio`; `Conn::handle()`) is a cloneable,
+thread-safe handle without the handler type: `id`, `is_open`, addresses, `close`,
+`set_idle_timeout`, and a close deadline, `close_at` / `close_after` (closed then whatever the
+connection sends; the last one set is in force) and `cancel_close`, run by a timer on the
+connection's own I/O thread. `Listener::on_accept` tells an application of every connection
+accepted (after the filter and `max_connections`, before TLS and `on_open`) and
+`Listener::on_close` of every one closed (exactly once for each, panics and refused connections
+included), so it can keep a table of them and close the one it chooses. In akio-http,
+`Context::connection()` gives a request's connection (HTTP/1.1 and HTTP/2; `None` on HTTP/3).
+`ConnInner` is 8 bytes larger; a listener without hooks is unchanged.
+
 ### Added: a terminal's echo turned off, and raw mode (akio-sys)
 
 akit's A233, for `akit hash-password` at a terminal. `akio_sys::terminal::no_echo(fd)` turns

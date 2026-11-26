@@ -1,7 +1,8 @@
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 
 use crate::{
-    Conn, ConnInner, Error, Task, Transport,
+    Conn, ConnHandle, ConnInner, Error, Task, Transport,
     conn::{Completion, LoopFn, TransportPoll, TransportWaker},
 };
 
@@ -248,5 +249,124 @@ impl<A: Acceptor> DynAcceptor for A {
     }
     fn on_shutdown(&self, inner: &Arc<ConnInner>) {
         Acceptor::on_shutdown(self, &Conn::<A::Handler>::new(inner.clone()));
+    }
+}
+
+/// A hook on every connection of a listener ([`hooked`]): told with a [`ConnHandle`].
+#[doc(hidden)]
+pub type ConnHook = Arc<dyn Fn(&ConnHandle) + Send + Sync>;
+
+/// Wraps `acceptor` so that `on_accept` is told of each connection it opens, before its
+/// `on_open`, and `on_close` of each one that closes, after its handler's `on_close` (akit
+/// A232, ADR-179). Backend-facing: `akio`'s `Listener::on_accept` and `on_close`.
+#[doc(hidden)]
+pub fn hooked(
+    acceptor: Arc<dyn DynAcceptor>,
+    on_accept: Option<ConnHook>,
+    on_close: Option<ConnHook>,
+) -> Arc<dyn DynAcceptor> {
+    if on_accept.is_none() && on_close.is_none() {
+        return acceptor;
+    }
+    Arc::new(Hooked {
+        acceptor,
+        on_accept,
+        on_close,
+    })
+}
+
+struct Hooked {
+    acceptor: Arc<dyn DynAcceptor>,
+    on_accept: Option<ConnHook>,
+    on_close: Option<ConnHook>,
+}
+
+impl Hooked {
+    /// Tells `on_close` of a connection that will not get a handler (a hook or `on_open`
+    /// panicked), closing it first.
+    fn refused(&self, conn: &ConnHandle) {
+        conn.close();
+        if let Some(f) = &self.on_close {
+            let _ = catch_unwind(AssertUnwindSafe(|| f(conn)));
+        }
+    }
+}
+
+impl DynAcceptor for Hooked {
+    fn on_open(&self, inner: &Arc<ConnInner>) -> Box<dyn DynHandler> {
+        let conn = ConnHandle::from_inner(inner.clone());
+        if let Some(f) = &self.on_accept {
+            if let Err(p) = catch_unwind(AssertUnwindSafe(|| f(&conn))) {
+                self.refused(&conn);
+                resume_unwind(p);
+            }
+        }
+        let h = match catch_unwind(AssertUnwindSafe(|| self.acceptor.on_open(inner))) {
+            Ok(h) => h,
+            Err(p) => {
+                self.refused(&conn);
+                resume_unwind(p);
+            }
+        };
+        match &self.on_close {
+            None => h,
+            Some(f) => Box::new(HookedHandler {
+                h,
+                conn,
+                on_close: f.clone(),
+                told: false,
+            }),
+        }
+    }
+    fn on_shutdown(&self, inner: &Arc<ConnInner>) {
+        self.acceptor.on_shutdown(inner);
+    }
+}
+
+/// A connection's handler with the listener's `on_close` hook after its own. A handler
+/// dropped without `on_close` (a backend that could not register the connection) tells the
+/// hook when it is dropped.
+struct HookedHandler {
+    h: Box<dyn DynHandler>,
+    conn: ConnHandle,
+    on_close: ConnHook,
+    told: bool,
+}
+
+impl Drop for HookedHandler {
+    fn drop(&mut self) {
+        if !self.told {
+            self.told = true;
+            self.conn.close();
+            let _ = catch_unwind(AssertUnwindSafe(|| (self.on_close)(&self.conn)));
+        }
+    }
+}
+
+impl DynHandler for HookedHandler {
+    fn on_data(&mut self, data: &[u8]) {
+        self.h.on_data(data);
+    }
+    fn on_close(&mut self, err: Option<Error>) {
+        // The hook runs even if the handler's `on_close` panics, so an application's table
+        // of connections never keeps one that closed.
+        let r = catch_unwind(AssertUnwindSafe(|| self.h.on_close(err)));
+        self.told = true;
+        (self.on_close)(&self.conn);
+        if let Err(p) = r {
+            resume_unwind(p);
+        }
+    }
+    fn run_task(&mut self, task: Task) {
+        self.h.run_task(task);
+    }
+    fn on_batch_end(&mut self) {
+        self.h.on_batch_end();
+    }
+    fn wants_owned(&self) -> bool {
+        self.h.wants_owned()
+    }
+    fn on_data_owned(&mut self, data: akio_buf::slab::ChunkMut) {
+        self.h.on_data_owned(data);
     }
 }
