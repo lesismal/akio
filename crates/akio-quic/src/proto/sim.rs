@@ -164,6 +164,7 @@ impl Sim {
                 cfg: server_cfg,
                 retry,
                 max_connections: usize::MAX,
+                max_handshakes: usize::MAX,
             }),
             &mut rng,
         );
@@ -2010,4 +2011,148 @@ fn stopped_stream_leaves_the_writable_wait() {
     let evs: Vec<Event> = std::iter::from_fn(|| c.poll_event()).collect();
     assert!(evs.iter().any(|e| matches!(e, Event::StreamStopped(..))));
     assert!(!evs.iter().any(|e| matches!(e, Event::StreamWritable(_))));
+}
+
+/// A client connection's first Initial, from a fresh client endpoint.
+fn first_initial(
+    cep: &mut Endpoint,
+    tls: &akio_tls::ClientConfig,
+    now: Instant,
+    to: SocketAddr,
+) -> (Connection, Vec<u8>) {
+    let (_, mut c) = cep
+        .connect(
+            now,
+            ConnConfig::new(TransportConfig::default(), true),
+            tls,
+            "localhost",
+            to,
+            None,
+        )
+        .expect("connect");
+    let d = c.poll_transmit(now, 1).expect("initial").data;
+    (c, d)
+}
+
+/// The handshakes a server has in progress are bounded as fit's QUIC listener bounds them
+/// (akit A245): from half of `max_handshakes` on, a client without a token gets a Retry and
+/// gets in by answering it; at the limit a new client's Initial is dropped unanswered, with
+/// nothing kept (counted as refused); a handshake that ends makes room again.
+#[test]
+fn handshakes_bounded_with_retry_past_half() {
+    let (stls, ctls) = certs();
+    let mut rng = ChaChaRng::from_seed([41; 32]);
+    let mut ep = Endpoint::with_rng(
+        Some(ServerSetup {
+            tls: stls,
+            cfg: ConnConfig::new(TransportConfig::default(), true),
+            retry: false,
+            max_connections: usize::MAX,
+            max_handshakes: 4,
+        }),
+        &mut rng,
+    );
+    let mut cep = Endpoint::with_rng(None, &mut rng);
+    let now = Instant::now();
+    let saddr: SocketAddr = "10.0.0.2:443".parse().expect("addr");
+    let from = |i: u16| -> SocketAddr { SocketAddr::from(([10, 0, 0, 1], 5000 + i)) };
+    let mut handles = Vec::new();
+    // Under half: straight in.
+    for i in 0..2 {
+        let (_c, d) = first_initial(&mut cep, &ctls, now, saddr);
+        match ep.handle(now, from(i), &d) {
+            Some(DatagramEvent::New(h, _)) => handles.push(h),
+            _ => panic!("client {i} not let in"),
+        }
+    }
+    // From half on: a Retry first, and in with its token.
+    for i in 2..4 {
+        let (mut c, d) = first_initial(&mut cep, &ctls, now, saddr);
+        let Some(DatagramEvent::Respond(retry)) = ep.handle(now, from(i), &d) else {
+            panic!("client {i} got no Retry");
+        };
+        c.handle_datagram(now, saddr, retry.data);
+        let again = c
+            .poll_transmit(now, 1)
+            .expect("initial with the token")
+            .data;
+        match ep.handle(now, from(i), &again) {
+            Some(DatagramEvent::New(h, _)) => handles.push(h),
+            _ => panic!("client {i} not let in after its Retry"),
+        }
+        assert!(c.retry_scid.is_some());
+    }
+    assert_eq!(ep.refused(), 0);
+    // At the limit: dropped unanswered, not even a Retry.
+    let (_c5, d5) = first_initial(&mut cep, &ctls, now, saddr);
+    assert!(ep.handle(now, from(5), &d5).is_none());
+    assert!(ep.handle(now, from(5), &d5).is_none());
+    assert_eq!(ep.refused(), 2);
+    // One handshake done: under the limit again (a Retry, still at half); another connection
+    // gone and one more handshake done: under half (straight in).
+    ep.handle_event(handles[0], &EndpointEvent::HandshakeDone);
+    assert!(matches!(
+        ep.handle(now, from(5), &d5),
+        Some(DatagramEvent::Respond(_))
+    ));
+    ep.handle_event(handles[1], &EndpointEvent::Drained);
+    ep.handle_event(handles[2], &EndpointEvent::HandshakeDone);
+    assert!(matches!(
+        ep.handle(now, from(5), &d5),
+        Some(DatagramEvent::New(..))
+    ));
+    assert_eq!(ep.refused(), 2);
+}
+
+/// A server drops a connection whose handshake is not done within `handshake_timeout`
+/// (akit A245), well before the idle timeout, without a word; one whose handshake completed
+/// stays past it.
+#[test]
+fn handshake_timeout_drops_a_stalled_handshake() {
+    let (s, tls) = certs();
+    let mut scfg = ConnConfig::new(TransportConfig::default(), true);
+    scfg.handshake_timeout = Some(Duration::from_secs(2));
+    let mut sim = Sim::new(42, scfg.clone(), s.clone(), false);
+    let start = sim.now;
+    sim.connect(
+        &tls,
+        ConnConfig::new(TransportConfig::default(), true),
+        None,
+    );
+    // The client's first flight reaches the server; nothing gets through after it.
+    assert!(sim.run_until(Duration::from_secs(1), |s| s.server_handle().is_some()));
+    let sh = sim.server_handle().expect("server conn");
+    sim.link.down = true;
+    let mut c = Collector::default();
+    let ok = sim.run_until(Duration::from_secs(10), |s| {
+        let evs = s.events(true, sh);
+        c.take(evs);
+        c.closed.is_some()
+    });
+    assert!(ok, "the stalled handshake was kept");
+    assert_eq!(c.closed, Some(ConnectionError::TimedOut));
+    let took = sim.now - start;
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(4),
+        "{took:?}"
+    );
+    sim.run_until(Duration::from_secs(1), |s| s.server.conns.is_empty());
+    assert!(sim.server.conns.is_empty(), "not forgotten");
+
+    // A handshake done in time is not cut at the deadline (the client's keep-alives keep the
+    // simulation's clock in steps of a second).
+    let mut sim = Sim::new(43, scfg, s, false);
+    let ka = TransportConfig {
+        keep_alive_interval: Some(Duration::from_secs(1)),
+        ..TransportConfig::default()
+    };
+    let h = sim.handshake(&tls, ConnConfig::new(ka, true));
+    let sh = sim.server_handle().expect("server conn");
+    let from = sim.now;
+    sim.run_until(Duration::from_secs(5), |_| false);
+    assert!(sim.now - from >= Duration::from_secs(5));
+    let mut c = Collector::default();
+    c.take(sim.events(true, sh));
+    c.take(sim.events(false, h));
+    assert!(c.closed.is_none(), "{:?}", c.closed);
 }

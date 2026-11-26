@@ -30,8 +30,8 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 akio-http `Service`。与 qui
 
 - `QuicServer` 是一个 **UDP listener** 的 acceptor。该 listener 的每个数据报都经过同一个
   endpoint，由它按连接 ID 路由，所以迁移到新地址的客户端（经路径验证后）仍保持原连接。endpoint
-  还会对未知版本回复版本协商、对未知连接 ID 发送无状态重置，并在握手压力大时用 Retry 验证客户端
-  地址。
+  还会对未知版本回复版本协商、对未知连接 ID 发送无状态重置，并在握手压力大时（进行中的握手达到
+  `max_handshakes` 的一半起）用 Retry 验证客户端地址。
 - 每个 QUIC 连接从工厂得到一个 `QuicHandler`。它的回调一次一个、按顺序执行，在读到该数据报的
   I/O 线程上或在一个共享的定时器线程上；回调不能阻塞。
 - `akio_quic::dial(&engine, addr, server_name, client_cfg, handler)` 在一个独立的 UDP socket 上
@@ -87,8 +87,8 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 akio-http `Service`。与 qui
 | `TransportConfig::max_idle_timeout` | 30 s | 关闭静默的连接 |
 | `TransportConfig::datagram_receive_buffer_size`、`datagram_send_buffer_size` | 1.25 MB、1 MiB | 两个方向缓冲的不可靠数据报 |
 | `ServerConfig::max_connections(n)` | 10,000 | 服务器同时持有的连接数（握手中、打开或关闭中）；超过后新客户端立即收到 `CONNECTION_REFUSED`，服务器不保留任何状态（与无状态重置一起限速；由 `QuicServer::refused_connections()` 计数） |
-
-进行中的握手超过 4096 个时，新客户端还必须先用 Retry 证明其地址。
+| `ServerConfig::max_handshakes(n)` | 8,192 | 进行中的握手数；从一半起，没有有效令牌的客户端须先用 Retry 证明其地址（来自伪造地址的 Initial 因此最多占一半）；达到上限时新客户端的 Initial 被丢弃且不作应答，不保留任何状态，等有握手结束后它即可进入（同样由 `refused_connections()` 计数） |
+| `ServerConfig::handshake_timeout(t)` | 10 s | 到时仍未完成握手的连接被直接丢弃，其 handler 的 `on_close` 收到 `TimedOut`（`None`：只受空闲超时限制，而客户端每个包都会刷新它） |
 
 ### 版本、ECN、BBR 与迁移
 

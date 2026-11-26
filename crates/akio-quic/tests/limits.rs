@@ -1,10 +1,11 @@
 //! QUIC resource limits through the public API: the server's connection cap (refused with
-//! CONNECTION_REFUSED), and stream send buffers (`Overloaded`, `on_stream_writable`) with a
+//! CONNECTION_REFUSED), its handshake bounds (a timeout; a Retry past half of
+//! `max_handshakes`, Initials dropped past it), and stream send buffers (`Overloaded`, `on_stream_writable`) with a
 //! producer that follows them, a peer that is cut midway, and work moved to the pool.
 #![allow(missing_docs)]
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -70,6 +71,11 @@ fn defaults_are_bounded() {
     assert_eq!(t.send_buffer, 16 << 20);
     assert!(t.send_buffer > t.send_window);
     assert_eq!(akio_quic::DEFAULT_MAX_CONNECTIONS, 10_000);
+    assert_eq!(akio_quic::DEFAULT_MAX_HANDSHAKES, 8192);
+    assert_eq!(
+        akio_quic::DEFAULT_HANDSHAKE_TIMEOUT,
+        Duration::from_secs(10)
+    );
     assert_eq!(Error::Overloaded.to_string(), "quic: overloaded");
 }
 
@@ -109,6 +115,174 @@ fn connections_beyond_the_limit_are_refused() {
     });
     let (_c4, r4) = dial();
     assert_eq!(r4.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
+}
+
+/// What a [`Relay`] passes from the server back to the client.
+#[derive(Clone, Copy, PartialEq)]
+enum Down {
+    /// Retry packets alone: the client gets into a handshake that then stalls.
+    RetryOnly,
+    /// Nothing, and only the client's first datagram goes up: a handshake that stalls at once.
+    Nothing,
+}
+
+/// A UDP relay between one client and a server, counting the server's Retry packets.
+struct Relay {
+    addr: SocketAddr,
+    retries: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+fn relay(server: SocketAddr, down: Down) -> Relay {
+    use std::net::UdpSocket;
+    let front = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let back = UdpSocket::bind("127.0.0.1:0").unwrap();
+    back.connect(server).unwrap();
+    for s in [&front, &back] {
+        // Only so that the threads see `stop`.
+        s.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    }
+    let addr = front.local_addr().unwrap();
+    let (retries, stop) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let client: Arc<Mutex<Option<SocketAddr>>> = Arc::default();
+    let (f2, b2, c2, s2) = (
+        front.try_clone().unwrap(),
+        back.try_clone().unwrap(),
+        client.clone(),
+        stop.clone(),
+    );
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 65536];
+        let mut up = 0;
+        while !s2.load(Ordering::Acquire) {
+            if let Ok((n, from)) = f2.recv_from(&mut buf) {
+                *c2.lock().unwrap() = Some(from);
+                up += 1;
+                if down != Down::Nothing || up == 1 {
+                    let _ = b2.send(&buf[..n]);
+                }
+            }
+        }
+    });
+    let (r2, s3) = (retries.clone(), stop.clone());
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 65536];
+        while !s3.load(Ordering::Acquire) {
+            if let Ok(n) = back.recv(&mut buf) {
+                // A version 1 long header of type Retry.
+                let retry = n > 0 && buf[0] & 0x80 != 0 && (buf[0] >> 4) & 0x3 == 3;
+                if retry {
+                    r2.fetch_add(1, Ordering::AcqRel);
+                }
+                let pass = match down {
+                    Down::RetryOnly => retry,
+                    Down::Nothing => false,
+                };
+                let to = *client.lock().unwrap();
+                if let (true, Some(to)) = (pass, to) {
+                    let _ = front.send_to(&buf[..n], to);
+                }
+            }
+        }
+    });
+    Relay {
+        addr,
+        retries,
+        stop,
+    }
+}
+
+#[test]
+fn stalled_handshakes_dropped_after_the_timeout() {
+    let (certs, key) = tls();
+    let cfg = akio_quic::server_config(certs, key, &[b"lim"])
+        .unwrap()
+        .handshake_timeout(Some(Duration::from_millis(300)));
+    let server = QuicServer::new(cfg, |_c: &Connection| Quiet);
+    let (_s, addr) = serve(server.clone());
+    let e = client_engine();
+    let ccfg = akio_quic::client_config_insecure(&[b"lim"]).unwrap();
+    // A client whose first Initial alone reaches the server: its handshake stalls there.
+    let r = relay(addr, Down::Nothing);
+    let (tx, _rx) = mpsc::channel();
+    let _stuck = akio_quic::dial(&e, r.addr, "localhost", ccfg.clone(), Watch(tx)).unwrap();
+    wait_for("the stalled handshake", || server.connections() == 1);
+    let t = Instant::now();
+    wait_for("the stalled handshake to be dropped", || {
+        server.connections() == 0
+    });
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    // A handshake done in time stays past the timeout.
+    let (tx, rx) = mpsc::channel();
+    let _ok = akio_quic::dial(&e, addr, "localhost", ccfg.clone(), Watch(tx)).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(rx.try_recv().is_err());
+    assert_eq!(server.connections(), 1);
+
+    // Without a handshake timeout, only the idle timeout (30 s) would end it.
+    let (certs2, key2) = tls();
+    let cfg = akio_quic::server_config(certs2, key2, &[b"lim"])
+        .unwrap()
+        .handshake_timeout(None);
+    let server = QuicServer::new(cfg, |_c: &Connection| Quiet);
+    let (_s2, addr) = serve(server.clone());
+    let r = relay(addr, Down::Nothing);
+    let (tx, _rx) = mpsc::channel();
+    let _stuck = akio_quic::dial(&e, r.addr, "localhost", ccfg, Watch(tx)).unwrap();
+    wait_for("the stalled handshake", || server.connections() == 1);
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(server.connections(), 1);
+}
+
+#[test]
+fn handshakes_past_half_retry_and_past_the_limit_wait() {
+    let (certs, key) = tls();
+    let cfg = akio_quic::server_config(certs, key, &[b"lim"])
+        .unwrap()
+        .max_handshakes(2)
+        .handshake_timeout(Some(Duration::from_secs(1)));
+    let server = QuicServer::new(cfg, |_c: &Connection| Quiet);
+    let (_s, addr) = serve(server.clone());
+    let e = client_engine();
+    let ccfg = akio_quic::client_config_insecure(&[b"lim"]).unwrap();
+    let stalled = || {
+        let r = relay(addr, Down::RetryOnly);
+        let (tx, _rx) = mpsc::channel();
+        let c = akio_quic::dial(&e, r.addr, "localhost", ccfg.clone(), Watch(tx)).unwrap();
+        (r, c)
+    };
+    // Under half: in at once, no Retry.
+    let (ra, _a) = stalled();
+    wait_for("the first handshake", || server.connections() == 1);
+    // At half: in after a Retry.
+    let (rb, _b) = stalled();
+    wait_for("the second handshake", || server.connections() == 2);
+    assert_eq!(ra.retries.load(Ordering::Acquire), 0);
+    assert!(rb.retries.load(Ordering::Acquire) >= 1);
+    // Their clients' Initials sent again reach the server no more.
+    drop((ra, rb));
+    // At the limit: a new client's Initials are dropped, it is not refused; once the stalled
+    // handshakes time out it gets in.
+    let (tx, rx) = mpsc::channel();
+    let t = Instant::now();
+    let _c = akio_quic::dial(&e, addr, "localhost", ccfg.clone(), Watch(tx)).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(15)).unwrap(), Ok(()));
+    assert!(
+        t.elapsed() >= Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
+    );
+    assert!(server.refused_connections() >= 1);
 }
 
 /// Answers a stream's request with `total` bytes, written in `chunk`-byte pieces as the send

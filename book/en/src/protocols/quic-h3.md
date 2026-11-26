@@ -35,7 +35,8 @@ How it fits on `akio`:
   through one endpoint, which routes it by connection id, so a client that migrates to a new
   address keeps its connection (after path validation). The endpoint also answers unknown
   versions with Version Negotiation, sends stateless resets for unknown connection ids and,
-  under handshake load, validates client addresses with Retry.
+  under handshake load (from half of `max_handshakes` in progress), validates client
+  addresses with Retry.
 - Each QUIC connection gets a `QuicHandler` from the factory. Its callbacks run one at a time, in
   order, on the I/O thread that read the datagram or on a shared timer thread; they must not
   block.
@@ -97,8 +98,8 @@ Limits and their defaults (every one bounded; the `None` / `MAX` values lift a l
 | `TransportConfig::max_idle_timeout` | 30 s | closes a silent connection |
 | `TransportConfig::datagram_receive_buffer_size`, `datagram_send_buffer_size` | 1.25 MB, 1 MiB | unreliable datagrams buffered each way |
 | `ServerConfig::max_connections(n)` | 10,000 | connections a server holds (handshaking, open or closing); beyond it a new client is refused at once with `CONNECTION_REFUSED`, keeping no state (rate limited like stateless resets; counted by `QuicServer::refused_connections()`) |
-
-Above 4096 handshakes in progress, new clients must also prove their address with a Retry.
+| `ServerConfig::max_handshakes(n)` | 8,192 | handshakes in progress; from half of them on, a client without a valid token proves its address with a Retry first (Initials from forged addresses then hold at most half); at the limit a new client's Initial is dropped unanswered, keeping no state, and it gets in once a handshake is over (counted by `refused_connections()` too) |
+| `ServerConfig::handshake_timeout(t)` | 10 s | a connection whose handshake is not done by then is dropped without a word, its handler's `on_close` getting `TimedOut` (`None`: the idle timeout alone, which every client packet renews) |
 
 ### Versions, ECN, BBR and migration
 

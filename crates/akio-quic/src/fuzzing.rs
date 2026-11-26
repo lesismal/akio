@@ -169,6 +169,7 @@ impl Pair {
                 cfg: scfg,
                 retry: false,
                 max_connections: usize::MAX,
+                max_handshakes: usize::MAX,
             }),
             &mut rng,
         );

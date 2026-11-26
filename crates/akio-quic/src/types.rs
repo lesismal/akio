@@ -351,11 +351,22 @@ pub(crate) struct ServerInner {
     pub(crate) prefer_version: Option<u32>,
     pub(crate) zero_rtt: bool,
     pub(crate) max_connections: usize,
+    pub(crate) max_handshakes: usize,
+    pub(crate) handshake_timeout: Option<Duration>,
 }
 
 /// Connections a server endpoint holds at once by default (see
 /// [`ServerConfig::max_connections`]).
 pub const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
+
+/// Handshakes a server endpoint has in progress at once by default (see
+/// [`ServerConfig::max_handshakes`]): clients prove their address with a Retry from half of it
+/// on.
+pub const DEFAULT_MAX_HANDSHAKES: usize = 8192;
+
+/// How long a client's handshake may take by default (see
+/// [`ServerConfig::handshake_timeout`]).
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -376,6 +387,8 @@ impl ServerConfig {
             prefer_version: None,
             zero_rtt: false,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_handshakes: DEFAULT_MAX_HANDSHAKES,
+            handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
         })
     }
 
@@ -387,6 +400,34 @@ impl ServerConfig {
     #[must_use]
     pub fn max_connections(mut self, n: usize) -> Self {
         self.0.max_connections = n;
+        self
+    }
+
+    /// Handshakes the server has in progress at once (default 8,192; `usize::MAX` lifts the
+    /// limit; 0 is taken as 1): a connection counts from a client's first Initial until its
+    /// handshake completes or it goes. From half of them on, a client whose Initial carries no
+    /// valid token (a Retry's, or a NEW_TOKEN one from an earlier connection) is answered with
+    /// a Retry instead, keeping no state, so that Initials from forged addresses, which cost
+    /// their sender nothing, hold at most half; a client that answers its Retry gets one of the
+    /// rest. At the limit, a new client's Initial is dropped unanswered, with nothing kept:
+    /// the client sends it again and gets in once a handshake is over (counted by
+    /// [`QuicServer::refused_connections`](crate::QuicServer::refused_connections)). A clone
+    /// of the [`QuicServer`](crate::QuicServer) serving several listeners shares the count.
+    #[must_use]
+    pub fn max_handshakes(mut self, n: usize) -> Self {
+        self.0.max_handshakes = n.max(1);
+        self
+    }
+
+    /// How long a client's handshake may take, from its first Initial to the handshake's
+    /// completion (default 10 s; `None`: only the idle timeout bounds it). A connection whose
+    /// handshake is not done by then is dropped without a word (no `CONNECTION_CLOSE`), as an
+    /// idle one is, and its handler's `on_close` gets [`ConnectionError::TimedOut`]; its place
+    /// among [`max_handshakes`](Self::max_handshakes) is free again. A client that answered a
+    /// Retry starts its count over with the connection the Retry led to.
+    #[must_use]
+    pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.0.handshake_timeout = timeout;
         self
     }
 
@@ -464,7 +505,8 @@ impl ServerConfig {
     }
 
     /// Validates every client address with a Retry round trip before accepting it (default:
-    /// only under handshake load). Hidden: for tests and interop runs.
+    /// from half of [`max_handshakes`](Self::max_handshakes) in progress on). Hidden: for tests
+    /// and interop runs.
     #[doc(hidden)]
     #[must_use]
     pub fn retry(mut self, yes: bool) -> Self {

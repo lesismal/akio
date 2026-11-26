@@ -148,3 +148,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-182: A pinned server certificate in akio-tls's client](182-pinned-server-certificate.md) (accepted 2026-11-27; akit A235)
 - [ADR-183: A WebSocket's reads held, its drain heard, and its peer's address](183-websocket-pacing.md) (accepted 2026-11-27; akit A236)
 - [ADR-184: A WebSocket ended at once, what is queued dropped](184-websocket-abort.md) (accepted 2026-11-27; akit A238)
+- [ADR-185: The QUIC server's handshake bounds](185-quic-handshake-bounds.md) (accepted 2026-11-27; akit A245)

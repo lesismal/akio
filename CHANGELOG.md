@@ -10,6 +10,18 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the QUIC server's handshake bounds (akio-quic)
+
+akit's A245, for its tunnel hub's QUIC listener (fit's `handshake_timeout` and `max_handshakes`);
+ADR-185. `ServerConfig::handshake_timeout(Option<Duration>)` (default 10 s,
+`DEFAULT_HANDSHAKE_TIMEOUT`): a connection whose handshake is not done by then is dropped without a
+`CONNECTION_CLOSE`, its handler's `on_close` getting `TimedOut`. `ServerConfig::max_handshakes(n)`
+(default 8192, `DEFAULT_MAX_HANDSHAKES`): from half of them in progress, a client without a valid
+token proves its address with a Retry first (before, from a fixed 4096); at the limit a new
+client's Initial is dropped unanswered, keeping no state, and counted by
+`QuicServer::refused_connections()`. Behaviour change: handshakes used to be bounded only by the
+idle timeout (30 s, renewed by every client packet), and handshakes in progress not at all.
+
 ### Added: a WebSocket ended at once, what is queued dropped (akio-ws, akio-http, akio-h3, akio-quic)
 
 akit's A238, for its tunnel's WebSocket links (a failed link, a kicked peer, a revoked token, a role

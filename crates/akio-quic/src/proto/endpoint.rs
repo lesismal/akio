@@ -22,8 +22,6 @@ pub(crate) const TOKEN_RETRY: u8 = 1;
 pub(crate) const TOKEN_NEW: u8 = 2;
 const RETRY_TOKEN_LIFETIME: u64 = 10;
 const NEW_TOKEN_LIFETIME: u64 = 24 * 3600;
-/// Handshakes in progress above which new clients must prove their address with a Retry.
-const RETRY_THRESHOLD: usize = 4096;
 /// Stateless resets sent per second at most.
 const RESETS_PER_SECOND: u32 = 64;
 
@@ -37,6 +35,9 @@ pub(crate) struct ServerSetup {
     pub retry: bool,
     /// Connections held at once; new ones beyond it are refused (CONNECTION_REFUSED).
     pub max_connections: usize,
+    /// Handshakes in progress at once: from half of it on, a client without a token proves
+    /// its address with a Retry first; at it, a new client's Initial is dropped unanswered.
+    pub max_handshakes: usize,
 }
 
 pub(crate) enum DatagramEvent {
@@ -58,7 +59,8 @@ pub(crate) struct Endpoint {
     handshaking: KeyedSet<ConnHandle>,
     next: ConnHandle,
     resets: (Instant, u32),
-    /// Connections refused (over `max_connections`) since the endpoint started.
+    /// Connections refused (over `max_connections`, or dropped over `max_handshakes`) since
+    /// the endpoint started.
     refused: u64,
 }
 
@@ -102,7 +104,8 @@ impl Endpoint {
         }
     }
 
-    /// New connections refused since the endpoint started (over `max_connections`).
+    /// New connections refused since the endpoint started (over `max_connections`, or dropped
+    /// over `max_handshakes`).
     pub fn refused(&self) -> u64 {
         self.refused
     }
@@ -255,6 +258,16 @@ impl Endpoint {
             self.refused += 1;
             return self.refuse(now, version, from, &h.dcid, &h.scid);
         }
+        let max_handshakes = self
+            .server
+            .as_ref()
+            .map_or(usize::MAX, |s| s.max_handshakes);
+        if self.handshaking.len() >= max_handshakes {
+            // Dropped unanswered, keeping nothing: the client sends its Initial again and gets
+            // in once a handshake is over (as fit's QUIC listener does).
+            self.refused += 1;
+            return None;
+        }
         let (orig, retry_scid, validated) = match self.check_token(from, h.token, &h.dcid, version)
         {
             TokenCheck::Retry(odcid) => (odcid, Some(h.dcid), true),
@@ -264,7 +277,7 @@ impl Endpoint {
                 let must = self
                     .server
                     .as_ref()
-                    .is_some_and(|s| s.retry || self.handshaking.len() >= RETRY_THRESHOLD);
+                    .is_some_and(|s| s.retry || self.handshaking.len() >= max_handshakes / 2);
                 if must {
                     return Some(self.retry(version, from, &h.dcid, &h.scid));
                 }

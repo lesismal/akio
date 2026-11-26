@@ -115,8 +115,9 @@ use akio_core::{
 
 pub use crate::bytes::Bytes;
 pub use types::{
-    ClientConfig, Congestion, ConnectionError, ConnectionStats, DEFAULT_MAX_CONNECTIONS, Dir,
-    ServerConfig, Side, StreamId, TransportConfig, UdpStats, Version,
+    ClientConfig, Congestion, ConnectionError, ConnectionStats, DEFAULT_HANDSHAKE_TIMEOUT,
+    DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_HANDSHAKES, Dir, ServerConfig, Side, StreamId,
+    TransportConfig, UdpStats, Version,
 };
 use types::{TokenStore, config_err};
 
@@ -1171,11 +1172,13 @@ impl QuicServer {
         cfg.versions = config.versions;
         cfg.prefer_version = config.prefer_version;
         cfg.zero_rtt = config.zero_rtt;
+        cfg.handshake_timeout = config.handshake_timeout;
         let setup = proto::ServerSetup {
             tls: config.tls,
             cfg,
             retry: config.retry,
             max_connections: config.max_connections,
+            max_handshakes: config.max_handshakes,
         };
         QuicServer(Arc::new(Ep::new(
             proto::Endpoint::new(Some(setup)),
@@ -1189,8 +1192,10 @@ impl QuicServer {
         lock(&self.0.conns).len()
     }
 
-    /// New connections refused since the server started because it held
-    /// [`max_connections`](ServerConfig::max_connections).
+    /// New connections refused since the server started: answered `CONNECTION_REFUSED`
+    /// because it held [`max_connections`](ServerConfig::max_connections), or dropped
+    /// unanswered because it had [`max_handshakes`](ServerConfig::max_handshakes) in progress
+    /// (a client counts again each time it sends its Initial again).
     pub fn refused_connections(&self) -> u64 {
         lock(&self.0.endpoint).refused()
     }

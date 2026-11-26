@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：QUIC 服务端的握手限制（akio-quic）
+
+akit 的 A245，用于其隧道 hub 的 QUIC 监听（fit 的 `handshake_timeout` 与 `max_handshakes`）；ADR-185。
+`ServerConfig::handshake_timeout(Option<Duration>)`（默认 10 秒，`DEFAULT_HANDSHAKE_TIMEOUT`）：到时仍未
+完成握手的连接被丢弃，不发 `CONNECTION_CLOSE`，其 handler 的 `on_close` 收到 `TimedOut`。
+`ServerConfig::max_handshakes(n)`（默认 8192，`DEFAULT_MAX_HANDSHAKES`）：进行中的握手达到一半起，没有
+有效令牌的客户端须先用 Retry 证明其地址（之前从固定的 4096 起）；达到上限时新客户端的 Initial 被丢弃且
+不作应答，不保留任何状态，并由 `QuicServer::refused_connections()` 计数。行为变化：此前握手只受空闲超时
+限制（30 秒，客户端每个包都会刷新它），进行中的握手数不受限制。
+
 ### 新增：立即结束 WebSocket，丢弃排队的数据（akio-ws、akio-http、akio-h3、akio-quic）
 
 akit 的 A238，用于其隧道的 WebSocket 链路（链路出错、对端被踢出、令牌吊销、角色停止）；ADR-184。

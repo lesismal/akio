@@ -392,6 +392,9 @@ pub(crate) struct ConnConfig {
     /// 0-RTT: a client sends stream data in 0-RTT packets when a ticket allows it, a server
     /// accepts them (RFC 9001 section 4.6).
     pub zero_rtt: bool,
+    /// A server drops a connection whose handshake is not confirmed this long after it began
+    /// (`None`: only the idle timeout bounds it).
+    pub handshake_timeout: Option<Duration>,
 }
 
 impl ConnConfig {
@@ -406,6 +409,7 @@ impl ConnConfig {
             versions: vec![super::packet::VERSION_1, super::packet::VERSION_2],
             prefer_version: None,
             zero_rtt: false,
+            handshake_timeout: None,
         }
     }
 
@@ -536,6 +540,8 @@ pub struct Connection {
     dgram_queued_bytes: usize,
     // Timers and bookkeeping.
     idle_deadline: Option<Instant>,
+    /// Server: the handshake must be confirmed by then (`ConnConfig::handshake_timeout`).
+    handshake_deadline: Option<Instant>,
     last_rx: Instant,
     eliciting_since_rx: bool,
     last_eliciting_sent_any: Option<Instant>,
@@ -703,6 +709,10 @@ impl Connection {
             dgram_queue: VecDeque::new(),
             dgram_queued_bytes: 0,
             idle_deadline: None,
+            handshake_deadline: match side {
+                Side::Server => cfg.handshake_timeout.map(|t| now + t),
+                Side::Client => None,
+            },
             last_rx: now,
             eliciting_since_rx: false,
             last_eliciting_sent_any: None,
@@ -1332,6 +1342,7 @@ impl Connection {
             return;
         }
         self.confirmed = true;
+        self.handshake_deadline = None;
         // The server has the client's Finished: 0-RTT is over (late packets are lost and come
         // again in 1-RTT).
         self.zero_rtt = None;
@@ -1653,6 +1664,7 @@ impl Connection {
             }
         };
         min(self.idle_deadline);
+        min(self.handshake_deadline);
         min(self.loss_timer().map(|x| x.0));
         for s in &self.spaces {
             if s.rx_new {
@@ -1686,6 +1698,12 @@ impl Connection {
             _ => {}
         }
         if self.idle_deadline.is_some_and(|d| now >= d) {
+            self.drain_now(ConnectionError::TimedOut);
+            return;
+        }
+        if self.handshake_deadline.is_some_and(|d| now >= d) {
+            // Dropped without a word, as an idle connection is: a client that is still there
+            // starts over (or gives up on its own timeout).
             self.drain_now(ConnectionError::TimedOut);
             return;
         }
