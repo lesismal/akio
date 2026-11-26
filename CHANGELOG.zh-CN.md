@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：在线程局部变量的析构函数里等待引擎（akio-pool、akio）
+
+akit 的 A237。`Engine::wait` 先用 `Pool::is_current` 判断自己是否在逻辑池线程上，它以 `with`
+读取 akio-pool 的线程局部变量 `CURRENT`：线程退出时，另一个线程局部变量的析构函数里等待（或丢弃）
+引擎，会遇到已被销毁的 `CURRENT` 而 panic，而线程局部析构函数里的 panic 会使进程中止。现在
+`Pool::is_current`、`on_pool_thread` 与 `blocking` 改用 `try_with` 读取，已销毁的 `CURRENT`
+视为不在池线程上。
+
 ### 新增：WebSocket 的读取暂停、排空通知与对端地址（akio-ws、akio-http、akio-h3）
 
 akit 的 A236，用于其隧道的 WebSocket 链路和 LLM 网格；ADR-183。`WsSender` 新增

@@ -76,7 +76,9 @@ thread_local! {
 /// Whether the calling thread is a thread of an akio pool (any [`Pool`], the engine's logical
 /// pool among them).
 pub fn on_pool_thread() -> bool {
-    CURRENT.with(|c| c.borrow().is_some())
+    // `try_with`: asked from another thread-local's destructor, `CURRENT` may be gone already
+    // (a thread that is not a pool thread any more).
+    CURRENT.try_with(|c| c.borrow().is_some()).unwrap_or(false)
 }
 
 /// Runs `f`, a wait, telling the pool of the calling thread that this thread is blocked
@@ -125,7 +127,11 @@ pub fn on_pool_thread() -> bool {
 pub fn blocking<R>(f: impl FnOnce() -> R) -> R {
     let depth = BLOCKING.with(Cell::get);
     let pool = if depth == 0 {
-        match CURRENT.with(|c| c.borrow().as_ref().and_then(Weak::upgrade)) {
+        match CURRENT
+            .try_with(|c| c.borrow().as_ref().and_then(Weak::upgrade))
+            .ok()
+            .flatten()
+        {
             Some(p) => Some(p),
             None => return f(),
         }
@@ -735,11 +741,13 @@ impl Pool {
 
     /// Whether the calling thread is one of this pool's threads.
     pub fn is_current(&self) -> bool {
-        CURRENT.with(|c| {
-            c.borrow()
-                .as_ref()
-                .is_some_and(|w| std::ptr::eq(w.as_ptr(), self))
-        })
+        CURRENT
+            .try_with(|c| {
+                c.borrow()
+                    .as_ref()
+                    .is_some_and(|w| std::ptr::eq(w.as_ptr(), self))
+            })
+            .unwrap_or(false)
     }
 
     /// Stops accepting work; threads finish the queued jobs and exit.
@@ -776,6 +784,36 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
     use super::*;
+
+    /// A pool asked about from another thread-local's destructor, after `CURRENT` was destroyed
+    /// (A237: an engine dropped by a thread's cache when the thread exits): not a pool thread,
+    /// and no panic (which, in a thread-local destructor, aborts the process).
+    #[test]
+    fn asked_from_a_thread_local_destructor() {
+        struct AtExit(Arc<Pool>, std::sync::mpsc::Sender<(bool, bool, u32)>);
+        impl Drop for AtExit {
+            fn drop(&mut self) {
+                let r = (self.0.is_current(), on_pool_thread(), blocking(|| 7));
+                let _ = self.1.send(r);
+            }
+        }
+        thread_local! {
+            static AT_EXIT: RefCell<Option<AtExit>> = const { RefCell::new(None) };
+        }
+        let pool = Pool::new(cfg(1, 1, 4));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = pool.clone();
+        thread::spawn(move || {
+            // Registered first, destroyed last: `CURRENT`, read after it, is gone by then.
+            AT_EXIT.with(|a| *a.borrow_mut() = Some(AtExit(p, tx)));
+            assert!(!on_pool_thread());
+        })
+        .join()
+        .unwrap();
+        assert_eq!(rx.recv().unwrap(), (false, false, 7));
+        pool.shutdown();
+        pool.join();
+    }
 
     fn cfg(min: usize, max: usize, cap: usize) -> PoolConfig {
         PoolConfig {

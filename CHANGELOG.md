@@ -10,6 +10,14 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: waiting for the engine from a thread-local's destructor (akio-pool, akio)
+
+akit's A237. `Engine::wait` asks `Pool::is_current` whether it runs on a logical-pool thread, which
+read akio-pool's thread-local `CURRENT` with `with`: an engine waited for (or dropped) by another
+thread-local's destructor as its thread exits found `CURRENT` destroyed already, panicked, and the
+panic, in a thread-local destructor, aborted the process. `Pool::is_current`, `on_pool_thread` and
+`blocking` read it with `try_with` now, a destroyed `CURRENT` taken as not a pool thread.
+
 ### Added: a WebSocket's reads held, its drain heard, and its peer's address (akio-ws, akio-http, akio-h3)
 
 akit's A236, for its tunnel's WebSocket links and its LLM mesh; ADR-183. `WsSender` gets
