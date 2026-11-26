@@ -70,6 +70,8 @@ pub const IPV6_DONTFRAG: c_int = 62;
 pub const IPPROTO_ICMP: c_int = 1;
 pub const IPPROTO_ICMPV6: c_int = 58;
 pub const IP_PKTINFO: c_int = 26;
+/// `<netinet/in.h>`: the interface (by index) IPv4 multicast leaves on.
+pub const IP_MULTICAST_IFINDEX: c_int = 66;
 pub const IPV6_PKTINFO: c_int = 46;
 /// `<netinet/in.h>`: `IP_RECVPKTINFO` is `IP_PKTINFO` (libc has no constant to compare with).
 pub const IP_RECVPKTINFO: c_int = IP_PKTINFO;
