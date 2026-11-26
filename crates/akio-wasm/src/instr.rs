@@ -289,20 +289,27 @@ instrs! {
         /// Meters a basic block: takes `n` from the call's budget (ADR-125, section 3).
         Fuel { n: u32 },
         /// Jumps to `t`.
-        Br { t: u32 },
+        ///
+        /// Every branch carries `n`, the fuel of the basic block it enters (0 when the target
+        /// starts with its own `Fuel`): a branch to a block's `Fuel` takes the fuel itself and
+        /// jumps past it ([`thread_fuel`]), so a taken branch is one dispatch, not two.
+        Br { t: u32, n: u32 },
         /// Jumps to `t` if slot `c` (an `i32`) is not zero.
-        BrIfNz { c: u32, t: u32 },
-        /// Jumps to `t` if slot `c` (an `i32`) is zero.
-        BrIfZ { c: u32, t: u32 },
+        ///
+        /// `f`, when not 0, is the fuel plus one of the `Fuel` that follows: not jumping, it
+        /// takes that fuel and goes on past it.
+        BrIfNz { c: u32, t: u32, n: u32, f: u16 },
+        /// Jumps to `t` if slot `c` (an `i32`) is zero; `f` as for `BrIfNz`.
+        BrIfZ { c: u32, t: u32, n: u32, f: u16 },
         /// Jumps to `t` if the `i32` comparison holds.
-        BrCmp32 { op: Cmp, a: u32, b: u32, t: u32 },
+        BrCmp32 { op: Cmp, n: u16, a: u32, b: u32, t: u32 },
         /// Jumps to `t` if the `i32` comparison with an immediate holds.
-        BrCmp32I { op: Cmp, a: u32, imm: i32, t: u32 },
+        BrCmp32I { op: Cmp, n: u16, a: u32, imm: i32, t: u32 },
         /// Jumps to `t` if the `i64` comparison holds.
-        BrCmp64 { op: Cmp, a: u32, b: u32, t: u32 },
+        BrCmp64 { op: Cmp, n: u16, a: u32, b: u32, t: u32 },
         /// Jumps to `t` if the `i64` comparison with an immediate (sign-extended) holds.
-        BrCmp64I { op: Cmp, a: u32, imm: i32, t: u32 },
-        /// Jumps to the `min(slot s, n)`-th of the `n + 1` `Br` instructions that follow.
+        BrCmp64I { op: Cmp, n: u16, a: u32, imm: i32, t: u32 },
+        /// Jumps as the `min(slot s, n)`-th of the `n + 1` `Br` instructions that follow does.
         BrTable { s: u32, n: u32 },
         /// Copies slot `s` to slot `d`.
         Copy { d: u32, s: u32 },
@@ -320,11 +327,16 @@ instrs! {
         Return0,
         /// Returns slot `s`.
         Return1 { s: u32 },
+        /// Returns a constant (a slot's bits).
+        Return1C { v: u64 },
         /// Returns slots `s..s + n`.
         ReturnN { s: u32, n: u32 },
         /// Calls the module's defined function `f`; its frame starts at slot `base`, where the
         /// arguments are and the results go.
         Call { f: u32, base: u32 },
+        /// `Call`, with the first argument the constant `v` (zero-extended) written first: Go
+        /// passes 0 to every function it calls.
+        CallC { f: u32, base: u32, v: u32 },
         /// Calls the instance's imported function `f` (a module function index).
         CallImport { f: u32, base: u32 },
         /// Calls through table `table`, checked against type `ty`; the element index is in the
@@ -334,6 +346,9 @@ instrs! {
         Select { d: u32, b: u32, c: u32 },
         GlobalGet { d: u32, g: u32 },
         GlobalSet { s: u32, g: u32 },
+        /// `d = a + imm` (`i32`), then global `g = d`: Go's stack pointer moving, kept in a
+        /// local and in a global.
+        I32AddGlobal { g: u16, d: u32, a: u32, imm: i32 },
         TableGet { d: u32, a: u32, t: u32 },
         TableSet { a: u32, v: u32, t: u32 },
         TableSize { d: u32, t: u32 },
@@ -353,6 +368,12 @@ instrs! {
         DataDrop { seg: u32 },
         /// A reference to the module's function `f`.
         RefFunc { d: u32, f: u32 },
+        /// Stores of a constant (`x` is the constant, not a slot): its low byte, its low two
+        /// bytes, its four bytes, and its eight bytes sign-extended from 32 bits.
+        Store8I(Mem),
+        Store16I(Mem),
+        Store32I(Mem),
+        Store64I(Mem),
     }
     dest {
         Copy, Const32, Const64, I32BinI, I64BinI, GlobalGet, TableGet, TableSize, MemorySize,
@@ -527,7 +548,7 @@ impl Instr {
     /// Points a branch at `t`; false for an instruction that is not a branch.
     pub(crate) fn set_target(&mut self, to: u32) -> bool {
         match self {
-            Self::Br { t }
+            Self::Br { t, .. }
             | Self::BrIfNz { t, .. }
             | Self::BrIfZ { t, .. }
             | Self::BrCmp32 { t, .. }
@@ -538,6 +559,53 @@ impl Instr {
                 true
             }
             _ => false,
+        }
+    }
+}
+
+/// Threads branches through the `Fuel` that starts their target: a branch to `Fuel { n }` at `t`
+/// takes `n` itself and jumps to `t + 1`. The fuel taken, and where a call stops for want of it,
+/// are as before; a taken branch is one dispatch instead of two. A comparison's branch threads
+/// only fuel that fits its 16 bits. A `br_if` takes the fuel of a `Fuel` that follows it too
+/// when it does not jump, and goes on past it.
+pub(crate) fn thread_fuel(code: &mut [Instr]) {
+    for k in 0..code.len() {
+        if let (Instr::BrIfNz { f: 0, .. } | Instr::BrIfZ { f: 0, .. }, Some(&Instr::Fuel { n })) =
+            (code[k], code.get(k + 1))
+        {
+            if let Ok(next) = u16::try_from(u64::from(n) + 1) {
+                if let Instr::BrIfNz { f, .. } | Instr::BrIfZ { f, .. } = &mut code[k] {
+                    *f = next;
+                }
+            }
+        }
+        let (Instr::Br { t, n: 0 }
+        | Instr::BrIfNz { t, n: 0, .. }
+        | Instr::BrIfZ { t, n: 0, .. }
+        | Instr::BrCmp32 { t, n: 0, .. }
+        | Instr::BrCmp32I { t, n: 0, .. }
+        | Instr::BrCmp64 { t, n: 0, .. }
+        | Instr::BrCmp64I { t, n: 0, .. }) = code[k]
+        else {
+            continue;
+        };
+        let Some(&Instr::Fuel { n: fuel }) = code.get(t as usize) else {
+            continue;
+        };
+        let to = t + 1;
+        match &mut code[k] {
+            Instr::Br { t, n } | Instr::BrIfNz { t, n, .. } | Instr::BrIfZ { t, n, .. } => {
+                (*t, *n) = (to, fuel);
+            }
+            Instr::BrCmp32 { t, n, .. }
+            | Instr::BrCmp32I { t, n, .. }
+            | Instr::BrCmp64 { t, n, .. }
+            | Instr::BrCmp64I { t, n, .. } => {
+                if let Ok(f) = u16::try_from(fuel) {
+                    (*t, *n) = (to, f);
+                }
+            }
+            _ => {}
         }
     }
 }

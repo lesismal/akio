@@ -613,3 +613,411 @@ fn translation_is_linear_in_the_code() {
     s.call("f", &[], &Budget::unlimited()).unwrap();
     s.call("g", &[], &Budget::unlimited()).unwrap();
 }
+
+// --- Fused and folded instructions (ADR-125, W5): WebAssembly's meaning at their edges. ---
+
+const I32_WRAP_I64: u8 = 0xa7;
+const I64_EXTEND_I32_S: u8 = 0xac;
+const I64_EXTEND_I32_U: u8 = 0xad;
+
+#[test]
+fn an_address_wrapped_from_an_i64_is_its_low_32_bits() {
+    // load(a: i64) = i32.load offset=4 (i32.wrap_i64 a); store(a: i64, v) = i32.store (wrap a) v;
+    // load_sum(a: i64) = i32.load (i32.wrap_i64 (a + 8)), the wrap of a computed value.
+    let mut b = Builder::default();
+    b.memory(1, None);
+    let tl = b.ty(&[I64], &[I32]);
+    let ts = b.ty(&[I64, I32], &[]);
+    let load = b.func(
+        tl,
+        &[],
+        Code::default().get(0).op(&[I32_WRAP_I64, 0x28, 2, 4]).end(),
+    );
+    let store_ = b.func(
+        ts,
+        &[],
+        Code::default()
+            .get(0)
+            .op(&[I32_WRAP_I64])
+            .get(1)
+            .op(&[0x36, 2, 0])
+            .end(),
+    );
+    let load_sum = b.func(
+        tl,
+        &[],
+        Code::default()
+            .get(0)
+            .i64c(8)
+            .op(&[0x7c, I32_WRAP_I64, 0x28, 2, 0])
+            .end(),
+    );
+    b.export("load", load);
+    b.export("store", store_);
+    b.export("load_sum", load_sum);
+    let m = b.load();
+    let mut s = store(&m, InstanceLimits::default());
+    let u = Budget::unlimited();
+    s.call("store", &[Value::I64(0x1_0000_0010), Value::I32(77)], &u)
+        .unwrap();
+    // 0xffff_ffff_0000_000c wraps to 0xc, plus the offset 4: 0x10.
+    assert_eq!(
+        s.call("load", &[Value::I64(0xffff_ffff_0000_000c_u64 as i64)], &u),
+        Ok(vec![Value::I32(77)])
+    );
+    assert_eq!(
+        s.call("load_sum", &[Value::I64(0x1_0000_0008)], &u),
+        Ok(vec![Value::I32(77)])
+    );
+    // The offset is added to the 32-bit address without wrapping: past the memory.
+    assert_eq!(
+        s.call("load", &[Value::I64(0x1_ffff_fffe)], &u),
+        Err(Trap::MemoryOutOfBounds)
+    );
+}
+
+#[test]
+fn constants_are_stored_by_their_width() {
+    let mut b = Builder::default();
+    b.memory(1, None);
+    b.export_memory("mem");
+    let t = b.ty(&[], &[]);
+    let at = |c: Code, addr: i32| c.i32c(addr);
+    let mut c = Code::default();
+    c = at(c, 0).i64c(-1).op(&[0x37, 3, 0]); // i64.store -1
+    c = at(c, 8).i64c(0x1_0000_0001).op(&[0x37, 3, 0]); // past 32 bits: no immediate
+    c = at(c, 16).i32c(0x1ff).op(&[0x3a, 0, 0]); // i32.store8
+    c = at(c, 17).i64c(0x1_2345).op(&[0x3d, 1, 0]); // i64.store16
+    c = at(c, 20).i64c(-2).op(&[0x3e, 2, 0]); // i64.store32
+    c = at(c, 24)
+        .op(&[0x44])
+        .op(&(-0.0f64).to_le_bytes())
+        .op(&[0x39, 3, 0]); // f64.store
+    c = at(c, 32)
+        .op(&[0x43])
+        .op(&1.5f32.to_le_bytes())
+        .op(&[0x38, 2, 0]); // f32.store
+    c = at(c, 36).i32c(-3).op(&[0x36, 2, 0]); // i32.store
+    c = at(c, 40).i64c(i64::from(i32::MIN)).op(&[0x37, 3, 0]); // the smallest immediate
+    let f = b.func(t, &[], c.end());
+    b.export("f", f);
+    let m = b.load();
+    let mut s = store(&m, InstanceLimits::default());
+    s.call("f", &[], &Budget::unlimited()).unwrap();
+    let mem = s.s.export(s.inst, "mem").unwrap().memory().unwrap();
+    let d = &s.s.memory_data(mem)[..48];
+    assert_eq!(d[0..8], (-1i64).to_le_bytes());
+    assert_eq!(d[8..16], 0x1_0000_0001u64.to_le_bytes());
+    assert_eq!(d[16..20], [0xff, 0x45, 0x23, 0]);
+    assert_eq!(d[20..24], (-2i32).to_le_bytes());
+    assert_eq!(d[24..32], (-0.0f64).to_le_bytes());
+    assert_eq!(d[32..36], 1.5f32.to_le_bytes());
+    assert_eq!(d[36..40], (-3i32).to_le_bytes());
+    assert_eq!(d[40..48], i64::from(i32::MIN).to_le_bytes());
+}
+
+#[test]
+fn conversions_of_constants_and_zero_extension() {
+    let mut b = Builder::default();
+    let t64 = b.ty(&[], &[I64]);
+    let t32 = b.ty(&[], &[I32]);
+    let tp = b.ty(&[I32], &[I64]);
+    let mut add = |name: &str, ty: u32, locals: &[(u32, u8)], code: Code| {
+        let f = b.func(ty, locals, code.end());
+        b.export(name, f);
+    };
+    add(
+        "wrap_extend_s",
+        t64,
+        &[],
+        Code::default()
+            .i64c(0x1_8000_0001)
+            .op(&[I32_WRAP_I64, I64_EXTEND_I32_S]),
+    );
+    add(
+        "extend_u",
+        t64,
+        &[],
+        Code::default().i32c(-1).op(&[I64_EXTEND_I32_U]),
+    );
+    add(
+        "extend8_s32",
+        t32,
+        &[],
+        Code::default().i32c(0x80).op(&[0xc0]),
+    );
+    add(
+        "extend16_s32",
+        t32,
+        &[],
+        Code::default().i32c(0x18000).op(&[0xc1]),
+    );
+    add(
+        "extend8_s64",
+        t64,
+        &[],
+        Code::default().i64c(0x180).op(&[0xc2]),
+    );
+    add(
+        "extend16_s64",
+        t64,
+        &[],
+        Code::default().i64c(0x8000).op(&[0xc3]),
+    );
+    add(
+        "extend32_s64",
+        t64,
+        &[],
+        Code::default().i64c(0x1_8000_0000).op(&[0xc4]),
+    );
+    // (x) -> i64.extend_i32_u (x + 1), through a local: the add writes the local directly.
+    add(
+        "extend_u_local",
+        tp,
+        &[(1, I64)],
+        Code::default()
+            .get(0)
+            .i32c(1)
+            .op(&[0x6a, I64_EXTEND_I32_U])
+            .set(1)
+            .get(1),
+    );
+    // (x) -> i64.extend_i32_u x, a parameter.
+    add(
+        "extend_u_param",
+        tp,
+        &[],
+        Code::default().get(0).op(&[I64_EXTEND_I32_U]),
+    );
+    let m = b.load();
+    let mut s = store(&m, InstanceLimits::default());
+    let u = Budget::unlimited();
+    let mut call = |f: &str, args: &[Value]| s.call(f, args, &u).unwrap()[0];
+    assert_eq!(call("wrap_extend_s", &[]), Value::I64(-0x7fff_ffff));
+    assert_eq!(call("extend_u", &[]), Value::I64(0xffff_ffff));
+    assert_eq!(call("extend8_s32", &[]), Value::I32(-128));
+    assert_eq!(call("extend16_s32", &[]), Value::I32(-32768));
+    assert_eq!(call("extend8_s64", &[]), Value::I64(-128));
+    assert_eq!(call("extend16_s64", &[]), Value::I64(-32768));
+    assert_eq!(call("extend32_s64", &[]), Value::I64(-0x8000_0000));
+    assert_eq!(
+        call("extend_u_local", &[Value::I32(-2)]),
+        Value::I64(0xffff_ffff)
+    );
+    assert_eq!(call("extend_u_local", &[Value::I32(-1)]), Value::I64(0));
+    assert_eq!(
+        call("extend_u_param", &[Value::I32(-5)]),
+        Value::I64(0xffff_fffb)
+    );
+}
+
+#[test]
+fn a_branch_on_a_double_negation() {
+    // Each returns 1 when the branch is taken, the result of the test otherwise kept in a local
+    // where one reads it.
+    let mut b = Builder::default();
+    let t64 = b.ty(&[I64], &[I32]);
+    let t32 = b.ty(&[I32], &[I32]);
+    // block; x; i64.eqz; i64.extend_i32_u; i64.eqz; br_if 0; i32.const 0; return; end; 1
+    let tail = |c: Code| c.op(&[0x0d, 0]).i32c(0).op(&[0x0f]).end().i32c(1).end();
+    let f64_ = b.func(
+        t64,
+        &[],
+        tail(
+            Code::default()
+                .op(&[0x02, 0x40])
+                .get(0)
+                .op(&[0x50, I64_EXTEND_I32_U, 0x50]),
+        ),
+    );
+    let f32_ = b.func(
+        t32,
+        &[],
+        tail(Code::default().op(&[0x02, 0x40]).get(0).op(&[0x45, 0x45])),
+    );
+    let mixed = b.func(
+        t32,
+        &[],
+        tail(
+            Code::default()
+                .op(&[0x02, 0x40])
+                .get(0)
+                .op(&[0x45, I64_EXTEND_I32_U, 0x50]),
+        ),
+    );
+    // The inner test kept in a local (`local.tee`): (x) -> 10 + (x == 0) if x != 0, else 0.
+    let kept = b.func(
+        t32,
+        &[(1, I32)],
+        Code::default()
+            .op(&[0x02, 0x40])
+            .get(0)
+            .op(&[0x45])
+            .tee(1)
+            .op(&[0x45, 0x0d, 0])
+            .i32c(0)
+            .op(&[0x0f])
+            .end()
+            .get(1)
+            .i32c(10)
+            .op(&[0x6a])
+            .end(),
+    );
+    b.export("i64", f64_);
+    b.export("i32", f32_);
+    b.export("mixed", mixed);
+    b.export("kept", kept);
+    let m = b.load();
+    let mut s = store(&m, InstanceLimits::default());
+    let u = Budget::unlimited();
+    for (x, want) in [(0, 0), (1, 1), (-1, 1), (1 << 40, 1)] {
+        let r = s.call("i64", &[Value::I64(x)], &u);
+        assert_eq!(r, Ok(vec![Value::I32(want)]), "i64 {x}");
+    }
+    for (x, want) in [(0, 0), (1, 1), (-1, 1), (i32::MIN, 1)] {
+        for f in ["i32", "mixed"] {
+            let r = s.call(f, &[Value::I32(x)], &u);
+            assert_eq!(r, Ok(vec![Value::I32(want)]), "{f} {x}");
+        }
+    }
+    assert_eq!(
+        s.call("kept", &[Value::I32(0)], &u),
+        Ok(vec![Value::I32(0)])
+    );
+    assert_eq!(
+        s.call("kept", &[Value::I32(7)], &u),
+        Ok(vec![Value::I32(10)])
+    );
+}
+
+#[test]
+fn a_constant_first_argument_and_constant_results() {
+    // sub(a, b) = a - b; f(x) = if x { return sub(5, x) } else { return -1 }.
+    let mut b = Builder::default();
+    let t2 = b.ty(&[I32, I32], &[I32]);
+    let t1 = b.ty(&[I32], &[I32]);
+    let sub = b.func(t2, &[], Code::default().get(0).get(1).op(&[0x6b]).end());
+    let f = b.func(
+        t1,
+        &[],
+        Code::default()
+            .get(0)
+            .op(&[0x04, 0x40]) // if
+            .i32c(5)
+            .get(0)
+            .call(sub)
+            .op(&[0x0f])
+            .end()
+            .i32c(-1)
+            .end(),
+    );
+    b.export("f", f);
+    let m = b.load();
+    let mut s = store(&m, InstanceLimits::default());
+    let u = Budget::unlimited();
+    assert_eq!(s.call("f", &[Value::I32(7)], &u), Ok(vec![Value::I32(-2)]));
+    assert_eq!(s.call("f", &[Value::I32(0)], &u), Ok(vec![Value::I32(-1)]));
+}
+
+#[test]
+fn a_global_moved_by_an_immediate_with_its_local() {
+    // f(k) = { local = sp - 8; sp = local; sp = sp + k... } as Go moves its stack pointer:
+    // `global.get sp; i32.const 8; i32.sub; local.tee l; global.set sp` and the same added
+    // without a local; returns l.
+    let mut b = Builder::default();
+    let sp = b.global_i32(5);
+    b.export_global("sp", sp);
+    let t = b.ty(&[I32], &[I32]);
+    let f = b.func(
+        t,
+        &[(1, I32)],
+        Code::default()
+            .op(&[0x23])
+            .idx(sp)
+            .i32c(8)
+            .op(&[0x6b])
+            .tee(1)
+            .op(&[0x24])
+            .idx(sp)
+            .op(&[0x23])
+            .idx(sp)
+            .i32c(i32::MIN)
+            .op(&[0x6b]) // sub i32::MIN: adds it, modulo 2^32
+            .op(&[0x24])
+            .idx(sp)
+            .get(1)
+            .end(),
+    );
+    b.export("f", f);
+    let m = b.load();
+    let mut s = store(&m, InstanceLimits::default());
+    let r = s.call("f", &[Value::I32(0)], &Budget::unlimited());
+    assert_eq!(r, Ok(vec![Value::I32(-3)]));
+    let g = s.s.export(s.inst, "sp").unwrap().global().unwrap();
+    assert_eq!(
+        s.s.global_get(g),
+        Value::I32((-3i32).wrapping_sub(i32::MIN))
+    );
+}
+
+#[test]
+fn fuel_is_exact_across_branches_that_take_it() {
+    // The fused comparisons' sum (br_if out of a loop, br back), and a br_table in a loop:
+    // exactly the fuel a call used runs it again, one less stops it.
+    let mut b = Builder::default();
+    let t = b.ty(&[I32], &[I32]);
+    // (n): acc = 0; loop { block block block (n & 3) br_table 0 1 2 end acc += 1 end acc += 2
+    // end acc += 3; n -= 1; br_if 0 (n) } acc
+    let f = b.func(
+        t,
+        &[(1, I32)],
+        Code::default()
+            .op(&[0x03, 0x40, 0x02, 0x40, 0x02, 0x40, 0x02, 0x40])
+            .get(0)
+            .i32c(3)
+            .op(&[0x71, 0x0e, 2, 0, 1, 2, 0x0b])
+            .get(1)
+            .i32c(1)
+            .op(&[0x6a])
+            .set(1)
+            .end()
+            .get(1)
+            .i32c(2)
+            .op(&[0x6a])
+            .set(1)
+            .end()
+            .get(1)
+            .i32c(3)
+            .op(&[0x6a])
+            .set(1)
+            .get(0)
+            .i32c(1)
+            .op(&[0x6b])
+            .tee(0)
+            .op(&[0x0d, 0])
+            .end()
+            .get(1)
+            .end(),
+    );
+    b.export("f", f);
+    let m = b.load();
+    for n in [1, 2, 3, 4, 9] {
+        let mut s = store(&m, InstanceLimits::default());
+        let r = s.call("f", &[Value::I32(n)], &Budget::unlimited()).unwrap();
+        let need = s.s.fuel_used();
+        let mut s = store(&m, InstanceLimits::default());
+        assert_eq!(
+            s.call("f", &[Value::I32(n)], &Budget::fuel(need)),
+            Ok(r),
+            "n {n}"
+        );
+        assert_eq!(s.s.fuel_used(), need);
+        let mut s = store(&m, InstanceLimits::default());
+        let r = s.call("f", &[Value::I32(n)], &Budget::fuel(need - 1));
+        assert_eq!(r, Err(Trap::OutOfFuel), "n {n}");
+    }
+    let mut s = store(&m, InstanceLimits::default());
+    // n = 4: (n & 3) = 0, 3, 2, 1, so labels 0, 2 (the default), 2, 1: 6 + 3 + 3 + 5.
+    let r = s.call("f", &[Value::I32(4)], &Budget::unlimited());
+    assert_eq!(r, Ok(vec![Value::I32(17)]));
+}

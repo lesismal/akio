@@ -24,10 +24,18 @@ pub trait WasmTy: sealed::Sealed + Copy + Send + 'static {
     fn from_value(v: Value) -> Option<Self>;
     #[doc(hidden)]
     fn into_value(self) -> Value;
+    /// From a slot's bits (an `i32` zero-extended, a float's bits).
+    #[doc(hidden)]
+    fn from_slot(v: u64) -> Self;
+    #[doc(hidden)]
+    fn into_slot(self) -> u64;
 }
 
 macro_rules! wasm_ty {
-    ($t:ty, $vt:ident, $v:ident, |$x:ident| $from:expr, |$y:ident| $into:expr) => {
+    (
+        $t:ty, $vt:ident, $v:ident, |$x:ident| $from:expr, |$y:ident| $into:expr,
+        |$s:ident| $from_slot:expr, |$z:ident| $into_slot:expr
+    ) => {
         impl sealed::Sealed for $t {}
         impl WasmTy for $t {
             const TY: ValType = ValType::$vt;
@@ -43,16 +51,44 @@ macro_rules! wasm_ty {
                 let $y = self;
                 Value::$v($into)
             }
+            #[inline(always)]
+            fn from_slot($s: u64) -> Self {
+                $from_slot
+            }
+            #[inline(always)]
+            fn into_slot(self) -> u64 {
+                let $z = self;
+                $into_slot
+            }
         }
     };
 }
 
-wasm_ty!(i32, I32, I32, |x| x, |y| y);
-wasm_ty!(u32, I32, I32, |x| x as u32, |y| y as i32);
-wasm_ty!(i64, I64, I64, |x| x, |y| y);
-wasm_ty!(u64, I64, I64, |x| x as u64, |y| y as i64);
-wasm_ty!(f32, F32, F32, |x| x, |y| y);
-wasm_ty!(f64, F64, F64, |x| x, |y| y);
+wasm_ty!(i32, I32, I32, |x| x, |y| y, |s| s as u32 as i32, |z| {
+    u64::from(z as u32)
+});
+wasm_ty!(
+    u32,
+    I32,
+    I32,
+    |x| x as u32,
+    |y| y as i32,
+    |s| s as u32,
+    |z| u64::from(z)
+);
+wasm_ty!(i64, I64, I64, |x| x, |y| y, |s| s as i64, |z| z as u64);
+wasm_ty!(u64, I64, I64, |x| x as u64, |y| y as i64, |s| s, |z| z);
+wasm_ty!(
+    f32,
+    F32,
+    F32,
+    |x| x,
+    |y| y,
+    |s| f32::from_bits(s as u32),
+    |z| u64::from(z.to_bits())
+);
+wasm_ty!(f64, F64, F64, |x| x, |y| y, |s| f64::from_bits(s), |z| z
+    .to_bits());
 
 /// A function's parameters: a Rust tuple of [`WasmTy`]s, `()`, `(i32,)`, `(i32, u64)` ... up to
 /// twelve, or a single one.
@@ -65,6 +101,9 @@ pub trait WasmParams: sealed::Sealed + Sized + Send + 'static {
     fn from_values(v: &[Value]) -> Option<Self>;
     #[doc(hidden)]
     fn write_values(self, out: &mut [Value]);
+    /// From `N` slots of the right types (a typed host function's arguments).
+    #[doc(hidden)]
+    fn from_slots(v: &[u64]) -> Self;
 }
 
 /// A function's results, as [`WasmParams`]: `()` for none, a tuple, or a single [`WasmTy`].
@@ -77,6 +116,32 @@ pub trait WasmResults: Sized + Send + 'static {
     fn from_values(v: &[Value]) -> Option<Self>;
     #[doc(hidden)]
     fn write_values(self, out: &mut [Value]);
+    /// Writes the `N` results to slots (a typed host function's results).
+    ///
+    /// # Errors
+    ///
+    /// [`Trap::Host`] for a result that is not of the type `push_types` says.
+    #[doc(hidden)]
+    fn write_slots(self, out: &mut [u64]) -> Result<(), Trap> {
+        let mut types = Vec::with_capacity(Self::N);
+        Self::push_types(&mut types);
+        let mut values = vec![Value::I32(0); Self::N];
+        self.write_values(&mut values);
+        for ((o, v), t) in out.iter_mut().zip(values).zip(types) {
+            *o = match v {
+                Value::I32(x) if t == ValType::I32 => u64::from(x as u32),
+                Value::I64(x) if t == ValType::I64 => x as u64,
+                Value::F32(x) if t == ValType::F32 => u64::from(x.to_bits()),
+                Value::F64(x) if t == ValType::F64 => x.to_bits(),
+                _ => {
+                    return Err(Trap::Host(
+                        "a host function's result of the wrong type".into(),
+                    ));
+                }
+            };
+        }
+        Ok(())
+    }
 }
 
 impl<T: WasmTy> WasmParams for T {
@@ -93,6 +158,10 @@ impl<T: WasmTy> WasmParams for T {
     fn write_values(self, out: &mut [Value]) {
         out[0] = self.into_value();
     }
+    #[inline(always)]
+    fn from_slots(v: &[u64]) -> Self {
+        T::from_slot(v[0])
+    }
 }
 
 impl<T: WasmTy> WasmResults for T {
@@ -108,6 +177,11 @@ impl<T: WasmTy> WasmResults for T {
     }
     fn write_values(self, out: &mut [Value]) {
         out[0] = self.into_value();
+    }
+    #[inline(always)]
+    fn write_slots(self, out: &mut [u64]) -> Result<(), Trap> {
+        out[0] = self.into_slot();
+        Ok(())
     }
 }
 
@@ -140,6 +214,12 @@ macro_rules! tuples {
                 let mut it = out.iter_mut();
                 $(if let Some(o) = it.next() { *o = $n.into_value(); })*
             }
+            #[allow(non_snake_case, unused_mut, unused_variables, clippy::unused_unit)]
+            #[inline(always)]
+            fn from_slots(v: &[u64]) -> Self {
+                let mut it = v.iter();
+                ($($n::from_slot(it.next().copied().unwrap_or(0)),)*)
+            }
         }
 
         impl<$($n: WasmTy),*> WasmResults for ($($n,)*) {
@@ -152,6 +232,14 @@ macro_rules! tuples {
             }
             fn write_values(self, out: &mut [Value]) {
                 <Self as WasmParams>::write_values(self, out);
+            }
+            #[allow(non_snake_case, unused_mut, unused_variables)]
+            #[inline(always)]
+            fn write_slots(self, out: &mut [u64]) -> Result<(), Trap> {
+                let ($($n,)*) = self;
+                let mut it = out.iter_mut();
+                $(if let Some(o) = it.next() { *o = $n.into_slot(); })*
+                Ok(())
             }
         }
     };

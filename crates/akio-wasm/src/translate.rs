@@ -16,7 +16,7 @@
 
 use crate::{
     error::{Result, invalid},
-    instr::{BinOp, Cmp, Instr, Un},
+    instr::{BinOp, Cmp, Instr, Mem, Un, thread_fuel},
     module::Module,
     ops::{BlockType, Decoder, Op},
     reader::Reader,
@@ -98,12 +98,24 @@ impl Cond {
 
     const fn branch(self, t: u32) -> Instr {
         match self {
-            Self::Nz(c) => Instr::BrIfNz { c, t },
-            Self::Z(c) => Instr::BrIfZ { c, t },
-            Self::C32(op, a, b) => Instr::BrCmp32 { op, a, b, t },
-            Self::C32I(op, a, imm) => Instr::BrCmp32I { op, a, imm, t },
-            Self::C64(op, a, b) => Instr::BrCmp64 { op, a, b, t },
-            Self::C64I(op, a, imm) => Instr::BrCmp64I { op, a, imm, t },
+            Self::Nz(c) => Instr::BrIfNz { c, t, n: 0, f: 0 },
+            Self::Z(c) => Instr::BrIfZ { c, t, n: 0, f: 0 },
+            Self::C32(op, a, b) => Instr::BrCmp32 { op, n: 0, a, b, t },
+            Self::C32I(op, a, imm) => Instr::BrCmp32I {
+                op,
+                n: 0,
+                a,
+                imm,
+                t,
+            },
+            Self::C64(op, a, b) => Instr::BrCmp64 { op, n: 0, a, b, t },
+            Self::C64I(op, a, imm) => Instr::BrCmp64I {
+                op,
+                n: 0,
+                a,
+                imm,
+                t,
+            },
         }
     }
 }
@@ -193,6 +205,7 @@ impl Translator {
         if self.code.len() > 4 * bytes + 4 {
             return Err(invalid(self.at, "translated form too large"));
         }
+        thread_fuel(&mut self.code);
         Ok(Compiled {
             code: self.code.as_slice().into(),
             params,
@@ -411,13 +424,52 @@ impl Translator {
                     if let Some(c) = fused {
                         self.code.pop();
                         self.last = None;
-                        return Ok(c);
+                        return Ok(self.not_not(c));
                     }
                 }
             }
         }
         self.last = None;
         Ok(Cond::Nz(self.operand(v, pos)))
+    }
+
+    /// A branch on `x == 0` where `x` is the `eqz` of `y` that the instruction now last computed
+    /// into a slot of the operand stack (read by nothing else): a branch on `y != 0`, the last
+    /// instruction dropped. Go's `wasm` code tests a `bool` so (`i64.eqz`, `i64.extend_i32_u`,
+    /// `i64.eqz`, `br_if`).
+    fn not_not(&mut self, c: Cond) -> Cond {
+        let (Cond::Z(x) | Cond::C64I(Cmp::Eq, x, 0)) = c else {
+            return c;
+        };
+        if x < self.locals {
+            return c;
+        }
+        let inner = match self.code.last() {
+            Some(&Instr::I32Eqz(Un { d, a })) if d == x => Cond::Nz(a),
+            Some(&Instr::I64Eqz(Un { d, a })) if d == x => Cond::C64I(Cmp::Ne, a, 0),
+            _ => return c,
+        };
+        self.code.pop();
+        inner
+    }
+
+    /// The slot of a load's or store's address, the value `v` at `pos`: when the last instruction
+    /// is the `i32.wrap_i64` that put it there, the wrap's operand instead, the wrap dropped (an
+    /// address is read as its low 32 bits anyway). Nothing runs between the wrap and the access,
+    /// and no branch lands between them (every branch target starts with a `Fuel`, or follows
+    /// the branch that made it).
+    fn address(&mut self, v: V, pos: u32) -> u32 {
+        if v == V::Slot {
+            let s = self.slot(pos);
+            if let Some(&Instr::I32WrapI64(Un { d, a })) = self.code.last() {
+                if d == s {
+                    self.code.pop();
+                    self.last = None;
+                    return a;
+                }
+            }
+        }
+        self.operand(v, pos)
     }
 
     /// Copies the top `n` values (in their slots) to positions `dst..`.
@@ -442,13 +494,18 @@ impl Translator {
             0 => {
                 self.emit(Instr::Return0);
             }
-            1 => {
-                let s = match self.vals[src as usize] {
-                    V::Local(i) => i,
-                    v => self.operand(v, src),
-                };
-                self.emit(Instr::Return1 { s });
-            }
+            1 => match self.vals[src as usize] {
+                V::Local(s) => {
+                    self.emit(Instr::Return1 { s });
+                }
+                V::Const(v) => {
+                    self.emit(Instr::Return1C { v });
+                }
+                V::Slot => {
+                    let s = self.slot(src);
+                    self.emit(Instr::Return1 { s });
+                }
+            },
             _ => {
                 self.flush_top(n);
                 let s = self.slot(src);
@@ -461,9 +518,9 @@ impl Translator {
     fn jump_to(&mut self, k: usize) {
         let c = self.ctls[k];
         if c.kind == Kind::Loop {
-            self.emit(Instr::Br { t: c.start });
+            self.emit(Instr::Br { t: c.start, n: 0 });
         } else {
-            let pc = self.emit(Instr::Br { t: NONE }) as u32;
+            let pc = self.emit(Instr::Br { t: NONE, n: 0 }) as u32;
             self.add_fixup(k, pc);
         }
     }
@@ -560,7 +617,7 @@ impl Translator {
             if direct {
                 self.jump_to(k);
             } else {
-                let pc = self.emit(Instr::Br { t: NONE }) as u32;
+                let pc = self.emit(Instr::Br { t: NONE, n: 0 }) as u32;
                 self.stubs.push((pc, depth));
             }
         }
@@ -714,6 +771,9 @@ impl Translator {
             let i = Instr::numeric(op, d, sa, sb).ok_or_else(|| self.err())?;
             self.emit_result(i);
         } else {
+            if self.conversion(op)? {
+                return Ok(());
+            }
             let (a, pa) = self.pop()?;
             let d = self.slot(pa);
             let sa = self.operand(a, pa);
@@ -721,6 +781,34 @@ impl Translator {
             self.emit_result(i);
         }
         Ok(())
+    }
+
+    /// The integer conversions done without an instruction: `i64.extend_i32_u` of any value (a
+    /// slot holds an `i32` zero-extended, its bits are the `i64`'s), and every integer conversion
+    /// of a constant (Go converts constants so). True if `op` was one.
+    fn conversion(&mut self, op: u16) -> Result<bool> {
+        let fold: fn(u64) -> u64 = match op {
+            0xa7 => |c| c & 0xffff_ffff,                       // i32.wrap_i64
+            0xac | 0xc4 => |c| i64::from(c as i32) as u64,     // i64.extend_i32_s, extend32_s
+            0xad => |c| c & 0xffff_ffff,                       // i64.extend_i32_u
+            0xc0 => |c| u64::from(i32::from(c as i8) as u32),  // i32.extend8_s
+            0xc1 => |c| u64::from(i32::from(c as i16) as u32), // i32.extend16_s
+            0xc2 => |c| i64::from(c as i8) as u64,             // i64.extend8_s
+            0xc3 => |c| i64::from(c as i16) as u64,            // i64.extend16_s
+            _ => return Ok(false),
+        };
+        match self.vals.last() {
+            Some(&V::Const(c)) => {
+                self.pop()?;
+                self.push_lazy(V::Const(fold(c)));
+                self.last = None;
+                Ok(true)
+            }
+            // The value stays where it is, and the instruction that wrote it stays the last.
+            Some(_) if op == 0xad => Ok(true),
+            Some(_) => Ok(false),
+            None => Err(self.err()),
+        }
     }
 
     /// Pops `n` operands into their slots; returns the first one's slot.
@@ -823,10 +911,18 @@ impl Translator {
                 if f < m.imported_funcs {
                     self.emit(Instr::CallImport { f, base });
                 } else {
-                    self.emit(Instr::Call {
-                        f: f - m.imported_funcs,
-                        base,
-                    });
+                    let f = f - m.imported_funcs;
+                    // The first argument a constant written just now (the last written, as
+                    // `flush_top` writes the lowest position last): one instruction.
+                    match self.code.last() {
+                        Some(&Instr::Const32 { d, v }) if p > 0 && d == base => {
+                            self.code.pop();
+                            self.emit(Instr::CallC { f, base, v });
+                        }
+                        _ => {
+                            self.emit(Instr::Call { f, base });
+                        }
+                    }
                 }
                 for _ in 0..r {
                     self.vals.push(V::Slot);
@@ -875,8 +971,42 @@ impl Translator {
             }
             Op::GlobalSet(g) => {
                 let (v, p) = self.pop()?;
-                let s = self.operand(v, p);
-                self.emit(Instr::GlobalSet { s, g });
+                // The value an `i32` add or subtract of an immediate wrote just now, to its slot
+                // or to the local it is still read from: one instruction does both.
+                let written = match v {
+                    V::Slot => Some(self.slot(p)),
+                    V::Local(l) => Some(l),
+                    V::Const(_) => None,
+                };
+                let fused = match (written, self.code.last(), u16::try_from(g)) {
+                    (
+                        Some(w),
+                        Some(&Instr::I32BinI {
+                            op: op @ (BinOp::Add | BinOp::Sub),
+                            d,
+                            a,
+                            imm,
+                        }),
+                        Ok(g),
+                    ) if d == w => Some(Instr::I32AddGlobal {
+                        g,
+                        d,
+                        a,
+                        imm: if op == BinOp::Add {
+                            imm
+                        } else {
+                            imm.wrapping_neg()
+                        },
+                    }),
+                    _ => None,
+                };
+                if let Some(i) = fused {
+                    self.code.pop();
+                    self.emit(i);
+                } else {
+                    let s = self.operand(v, p);
+                    self.emit(Instr::GlobalSet { s, g });
+                }
                 self.last = None;
             }
             Op::TableGet(t) => {
@@ -895,7 +1025,7 @@ impl Translator {
             }
             Op::Load(code, arg) => {
                 let (v, p) = self.pop()?;
-                let a = self.operand(v, p);
+                let a = self.address(v, p);
                 let x = self.slot(p);
                 let i = Instr::load(code, x, a, arg.offset).ok_or_else(|| self.err())?;
                 self.emit_result(i);
@@ -903,9 +1033,30 @@ impl Translator {
             Op::Store(code, arg) => {
                 let (v, pv) = self.pop()?;
                 let (a, pa) = self.pop()?;
-                let sv = self.operand(v, pv);
-                let sa = self.operand(a, pa);
-                let i = Instr::store(code, sv, sa, arg.offset).ok_or_else(|| self.err())?;
+                // The address first: the wrap it may drop is the last instruction only until
+                // the value's constant is written (to another slot: the wrap's operand stays).
+                let sa = self.address(a, pa);
+                let i = match (v, store_imm(code)) {
+                    (V::Const(c), Some((width, wide)))
+                        if width < 8 || !wide || i32::try_from(c as i64).is_ok() =>
+                    {
+                        let m = Mem {
+                            x: c as u32,
+                            a: sa,
+                            off: arg.offset,
+                        };
+                        match width {
+                            1 => Instr::Store8I(m),
+                            2 => Instr::Store16I(m),
+                            4 => Instr::Store32I(m),
+                            _ => Instr::Store64I(m),
+                        }
+                    }
+                    _ => {
+                        let sv = self.operand(v, pv);
+                        Instr::store(code, sv, sa, arg.offset).ok_or_else(|| self.err())?
+                    }
+                };
                 self.emit(i);
                 self.last = None;
             }
@@ -995,6 +1146,18 @@ impl Translator {
     }
 }
 
+/// The bytes store opcode `op` writes, and whether its value is 64 bits wide (`i64.store`,
+/// `f64.store`), for the stores of a constant.
+const fn store_imm(op: u8) -> Option<(u32, bool)> {
+    Some(match op {
+        0x36 | 0x38 | 0x3e => (4, false), // i32.store, f32.store, i64.store32
+        0x37 | 0x39 => (8, true),         // i64.store, f64.store
+        0x3a | 0x3c => (1, false),        // i32.store8, i64.store8
+        0x3b | 0x3d => (2, false),        // i32.store16, i64.store16
+        _ => return None,
+    })
+}
+
 /// A fused branch condition from a two-operand comparison writing slot `d`.
 fn cmp_of(i: Instr, d: u32) -> Option<Cond> {
     use Instr as I;
@@ -1041,4 +1204,114 @@ fn cmp_of(i: Instr, d: u32) -> Option<Cond> {
     } else {
         Cond::C32(op, b.a, b.b)
     })
+}
+
+// The integration tests' module builder.
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::common::{Builder, Code, I32, I64};
+    use super::*;
+    use crate::ModuleLimits;
+
+    /// The sequences Go's `wasm` code is made of translate to the fused instructions: what
+    /// keeps a call of Go's `headers` guest at about two thousand dispatches (W5).
+    #[test]
+    fn go_sequences_are_fused() {
+        let mut b = Builder::default();
+        b.memory(1, None);
+        let sp = b.global_i32(1 << 16);
+        let t = b.ty(&[I32], &[I32]);
+        let callee = b.func(t, &[], Code::default().get(0).end());
+        let f = b.func(
+            t,
+            &[(1, I32), (1, I64)],
+            Code::default()
+                // The stack pointer moves, in a local and its global.
+                .op(&[0x23])
+                .idx(sp)
+                .i32c(8)
+                .op(&[0x6b])
+                .tee(1)
+                .op(&[0x24])
+                .idx(sp)
+                // A constant stored.
+                .get(1)
+                .i64c(1234)
+                .op(&[0x37, 3, 0])
+                // An i64 address, wrapped.
+                .get(2)
+                .op(&[0xa7, 0x29, 3, 0])
+                .set(2)
+                // An i32 widened, moved and wrapped.
+                .get(1)
+                .op(&[0xad])
+                .i64c(8)
+                .op(&[0x7c, 0xa7, 0x29, 3, 0, 0x1a])
+                // A bool's test.
+                .op(&[0x02, 0x40])
+                .get(2)
+                .op(&[0x50, 0xad, 0x50, 0x0d, 0])
+                .end()
+                // A call with 0, and a constant returned.
+                .i32c(0)
+                .call(callee)
+                .op(&[0x1a])
+                .i32c(0)
+                .end(),
+        );
+        let _ = f;
+        let m = Module::new(&b.build(), &ModuleLimits::default()).unwrap();
+        let code = &m.compiled[1].code;
+        for i in code {
+            assert!(
+                !matches!(
+                    i,
+                    Instr::I32WrapI64(_)
+                        | Instr::I64ExtendI32U(_)
+                        | Instr::I64Eqz(_)
+                        | Instr::Const32 { .. }
+                        | Instr::Const64 { .. }
+                        | Instr::GlobalSet { .. }
+                        | Instr::Return1 { .. }
+                        | Instr::Call { .. }
+                ),
+                "{i:?} in {code:#?}"
+            );
+        }
+        let has = |p: fn(&Instr) -> bool| code.iter().any(p);
+        assert!(has(|i| matches!(i, Instr::I32AddGlobal { imm: -8, .. })));
+        assert!(has(|i| matches!(i, Instr::Store64I(m) if m.x == 1234)));
+        assert!(has(|i| matches!(i, Instr::I64Load(m) if m.a == 2)));
+        assert!(has(|i| matches!(
+            i,
+            Instr::BrCmp64I {
+                op: Cmp::Ne,
+                a: 2,
+                imm: 0,
+                ..
+            }
+        )));
+        assert!(has(|i| matches!(i, Instr::CallC { v: 0, .. })));
+        assert!(has(|i| matches!(i, Instr::Return1C { v: 0 })));
+        // No branch lands on a `Fuel`: each takes its target's fuel itself.
+        for i in code {
+            let (Instr::Br { t, .. }
+            | Instr::BrIfNz { t, .. }
+            | Instr::BrIfZ { t, .. }
+            | Instr::BrCmp32 { t, .. }
+            | Instr::BrCmp32I { t, .. }
+            | Instr::BrCmp64 { t, .. }
+            | Instr::BrCmp64I { t, .. }) = *i
+            else {
+                continue;
+            };
+            assert!(!matches!(code[t as usize], Instr::Fuel { .. }), "{code:#?}");
+        }
+    }
 }
