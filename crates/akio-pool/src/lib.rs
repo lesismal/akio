@@ -873,6 +873,10 @@ mod tests {
             .unwrap();
         }
         wait_until(|| done.load(Ordering::SeqCst) == 8);
+        // Both `min_threads` were spawned by `new`, but a thread runs the hook only once it is
+        // scheduled: on a busy machine the first may run all eight jobs before the second
+        // starts.
+        wait_until(|| started.load(Ordering::SeqCst) >= 2);
         assert_eq!(started.load(Ordering::SeqCst), 2);
         pool.shutdown();
         pool.join();

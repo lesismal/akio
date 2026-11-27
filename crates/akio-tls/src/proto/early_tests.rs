@@ -465,9 +465,47 @@ fn write_early_corpus() {
     write("tls_server", "early_client_hello_body", &flight[9..5 + len]);
 }
 
+/// Holds a delayed answer of [`AsyncRemote`] until [`run_async`] has seen the server suspend:
+/// otherwise a test thread descheduled for longer than `delay` inside `recv` gets the answer
+/// before the server looks for it, and the server never suspends.
+#[derive(Default)]
+struct AnswerGate {
+    open: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+
+impl AnswerGate {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+    }
+}
+
+thread_local! {
+    /// The gates of the answers asked for on this thread (the server's `recv` asks the store
+    /// on the calling thread), opened by [`release_answers`].
+    static ANSWER_GATES: std::cell::RefCell<Vec<std::sync::Arc<AnswerGate>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Lets the delayed answers asked for on this thread come.
+fn release_answers() {
+    for g in ANSWER_GATES.with(|v| std::mem::take(&mut *v.borrow_mut())) {
+        g.open();
+    }
+}
+
 /// An asynchronous "remote" anti-replay store (ADR-062): the same shared map as
 /// [`RemoteStore`], answered from another thread after `delay` (or never, when `silent`), as a
-/// Redis client's reader thread would.
+/// Redis client's reader thread would; the answer comes only once the test lets it
+/// ([`release_answers`]).
 #[derive(Default)]
 struct AsyncRemote {
     map: std::sync::Arc<RemoteStore>,
@@ -488,7 +526,10 @@ impl crate::AsyncAntiReplayStore for AsyncRemote {
             return done.complete(self.map.check_and_insert(binder, ttl));
         }
         let (map, binder, delay) = (self.map.clone(), binder.to_vec(), self.delay);
+        let gate = std::sync::Arc::new(AnswerGate::default());
+        ANSWER_GATES.with(|v| v.borrow_mut().push(gate.clone()));
         std::thread::spawn(move || {
+            gate.wait();
             std::thread::sleep(delay);
             done.complete(map.check_and_insert(&binder, ttl));
         });
@@ -521,6 +562,7 @@ fn run_async(scfg: &ServerConfig, ccfg: &ClientConfig, early: &[u8]) -> (Run, bo
             .unwrap();
         if s.suspended() {
             suspended = true;
+            release_answers();
             // Nothing goes out and nothing reaches the application meanwhile; bytes that
             // arrive wait.
             assert!(s2c.is_empty() && s_plain.is_empty());
@@ -547,6 +589,8 @@ fn run_async(scfg: &ServerConfig, ccfg: &ClientConfig, early: &[u8]) -> (Run, bo
         }
         c.recv(&s2c, &mut c_plain, &mut c2s).unwrap();
     }
+    // An answer the server did not wait for (it suspended once at most) is let go too.
+    release_answers();
     assert!(!c.handshaking() && !s.handshaking());
     (
         Run {
@@ -593,6 +637,7 @@ fn async_store_suspends_the_handshake() {
     let (mut plain, mut out) = (Vec::new(), Vec::new());
     s.recv(&r.first_flight, &mut plain, &mut out).unwrap();
     assert!(s.suspended());
+    release_answers();
     s.wait_resumable();
     s.recv(b"", &mut plain, &mut out).unwrap();
     assert!(!s.suspended());
