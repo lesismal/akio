@@ -1,5 +1,6 @@
 //! Process plumbing: the CPUs a thread may run on and pinning it to some of them, turning
-//! signals into bytes on a pipe (the self-pipe trick), and sending a signal to a process.
+//! signals into bytes on a pipe (the self-pipe trick), sending a signal to a process, and the
+//! process's effective user.
 
 use crate::ffi;
 use std::io;
@@ -160,6 +161,14 @@ pub fn kill(pid: u32, sig: i32) -> io::Result<()> {
     Ok(())
 }
 
+/// The process's effective user id (`geteuid(2)`, which cannot fail): `0` when it runs as root.
+/// The user it acts as when it opens files or signals other processes, which differs from the
+/// real user under a set-user-ID program.
+pub fn euid() -> u32 {
+    // SAFETY: geteuid takes no arguments and always succeeds.
+    unsafe { ffi::geteuid() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +191,18 @@ mod tests {
         // kill(2) itself: signal 0 checks the target without delivering anything.
         kill(std::process::id(), 0).unwrap();
         assert!(kill(0, SIGUSR2).is_err());
+    }
+
+    #[test]
+    fn euid_owns_the_files_it_creates() {
+        // A new file belongs to the effective user (Linux: the file system user, which follows
+        // it unless set apart with setfsuid).
+        use std::os::unix::fs::MetadataExt;
+        let path = std::env::temp_dir().join(format!("akio-sys-euid-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let uid = file.metadata().unwrap().uid();
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(euid(), uid);
     }
 }

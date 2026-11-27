@@ -10,6 +10,12 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：进程的有效用户（akio-sys）
+
+akit 的 A247，供其 LLM 节点使用：节点只在不是 root 时才通过 `sudo -n` 运行需要 root 的命令（与 fit 的
+`os.Geteuid() != 0` 相同）。`akio_sys::process::euid()` 是进程的有效用户 id（`geteuid(2)`，不会失败）：
+以 root 运行时为 `0`。支持 Linux 和 macOS，通过自有的 `ffi` 绑定。
+
 ### 新增：QUIC 服务端的握手限制（akio-quic）
 
 akit 的 A245，用于其隧道 hub 的 QUIC 监听（fit 的 `handshake_timeout` 与 `max_handshakes`）；ADR-185。

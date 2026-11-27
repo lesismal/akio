@@ -96,6 +96,7 @@ fn common_layouts() {
         size_of::<libc::sa_family_t>()
     );
     assert_eq!(size_of::<super::pid_t>(), size_of::<libc::pid_t>());
+    assert_eq!(size_of::<super::uid_t>(), size_of::<libc::uid_t>());
     assert_eq!(size_of::<super::off_t>(), size_of::<libc::off_t>());
     // libc marks its musl `time_t` deprecated (a note about 32-bit targets); it is 64-bit here.
     #[allow(deprecated)]

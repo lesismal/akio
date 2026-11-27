@@ -3,7 +3,7 @@
 //! non-blocking connect, `sendfile`), file change notification ([`FsWatcher`]: inotify / kqueue
 //! `EVFILT_VNODE`), the kernel CSPRNG (`getrandom` / `getentropy`, for
 //! `akio-crypto`), the host's network interfaces ([`interfaces`], `getifaddrs`) and sending a
-//! datagram out of one of them ([`send_to_on`]), process plumbing ([`process`]: CPU affinity, signals), a terminal's echo and raw mode ([`terminal`], `tcgetattr` / `tcsetattr`), TUN devices and their interface settings ([`tun_open`] on Linux, [`utun_open`] on macOS) and, on Linux, batched datagram I/O (`recvmmsg` /
+//! datagram out of one of them ([`send_to_on`]), process plumbing ([`process`]: CPU affinity, signals, the effective user), a terminal's echo and raw mode ([`terminal`], `tcgetattr` / `tcsetattr`), TUN devices and their interface settings ([`tun_open`] on Linux, [`utun_open`] on macOS) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO, traffic class bytes (DSCP and ECN) in control messages, and
 //! the ICMP errors of unconnected sockets through `IP_RECVERR`; on macOS one datagram per
 //! `sendmsg` / `recvmsg` with its traffic class, and the ICMP errors of unconnected sockets

@@ -84,12 +84,12 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | akio-crypto | 153 | 73 | 0 | 0 |
 | akio-dpdk | 32 | 0 | 1 | 1 |
 | akio-ebpf | 50 | 4 | 3 | 2 |
-| akio-http | 0 | 0 | 0 | 8 |
-| akio-sys | 174 | 5 | 3 | 0 |
-| akio-uring | 43 | 5 | 2 | 0 |
+| akio-http | 0 | 0 | 0 | 15 |
+| akio-sys | 178 | 5 | 3 | 0 |
+| akio-uring | 44 | 5 | 2 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **464** | **87** | **11** | **42** |
+| **total** | **469** | **87** | **11** | **49** |
 
 按用途：
 
@@ -100,7 +100,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `aki
 | `akio-sys/src/iface.rs` | 11 + `unsafe fn read_addr`、`copy` | 接口列表（`getifaddrs` / `if_nametoindex` / `freeifaddrs`；akio-tls 的网卡卸载检测也经由它）与从指定接口发出一个数据报（带 `IP_PKTINFO` / `IPV6_PKTINFO` 控制消息的 `sendmsg`），Linux 与 macOS | 链表只在 `getifaddrs` 与 `freeifaddrs` 之间遍历（只释放一次），名字在释放前复制出来；套接字地址按地址族（在 `sin_family` 的偏移处读取，macOS 上是一个字节）逐字节复制进清零的 `sockaddr_in` / `sockaddr_in6`，从不就地引用，macOS 上最多复制 `sa_len` 字节（子网掩码会被截短）；控制消息是 `#[repr(C)]` 的 `cmsghdr` + `in_pktinfo` / `in6_pktinfo`，其 `CMSG_LEN` / `CMSG_SPACE` 在测试中与 `libc` 对照，构造时不用 `unsafe`，`msghdr` 只指向存活的局部变量 |
 | `akio-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
 | `akio-sys/src/terminal.rs` | 5（3 个 + 测试中 2 个） | 终端的回显与 raw 模式（akit A233）：`tcgetattr` 写入 `MaybeUninit<termios>`、`tcsetattr`（`TCSANOW`，遇 `EINTR` 重试）；测试打开伪终端（`posix_openpt`、`grantpt`、`unlockpt`、`ptsname`、`open`）并设置 `O_NONBLOCK` | 描述符是 guard 持有的 `BorrowedFd`，因此比 guard 活得更久；只有 `tcgetattr` 成功（它会填满整个结构体）之后才读取 `termios`；其布局与标志值在 `ffi::layout` 中与 `libc` 对照检查 |
-| `akio-sys/src/process.rs` | 7 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 处理器只调用 `write`（异步信号安全），并保存和恢复 `errno` |
+| `akio-sys/src/process.rs` | 8 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill`；`geteuid`（akit A247） | 处理器只调用 `write`（异步信号安全），并保存和恢复 `errno` |
 | `akio-sys/src/fswatch.rs` | 12（Linux 7 个，macOS 5 个） | 供 akio-http 静态文件缓存使用的变更通知：`inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`、对 inotify fd 与 eventfd 的 `ppoll`、读取事件（Linux）；`kqueue`、`fcntl`、带 `EVFILT_VNODE` / `EVFILT_USER` 的 `kevent` 注册与等待（macOS） | fd 立即被拥有；路径是以 NUL 结尾的 `CString`；读取不越过缓冲区，记录按字节解析；kevent 的 `udata` 是监视 id，从不解引用；`O_EVTONLY` 描述符由 `std` 打开并归监视器所有 |
 | `akio-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `akio-sys/src/ktls.rs` | 12 | 内核 TLS（akio-tls 的 `ktls`，ADR-067）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥；网卡 TLS 卸载检测：`SIOCETHTOOL` ioctl（`ETHTOOL_GSSET_INFO` / `GSTRINGS` / `GFEATURES`）用的 `socket`/`ioctl`/`close`；接口地址来自 `iface` | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；ethtool 命令缓冲区按其中写入的计数分配，`ifreq` 名称以 NUL 结尾（布局与 `libc::ifreq` 对照） |

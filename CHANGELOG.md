@@ -10,6 +10,13 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: the process's effective user (akio-sys)
+
+akit's A247, for its LLM node, which runs root commands through `sudo -n` only when it is not root
+(as fit's `os.Geteuid() != 0`). `akio_sys::process::euid()` is the process's effective user id
+(`geteuid(2)`, which cannot fail): `0` when it runs as root. Linux and macOS, through the own
+`ffi` bindings.
+
 ### Added: the QUIC server's handshake bounds (akio-quic)
 
 akit's A245, for its tunnel hub's QUIC listener (fit's `handshake_timeout` and `max_handshakes`);

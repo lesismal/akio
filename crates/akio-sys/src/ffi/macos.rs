@@ -3,7 +3,7 @@
 
 use super::{
     c_char, c_int, c_uint, c_ulong, c_void, in_addr, in6_addr, iovec, off_t, pid_t, size_t,
-    sockaddr, socklen_t, ssize_t, timespec,
+    sockaddr, socklen_t, ssize_t, timespec, uid_t,
 };
 
 /// `sa_family_t`.
@@ -317,6 +317,7 @@ unsafe extern "C" {
     pub fn getentropy(buf: *mut c_void, len: size_t) -> c_int;
 
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
+    pub fn geteuid() -> uid_t;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction, old: *mut sigaction) -> c_int;
 

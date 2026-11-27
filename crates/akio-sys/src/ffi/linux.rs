@@ -5,7 +5,7 @@
 
 use super::{
     c_char, c_int, c_long, c_short, c_uint, c_ulong, c_ushort, c_void, ifaddrs, in_addr, in6_addr,
-    iovec, off_t, pid_t, size_t, sockaddr, socklen_t, ssize_t, timespec,
+    iovec, off_t, pid_t, size_t, sockaddr, socklen_t, ssize_t, timespec, uid_t,
 };
 
 #[cfg(not(all(
@@ -660,6 +660,7 @@ unsafe extern "C" {
     pub fn syscall(num: c_long, ...) -> c_long;
 
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
+    pub fn geteuid() -> uid_t;
     pub fn sched_setaffinity(pid: pid_t, size: size_t, set: *const cpu_set_t) -> c_int;
     pub fn sched_getaffinity(pid: pid_t, size: size_t, set: *mut cpu_set_t) -> c_int;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;

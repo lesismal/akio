@@ -33,6 +33,8 @@ pub type ssize_t = isize;
 pub type socklen_t = u32;
 /// `pid_t`.
 pub type pid_t = i32;
+/// `uid_t`.
+pub type uid_t = u32;
 /// `off_t` (64-bit on every supported target).
 pub type off_t = i64;
 /// `time_t`.
