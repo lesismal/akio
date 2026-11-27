@@ -409,11 +409,6 @@ fn a_websocket_with_its_own_queue_bound() {
     let (client, server) = dial_h1(&srv);
     client.ws.hold_reads(true);
     let msg = vec![2u8; MSG];
-    // The kernel's buffers fill first: queue until something waits, then bound what waits.
-    while server.ws.queued_bytes() == 0 {
-        server.ws.send_binary(&msg).unwrap();
-        thread::sleep(Duration::from_millis(1));
-    }
     let frame = MSG + 4; // a 16 KiB binary frame's header is 4 bytes
     // At the bound, a frame and a byte are refused. That needs the queue to sit still, the
     // kernel taking no more: a queue unchanged for 100 ms may only be a server thread that has
@@ -421,14 +416,25 @@ fn a_websocket_with_its_own_queue_bound() {
     // then never passes the bound, but says the queue was not at it: settle and try again.
     let mut tries = 0;
     loop {
-        let mut queued = server.ws.queued_bytes();
-        loop {
-            thread::sleep(Duration::from_millis(100));
-            let now = server.ws.queued_bytes();
-            if now == queued {
-                break;
+        // The kernel's buffers fill first: queue until something still waits once the queue
+        // settles, then bound what waits. Something waiting right after a send may only be a
+        // server thread yet to write it, and the kernel's send buffer grows as it takes data
+        // (on a Linux host it took all that waited, try after try): fill again until it stays.
+        let mut queued = 0;
+        while queued == 0 {
+            while server.ws.queued_bytes() == 0 {
+                server.ws.send_binary(&msg).unwrap();
+                thread::sleep(Duration::from_millis(1));
             }
-            queued = now;
+            queued = server.ws.queued_bytes();
+            loop {
+                thread::sleep(Duration::from_millis(100));
+                let now = server.ws.queued_bytes();
+                if now == queued {
+                    break;
+                }
+                queued = now;
+            }
         }
         let bound = queued + 2 * frame;
         server.ws.set_max_queued_bytes(Some(bound)).unwrap();
