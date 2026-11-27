@@ -7,7 +7,8 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::{
-    collections::HashMap,
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{Arc, Condvar, Mutex, mpsc},
@@ -161,7 +162,8 @@ struct Windows {
     streams: HashMap<u32, i64>,
 }
 
-type Writer = Arc<Mutex<TcpStream>>;
+/// What goes out on the connection, in order, written by a thread of its own.
+type Writer = mpsc::Sender<Vec<u8>>;
 
 fn send_frame(w: &Writer, ty: u8, flags: u8, sid: u32, payload: &[u8]) {
     let mut b = (payload.len() as u32).to_be_bytes()[1..].to_vec();
@@ -169,16 +171,44 @@ fn send_frame(w: &Writer, ty: u8, flags: u8, sid: u32, payload: &[u8]) {
     b.push(flags);
     b.extend_from_slice(&sid.to_be_bytes());
     b.extend_from_slice(payload);
-    w.lock().unwrap().write_all(&b).unwrap();
+    // Fails only once the writer is gone (its write failed, and said so).
+    let _ = w.send(b);
+}
+
+/// Writes what is queued on `rx` until the connection ends.
+fn write_frames(mut s: TcpStream, rx: mpsc::Receiver<Vec<u8>>) {
+    for b in rx {
+        if let Err(e) = s.write_all(&b) {
+            // The proxy closed the connection, or stopped reading it for good.
+            return eprintln!("writing to the proxy: {e}");
+        }
+    }
 }
 
 /// One h2c connection: flow control both ways (ours wide open, the server's window heeded),
-/// read on a thread of its own so that writing never waits on our reading.
+/// read and written on threads of their own, so that neither waits on the other. The reader
+/// must never wait for a write to finish (RFC 9113 §5.2.2: a receiver reads in a timely
+/// fashion): the proxy, as every akio connection, stops reading a peer whose output is queued
+/// past `Config::write_high_watermark`, so a reader stuck behind a write that waits for the
+/// proxy to read (to send a WINDOW_UPDATE, say) would leave both sides waiting for good.
 struct H2 {
     w: Writer,
     enc: Encoder,
     win: Arc<(Mutex<Windows>, Condvar)>,
     rx: mpsc::Receiver<Ev>,
+    /// Events of other streams that came while one stream's were awaited: the streams of a
+    /// connection are answered in no particular order (a literal address and a name to resolve
+    /// may connect either way round).
+    later: RefCell<VecDeque<Ev>>,
+}
+
+impl Ev {
+    fn sid(&self) -> Option<u32> {
+        match self {
+            Ev::Head(s, ..) | Ev::Data(s, ..) | Ev::Reset(s, _) => Some(*s),
+            Ev::GoAway => None,
+        }
+    }
 }
 
 /// Reads frames until the connection ends: answers SETTINGS and PING, tracks the windows,
@@ -272,10 +302,10 @@ impl H2 {
     fn open(e: &Engine) -> H2 {
         let s = TcpStream::connect(e.local_addrs()[0]).unwrap();
         s.set_write_timeout(Some(WAIT)).unwrap();
-        let w: Writer = Arc::new(Mutex::new(s.try_clone().unwrap()));
-        w.lock()
-            .unwrap()
-            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        let (w, out) = mpsc::channel();
+        let ws = s.try_clone().unwrap();
+        thread::spawn(move || write_frames(ws, out));
+        w.send(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec())
             .unwrap();
         // INITIAL_WINDOW_SIZE as large as it goes, and the connection's the same.
         send_frame(&w, SETTINGS, 0, 0, &[0, 4, 0x7f, 0xff, 0xff, 0xff]);
@@ -302,6 +332,7 @@ impl H2 {
             enc: Encoder::new(),
             win,
             rx,
+            later: RefCell::default(),
         }
     }
 
@@ -325,22 +356,33 @@ impl H2 {
 
     /// The next stream event.
     fn next(&self) -> Ev {
+        if let Some(ev) = self.later.borrow_mut().pop_front() {
+            return ev;
+        }
         match self.rx.recv_timeout(WAIT).expect("a stream event") {
             Ev::GoAway => panic!("GOAWAY"),
             ev => ev,
         }
     }
 
-    /// The response head on `sid` (status, whether it ended the stream).
+    /// The response head on `sid` (status, whether it ended the stream); what other streams
+    /// got meanwhile is kept for later, in order.
     fn head(&self, sid: u32) -> (u16, bool) {
-        loop {
+        let mut other = Vec::new();
+        let head = loop {
             match self.next() {
-                Ev::Head(s, status, end) if s == sid => return (status, end),
+                Ev::Head(s, status, end) if s == sid => break (status, end),
                 // An earlier refusal, answered before its request ended (RFC 9113 §8.1).
                 Ev::Reset(s, 0) if s != sid => {}
+                ev if ev.sid() != Some(sid) => other.push(ev),
                 ev => panic!("{ev:?}"),
             }
+        };
+        let mut later = self.later.borrow_mut();
+        for ev in other.into_iter().rev() {
+            later.push_front(ev);
         }
+        head
     }
 
     /// A refusal on `sid`: its status, its body read to the end of the stream.

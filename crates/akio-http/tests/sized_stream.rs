@@ -7,7 +7,7 @@
 use std::{
     io::{Read, Write},
     net::TcpStream,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     thread,
     time::Duration,
 };
@@ -43,12 +43,40 @@ fn sized(n: usize) -> Headers {
     h
 }
 
-/// What the routes report: the writes refused, how requests ended, what taps saw.
+/// What the routes report: the writes refused, how requests ended, what taps saw. A request's
+/// end and its tap's are reported on the server's side, possibly after the client has read the
+/// whole response: wait for them ([`Seen::taps`], [`Seen::ends`]).
 #[derive(Default)]
 struct Seen {
     refused: Mutex<Vec<String>>,
-    ends: Mutex<Vec<End>>,
-    taps: Mutex<Vec<(usize, TapEnd)>>,
+    ends: (Mutex<Vec<End>>, Condvar),
+    taps: (Mutex<Vec<(usize, TapEnd)>>, Condvar),
+}
+
+/// Waits (bounded) until `v` has `n` entries, and returns what it has then.
+fn wait_len<T: Clone>(v: &(Mutex<Vec<T>>, Condvar), n: usize) -> Vec<T> {
+    let g = v.0.lock().unwrap();
+    let (g, _) =
+        v.1.wait_timeout_while(g, Duration::from_secs(10), |v| v.len() < n)
+            .unwrap();
+    g.clone()
+}
+
+fn report<T>(v: &(Mutex<Vec<T>>, Condvar), x: T) {
+    v.0.lock().unwrap().push(x);
+    v.1.notify_all();
+}
+
+impl Seen {
+    /// The first `n` taps' ends.
+    fn taps(&self, n: usize) -> Vec<(usize, TapEnd)> {
+        wait_len(&self.taps, n)
+    }
+
+    /// The first `n` requests' ends.
+    fn ends(&self, n: usize) -> Vec<End> {
+        wait_len(&self.ends, n)
+    }
 }
 
 struct Tap(Arc<Seen>, usize);
@@ -58,7 +86,7 @@ impl BodyTap for Tap {
         self.1 += data.len();
     }
     fn end(&mut self, end: TapEnd) {
-        self.0.taps.lock().unwrap().push((self.1, end));
+        report(&self.0.taps, (self.1, end));
     }
 }
 
@@ -106,7 +134,7 @@ fn app(seen: &Arc<Seen>) -> Router {
         // Four bytes of the ten given, then finished: cut.
         .get("/short", move |ctx: &mut Context| {
             let seen = s2.clone();
-            ctx.on_end(move |e| seen.ends.lock().unwrap().push(e));
+            ctx.on_end(move |e| report(&seen.ends, e));
             let seen = s2.clone();
             ctx.add_response_filter(move |resp, _req| resp.tap_body(Tap(seen, 0)));
             let s = ctx.stream_response(200, sized(10)).unwrap();
@@ -278,10 +306,8 @@ fn a_streamed_response_framed_by_its_length() {
     let (_, body) = read_response(&mut s, false);
     assert_eq!(body, b"hello");
     // The taps saw every byte (the HEAD answer has none to see).
-    thread::sleep(Duration::from_millis(50));
-    let taps = seen.taps.lock().unwrap().clone();
     assert_eq!(
-        taps,
+        seen.taps(4),
         [0, 1, 100_000, 3 << 20]
             .map(|n| (n, TapEnd::Finished))
             .to_vec()
@@ -313,8 +339,8 @@ fn a_sized_stream_finished_short_closes_the_connection() {
     assert!(got.contains("Content-Length: 10\r\n"), "{got}");
     assert!(got.ends_with("\r\n\r\nabcd"), "{got}");
     assert_eq!(got.matches("HTTP/1.1 ").count(), 1, "{got}");
-    assert_eq!(*seen.ends.lock().unwrap(), [End::Gone]);
-    assert_eq!(*seen.taps.lock().unwrap(), [(4, TapEnd::Cut)]);
+    assert_eq!(seen.ends(1), [End::Gone]);
+    assert_eq!(seen.taps(1), [(4, TapEnd::Cut)]);
     stop(&e);
 }
 

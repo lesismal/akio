@@ -314,6 +314,12 @@ fn sessions_end_with_their_source() {
         RtspClientConfig::default(),
     )
     .unwrap();
+    // The pull's DESCRIBE finds "pushed" only once it is live: `push` returns at RECORD's
+    // answer, and the server's stream goes live with the first media that configures its
+    // tracks, after that (a DESCRIBE before is answered 404).
+    wait("pushed live", 10, || {
+        hub.stream_info("pushed").is_some_and(|i| i.publishing)
+    });
     let mut c = RtspClientConfig::default();
     c.idle_timeout = Duration::from_millis(500);
     let pull = client::pull(&engine, &format!("rtsp://{addr}/pushed"), &hub, "pulled", c).unwrap();
