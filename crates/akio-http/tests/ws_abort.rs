@@ -348,6 +348,18 @@ fn abort_in_callback(from: &End, to: &End) {
 fn abort_after_close(client: &End, server: &End) {
     exchange(client, server);
     server.ws.hold_reads(true);
+    // The hold takes effect on the server's I/O thread: probe until a message stays unread
+    // (the close frame then queues behind it).
+    let t = Instant::now();
+    loop {
+        let before = server.got.load(Ordering::Acquire);
+        client.ws.send_binary(&[7; 10]).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        if server.got.load(Ordering::Acquire) == before {
+            break;
+        }
+        assert!(t.elapsed() < WAIT, "the server's reads were never held");
+    }
     client.ws.close(1000, "bye");
     thread::sleep(Duration::from_millis(100));
     assert!(
