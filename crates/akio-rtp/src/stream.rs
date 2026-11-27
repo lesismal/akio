@@ -178,6 +178,83 @@ impl SendStream {
         out
     }
 
+    /// [`write`](Self::write) with sequence number `seq` chosen by the caller (an SFU forwarding
+    /// another stream's packets, ADR-187): numbers may skip (a packet lost upstream stays a gap
+    /// the receiver sees) or come late (a retransmission repaired upstream fills its gap).
+    /// The packet joins the history in sequence order, so [`resend`](Self::resend) finds it;
+    /// one with a number already in the history replaces it there. The next
+    /// [`write`](Self::write) or padding packet follows the highest number written, and only
+    /// the newest packet moves the timestamp / wallclock pair of the sender reports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_with_seq(
+        &mut self,
+        now: Instant,
+        seq: u16,
+        pt: u8,
+        marker: bool,
+        timestamp: u32,
+        payload: &[u8],
+        ext: &ExtensionValues,
+        map: &ExtensionMap,
+    ) -> Vec<u8> {
+        let h = RtpHeader {
+            marker,
+            payload_type: pt,
+            sequence_number: seq,
+            timestamp,
+            ssrc: self.ssrc,
+            ext: ext.clone(),
+            ..RtpHeader::default()
+        };
+        let out = h.write(map, payload);
+        self.packets += 1;
+        self.octets += payload.len() as u64;
+        // Ahead of every number sent: the newest packet.
+        let newest = self.packets == 1 || seq.wrapping_sub(self.next_seq) < 0x8000;
+        if newest {
+            self.next_seq = seq.wrapping_add(1);
+            self.last = Some((timestamp, now));
+        }
+        let sent = Sent {
+            seq,
+            pt,
+            marker,
+            timestamp,
+            payload: payload.to_vec(),
+            ext: ext.clone(),
+            at: now,
+            resent: None,
+        };
+        match self.history_index(seq) {
+            Ok(i) => self.history[i] = sent,
+            Err(i) => self.history.insert(i, sent),
+        }
+        self.prune(now);
+        out
+    }
+
+    /// Where `seq` is in the history (kept in sequence order from its front), or where it
+    /// would go.
+    fn history_index(&self, seq: u16) -> Result<usize, usize> {
+        let Some(first) = self.history.front().map(|s| s.seq) else {
+            return Err(0);
+        };
+        let key = seq.wrapping_sub(first);
+        if key >= 0x8000 {
+            return Err(0); // before the oldest packet kept
+        }
+        // Without skipped numbers the packet is at its offset from the front.
+        if self
+            .history
+            .get(usize::from(key))
+            .is_some_and(|s| s.seq == seq)
+        {
+            return Ok(usize::from(key));
+        }
+        self.history
+            .binary_search_by_key(&key, |s| s.seq.wrapping_sub(first))
+    }
+
     /// Answers a NACK: for each sequence number still in the history and not resent in the
     /// last 10 ms, an RTX packet (RFC 4588: the RTX SSRC and its own sequence number, payload
     /// type `rtx_pt`, payload = 2-byte original sequence number + original payload, same
@@ -209,17 +286,13 @@ impl SendStream {
     ) -> Vec<Vec<u8>> {
         self.prune(now);
         let mut out = Vec::new();
-        let Some(first) = self.history.front().map(|s| s.seq) else {
-            return out;
-        };
         for &seq in seqs {
-            let i = usize::from(seq.wrapping_sub(first));
-            let Some(s) = self.history.get_mut(i) else {
+            let Ok(i) = self.history_index(seq) else {
                 continue;
             };
-            if s.seq != seq
-                || s.resent
-                    .is_some_and(|t| now.saturating_duration_since(t) < RESEND_MIN_INTERVAL)
+            let s = &mut self.history[i];
+            if s.resent
+                .is_some_and(|t| now.saturating_duration_since(t) < RESEND_MIN_INTERVAL)
             {
                 continue;
             }

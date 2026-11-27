@@ -417,7 +417,10 @@ impl Codec {
             .or_else(|| s.eq_ignore_ascii_case("AV1X").then_some(Codec::Av1))
     }
 
-    pub(crate) fn kind(self) -> MediaKind {
+    /// Audio or video: which media section of another peer a packet of this codec goes to
+    /// (an SFU forwarding RTP, [`Peer::write_rtp`](crate::Peer::write_rtp)).
+    #[must_use]
+    pub fn kind(self) -> MediaKind {
         match self {
             Codec::Opus | Codec::Pcmu | Codec::Pcma | Codec::G722 => MediaKind::Audio,
             _ => MediaKind::Video,
@@ -584,6 +587,17 @@ pub struct RtpPacket {
     pub received: Instant,
     /// The payload.
     pub payload: Arc<[u8]>,
+    /// The media section the packet arrived on.
+    pub mid: Mid,
+    /// The simulcast encoding (RID) of its stream, once a packet of the stream carried it.
+    pub rid: Option<String>,
+    /// The codec of its payload type.
+    pub codec: Option<Codec>,
+    /// The header extensions it carried that `akio-rtp` knows: audio level, video
+    /// orientation, transmission offset, playout delay, abs-send-time and the transport-wide
+    /// sequence number (the MID and RIDs are in [`mid`](Self::mid) and [`rid`](Self::rid)).
+    /// [`Peer::write_rtp`](crate::Peer::write_rtp) forwards the first four.
+    pub extensions: akio_rtp::ExtensionValues,
 }
 
 // ---- ICE ----

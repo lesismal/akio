@@ -10,6 +10,19 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: RTP forwarding for an SFU (akio-webrtc, akio-rtp)
+
+akit's A260, for its media server, which forwards a publisher's packets to each viewer as they
+arrive instead of depacketizing and packetizing every frame again (ADR-187). `Peer::write_rtp(mid,
+&RtpPacket)` sends a packet received in RTP mode as it is: with this side's SSRC, the payload type
+negotiated here for its codec, its audio level, video orientation, transmission offset and playout
+delay under this side's extension ids, sequence numbers and timestamps renumbered (a source's gaps
+and late packets kept; a new source, such as a publisher replaced, continuing after the last
+packet sent), and kept for retransmission, so the viewer's NACKs are answered from what was sent.
+`RtpPacket` gains `mid`, `rid`, `codec` and `extensions`; `Codec::kind()` is public. akio-rtp:
+`SendStream::write_with_seq` writes a packet with a sequence number of the caller's, its history
+kept in sequence order.
+
 ### Added: a receiver's bitrate cap told as REMB, and ICE consent timeouts per peer (akio-webrtc)
 
 akit's A261, for its media server's `max_bitrate` and `ice_timeout` (ADR-187).

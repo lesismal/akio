@@ -501,6 +501,42 @@ impl Peer {
         })?
     }
 
+    /// Writes an RTP packet received from another peer in RTP mode ([`PeerHandler::on_rtp`])
+    /// on `mid`, as it is, without depacketizing it: what an SFU forwarding a publisher's
+    /// media to its viewers does on the I/O thread that received it (ADR-187). It goes out
+    ///
+    /// - with this side's SSRC of `mid` and the payload type negotiated here for the packet's
+    ///   [`codec`](RtpPacket::codec) (the first one of that codec: a viewer answered with the
+    ///   publisher's codecs, [`RtcServer::accept_offer_with`], has just those), its payload,
+    ///   marker bit and the audio level, video orientation, transmission offset and playout
+    ///   delay it carried under this side's extension ids (only those negotiated here), and
+    ///   this side's MID and send-time extensions (abs-send-time, transport-wide sequence
+    ///   number);
+    /// - renumbered: the sequence numbers and timestamps of one source (one SSRC written) are
+    ///   shifted by an offset, so a packet lost upstream stays a gap and a late one (repaired
+    ///   upstream with NACK) fills its gap; when another source is written (a publisher
+    ///   replaced, another simulcast layer), its first packet follows the last sequence number
+    ///   sent and the last timestamp by the time between their arrivals, and packets of the
+    ///   earlier source are dropped from then on. Samples written on the same line in between
+    ///   ([`write_media`](Self::write_media)) take numbers the forwarded ones then skip.
+    ///
+    /// It joins the stream's retransmission history: the remote's NACKs are answered from it
+    /// (RTX where negotiated), its PLI / FIR come to [`PeerHandler::on_keyframe_request`] of
+    /// this peer for the application to pass to the publisher
+    /// ([`request_keyframe`](Self::request_keyframe)), and the sender reports follow it. No
+    /// RED or FEC is added. Dropped before the peer is connected; [`Error::UnknownMedia`] when
+    /// `mid` does not send, [`Error::Rtc`] when the codec was not negotiated on it. On a
+    /// simulcast line it goes out as the first encoding.
+    pub fn write_rtp(&self, mid: Mid, packet: &RtpPacket) -> Result<(), Error> {
+        self.with_rtc_inner(
+            |rtc| match rtc.write_rtp(Instant::now(), mid, None, packet) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(Error::UnknownMedia),
+                Err(e) => Err(rtc_err(e)),
+            },
+        )?
+    }
+
     /// Caps what the remote sends this peer at `bps` bits per second, told as REMB
     /// (draft-alvestrand-rmcat-remb, which browsers keep under) about every media stream
     /// received, once now and then once a second with the RTCP reports (ADR-187). `None`

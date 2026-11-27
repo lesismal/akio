@@ -86,6 +86,8 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 | `payload_type(mid, codec)` | 某编解码器协商得到的 payload type |
 | `request_keyframe(mid, kind)` | 向远端发送方发 PLI 或 FIR |
 | `request_layer_keyframe(mid, rid, kind)` | 只向接收到的某一 simulcast 层发 PLI 或 FIR |
+| `write_rtp(mid, packet)` | 原样转发从另一个 peer 收到的 RTP 包（SFU） |
+| `set_receive_bitrate_cap(bps)` | 远端最多可发送的码率，以 REMB 告知 |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | 首次交换之后的 SDP 变更 |
 | `add_remote_candidate(line)` | trickle ICE |
 | `close()` | DTLS close notify，随后 `on_close` |
@@ -250,6 +252,37 @@ wallclock, rtp_time, data)` 写某一编码的样本：由应用以各自的分�
 kind)` 只向发布者请求该层的关键帧（`crates/akio-webrtc/examples/webrtc-interop.rs` 的 `sfu` 模式即如此，
 切换时改写 RTP 时间戳）。Chrome 不接收 simulcast：它的 answer 去掉了 `a=simulcast`，因此只向它发送第一个
 编码。
+
+### SFU：转发 RTP
+
+把发布者的媒体转发给观众的媒体服务器（WHIP 进，WHEP 出）让发布者的 peer 运行在 RTP 模式，每个包一到就
+写给每个观众的 peer（ADR-187）：
+
+```rust,ignore
+// 服务器上发布者的 peer（以 `set_rtp_mode(true)` 接受）：
+fn on_rtp(&mut self, _p: &Peer, pkt: &RtpPacket) {
+    for v in &self.viewers {
+        let mid = if pkt.codec.map(Codec::kind) == Some(MediaKind::Audio) { v.audio } else { v.video };
+        let _ = v.peer.write_rtp(mid, pkt);
+    }
+}
+```
+
+- `RtcServer::accept_offer_with(config, offer, handler)`（以及 `create_offer_with`，`Endpoint` 上同样有）
+  给 peer 一个自己的配置：用为该流选定的编解码器应答发布者
+  （`rtc_config().clear_codecs().enable_vp8(true).enable_opus(true)`，RTP 模式），并用同样的编解码器应答其
+  观众，使发布者发送的正是每个观众解码的。
+- `Peer::write_rtp(mid, &packet)` 不解包地发送该包，使用该 peer 在 `mid` 上的 SSRC 和它为包的编解码器
+  （`RtpPacket::codec`；`mid`、`rid` 与 `extensions` 也一并携带）协商的 payload type。音量、视频方向、传输
+  偏移与播放延迟使用该 peer 的扩展 id 发出，MID 与发送时间扩展是它自己的。序号与时间戳会重新编号：保留同一
+  来源的空洞（上游丢失）与迟到的包（上游修复）；写入另一个来源（发布者被替换、另一个 simulcast 层）时，紧接
+  最后发出的包继续。包进入重传历史：观众的 NACK 以 RTX 应答。
+- 观众的 PLI 或 FIR 到达其 peer 的 `on_keyframe_request`；用 `request_keyframe` 转交给发布者（并限频）。
+- 在发布者的 peer 上调用 `Peer::set_receive_bitrate_cap(Some(bps))`，以 REMB 告诉它最多可以发送多少，立即
+  一次，之后每秒一次，浏览器会遵守（TMMBR，即 `request_max_bitrate`，浏览器会忽略）。
+- `RtcConfig::set_ice_timeouts(disconnected, failed)` 在失去 consent `disconnected` 后报告
+  `Disconnected`，`failed` 后报告 `IceConnectionState::Failed`；服务器随后在 `Failed` 而不是
+  `Disconnected`（默认 30 s）时关闭 peer。
 
 ### FEC 与更多 RTCP
 
@@ -855,4 +888,4 @@ DTLS 1.2。
   建立新关联（同时会重启数据通道）。DTLS 1.3 的 KeyUpdate 不改变 SRTP 的密钥（ADR-086 第 6 节）。
 
 新增内容的细节见 ADR-017、ADR-032、ADR-039、ADR-044、ADR-045、ADR-048、ADR-054、ADR-058、ADR-072、ADR-073、
-ADR-076、ADR-077、ADR-082、ADR-083、ADR-086 与 ADR-091。
+ADR-076、ADR-077、ADR-082、ADR-083、ADR-086、ADR-091 与 ADR-187。

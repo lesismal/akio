@@ -424,6 +424,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | TURN 中继 | akio-turn（ADR-083、ADR-091） | 是（`turn-relay-bench`） | 是（按客户端分片分配，3.7x；`028d61d2`） | 没有与 coturn 的吞吐对比。 |
 | 媒体服务器（RTMP、RTSP、HLS、hub） | akio-media | 部分（`bench_segmenting`，各 ADR 的接入 A/B） | 部分（2026-11-21/22 的 `perf(media)`） | 没有与参考服务器对比（SRS、mediamtx）。 |
 | BitTorrent | akio-bittorrent | 部分（`bt-bench` A/B：回环 2,180 MiB/s） | 部分（SHA-1 分片哈希） | 没有与其他客户端对比。 |
+| 面向 SFU 的 RTP 转发 | akio-webrtc、akio-rtp（ADR-187，akit A260） | 否 | 否 | 在 gpu51 上同次 A/B：一个发布者的 VP8 与 Opus 经 `write_rtp` 转发给 1、10、100 个观众，对比帧方式的临时方案（`on_media_data` 后对每个观众 `write_media`），测一个 I/O 线程上的每秒包数与每个转发包的 CPU；RTP 模式接收吞吐量对比 main（现在每个包构建一个 `ExtensionValues` 并克隆 RID）；在有迟到插入的历史上承受观众的 NACK 风暴（二分查找）。 |
 | 接收端码率上限以 REMB 告知；每个 peer 的 ICE consent 超时 | akio-webrtc（ADR-187，akit A261） | 否 | 否 | 吞吐量无需测量：失去 consent 期间 peer 的定时器多一个截止时间，设了上限的 peer 每秒随报告多一个 REMB。可检查收到 REMB 的报告（每个 REMB 一个事件）不出现在发布者的媒体路径上。 |
 | `RtcServer` 上 peer 自己的配置 | akio-webrtc（akit A259） | 否 | 否 | 无需测量：只是用参数而不是服务器的闭包构建 peer 的配置。 |
 | QUIC 服务端的握手限制 | akio-quic（ADR-185，akit A245） | 否 | 否 | 与 main 同次 A/B：QUIC 握手速率（每秒新连接数，`quic-bench` 每个请求一个连接），以及来自大量地址的 Initial 洪泛下服务端的内存（从 `max_handshakes` 的一半起发 Retry，超过上限丢弃）；大块传输与 echo 不变（握手确认后每个包没有额外开销）。 |

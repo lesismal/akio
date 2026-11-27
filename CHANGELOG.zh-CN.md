@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：面向 SFU 的 RTP 转发（akio-webrtc、akio-rtp）
+
+akit 的 A260，用于其媒体服务器：发布者的包一到就转发给每个观众，而不是把每帧解包再重新打包；ADR-187。
+`Peer::write_rtp(mid, &RtpPacket)` 原样发送 RTP 模式下收到的包：使用本端的 SSRC、本端为其编解码器协商的
+payload type，音量、视频方向、传输偏移与播放延迟使用本端的扩展 id，序号与时间戳重新编号（保留同一来源的
+空洞与迟到的包；新来源，例如被替换的发布者，接在最后发出的包之后），并保存以备重传，因此观众的 NACK 由
+已发出的内容应答。`RtpPacket` 新增 `mid`、`rid`、`codec` 与 `extensions`；`Codec::kind()` 改为公开。
+akio-rtp：`SendStream::write_with_seq` 以调用者给定的序号写包，其历史按序号顺序保存。
+
 ### 新增：接收端码率上限以 REMB 告知，以及每个 peer 的 ICE consent 超时（akio-webrtc）
 
 akit 的 A261，用于其媒体服务器的 `max_bitrate` 与 `ice_timeout`；ADR-187。

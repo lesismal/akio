@@ -640,6 +640,8 @@ struct SimEnc {
     fec: FecSend,
     /// This encoding's FlexFEC stream (unsignaled: MID and the repaired RID name it).
     fec_send: SendStream,
+    /// Forwarded RTP's renumbering on this encoding (ADR-187).
+    fwd: forward::Renumber,
 }
 
 /// The FEC state of one sent stream: its encoder and protection policy, made on the first
@@ -749,6 +751,8 @@ struct MediaLine {
     red_other: Vec<(u8, u8)>,
     /// RFC 6904 encrypted extension ids of [`ext`](Self::ext).
     enc_ids: Vec<u8>,
+    /// Forwarded RTP's renumbering on the sent stream (ADR-187).
+    fwd: forward::Renumber,
 }
 
 impl MediaLine {
@@ -777,6 +781,7 @@ impl MediaLine {
                 active: true,
                 fec: FecSend::default(),
                 fec_send: SendStream::new(random_u32(), 90_000, None, random_u32() as u16),
+                fwd: forward::Renumber::default(),
             })
             .collect();
         MediaLine {
@@ -814,6 +819,7 @@ impl MediaLine {
             red_hist_pt: None,
             red_other: Vec::new(),
             enc_ids: Vec::new(),
+            fwd: forward::Renumber::default(),
         }
     }
 
@@ -3208,6 +3214,7 @@ impl Rtc {
                 marker: false,
                 rid: None,
                 rtx: false,
+                ext: None,
             };
             if self.recv.contains_key(&h.ssrc) && self.deliver(now, line, &p, b.data, true) {
                 self.stats.red_recovered += 1;
@@ -3221,6 +3228,7 @@ impl Rtc {
             marker: h.marker,
             rid: h.ext.rid.as_deref(),
             rtx: false,
+            ext: Some(&h.ext),
         };
         self.deliver(now, line, &p, primary.data, false);
     }
@@ -3297,6 +3305,7 @@ impl Rtc {
                     marker: h.marker,
                     rid: h.ext.rid.as_deref(),
                     rtx: false,
+                    ext: Some(&h.ext),
                 };
                 self.deliver(now, route.line, &p, payload, false);
                 self.deliver_recovered(now, route.line, rec);
@@ -3311,6 +3320,7 @@ impl Rtc {
             marker: h.marker,
             rid: h.ext.rid.as_deref(),
             rtx: true,
+            ext: Some(&h.ext),
         };
         self.deliver(now, route.line, &p, payload, false);
     }
@@ -3330,6 +3340,7 @@ impl Rtc {
                 marker: h.marker,
                 rid: h.ext.rid.as_deref(),
                 rtx: false,
+                ext: Some(&h.ext),
             };
             self.deliver(now, line, &p, h.payload(&r), true);
         }
@@ -3471,6 +3482,7 @@ impl Rtc {
             self.cfg.reorder_video
         };
         let rtp_mode = self.cfg.rtp_mode;
+        let mid = self.media[line_idx].mid;
         let Some(recv) = recv_entry(&mut self.recv, &self.media, line_idx, p.ssrc, codec.clock)
         else {
             return false;
@@ -3505,6 +3517,10 @@ impl Rtc {
                 ),
                 received: now,
                 payload: Arc::from(payload),
+                mid,
+                rid: recv.rid.clone(),
+                codec: Some(codec.codec),
+                extensions: p.ext.map(forward::forwarded_ext).unwrap_or_default(),
             }));
             return true;
         }
@@ -4342,6 +4358,8 @@ struct Pkt<'a> {
     rid: Option<&'a str>,
     /// A retransmission (RTX).
     rtx: bool,
+    /// Its header extensions (RTP mode hands them on).
+    ext: Option<&'a ExtensionValues>,
 }
 
 /// The receive stream of `ssrc` on `line`, made on first use (`None`: too many streams).
