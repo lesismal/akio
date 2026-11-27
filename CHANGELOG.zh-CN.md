@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：向进程组发送信号（akio-sys）
+
+akit 的 A248，供其 LLM 节点使用：节点让每个任务在自己的进程组中运行，任务被取消或超时时杀掉整个进程组
+（与 fit 的 `syscall.Kill(-pid, SIGKILL)` 相同），脚本启动的子进程也一并结束。
+`akio_sys::process::kill_group(pgid, sig)` 向进程组中的每个进程发送信号（`killpg(2)`）；用
+`CommandExt::process_group(0)` 启动的子进程，其进程组 id 就是它的 pid。`0`（调用者自己的进程组）和 `1`
+（`killpg` 会把它变成“所有进程”）被拒绝并返回 `EINVAL`，与 `kill` 拒绝非单个进程的目标一样。信号常量新增
+`process::SIGKILL`。支持 Linux 和 macOS。
+
 ### 新增：进程的有效用户（akio-sys）
 
 akit 的 A247，供其 LLM 节点使用：节点只在不是 root 时才通过 `sudo -n` 运行需要 root 的命令（与 fit 的

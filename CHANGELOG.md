@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a signal to a process group (akio-sys)
+
+akit's A248, for its LLM node, which runs each job in a process group of its own and kills the
+whole group when the job is canceled or runs past its timeout (fit's `syscall.Kill(-pid,
+SIGKILL)`), so that a script's children go too. `akio_sys::process::kill_group(pgid, sig)` sends a
+signal to every process in a group (`killpg(2)`); a child spawned with `CommandExt::process_group(0)`
+has its pid as its group id. `0` (the caller's own group) and `1` (which `killpg` makes "every
+process") are refused with `EINVAL`, as `kill` refuses what is not a single process.
+`process::SIGKILL` joins the signal constants. Linux and macOS.
+
 ### Added: the process's effective user (akio-sys)
 
 akit's A247, for its LLM node, which runs root commands through `sudo -n` only when it is not root

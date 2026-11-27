@@ -147,6 +147,7 @@ fn common_constants() {
         IFF_MULTICAST,
         SIGHUP,
         SIGINT,
+        SIGKILL,
         SIGTERM,
         SIGUSR2,
         SA_RESTART,

@@ -183,6 +183,7 @@ pub const POLLRDHUP: c_short = 0x2000;
 // ---- signals and processes -----------------------------------------------------------------
 pub const SIGHUP: c_int = 1;
 pub const SIGINT: c_int = 2;
+pub const SIGKILL: c_int = 9;
 pub const SIGUSR2: c_int = 12;
 pub const SIGTERM: c_int = 15;
 pub const SA_RESTART: c_int = 0x1000_0000;
@@ -660,6 +661,7 @@ unsafe extern "C" {
     pub fn syscall(num: c_long, ...) -> c_long;
 
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
+    pub fn killpg(pgrp: pid_t, sig: c_int) -> c_int;
     pub fn geteuid() -> uid_t;
     pub fn sched_setaffinity(pid: pid_t, size: size_t, set: *const cpu_set_t) -> c_int;
     pub fn sched_getaffinity(pid: pid_t, size: size_t, set: *mut cpu_set_t) -> c_int;

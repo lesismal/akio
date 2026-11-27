@@ -1,6 +1,6 @@
 //! Process plumbing: the CPUs a thread may run on and pinning it to some of them, turning
-//! signals into bytes on a pipe (the self-pipe trick), sending a signal to a process, and the
-//! process's effective user.
+//! signals into bytes on a pipe (the self-pipe trick), sending a signal to a process or a
+//! process group, and the process's effective user.
 
 use crate::ffi;
 use std::io;
@@ -11,6 +11,8 @@ use std::sync::{Mutex, OnceLock};
 pub const SIGHUP: i32 = ffi::SIGHUP;
 /// `SIGINT`.
 pub const SIGINT: i32 = ffi::SIGINT;
+/// `SIGKILL`.
+pub const SIGKILL: i32 = ffi::SIGKILL;
 /// `SIGTERM`.
 pub const SIGTERM: i32 = ffi::SIGTERM;
 /// `SIGUSR2`.
@@ -161,6 +163,29 @@ pub fn kill(pid: u32, sig: i32) -> io::Result<()> {
     Ok(())
 }
 
+/// Sends `sig` to every process in process group `pgid` (`killpg(2)`): a child spawned in a
+/// group of its own (`std::os::unix::process::CommandExt::process_group(0)`, whose group id is
+/// then its pid) together with whatever it started that stayed in its group, as Go's
+/// `syscall.Kill(-pid, sig)`. Signal `0` checks that the group has a process the caller may
+/// signal, delivering nothing.
+///
+/// `0` (the caller's own group) and `1` (which `killpg` turns into "every process the caller
+/// may signal") are refused, as is a `pgid` past `i32::MAX`, with `EINVAL`. `ESRCH` when no
+/// process is in the group, `EPERM` when the caller may signal none of them. A group the caller
+/// is in is not refused: the caller gets the signal too.
+pub fn kill_group(pgid: u32, sig: i32) -> io::Result<()> {
+    let pgid = ffi::pid_t::try_from(pgid)
+        .ok()
+        .filter(|&p| p > 1)
+        .ok_or_else(|| io::Error::from_raw_os_error(ffi::EINVAL))?;
+    // SAFETY: plain syscall with integer arguments; `pgid` > 1, so neither the caller's group
+    // nor every process.
+    if unsafe { ffi::killpg(pgid, sig) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// The process's effective user id (`geteuid(2)`, which cannot fail): `0` when it runs as root.
 /// The user it acts as when it opens files or signals other processes, which differs from the
 /// real user under a set-user-ID program.
@@ -204,5 +229,49 @@ mod tests {
         drop(file);
         std::fs::remove_file(&path).unwrap();
         assert_eq!(euid(), uid);
+    }
+
+    #[test]
+    fn kill_group_reaches_the_whole_group() {
+        use std::io::{BufRead, BufReader, Read};
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::process::{Command, Stdio};
+        use std::time::Duration;
+
+        for refused in [0, 1, u32::MAX] {
+            let e = kill_group(refused, 0).unwrap_err();
+            assert_eq!(e.raw_os_error(), Some(ffi::EINVAL), "pgid {refused}");
+        }
+        // A shell in a group of its own starts a child in the background (in its group: a
+        // shell that is not interactive has no job control), prints the child's pid and
+        // becomes another process of the group. Both hold the pipe's write end, so the pipe
+        // reads to its end only once both are gone.
+        let mut leader = Command::new("sh")
+            .args(["-c", "sleep 1000 & echo $!; exec sleep 1000"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(leader.stdout.take().unwrap());
+        let mut line = String::new();
+        out.read_line(&mut line).unwrap();
+        let member: u32 = line.trim().parse().unwrap();
+        let pgid = leader.id();
+        kill_group(pgid, 0).unwrap();
+        kill_group(pgid, SIGKILL).unwrap();
+        assert_eq!(leader.wait().unwrap().signal(), Some(SIGKILL));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            let _ = tx.send(out.read_to_end(&mut rest).map(|_| rest));
+        });
+        // A deadline for the test, not a retry: the member is killed with the leader or not
+        // at all.
+        let Ok(rest) = rx.recv_timeout(Duration::from_secs(30)) else {
+            let _ = kill(member, SIGKILL);
+            panic!("process {member} of group {pgid} outlived SIGKILL to the group");
+        };
+        assert!(rest.unwrap().is_empty());
     }
 }

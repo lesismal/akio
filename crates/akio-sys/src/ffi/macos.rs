@@ -106,6 +106,7 @@ pub const EV_EOF: u16 = 0x8000;
 // ---- signals -------------------------------------------------------------------------------
 pub const SIGHUP: c_int = 1;
 pub const SIGINT: c_int = 2;
+pub const SIGKILL: c_int = 9;
 pub const SIGTERM: c_int = 15;
 pub const SIGUSR2: c_int = 31;
 pub const SA_RESTART: c_int = 0x0002;
@@ -317,6 +318,7 @@ unsafe extern "C" {
     pub fn getentropy(buf: *mut c_void, len: size_t) -> c_int;
 
     pub fn kill(pid: pid_t, sig: c_int) -> c_int;
+    pub fn killpg(pgrp: pid_t, sig: c_int) -> c_int;
     pub fn geteuid() -> uid_t;
     pub fn sigemptyset(set: *mut sigset_t) -> c_int;
     pub fn sigaction(sig: c_int, act: *const sigaction, old: *mut sigaction) -> c_int;
