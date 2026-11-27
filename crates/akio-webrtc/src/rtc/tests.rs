@@ -534,10 +534,39 @@ fn send_video(
     net: &mut Net,
     video: Mid,
     frames: u64,
-    mut now: Instant,
+    now: Instant,
 ) -> (usize, Instant) {
+    let mut now = send_frames(a, b, net, video, frames, now);
+    let frame = video_frame();
+    for _ in 0..400 {
+        now += Duration::from_millis(5);
+        step(a, b, now, net);
+    }
+    let whole = b
+        .events
+        .iter()
+        .filter(|e| matches!(e, RtcEvent::MediaData(d) if d.mid == video && d.data.len() == frame.len() && d.data[2..] == frame[2..]))
+        .count();
+    (whole, now)
+}
+
+/// The 3000-byte VP8 frame [`send_video`] sends (its first two bytes vary).
+fn video_frame() -> Vec<u8> {
+    (0..3000u32).map(|i| (i * 7) as u8).collect()
+}
+
+/// The frames of [`send_video`] at 25 fps, without the 2 s that follow them: the time when
+/// the last one has gone.
+fn send_frames(
+    a: &mut Side,
+    b: &mut Side,
+    net: &mut Net,
+    video: Mid,
+    frames: u64,
+    mut now: Instant,
+) -> Instant {
     let vp8 = a.rtc.payload_type(video, Codec::Vp8).unwrap();
-    let frame: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
+    let frame = video_frame();
     for i in 0..frames {
         let mut f = frame.clone();
         f[0] = if i == 0 { 0x10 } else { 0x11 };
@@ -549,16 +578,7 @@ fn send_video(
             step(a, b, now, net);
         }
     }
-    for _ in 0..400 {
-        now += Duration::from_millis(5);
-        step(a, b, now, net);
-    }
-    let whole = b
-        .events
-        .iter()
-        .filter(|e| matches!(e, RtcEvent::MediaData(d) if d.mid == video && d.data.len() == frame.len() && d.data[2..] == frame[2..]))
-        .count();
-    (whole, now)
+    now
 }
 
 fn fec_cfg(m: Option<FecMechanism>) -> ConfigInner {
@@ -793,7 +813,9 @@ fn fec_rate_follows_reported_loss() {
     assert!(a.rtc.stats.fec_sent > 20);
     // With NACK the hybrid spreads groups over more frames as the round trip grows (here
     // about 60 ms at 25 fps: 2 x 25 x 0.06 = 3 frames); under 20 ms it would leave delta frames
-    // to NACK (`fec_protection_policy`).
+    // to NACK (`fec_protection_policy`). Read while the frames flow: the hybrid protects no
+    // frames under 700 bytes, and a report that comes more than a second after the last frame
+    // (RTCP intervals are randomized) finds none in the last second, so none protected.
     let (mut a, mut b, video, now) = pair_with(cfg.clone(), cfg, Direction::SendRecv, same);
     let mut net = Net {
         rng: 3,
@@ -803,7 +825,7 @@ fn fec_rate_follows_reported_loss() {
     };
     let now = connect(&mut a, &mut b, &mut net, now);
     net.loss = 15;
-    send_video(&mut a, &mut b, &mut net, video, 150, now);
+    send_frames(&mut a, &mut b, &mut net, video, 150, now);
     let rtt = a.rtc.media[0].rtt().expect("rtt");
     let p = a.rtc.media[0].fec.enc.as_ref().unwrap().protection();
     assert!(rtt >= Duration::from_millis(30), "{rtt:?}");
