@@ -85,6 +85,8 @@ pub akio_webrtc::Codec::Pcma
 pub akio_webrtc::Codec::Pcmu
 pub akio_webrtc::Codec::Vp8
 pub akio_webrtc::Codec::Vp9
+impl akio_webrtc::Codec
+pub fn akio_webrtc::Codec::kind(self) -> akio_webrtc::MediaKind
 impl core::clone::Clone for akio_webrtc::Codec
 pub fn akio_webrtc::Codec::clone(&self) -> Self
 impl core::cmp::Eq for akio_webrtc::Codec
@@ -244,6 +246,7 @@ pub akio_webrtc::IceConnectionState::Checking
 pub akio_webrtc::IceConnectionState::Completed
 pub akio_webrtc::IceConnectionState::Connected
 pub akio_webrtc::IceConnectionState::Disconnected
+pub akio_webrtc::IceConnectionState::Failed
 pub akio_webrtc::IceConnectionState::New
 impl core::clone::Clone for akio_webrtc::IceConnectionState
 pub fn akio_webrtc::IceConnectionState::clone(&self) -> Self
@@ -433,6 +436,7 @@ impl core::panic::unwind_safe::UnwindSafe for akio_webrtc::ChannelId
 pub struct akio_webrtc::Endpoint(_)
 impl akio_webrtc::Endpoint
 pub fn akio_webrtc::Endpoint::accept_offer<H: akio_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::accept_offer_with<H: akio_webrtc::PeerHandler>(&self, akio_webrtc::RtcConfig, &str, H) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
 pub fn akio_webrtc::Endpoint::add_candidate(&self, akio_webrtc::Candidate)
 pub fn akio_webrtc::Endpoint::bind(&akio::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<akio_webrtc::Endpoint, akio_webrtc::Error>
 pub fn akio_webrtc::Endpoint::bind_rtcp(&self, &akio::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
@@ -445,6 +449,7 @@ pub fn akio_webrtc::Endpoint::conceal_host_candidates(&self) -> core::result::Re
 pub fn akio_webrtc::Endpoint::config(self, impl core::ops::function::Fn() -> akio_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn akio_webrtc::Endpoint::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn akio_webrtc::Endpoint::create_offer<H: akio_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::Endpoint::create_offer_with<H: akio_webrtc::PeerHandler>(&self, akio_webrtc::RtcConfig, H, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
 pub fn akio_webrtc::Endpoint::dial_tcp(&self, &alloc::rcs::arc::Arc<akio::Engine>) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
 pub fn akio_webrtc::Endpoint::gather_relay(&self, core::net::socket_addr::SocketAddr, &str, &str, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
 pub fn akio_webrtc::Endpoint::gather_relay_via(&self, &alloc::rcs::arc::Arc<akio::Engine>, &akio_webrtc::RelayServer, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, akio_webrtc::Error>
@@ -626,9 +631,11 @@ pub fn akio_webrtc::Peer::request_max_bitrate(&self, akio_webrtc::Mid, core::opt
 pub fn akio_webrtc::Peer::send(&self, akio_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, akio_webrtc::Error>
 pub fn akio_webrtc::Peer::set_bitrate_bounds(&self, u64, u64)
 pub fn akio_webrtc::Peer::set_channel_priority(&self, akio_webrtc::ChannelId, akio_webrtc::ChannelPriority) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::set_receive_bitrate_cap(&self, core::option::Option<u64>)
 pub fn akio_webrtc::Peer::set_voip_quality(&self, akio_webrtc::Mid, akio_rtp::xr::VoipQuality, core::option::Option<akio_rtp::emodel::EModel>) -> core::result::Result<(), akio_webrtc::Error>
 pub fn akio_webrtc::Peer::video_playout_stats(&self, akio_webrtc::Mid) -> core::result::Result<alloc::vec::Vec<(u32, akio_rtp::video::VideoPlayoutStats)>, akio_webrtc::Error>
 pub fn akio_webrtc::Peer::write_media(&self, akio_webrtc::Mid, akio_webrtc::Pt, std::time::Instant, akio_webrtc::MediaTime, &[u8]) -> core::result::Result<(), akio_webrtc::Error>
+pub fn akio_webrtc::Peer::write_rtp(&self, akio_webrtc::Mid, &akio_webrtc::RtpPacket) -> core::result::Result<(), akio_webrtc::Error>
 pub fn akio_webrtc::Peer::write_simulcast(&self, akio_webrtc::Mid, &str, akio_webrtc::Pt, std::time::Instant, akio_webrtc::MediaTime, &[u8]) -> core::result::Result<(), akio_webrtc::Error>
 impl core::clone::Clone for akio_webrtc::Peer
 pub fn akio_webrtc::Peer::clone(&self) -> Self
@@ -721,6 +728,7 @@ pub fn akio_webrtc::RtcConfig::set_ecn_initiation(self, akio_webrtc::EcnInitiati
 pub fn akio_webrtc::RtcConfig::set_ecn_marking(self, akio_webrtc::EcnMarking) -> Self
 pub fn akio_webrtc::RtcConfig::set_fec_mask(self, akio_webrtc::FecMask) -> Self
 pub fn akio_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
+pub fn akio_webrtc::RtcConfig::set_ice_timeouts(self, core::time::Duration, core::time::Duration) -> Self
 pub fn akio_webrtc::RtcConfig::set_keyframe_on_loss(self, bool) -> Self
 pub fn akio_webrtc::RtcConfig::set_latching(self, akio_webrtc::Latching) -> Self
 pub fn akio_webrtc::RtcConfig::set_padding_rate(self, u64) -> Self
@@ -769,11 +777,13 @@ impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcRtcp
 pub struct akio_webrtc::RtcServer(_)
 impl akio_webrtc::RtcServer
 pub fn akio_webrtc::RtcServer::accept_offer<H: akio_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::RtcServer::accept_offer_with<H: akio_webrtc::PeerHandler>(&self, akio_webrtc::RtcConfig, &str, H) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
 pub fn akio_webrtc::RtcServer::close_all(&self)
 pub fn akio_webrtc::RtcServer::close_on_disconnect(self, bool) -> Self
 pub fn akio_webrtc::RtcServer::config(self, impl core::ops::function::Fn() -> akio_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn akio_webrtc::RtcServer::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn akio_webrtc::RtcServer::create_offer<H: akio_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
+pub fn akio_webrtc::RtcServer::create_offer_with<H: akio_webrtc::PeerHandler>(&self, akio_webrtc::RtcConfig, H, impl core::ops::function::FnOnce(&mut akio_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(akio_webrtc::Peer, alloc::string::String), akio_webrtc::Error>
 pub fn akio_webrtc::RtcServer::ice_lite(self, bool) -> Self
 pub fn akio_webrtc::RtcServer::max_peers(self, usize) -> Self
 pub fn akio_webrtc::RtcServer::new(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> akio_webrtc::RtcServer
@@ -809,10 +819,14 @@ impl core::marker::Unpin for akio_webrtc::RtcTcp
 impl !core::panic::unwind_safe::RefUnwindSafe for akio_webrtc::RtcTcp
 impl !core::panic::unwind_safe::UnwindSafe for akio_webrtc::RtcTcp
 #[non_exhaustive] pub struct akio_webrtc::RtpPacket
+pub akio_webrtc::RtpPacket::codec: core::option::Option<akio_webrtc::Codec>
+pub akio_webrtc::RtpPacket::extensions: akio_rtp::packet::ExtensionValues
 pub akio_webrtc::RtpPacket::marker: bool
+pub akio_webrtc::RtpPacket::mid: akio_webrtc::Mid
 pub akio_webrtc::RtpPacket::payload: alloc::rcs::arc::Arc<[u8]>
 pub akio_webrtc::RtpPacket::pt: akio_webrtc::Pt
 pub akio_webrtc::RtpPacket::received: std::time::Instant
+pub akio_webrtc::RtpPacket::rid: core::option::Option<alloc::string::String>
 pub akio_webrtc::RtpPacket::rtp_time: u32
 pub akio_webrtc::RtpPacket::seq_no: u64
 pub akio_webrtc::RtpPacket::ssrc: u32

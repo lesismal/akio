@@ -1615,6 +1615,7 @@ pub fn akio_rtp::SendStream::rtx_ssrc(&self) -> core::option::Option<u32>
 pub fn akio_rtp::SendStream::sender_report(&self, std::time::Instant, u64) -> core::option::Option<akio_rtp::SenderInfo>
 pub fn akio_rtp::SendStream::ssrc(&self) -> u32
 pub fn akio_rtp::SendStream::write(&mut self, std::time::Instant, u8, bool, u32, &[u8], &akio_rtp::ExtensionValues, &akio_rtp::ExtensionMap) -> alloc::vec::Vec<u8>
+pub fn akio_rtp::SendStream::write_with_seq(&mut self, std::time::Instant, u16, u8, bool, u32, &[u8], &akio_rtp::ExtensionValues, &akio_rtp::ExtensionMap) -> alloc::vec::Vec<u8>
 impl core::fmt::Debug for akio_rtp::SendStream
 pub fn akio_rtp::SendStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for akio_rtp::SendStream
