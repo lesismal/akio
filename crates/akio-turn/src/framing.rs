@@ -4,7 +4,8 @@
 //!
 //! [`frame_len`] measures the message at the head of a buffer; [`FrameReader`] cuts a stream
 //! into messages, handing complete ones out without copying when they arrive whole and keeping
-//! at most one partial message (bounded by [`MAX_FRAME`]) between reads.
+//! at most one partial message (bounded by [`MAX_FRAME`], or less with
+//! [`FrameReader::with_max`]) between reads.
 
 use std::fmt;
 
@@ -22,11 +23,16 @@ pub enum FrameError {
     /// The first byte of a message is neither STUN (`0b00`) nor ChannelData (`0b01`), or a
     /// STUN header lacks the magic cookie or has a length that is not a multiple of four.
     NotTurn,
+    /// A message claims more bytes than the reader takes ([`FrameReader::with_max`]).
+    TooLong,
 }
 
 impl fmt::Display for FrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("turn stream: neither STUN nor ChannelData")
+        f.write_str(match self {
+            FrameError::NotTurn => "turn stream: neither STUN nor ChannelData",
+            FrameError::TooLong => "turn stream: a message longer than allowed",
+        })
     }
 }
 
@@ -68,9 +74,16 @@ pub fn channel_data_padding(len: usize) -> usize {
 }
 
 /// Cuts a TURN stream into messages. Holds at most one incomplete message.
-#[derive(Default)]
 pub struct FrameReader {
     buf: Vec<u8>,
+    /// The longest message taken, padding included.
+    max: usize,
+}
+
+impl Default for FrameReader {
+    fn default() -> Self {
+        FrameReader::with_max(MAX_FRAME)
+    }
 }
 
 impl fmt::Debug for FrameReader {
@@ -82,9 +95,19 @@ impl fmt::Debug for FrameReader {
 }
 
 impl FrameReader {
-    /// An empty reader.
+    /// An empty reader taking every message TURN can carry ([`MAX_FRAME`]).
     pub fn new() -> FrameReader {
         FrameReader::default()
+    }
+
+    /// An empty reader taking messages of at most `max` bytes, padding included: one whose
+    /// header claims more is [`FrameError::TooLong`] as soon as its length is known, so that
+    /// at most `max` bytes are held. `max` above [`MAX_FRAME`] is `MAX_FRAME`.
+    pub fn with_max(max: usize) -> FrameReader {
+        FrameReader {
+            buf: Vec::new(),
+            max: max.min(MAX_FRAME),
+        }
     }
 
     /// Bytes held from an incomplete message.
@@ -115,7 +138,7 @@ impl FrameReader {
         while !self.buf.is_empty() {
             // Enough of the header to know the length (4 bytes for ChannelData, 8 for STUN:
             // never past the end of the shortest message, 4 bytes of empty ChannelData).
-            let Some(need) = frame_len(&self.buf)? else {
+            let Some(need) = self.frame_len(&self.buf)? else {
                 let hdr = if self.buf[0] >> 6 == 1 { 4 } else { 8 };
                 let take = data.len().min(hdr - self.buf.len());
                 if take == 0 {
@@ -139,7 +162,7 @@ impl FrameReader {
         }
         // Whole messages straight from the read buffer.
         loop {
-            match frame_len(data)? {
+            match self.frame_len(data)? {
                 Some(n) if n <= data.len() => {
                     let go = f(&data[..n]);
                     data = &data[n..];
@@ -152,11 +175,19 @@ impl FrameReader {
         }
         if !data.is_empty() {
             if self.buf.capacity() == 0 {
-                self.buf.reserve(2048.min(MAX_FRAME));
+                self.buf.reserve(2048.min(self.max));
             }
             self.buf.extend_from_slice(data);
         }
         Ok(&[])
+    }
+
+    /// [`frame_len`], and a message over the reader's bound refused.
+    fn frame_len(&self, buf: &[u8]) -> Result<Option<usize>, FrameError> {
+        match frame_len(buf)? {
+            Some(n) if n > self.max => Err(FrameError::TooLong),
+            n => Ok(n),
+        }
     }
 }
 
@@ -202,6 +233,49 @@ mod tests {
         assert_eq!(frame_len(&big), Ok(Some(MAX_FRAME)));
         assert_eq!(channel_data_padding(4), 0);
         assert_eq!(channel_data_padding(5), 3);
+    }
+
+    /// A reader with a bound takes a message of exactly that many bytes and refuses one that
+    /// claims more as soon as its header is in, holding no more than the bound.
+    #[test]
+    fn reader_bound() {
+        let mut r = FrameReader::with_max(64);
+        let mut got = Vec::new();
+        r.push(&channel(60), |m| got.push(m.len())).unwrap();
+        assert_eq!(got, [64]);
+        // Whole in one read, and cut after its header.
+        assert_eq!(
+            FrameReader::with_max(64).push(&channel(61), |_| {}),
+            Err(FrameError::TooLong)
+        );
+        let mut r = FrameReader::with_max(64);
+        r.push(&channel(200)[..3], |_| {}).unwrap();
+        assert_eq!(r.buffered(), 3);
+        assert_eq!(
+            r.push(&channel(200)[3..10], |_| {}),
+            Err(FrameError::TooLong)
+        );
+        // A STUN header claiming 1000 bytes, the first 8 alone.
+        let mut hdr = vec![0u8, 1, 0x03, 0xe8];
+        hdr.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        assert_eq!(
+            FrameReader::with_max(512).push(&hdr, |_| {}),
+            Err(FrameError::TooLong)
+        );
+        assert_eq!(FrameReader::new().push(&hdr, |_| {}), Ok(()));
+        // Messages before the long one were delivered.
+        let mut both = channel(4);
+        both.extend_from_slice(&channel(100));
+        let mut n = 0;
+        assert_eq!(
+            FrameReader::with_max(64).push(&both, |_| n += 1),
+            Err(FrameError::TooLong)
+        );
+        assert_eq!(n, 1);
+        // Above MAX_FRAME is MAX_FRAME.
+        let mut big = vec![0u8, 1, 0xff, 0xfc];
+        big.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        assert_eq!(FrameReader::with_max(usize::MAX).push(&big, |_| {}), Ok(()));
     }
 
     /// Every way of cutting a stream of messages gives the same messages back.

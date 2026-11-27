@@ -98,7 +98,8 @@ impl Pair {
 }
 
 impl TcpRelays {
-    /// Opens a relay listener on `addr` for an allocation in `shard`.
+    /// Opens a relay listener on `addr` for an allocation in `shard`: port 0 is any free port,
+    /// of `TurnConfig::relay_ports` when set.
     pub(crate) fn open(
         &self,
         inner: &Inner,
@@ -108,22 +109,63 @@ impl TcpRelays {
         let Some(accept) = self.accept_loop(inner) else {
             return Err(io::Error::other("no accept thread"));
         };
-        for _ in 0..BIND_TRIES {
-            let l = akio_sys::listen(addr, true, BACKLOG)?;
-            let bound = l.local_addr()?;
-            let token = self.next_token.fetch_add(1, Ordering::Relaxed) + 1;
-            {
-                let mut ls = lock(&self.listeners);
-                if ls.contains_key(&bound) {
-                    continue; // another relay's port: try again
+        if let (Some((min, max)), 0) = (inner.shared.config().relay_ports, addr.port()) {
+            // From a random port of the range on, as UDP relays.
+            let n = u32::from(max - min) + 1;
+            let mut r = [0u8; 4];
+            crate::fill_random(&mut r);
+            let start = u32::from_ne_bytes(r) % n;
+            for k in 0..n {
+                let a = SocketAddr::new(addr.ip(), min + ((start + k) % n) as u16);
+                if lock(&self.listeners).contains_key(&a) {
+                    continue; // one of ours
                 }
-                ls.insert(bound, (shard, token));
+                // `SO_REUSEPORT` would let the listener share a port another socket that sets
+                // it holds: a bind without it tells whether the port is free.
+                match akio_sys::listen(a, false, 1) {
+                    Ok(probe) => drop(probe),
+                    Err(e) if e.kind() == io::ErrorKind::AddrInUse => continue,
+                    Err(e) => return Err(e),
+                }
+                match self.listen_on(accept, a, shard) {
+                    Err(e) if e.kind() == io::ErrorKind::AddrInUse => {}
+                    r => return r,
+                }
             }
-            lock(&accept.cmds).push(Cmd::Add(token, l, bound));
-            accept.waker.wake();
-            return Ok(bound);
+            return Err(io::ErrorKind::AddrInUse.into());
+        }
+        for _ in 0..BIND_TRIES {
+            match self.listen_on(accept, addr, shard) {
+                // Another relay's port (with `SO_REUSEPORT` the kernel may hand out a port
+                // twice): try again.
+                Err(e) if e.kind() == io::ErrorKind::AddrInUse && addr.port() == 0 => {}
+                r => return r,
+            }
         }
         Err(io::ErrorKind::AddrInUse.into())
+    }
+
+    /// Listens on `addr` for an allocation in `shard`, unless the bound address is one of this
+    /// server's relays already (`AddrInUse`).
+    fn listen_on(
+        &self,
+        accept: &AcceptLoop,
+        addr: SocketAddr,
+        shard: usize,
+    ) -> io::Result<SocketAddr> {
+        let l = akio_sys::listen(addr, true, BACKLOG)?;
+        let bound = l.local_addr()?;
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut ls = lock(&self.listeners);
+            if ls.contains_key(&bound) {
+                return Err(io::ErrorKind::AddrInUse.into());
+            }
+            ls.insert(bound, (shard, token));
+        }
+        lock(&accept.cmds).push(Cmd::Add(token, l, bound));
+        accept.waker.wake();
+        Ok(bound)
     }
 
     /// Closes the relay listener bound at `relay`.

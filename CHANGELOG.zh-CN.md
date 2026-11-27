@@ -10,6 +10,17 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：中继端口范围、共享的 nonce 密钥与流消息上限（akio-turn）
+
+akit 的 A256，用于其 TURN 角色（fit 的 `port_min`/`port_max`、`nonce_secret` 与 `max_stream_message`）；
+ADR-186。`TurnConfig::relay_ports(min, max)`：中继地址只绑定在该范围内的端口上（防火墙开放的范围），从范围内
+一个随机端口开始尝试，跳过其他套接字占用的端口，范围用尽时以 508 应答；`EVEN-PORT` 与 TCP 分配的监听套接字也
+使用它。`TurnConfig::nonce_secret(&[u8])`：nonce 密钥由它派生，使同一负载均衡器后面的服务器互相接受对方的
+nonce；nonce 中的有效期现在以 UNIX 秒表示（格式不变），因此本变更之前的服务器发出的 nonce 会收到一次 438。
+`TurnConfig::max_stream_message(n)`（默认 `framing::MAX_FRAME`，与之前相同）：TCP 或 TLS 客户端的下一条消息
+声明的长度超过它时，一读到消息头就断开连接；读取器一侧为 `framing::FrameReader::with_max(n)` 与
+`FrameError::TooLong`。
+
 ### 新增：文件系统的大小与可用空间（akio-sys）
 
 akit 的 A249，供其 LLM 节点使用：节点报告每个已挂载文件系统的大小与可用空间（fit 用 `syscall.Statfs`

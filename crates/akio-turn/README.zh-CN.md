@@ -29,6 +29,9 @@
 - `client::TcpAllocation`：由 `akio` 引擎驱动的 TCP 分配，没有阻塞调用：控制连接及其定时器，`connect` /
   `accept` 的数据连接由应用自己的 acceptor 服务（ConnectionBind 是位于其 handler 之下的传输层）。
 - `TurnConfig::tcp_connect_timeout`（30 秒）：Connect 等待对端的时长，与引擎的 `connect_timeout` 无关。
+- 供嵌入它的服务器使用（ADR-186）：`TurnConfig::relay_ports`（中继地址使用防火墙开放的端口范围）、
+  `nonce_secret`（同一负载均衡器后面的服务器互相接受对方的 nonce）、`max_stream_message`（TCP 或 TLS
+  客户端可发送的最大消息）。
 - `TurnCore`：同一服务器的 sans-io 状态机。
 
 ```rust,no_run

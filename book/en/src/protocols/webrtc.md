@@ -725,6 +725,9 @@ Chrome is 4 packets paced and 7 unpaced. While the path is marked ECT(1), the qu
 | `copy_dscp` | true | relayed datagrams keep the DSCP they came with (next paragraphs); false sends DSCP 0 |
 | `copy_ttl` | true | relayed datagrams go out with the TTL / hop limit they came with minus one (next paragraphs); false sends the default |
 | `relay_icmp` | true | ICMP errors of datagrams to peers go back to the client (Linux, macOS) |
+| `relay_ports` | none | relays bind on ports of this range alone (a firewall's), tried from a random one; a port held elsewhere is skipped, a range used up answers 508 |
+| `nonce_secret` | none (random) | the nonce key is derived from it: servers behind one load balancer share it to take each other's nonces (expiries are UNIX seconds) |
+| `max_stream_message` | `framing::MAX_FRAME` | a TCP or TLS client whose next message claims more is disconnected |
 
 Allocate, Refresh, CreatePermission, ChannelBind, Send and Data indications, ChannelData,
 `EVEN-PORT` with `RESERVATION-TOKEN` and `REQUESTED-ADDRESS-FAMILY` are supported; requests are

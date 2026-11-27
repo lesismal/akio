@@ -10,6 +10,19 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a relay port range, a shared nonce secret and a stream message bound (akio-turn)
+
+akit's A256, for its TURN role (fit's `port_min`/`port_max`, `nonce_secret` and
+`max_stream_message`); ADR-186. `TurnConfig::relay_ports(min, max)`: relayed addresses are bound on
+ports of the range alone (the range a firewall opens), tried from a random port of it on, a port
+another socket holds skipped, a range used up answered 508; `EVEN-PORT` and TCP allocations'
+listeners take it too. `TurnConfig::nonce_secret(&[u8])`: the nonce key is derived from it, so that
+servers behind one load balancer take each other's nonces; nonces now carry their expiry in UNIX
+seconds (same format), so a nonce of a server from before this change gets a 438 once.
+`TurnConfig::max_stream_message(n)` (default `framing::MAX_FRAME`, as before): a TCP or TLS client
+whose next message claims more is disconnected as soon as its header is in;
+`framing::FrameReader::with_max(n)` and `FrameError::TooLong` are the reader's side.
+
 ### Added: a file system's size and free space (akio-sys)
 
 akit's A249, for its LLM node, which reports each mounted file system's size and free space (fit

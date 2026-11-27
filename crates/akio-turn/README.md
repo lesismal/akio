@@ -37,6 +37,9 @@ and DTLS listeners, and a sans-io TURN client.
   the application's own acceptor (the ConnectionBind is a transport layer under its handler).
 - `TurnConfig::tcp_connect_timeout` (30 s): how long a Connect waits for the peer, independent
   of the engine's `connect_timeout`.
+- For a server embedding it (ADR-186): `TurnConfig::relay_ports` (relayed addresses on a
+  firewall's range of ports), `nonce_secret` (servers behind one load balancer take each other's
+  nonces), `max_stream_message` (the largest message a TCP or TLS client may send).
 - `TurnCore`: the same server as a sans-io state machine.
 
 ```rust,no_run

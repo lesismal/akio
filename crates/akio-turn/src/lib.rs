@@ -229,8 +229,45 @@ impl Inner {
             .ok_or_else(|| io::Error::other("TurnServer::set_engine was not called"))
     }
 
-    /// Binds a relay socket whose peers' datagrams go to shard `route`.
+    /// Binds a relay socket whose peers' datagrams go to shard `route`: on `addr`, or, for
+    /// port 0, on a free port (of `TurnConfig::relay_ports` when set; a given port must be in
+    /// it).
     fn bind_relay(
+        &self,
+        addr: SocketAddr,
+        route: usize,
+    ) -> io::Result<(UdpBinding, Arc<AtomicUsize>)> {
+        let Some((min, max)) = self.shared.config().relay_ports else {
+            return self.bind_relay_at(addr, route);
+        };
+        if addr.port() != 0 {
+            if !(min..=max).contains(&addr.port()) {
+                return Err(io::ErrorKind::AddrNotAvailable.into());
+            }
+            return self.bind_relay_at(addr, route);
+        }
+        // From a random port of the range on, so that a port just freed (a peer may still be
+        // sending to it) is not handed out again at once.
+        let n = u32::from(max - min) + 1;
+        let mut r = [0u8; 4];
+        fill_random(&mut r);
+        let start = u32::from_ne_bytes(r) % n;
+        for k in 0..n {
+            let port = min + ((start + k) % n) as u16;
+            let a = SocketAddr::new(addr.ip(), port);
+            if lock(self.relays_of(a)).contains_key(&a) {
+                continue; // one of ours: no system call to learn it
+            }
+            match self.bind_relay_at(a, route) {
+                Err(e) if e.kind() == io::ErrorKind::AddrInUse => {}
+                r => return r,
+            }
+        }
+        Err(io::ErrorKind::AddrInUse.into())
+    }
+
+    /// [`bind_relay`](Self::bind_relay) on `addr` as it is.
+    fn bind_relay_at(
         &self,
         addr: SocketAddr,
         route: usize,
@@ -843,7 +880,7 @@ impl Acceptor for TurnStream {
         TurnStreamClient {
             inner: self.0.clone(),
             shard,
-            reader: framing::FrameReader::new(),
+            reader: framing::FrameReader::with_max(self.0.shared.config().max_stream_message),
             peer: None,
         }
     }

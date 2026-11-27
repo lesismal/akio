@@ -17,9 +17,9 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use akio_crypto::hash::Sha1;
+use akio_crypto::hash::{Sha1, Sha256};
 use akio_crypto::mac::Hmac;
 
 use crate::auth::AuthFn;
@@ -286,6 +286,28 @@ pub struct TurnConfig {
     ///
     /// [`TurnServer`]: crate::TurnServer
     pub relay_icmp: bool,
+    /// The ports relayed addresses are bound on, `min` to `max` (both included): the range a
+    /// firewall in front of the server opens. `None` (the default) leaves each port to the
+    /// kernel. [`TurnServer`] tries the range from a random port of it on (so that a port just
+    /// freed, which a peer may still be sending to, is not handed out again at once) and skips
+    /// a port another socket holds; when every port is taken, the Allocate is refused with 508
+    /// (Insufficient Capacity). `EVEN-PORT` allocations take an even port of the range, and
+    /// the odd port they set aside above it must be in the range too; the listeners of TCP
+    /// allocations (RFC 6062) are bound in it as well. Both families use the same range.
+    ///
+    /// [`TurnServer`]: crate::TurnServer
+    pub relay_ports: Option<(u16, u16)>,
+    /// What the nonces' key is derived from. `None` (the default): random bytes of the
+    /// server's own. Servers that one load balancer spreads a client's requests over share a
+    /// secret, so that each takes the nonces of the others: a nonce is its expiry, in UNIX
+    /// seconds, and an HMAC of it and the client's address under the key (the servers' clocks
+    /// should agree within a few seconds). Not shown by `Debug`.
+    pub nonce_secret: Option<Vec<u8>>,
+    /// The largest message a TCP or TLS client may send, STUN or ChannelData, its padding
+    /// included: what its connection holds of a message not yet whole. A connection whose next
+    /// message claims more is closed. Default (and most):
+    /// [`framing::MAX_FRAME`](crate::framing::MAX_FRAME), every message TURN can carry.
+    pub max_stream_message: usize,
 }
 
 impl fmt::Debug for TurnConfig {
@@ -295,8 +317,10 @@ impl fmt::Debug for TurnConfig {
             .field("relay_ip", &self.relay_ip)
             .field("public_ip", &self.public_ip)
             .field("additional_relay_ip", &self.additional_relay_ip)
+            .field("relay_ports", &self.relay_ports)
             .field("default_lifetime", &self.default_lifetime)
             .field("max_allocations", &self.max_allocations)
+            .field("max_stream_message", &self.max_stream_message)
             .finish_non_exhaustive()
     }
 }
@@ -332,7 +356,33 @@ impl TurnConfig {
             copy_dscp: true,
             copy_ttl: true,
             relay_icmp: true,
+            relay_ports: None,
+            nonce_secret: None,
+            max_stream_message: crate::framing::MAX_FRAME,
         }
+    }
+
+    /// Sets [`relay_ports`](Self::relay_ports): relayed addresses on ports `min` to `max` (in
+    /// either order; port 0 is never one).
+    #[must_use]
+    pub fn relay_ports(mut self, min: u16, max: u16) -> Self {
+        let (lo, hi) = (min.min(max).max(1), max.max(min).max(1));
+        self.relay_ports = Some((lo, hi));
+        self
+    }
+
+    /// Sets [`nonce_secret`](Self::nonce_secret).
+    #[must_use]
+    pub fn nonce_secret(mut self, secret: &[u8]) -> Self {
+        self.nonce_secret = Some(secret.to_vec());
+        self
+    }
+
+    /// Sets [`max_stream_message`](Self::max_stream_message).
+    #[must_use]
+    pub fn max_stream_message(mut self, n: usize) -> Self {
+        self.max_stream_message = n;
+        self
     }
 
     /// Sets [`public_ip`](Self::public_ip).
@@ -610,6 +660,9 @@ pub(crate) struct Shared {
     cfg: TurnConfig,
     nonce_key: [u8; 32],
     epoch: Instant,
+    /// `epoch` in UNIX seconds: nonces carry absolute expiries, so that servers sharing a
+    /// `nonce_secret` take each other's.
+    epoch_unix: u64,
     /// Allocations open in all shards.
     allocations: AtomicUsize,
     /// Allocations open per username (only users with at least one).
@@ -621,16 +674,35 @@ pub(crate) struct Shared {
     next_conn: AtomicU32,
 }
 
+/// The nonce key derived from a shared `nonce_secret`.
+fn nonce_key_of(secret: &[u8]) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new(b"akio-turn nonce key");
+    mac.update(secret);
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&mac.finalize()[..32]);
+    key
+}
+
 impl Shared {
     pub(crate) fn new(cfg: TurnConfig) -> Shared {
-        let mut nonce_key = [0u8; 32];
-        crate::fill_random(&mut nonce_key);
+        let nonce_key = match &cfg.nonce_secret {
+            Some(secret) => nonce_key_of(secret),
+            None => {
+                let mut k = [0u8; 32];
+                crate::fill_random(&mut k);
+                k
+            }
+        };
         let mut start = [0u8; 4];
         crate::fill_random(&mut start);
+        let epoch_unix = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         Shared {
             cfg,
             nonce_key,
             epoch: Instant::now(),
+            epoch_unix,
             allocations: AtomicUsize::new(0),
             per_user: Mutex::new(HashMap::new()),
             reservations: Mutex::new(HashMap::new()),
@@ -680,9 +752,10 @@ impl Shared {
     }
 
     fn nonce(&self, now: Instant, client: SocketAddr) -> String {
-        let exp = (now + self.cfg.nonce_lifetime)
-            .saturating_duration_since(self.epoch)
-            .as_secs();
+        let exp = self.epoch_unix
+            + (now + self.cfg.nonce_lifetime)
+                .saturating_duration_since(self.epoch)
+                .as_secs();
         format!("{exp:016x}{}", self.nonce_mac(exp, client))
     }
 
@@ -703,7 +776,7 @@ impl Shared {
         let Ok(exp) = u64::from_str_radix(&nonce[..16], 16) else {
             return false;
         };
-        let now_s = now.saturating_duration_since(self.epoch).as_secs();
+        let now_s = self.epoch_unix + now.saturating_duration_since(self.epoch).as_secs();
         exp >= now_s && nonce[16..] == self.nonce_mac(exp, client)
     }
 
@@ -2291,6 +2364,7 @@ impl TurnCore {
         let mut sh = Shared::new(self.shared.cfg.clone());
         sh.nonce_key = [0x42; 32];
         sh.epoch = start;
+        sh.epoch_unix = 0;
         sh.next_conn = AtomicU32::new(1);
         self.shared = Arc::new(sh);
     }
@@ -2346,6 +2420,9 @@ fn unknown_required(m: &Message<'_>, df_known: bool) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests_dual;
+
+#[cfg(test)]
+mod tests_hooks;
 
 #[cfg(test)]
 mod tests {
@@ -2662,6 +2739,7 @@ mod tests {
         let mut sh = Shared::new(cfg);
         sh.nonce_key = core.shared.nonce_key;
         sh.epoch = core.shared.epoch;
+        sh.epoch_unix = core.shared.epoch_unix;
         core.shared = Arc::new(sh);
         let peer3: SocketAddr = "10.1.1.2:5557".parse().unwrap();
         let id3 = core.tcp_incoming(now, relay, peer3, &mut env).unwrap();
@@ -2685,6 +2763,7 @@ mod tests {
         let mut sh = Shared::new(cfg);
         sh.nonce_key = core.shared.nonce_key;
         sh.epoch = core.shared.epoch;
+        sh.epoch_unix = core.shared.epoch_unix;
         core.shared = Arc::new(sh);
         assert_eq!(
             core.tcp_incoming(now, relay, "10.1.1.2:1".parse().unwrap(), &mut env),
@@ -2771,6 +2850,7 @@ mod tests {
         let mut sh = Shared::new(cfg);
         sh.nonce_key = core.shared.nonce_key;
         sh.epoch = core.shared.epoch;
+        sh.epoch_unix = core.shared.epoch_unix;
         core.shared = Arc::new(sh);
         core.handle_client(now, CLIENT, &authed(&core, now, CLIENT, tcp()), &mut env);
         assert_eq!(env.last().2, Some(442));

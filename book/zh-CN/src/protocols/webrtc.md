@@ -596,6 +596,9 @@ pacing 时为 4 个包，不 pacing 时为 7 个。路径标记 ECT(1) 期间，
 | `copy_dscp` | true | 中继的数据报保留到达时的 DSCP（见下文）；false 时发出 DSCP 0 |
 | `copy_ttl` | true | 中继的数据报以到达时的 TTL / 跳数限制减 1 发出（见下文）；false 时用默认值 |
 | `relay_icmp` | true | 发往对端的数据报引起的 ICMP 错误转告客户端（Linux、macOS） |
+| `relay_ports` | 无 | 中继只绑定在该范围内的端口上（防火墙开放的范围），从随机一个开始尝试；跳过别处占用的端口，范围用尽时应答 508 |
+| `nonce_secret` | 无（随机） | nonce 密钥由它派生：同一负载均衡器后面的服务器共用它，互相接受对方的 nonce（有效期为 UNIX 秒） |
+| `max_stream_message` | `framing::MAX_FRAME` | TCP 或 TLS 客户端的下一条消息声明的长度超过它时断开连接 |
 
 支持 Allocate、Refresh、CreatePermission、ChannelBind、Send 与 Data 指示、ChannelData、带
 `RESERVATION-TOKEN` 的 `EVEN-PORT` 以及 `REQUESTED-ADDRESS-FAMILY`；请求通过
