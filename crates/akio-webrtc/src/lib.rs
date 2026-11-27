@@ -1150,9 +1150,16 @@ impl Hub {
             .clone()
     }
 
-    fn new_rtc(&self) -> Result<Rtc, Error> {
-        let config = lock(&self.config).clone();
-        let mut rtc = Rtc::new(config().0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
+    /// A new peer's stack with `config`, or the hub's configuration.
+    fn new_rtc(&self, config: Option<RtcConfig>) -> Result<Rtc, Error> {
+        let config = match config {
+            Some(c) => c,
+            None => {
+                let f = lock(&self.config).clone();
+                f()
+            }
+        };
+        let mut rtc = Rtc::new(config.0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
         let cs = lock(&self.candidates).clone();
         for c in cs {
             if self.uses(&c) {
@@ -1212,13 +1219,14 @@ impl Hub {
 
     fn accept_offer(
         self: &Arc<Hub>,
+        config: Option<RtcConfig>,
         offer: &str,
         handler: Box<dyn PeerHandler>,
     ) -> Result<(Peer, String), Error> {
         if self.full() {
             return Err(Error::TooManyPeers); // before paying for the DTLS identity and SDP
         }
-        let mut rtc = self.new_rtc()?;
+        let mut rtc = self.new_rtc(config)?;
         let answer = rtc.accept_offer(Instant::now(), offer).map_err(sdp_err)?;
         let p = self.register(rtc, handler)?;
         p.drive();
@@ -1227,13 +1235,14 @@ impl Hub {
 
     fn create_offer(
         self: &Arc<Hub>,
+        config: Option<RtcConfig>,
         handler: Box<dyn PeerHandler>,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
         if self.full() {
             return Err(Error::TooManyPeers);
         }
-        let mut rtc = self.new_rtc()?;
+        let mut rtc = self.new_rtc(config)?;
         let mut ch = rtc.changes();
         f(&mut SdpChanges(&mut ch));
         let offer = rtc
@@ -1665,7 +1674,21 @@ impl RtcServer {
         offer: &str,
         handler: H,
     ) -> Result<(Peer, String), Error> {
-        self.0.accept_offer(offer, Box::new(handler))
+        self.0.accept_offer(None, offer, Box::new(handler))
+    }
+
+    /// [`accept_offer`](Self::accept_offer) with a configuration of this peer's own in place
+    /// of the server's ([`config`](Self::config)): the codecs a media server answers a
+    /// publisher with, then that stream's viewers with the same, RTP mode, timeouts ... The
+    /// crypto provider and the ICE mode are set over it as over the server's; the server's
+    /// candidates, peer limit and connect timeout apply.
+    pub fn accept_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        offer: &str,
+        handler: H,
+    ) -> Result<(Peer, String), Error> {
+        self.0.accept_offer(Some(config), offer, Box::new(handler))
     }
 
     /// Starts a new peer with an offer made by `f` (add media, data channels); returns the
@@ -1675,7 +1698,18 @@ impl RtcServer {
         handler: H,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
-        self.0.create_offer(Box::new(handler), f)
+        self.0.create_offer(None, Box::new(handler), f)
+    }
+
+    /// [`create_offer`](Self::create_offer) with a configuration of this peer's own, as
+    /// [`accept_offer_with`](Self::accept_offer_with).
+    pub fn create_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        handler: H,
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
+    ) -> Result<(Peer, String), Error> {
+        self.0.create_offer(Some(config), Box::new(handler), f)
     }
 
     /// Open peers.
@@ -2390,7 +2424,18 @@ impl Endpoint {
         handler: H,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
-        self.0.create_offer(Box::new(handler), f)
+        self.0.create_offer(None, Box::new(handler), f)
+    }
+
+    /// [`create_offer`](Self::create_offer) with a configuration of this peer's own in place
+    /// of the endpoint's ([`config`](Self::config)), as [`RtcServer::accept_offer_with`].
+    pub fn create_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        handler: H,
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
+    ) -> Result<(Peer, String), Error> {
+        self.0.create_offer(Some(config), Box::new(handler), f)
     }
 
     /// Accepts a remote SDP offer for a new peer; returns the peer and the SDP answer.
@@ -2399,7 +2444,18 @@ impl Endpoint {
         offer: &str,
         handler: H,
     ) -> Result<(Peer, String), Error> {
-        self.0.accept_offer(offer, Box::new(handler))
+        self.0.accept_offer(None, offer, Box::new(handler))
+    }
+
+    /// [`accept_offer`](Self::accept_offer) with a configuration of this peer's own, as
+    /// [`RtcServer::accept_offer_with`].
+    pub fn accept_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        offer: &str,
+        handler: H,
+    ) -> Result<(Peer, String), Error> {
+        self.0.accept_offer(Some(config), offer, Box::new(handler))
     }
 
     /// Open peers.

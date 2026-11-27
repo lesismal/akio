@@ -10,6 +10,14 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a peer's own configuration on an `RtcServer` (akio-webrtc)
+
+akit's A259, for its WHIP/WHEP media server, which answers a publisher with one codec of each kind
+and that stream's viewers with the same codecs. `RtcServer::accept_offer_with(config, offer,
+handler)` and `create_offer_with(config, handler, f)` (and the same on `Endpoint`) build the peer
+from `config` instead of the server's configuration closure; the ICE mode, candidates, peer limit
+and connect timeout stay the server's.
+
 ### Added: a file system's size and free space (akio-sys)
 
 akit's A249, for its LLM node, which reports each mounted file system's size and free space (fit

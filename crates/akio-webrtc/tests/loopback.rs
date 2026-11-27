@@ -466,3 +466,51 @@ fn icmp_fails_a_host_check_to_a_closed_port() {
     b.close();
     e.shutdown();
 }
+
+#[test]
+fn a_peers_own_configuration_over_the_servers() {
+    // A259: the server's configuration offers every codec; one peer is answered, and another
+    // offered, with VP8 and Opus only.
+    let server = RtcServer::new(vec!["127.0.0.1:9".parse().unwrap()]);
+    let (e, _) = engine_with(None);
+    let ep = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let picked = || {
+        akio_webrtc::rtc_config()
+            .clear_codecs()
+            .enable_vp8(true)
+            .enable_opus(true)
+    };
+    let offer = |cfg: Option<akio_webrtc::RtcConfig>| {
+        let f = |api: &mut akio_webrtc::SdpChanges<'_, '_>| {
+            api.add_media(MediaKind::Audio, Direction::SendOnly, None, None);
+            api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
+        };
+        match cfg {
+            Some(c) => ep.create_offer_with(c, Echo, f),
+            None => ep.create_offer(Echo, f),
+        }
+        .unwrap()
+    };
+    let (_, full) = offer(None);
+    assert!(full.contains("H264") && full.contains("VP8"), "{full}");
+    let (_, own) = offer(Some(picked()));
+    assert!(own.contains("VP8") && !own.contains("H264"), "{own}");
+    let (_, answer) = server.accept_offer(&full, Echo).unwrap();
+    assert!(answer.contains("H264"), "{answer}");
+    let (_, answer) = server.accept_offer_with(picked(), &full, Echo).unwrap();
+    assert!(
+        answer.contains("VP8") && answer.contains("opus") && !answer.contains("H264"),
+        "{answer}"
+    );
+    // The server's limit still applies to peers with their own configuration.
+    let server = server.max_peers(1);
+    assert_eq!(server.peers(), 2);
+    assert!(matches!(
+        server.accept_offer_with(picked(), &full, Echo),
+        Err(akio_webrtc::Error::TooManyPeers)
+    ));
+    server.close_all();
+    ep.close();
+    e.shutdown();
+    e.wait();
+}

@@ -10,6 +10,13 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：`RtcServer` 上 peer 自己的配置（akio-webrtc）
+
+akit 的 A259，用于其 WHIP/WHEP 媒体服务器：对发布者每种媒体只应答一个编解码器，对该流的观众应答同样的
+编解码器。`RtcServer::accept_offer_with(config, offer, handler)` 与 `create_offer_with(config, handler,
+f)`（`Endpoint` 上同样有）用 `config` 而不是服务器的配置闭包构建 peer；ICE 模式、候选、peer 上限与连接
+超时仍是服务器的。
+
 ### 新增：文件系统的大小与可用空间（akio-sys）
 
 akit 的 A249，供其 LLM 节点使用：节点报告每个已挂载文件系统的大小与可用空间（fit 用 `syscall.Statfs`
