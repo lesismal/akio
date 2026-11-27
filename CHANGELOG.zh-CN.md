@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：引擎优雅关闭时 `H2Client` 的连接随之结束（akio-http）
+
+akit 的 A301。HTTP/1 客户端在 `Engine::shutdown` 时关闭其空闲连接，而 `H2Client` 的连接（来自
+`dial`、`dial_blocking` 或 `connect`，明文或 TLS）会一直保持打开，因此像连接池那样留作后续请求的连接
+会让 `Engine::wait` 一直等到 `Config::shutdown_timeout`，之后才被强制关闭。现在连接的 acceptor 会像
+收到服务器的 `GOAWAY` 那样结束它：发送 `GOAWAY(NO_ERROR)`，`H2Client::is_open` 变为 `false`，等待流的
+请求和新请求（`send`、`request`、`open`）不会发出，以 `ClientError::Refused` 失败（`websocket` 以
+`ClientError::Closed` 失败）；没有打开的流时连接立即关闭，否则在最后一个流（响应、上传、WebSocket）
+结束后关闭；打开的 WebSocket 以 going away（1001）关闭，与 HTTP/1 客户端一致。`GOAWAY` 之后承诺的推送会被拒绝。API 不变；基于 `H2Client` 的 akio-grpc 客户端同样受益。
+
 ### 变更：epoll/kqueue 上 TCP listener 的默认调度改为工作窃取（akio）
 
 epoll/kqueue 上、没有 BPF 引流、也没有调用 `Listener::scheduling` 的 TCP 或 Unix 域流 listener，现在

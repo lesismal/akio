@@ -1325,3 +1325,102 @@ fn cancel_token_resets_its_streams_and_fails_them_once() {
     assert_eq!(c.send(get("/after")).wait().unwrap().body, b"after");
     stop(&e, t);
 }
+
+// ---- the engine's graceful shutdown (akit's A301) ---------------------------------------------
+
+/// A client engine whose `shutdown_timeout` (20 s) a connection left open would sit out.
+fn patient_engine() -> akio::EngineBuilder {
+    Engine::builder()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_secs(20);
+            v
+        })
+        .client_threads(1)
+}
+
+/// Well under the engine's `shutdown_timeout`: the connections closed of themselves.
+const PROMPT: Duration = Duration::from_secs(10);
+
+/// The GOAWAY the client sent: `NO_ERROR`, last stream 0 (it took no push).
+fn client_goaway(srv: &mut Srv) -> Vec<u8> {
+    srv.until(|f| f.ty == GOAWAY)
+        .expect("the client's GOAWAY")
+        .payload
+}
+
+#[test]
+fn engine_shutdown_closes_an_idle_connection_at_once() {
+    let (tx, rx) = mpsc::channel();
+    let (e, c, t) = setup_on(
+        patient_engine(),
+        H2Options::default(),
+        &[(3, 100)],
+        move |srv| {
+            let (sid, _) = srv.request();
+            srv.respond(sid, b"one");
+            tx.send(client_goaway(srv)).unwrap();
+        },
+    );
+    assert_eq!(c.send(get("/one")).wait().unwrap().body, b"one");
+    assert!(c.is_open());
+    // Idle, as in a pool: the shutdown no longer waits for it.
+    let t0 = std::time::Instant::now();
+    e.shutdown();
+    e.wait();
+    assert!(t0.elapsed() < PROMPT, "{:?}", t0.elapsed());
+    assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), [0; 8]);
+    assert!(!c.is_open());
+    let r = c.send(get("/late")).wait();
+    assert!(matches!(r, Err(ClientError::Closed)), "{r:?}");
+    t.join().unwrap();
+}
+
+#[test]
+fn engine_shutdown_lets_the_stream_in_flight_end_then_closes() {
+    let (ready_tx, ready) = mpsc::channel();
+    let (seen_tx, seen) = mpsc::channel();
+    let (go_tx, go) = mpsc::channel::<()>();
+    let (e, c, t) = setup_on(
+        patient_engine(),
+        H2Options::default(),
+        &[(3, 1)],
+        move |srv| {
+            // The client has the stream limit (1) once it answers a PING sent after it.
+            srv.send(PING, 0, 0, b"limit-1!");
+            srv.until(|f| f.ty == PING && f.flags & ACK != 0).unwrap();
+            ready_tx.send(()).unwrap();
+            let (sid, _) = srv.request();
+            seen_tx.send(client_goaway(srv)).unwrap();
+            go.recv_timeout(Duration::from_secs(5)).unwrap();
+            srv.respond(sid, b"in flight");
+            // Neither the request waiting for a stream nor the late one is ever sent, and the
+            // client hangs up once the stream is over.
+            while let Some(f) = srv.read() {
+                assert_ne!(f.ty, HEADERS, "a stream started after the shutdown");
+            }
+        },
+    );
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let busy = c.send(get("/busy"));
+    // Past the server's limit: waits for a stream.
+    let queued = c.send(get("/queued"));
+    let t0 = std::time::Instant::now();
+    e.shutdown();
+    let waiter = thread::spawn(move || e.wait());
+    assert_eq!(seen.recv_timeout(Duration::from_secs(5)).unwrap(), [0; 8]);
+    // As after the server's GOAWAY: no new stream, the waiting request refused, not sent.
+    assert!(!c.is_open());
+    let r = queued.wait();
+    assert!(matches!(r, Err(ClientError::Refused)), "{r:?}");
+    let r = c.send(get("/late")).wait();
+    assert!(matches!(r, Err(ClientError::Refused)), "{r:?}");
+    let (on_event, evs) = recorder();
+    let _up = c.open(get("/late-stream"), on_event);
+    assert_eq!(until_over(&evs), ["error Refused"]);
+    go_tx.send(()).unwrap();
+    assert_eq!(busy.wait().unwrap().body, b"in flight");
+    waiter.join().unwrap();
+    assert!(t0.elapsed() < PROMPT, "{:?}", t0.elapsed());
+    t.join().unwrap();
+}

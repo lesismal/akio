@@ -534,6 +534,63 @@ fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
     stop(&e);
 }
 
+/// akit's A301: an idle connection of `H2Client::connect` (TLS, Happy Eyeballs) on an engine
+/// of its own ends at that engine's graceful shutdown: `wait` does not sit out its 20 s
+/// `shutdown_timeout`. The server is on another engine, so only the client can end it.
+#[test]
+fn tls_connection_idle_at_the_engine_shutdown_ends_at_once() {
+    let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
+    let scfg = akio::tls::ServerConfig::builder(
+        vec![akio::tls::Certificate::from_der(cert.clone())],
+        akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
+    )
+    .alpn(["h2"])
+    .build()
+    .unwrap();
+    let server = start(Tls::server(scfg, serve(app())));
+    let port = server.local_addrs()[0].port();
+    let mut roots = akio::tls::RootCerts::empty();
+    roots.add(&akio::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = akio::tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["h2"])
+        .build()
+        .unwrap();
+    let e = Arc::new(
+        Engine::builder()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_secs(20);
+                v
+            })
+            .client_threads(1)
+            .build()
+            .unwrap(),
+    );
+    e.start().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    H2Client::connect(
+        &e,
+        "127.0.0.1",
+        port,
+        Some((ccfg, "localhost")),
+        H2Options::default(),
+        move |r| {
+            let _ = tx.send(r);
+        },
+    );
+    let c = rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+    let url = format!("https://localhost:{port}/hello");
+    let r = c.send(ClientRequest::get(&url)).wait().unwrap();
+    assert_eq!(r.body, b"hello h2");
+    let t0 = std::time::Instant::now();
+    stop(&e);
+    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+    assert!(!c.is_open());
+    stop(&server);
+}
+
 #[test]
 fn tls_dial_fails_with_not_h2_when_alpn_chooses_http1() {
     let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();

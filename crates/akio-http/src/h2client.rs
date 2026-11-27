@@ -27,6 +27,13 @@
 //! [`H2Options::max_pending_streams`]. After the server's `GOAWAY`, [`H2Client::is_open`] is
 //! `false` and the requests it did not process fail with [`ClientError::Refused`].
 //!
+//! The engine's graceful shutdown ([`Engine::shutdown`]) ends a connection as the server's
+//! `GOAWAY` would: it sends `GOAWAY(NO_ERROR)`, [`H2Client::is_open`] turns `false`, requests
+//! waiting for a stream and new ones fail with [`ClientError::Refused`], and the connection
+//! closes at once when no stream is open, else once its last stream is over (open WebSockets
+//! are closed with going away, 1001), so an idle pooled connection does not hold
+//! [`Engine::wait`] until the shutdown timeout.
+//!
 //! Requests heed [`ClientRequest::response_header_timeout`] (from the request's END_STREAM to
 //! the final response's HEADERS), [`ClientRequest::response_idle_timeout`] (the longest gap
 //! between DATA frames from the head on, held reads not counted) and
@@ -1295,7 +1302,7 @@ impl H2Client {
     }
 
     /// Whether the connection can still take requests: it is open, and no `GOAWAY` came (nor
-    /// was sent by [`close`](Self::close)).
+    /// was sent by [`close`](Self::close) or the engine's graceful shutdown).
     pub fn is_open(&self) -> bool {
         !self.shared.goaway.load(Ordering::Acquire) && self.conn.is_open()
     }
@@ -1377,6 +1384,15 @@ impl Acceptor for H2Acceptor {
             }
         }
         h
+    }
+
+    // A graceful engine shutdown (akit's A301): GOAWAY, no new streams, and the connection
+    // closed once no stream is open (at once when idle). Without it an idle connection held
+    // `Engine::wait` until `shutdown_timeout`, as the HTTP/1 client's did (`DialAcceptor`).
+    fn on_shutdown(&self, c: &Conn<H2Conn>) {
+        if c.run_on_loop(|h: &mut H2Conn, c| h.shutdown(c)).is_err() {
+            c.close();
+        }
     }
 }
 
@@ -1500,6 +1516,10 @@ pub struct H2Conn {
     cont: Option<(u32, Option<u32>, Vec<u8>, bool)>,
     goaway: bool,
     dead: bool,
+    /// The engine is shutting down (A301): the connection closes once no stream is open.
+    closing: bool,
+    /// The highest pushed stream taken, the last stream of a GOAWAY this side sends.
+    last_push: u32,
     /// The server's first SETTINGS arrived, and whether it allows extended CONNECT.
     got_settings: bool,
     connect_protocol: bool,
@@ -1548,6 +1568,8 @@ impl H2Conn {
             cont: None,
             goaway: false,
             dead: false,
+            closing: false,
+            last_push: 0,
             got_settings: false,
             connect_protocol: false,
             ws_wait: Vec::new(),
@@ -1562,6 +1584,50 @@ impl H2Conn {
             resets: Vec::new(),
             head_waits: Vec::new(),
             ready: None,
+        }
+    }
+
+    /// The engine is shutting down (A301): `GOAWAY(NO_ERROR)`, no new streams (requests are
+    /// refused as after the server's GOAWAY), and the connection closed once its last stream
+    /// is over.
+    fn shutdown(&mut self, c: &Conn<Self>) {
+        if self.dead || self.closing {
+            return;
+        }
+        self.closing = true;
+        self.goaway = true;
+        self.shared.goaway.store(true, Ordering::Release);
+        // Never sent: another connection may take them.
+        let pending = std::mem::take(&mut self.pending);
+        self.count_waiting();
+        for p in pending {
+            fail_unstarted(p.cb, p.streaming, ClientError::Refused);
+        }
+        for w in std::mem::take(&mut self.ws_wait) {
+            w.done.fail(ClientError::Closed);
+        }
+        // Open WebSockets are told the client is going away (1001), as the HTTP/1 client's
+        // are; their streams end with the close handshake.
+        for st in self.streams.values() {
+            if let Some(CWs(WsState::Open(s, _))) = st.ws.as_deref() {
+                s.sender()
+                    .close(akio_ws::protocol::close::GOING_AWAY, "going away");
+            }
+        }
+        let mut out = Vec::new();
+        let mut p = self.last_push.to_be_bytes().to_vec();
+        p.extend_from_slice(&err::NO_ERROR.to_be_bytes());
+        frame(&mut out, ty::GOAWAY, 0, 0, &p);
+        let _ = c.send_owned(out);
+        self.close_if_drained(c);
+    }
+
+    /// While the engine shuts down: closes the connection once no stream is left.
+    fn close_if_drained(&mut self, c: &Conn<Self>) {
+        if self.closing && !self.dead && self.streams.is_empty() {
+            // Nothing is left to fail: this marks the connection over.
+            self.fail_all(ClientError::Closed);
+            c.close_after_send();
         }
     }
 
@@ -1697,6 +1763,7 @@ impl H2Conn {
             self.count_waiting();
             self.begin(c, p.req, p.cb, p.streaming, p.ctl);
         }
+        self.close_if_drained(c);
     }
 
     /// Starts a request on a stream, or queues it while the server's stream limit is reached.
@@ -2025,6 +2092,7 @@ impl H2Conn {
             let _ = c.send_owned(out);
         }
         self.ws_finish(sid);
+        self.close_if_drained(c);
     }
 
     /// A WebSocket's stream whose halves have both ended is done.
@@ -2354,7 +2422,9 @@ impl H2Conn {
             if pid % 2 == 1 || pid == 0 || self.streams.contains_key(&pid) {
                 return self.conn_error(c, err::PROTOCOL, "bad promised stream");
             }
+            // Past this side's GOAWAY (the engine shutting down) no push is taken.
             let refuse = !self.opts.enable_push
+                || self.closing
                 || size > limit
                 || self
                     .streams
@@ -2387,6 +2457,7 @@ impl H2Conn {
             st.pushed_path = Some(path);
             st.parent = Some(sid);
             self.streams.insert(pid, st);
+            self.last_push = self.last_push.max(pid);
             return;
         }
         if size > limit {

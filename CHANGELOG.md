@@ -10,6 +10,20 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: an `H2Client` connection ends at the engine's graceful shutdown (akio-http)
+
+akit's A301. The HTTP/1 client closes its idle connections at `Engine::shutdown`, but an
+`H2Client` connection (from `dial`, `dial_blocking` or `connect`, plain or TLS) stayed open
+through it, so a connection kept for later requests, as a pool keeps one, held `Engine::wait`
+until `Config::shutdown_timeout` and was then forced closed. The connection's acceptor now ends
+it as the server's `GOAWAY` would: it sends `GOAWAY(NO_ERROR)`, `H2Client::is_open` turns
+`false`, requests waiting for a stream and new ones (`send`, `request`, `open`) fail with
+`ClientError::Refused` without being sent (`websocket` with `ClientError::Closed`), and the
+connection closes at once when no stream is open, else once its last stream (a response, an
+upload, a WebSocket) is over; open WebSockets are closed with going away (1001), as the
+HTTP/1 client's are. Pushes promised after the `GOAWAY` are refused. No API change;
+akio-grpc's client, which rides on `H2Client`, gets the same.
+
 ### Changed: work stealing is the default scheduling of TCP listeners on epoll/kqueue (akio)
 
 A TCP or Unix-domain stream listener on epoll/kqueue without BPF steering that does not call

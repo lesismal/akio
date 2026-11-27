@@ -449,6 +449,42 @@ fn shutdown_closes_websockets_with_going_away() {
     stop(&ce);
 }
 
+/// akit's A301: the client engine's graceful shutdown closes its WebSockets over HTTP/2 with
+/// going away (1001), then the connection, well before its 20 s `shutdown_timeout`.
+#[test]
+fn client_engine_shutdown_closes_websockets_with_going_away() {
+    let srv = start();
+    let addr = srv.e.local_addrs()[0];
+    let ce = Engine::builder()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_secs(20);
+            v
+        })
+        .client_threads(1)
+        .build()
+        .unwrap();
+    ce.start().unwrap();
+    let c = H2Client::dial_blocking(&ce, addr, None, H2Options::default()).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let ws = c
+        .websocket_blocking(&format!("http://{addr}/ws"), &ws_opts(), Rec(tx))
+        .unwrap();
+    ws.send_text("before").unwrap();
+    assert_eq!(next(&rx), Ev::Msg(Message::Text("before".into())));
+    let t0 = std::time::Instant::now();
+    ce.shutdown();
+    assert_eq!(
+        srv.closed.recv_timeout(WAIT).unwrap(),
+        Ev::Close(Some(1001))
+    );
+    assert_eq!(next(&rx), Ev::Close(Some(1001)));
+    ce.wait();
+    assert!(t0.elapsed() < WAIT, "{:?}", t0.elapsed());
+    assert!(!c.is_open());
+    stop(&srv.e);
+}
+
 // ---- frame level ---------------------------------------------------------------------------
 
 const DATA: u8 = 0;

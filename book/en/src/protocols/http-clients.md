@@ -149,6 +149,10 @@ for the reasoning behind these rules.
 - WebSockets on the same connection (RFC 8441): `websocket(url, &H2WsOptions, handler, done)`
   or `websocket_blocking`; see [WebSocket over HTTP/2](websocket.md#websocket-over-http2).
 - `is_open()`, `close()`.
+- The engine's graceful shutdown (`Engine::shutdown`) ends the connection as a server's `GOAWAY`
+  would: it sends `GOAWAY`, `is_open()` turns `false`, new and waiting requests fail with
+  `ClientError::Refused`, and the connection closes at once when idle, else after its last
+  stream, so a pooled connection does not hold `Engine::wait` until the shutdown timeout.
 - `ClientRequest::timeout` applies: the stream is reset (`CANCEL`) and the request fails with
   `ClientError::Timeout`; the connection stays usable. One connection to one origin: no redirects
   or proxies.

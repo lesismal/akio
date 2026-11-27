@@ -133,6 +133,9 @@ SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认�
 - 同一连接上的 WebSocket（RFC 8441）：`websocket(url, &H2WsOptions, handler, done)` 或
   `websocket_blocking`；见 [HTTP/2 上的 WebSocket](websocket.md#http2-上的-websocket)。
 - `is_open()`、`close()`。
+- 引擎优雅关闭（`Engine::shutdown`）时，连接像收到服务器的 `GOAWAY` 那样结束：发送 `GOAWAY`，
+  `is_open()` 变为 `false`，新请求和等待流的请求以 `ClientError::Refused` 失败；空闲时连接立即关闭，
+  否则在最后一个流结束后关闭，所以池中的连接不会让 `Engine::wait` 一直等到关闭超时。
 - 遵守 `ClientRequest::timeout`：该流被重置（`CANCEL`），请求以 `ClientError::Timeout` 失败；连接
   仍可使用。一条连接只对应一个源：不跟随重定向，不走代理。
 
