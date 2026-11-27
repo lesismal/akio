@@ -200,17 +200,26 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     let mut a = connect(first);
     echo_once(&mut a, b"before");
     let stop_hammer = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hammered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hammer = {
-        let stop = stop_hammer.clone();
+        let (stop, hammered) = (stop_hammer.clone(), hammered.clone());
         thread::spawn(move || {
-            let mut n = 0;
             while !stop.load(Ordering::SeqCst) {
                 assert!(served(first), "the first listener stopped serving");
-                n += 1;
+                hammered.fetch_add(1, Ordering::SeqCst);
             }
-            n
         })
     };
+    // The hammer at work before the changes (on a busy machine it may start late)...
+    let at_work = |past: usize| {
+        let t = Instant::now();
+        while hammered.load(Ordering::SeqCst) <= past {
+            assert!(t.elapsed() < Duration::from_secs(10), "the hammer is stuck");
+            thread::sleep(Duration::from_millis(1));
+        }
+        hammered.load(Ordering::SeqCst)
+    };
+    let before = at_work(0);
     let ids: Vec<ListenerId> = (0..3)
         .map(|_| e.add_listener(echo_listener(localhost(), 2)).unwrap())
         .collect();
@@ -225,11 +234,7 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     assert_eq!(infos[0].local_addr, first);
     for info in &infos[1..] {
         assert_ne!(info.local_addr.port(), 0);
-        if !common::work_stealing() {
-            // Work stealing: the workers are sized by `WorkStealingConfig`, not `threads`
-            // (ADR-104).
-            assert_eq!(info.threads, 2);
-        }
+        assert_eq!(info.threads, 2);
         assert!(!info.udp);
         let mut c = connect(info.local_addr);
         echo_once(&mut c, b"added");
@@ -253,8 +258,10 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     e.shutdown_listener(ids[2], Duration::from_millis(50))
         .unwrap();
     echo_once(&mut a, b"after removal");
+    // ... and served again after them.
+    at_work(before);
     stop_hammer.store(true, Ordering::SeqCst);
-    assert!(hammer.join().unwrap() > 0);
+    hammer.join().unwrap();
     stop(&e);
     assert_eq!(
         e.add_listener(echo_listener(localhost(), 1))
