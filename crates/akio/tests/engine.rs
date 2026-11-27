@@ -1096,7 +1096,9 @@ fn loop_and_other_thread_sends_keep_their_order() {
             Listener::tcp(localhost())
                 .backend(common::backend())
                 .threads(1)
-                .serve(fn_acceptor(move |_c: &Conn<Relay>| Relay(tx.clone(), Vec::new()))),
+                .serve(fn_acceptor(move |_c: &Conn<Relay>| {
+                    Relay(tx.clone(), Vec::new())
+                })),
         )
         .build()
         .unwrap();

@@ -49,7 +49,10 @@ impl Table {
     fn of(&self, s: &TcpStream) -> ConnHandle {
         let peer = s.local_addr().unwrap();
         let open = self.open.lock().unwrap();
-        open.values().find(|h| h.peer_addr() == peer).unwrap().clone()
+        open.values()
+            .find(|h| h.peer_addr() == peer)
+            .unwrap()
+            .clone()
     }
     fn was_closed(&self, id: u64) -> bool {
         self.closed.lock().unwrap().contains(&id)

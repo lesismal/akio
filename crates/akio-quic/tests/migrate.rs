@@ -116,9 +116,14 @@ fn migrate_to_a_new_port_and_to_the_preferred_address() {
     let second = *seen.lock().unwrap().last().unwrap();
     assert_ne!(second.port(), first.port(), "a new local socket");
     assert_eq!(c.preferred_address(), None);
-    // Then a new local port on the same server address.
+    // Then a new local port on the same server address, one migration at a time: a call
+    // while one probes is refused. A test thread held up until the probe was answered (a
+    // loaded host) finds the migration done, and its call starts another: call again.
     c.migrate(&e).unwrap();
-    assert!(c.migrate(&e).is_err(), "one migration at a time");
+    assert!(
+        (0..10).any(|_| c.migrate(&e).is_err()),
+        "one migration at a time"
+    );
     let before = seen.lock().unwrap().len();
     wait_for("the second move", || {
         echo(&c, &rx, 1000);
