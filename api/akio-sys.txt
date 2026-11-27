@@ -1,4 +1,26 @@
 pub mod akio_sys
+pub mod akio_sys::fs
+#[non_exhaustive] pub struct akio_sys::fs::Space
+pub akio_sys::fs::Space::available: u64
+pub akio_sys::fs::Space::free: u64
+pub akio_sys::fs::Space::total: u64
+impl core::clone::Clone for akio_sys::fs::Space
+pub fn akio_sys::fs::Space::clone(&self) -> Self
+impl core::cmp::Eq for akio_sys::fs::Space
+impl core::cmp::PartialEq for akio_sys::fs::Space
+pub fn akio_sys::fs::Space::eq(&self, &Self) -> bool
+impl core::fmt::Debug for akio_sys::fs::Space
+pub fn akio_sys::fs::Space::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for akio_sys::fs::Space
+pub fn akio_sys::fs::Space::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for akio_sys::fs::Space
+impl core::marker::StructuralPartialEq for akio_sys::fs::Space
+impl core::marker::Send for akio_sys::fs::Space
+impl core::marker::Sync for akio_sys::fs::Space
+impl core::marker::Unpin for akio_sys::fs::Space
+impl core::panic::unwind_safe::RefUnwindSafe for akio_sys::fs::Space
+impl core::panic::unwind_safe::UnwindSafe for akio_sys::fs::Space
+pub fn akio_sys::fs::space(&std::path::Path) -> core::io::error::Result<akio_sys::fs::Space>
 pub mod akio_sys::numa
 pub struct akio_sys::numa::NumaNode
 pub akio_sys::numa::NumaNode::cpus: alloc::vec::Vec<usize>
@@ -24,10 +46,13 @@ pub fn akio_sys::numa::set_incoming_cpu(std::os::fd::raw::RawFd, usize) -> core:
 pub mod akio_sys::process
 pub const akio_sys::process::SIGHUP: i32
 pub const akio_sys::process::SIGINT: i32
+pub const akio_sys::process::SIGKILL: i32
 pub const akio_sys::process::SIGTERM: i32
 pub const akio_sys::process::SIGUSR2: i32
 pub fn akio_sys::process::allowed_cpus() -> core::io::error::Result<alloc::vec::Vec<usize>>
+pub fn akio_sys::process::euid() -> u32
 pub fn akio_sys::process::kill(u32, i32) -> core::io::error::Result<()>
+pub fn akio_sys::process::kill_group(u32, i32) -> core::io::error::Result<()>
 pub fn akio_sys::process::pin_current_thread(&[usize]) -> core::io::error::Result<()>
 pub fn akio_sys::process::signal_pipe(&[i32]) -> core::io::error::Result<std::os::unix::net::stream::UnixStream>
 pub mod akio_sys::terminal
