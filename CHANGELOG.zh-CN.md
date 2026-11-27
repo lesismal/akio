@@ -10,6 +10,14 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：文件系统的大小与可用空间（akio-sys）
+
+akit 的 A249，供其 LLM 节点使用：节点报告每个已挂载文件系统的大小与可用空间（fit 用 `syscall.Statfs`
+读取），而不必运行 `df`。`akio_sys::fs::space(path)` 返回路径所在文件系统的 `Space`，含 `total`、`free`
+（包括为 root 保留的部分）和 `available`（非 root 进程可用的部分，即 `df` 的 “available”），单位为字节：
+Linux 上用 `statvfs(3)`，macOS 上用 `statfs(2)`（macOS 的 `statvfs` 用 32 位计数块）。服务器不应答的网络
+文件系统上它可能阻塞。支持 Linux 和 macOS，通过自有的 `ffi` 绑定（与 `libc` 对照检查）。
+
 ### 新增：向进程组发送信号（akio-sys）
 
 akit 的 A248，供其 LLM 节点使用：节点让每个任务在自己的进程组中运行，任务被取消或超时时杀掉整个进程组

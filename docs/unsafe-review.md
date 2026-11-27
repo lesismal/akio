@@ -160,11 +160,11 @@ contain no `unsafe`.
 | akio-dpdk | 32 | 0 | 1 | 1 |
 | akio-ebpf | 50 | 4 | 3 | 2 |
 | akio-http | 0 | 0 | 0 | 15 |
-| akio-sys | 179 | 5 | 3 | 0 |
+| akio-sys | 187 | 5 | 3 | 0 |
 | akio-uring | 44 | 5 | 2 | 0 |
 | codec-bench | 3 | 0 | 0 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **470** | **87** | **11** | **49** |
+| **total** | **478** | **87** | **11** | **49** |
 
 By purpose:
 
@@ -175,6 +175,7 @@ By purpose:
 | `akio-sys/src/iface.rs` | 11 + `unsafe fn read_addr`, `copy` | the interface list (`getifaddrs` / `if_nametoindex` / `freeifaddrs`; also behind akio-tls's NIC offload check) and one datagram out of a given interface (`sendmsg` with an `IP_PKTINFO` / `IPV6_PKTINFO` control message), Linux and macOS | the list is walked only between `getifaddrs` and `freeifaddrs` (freed once), names are copied out before the free; socket addresses are copied byte-wise into a zeroed `sockaddr_in` / `sockaddr_in6` by their family (read at `sin_family`'s offset, a byte on macOS), never referenced in place, and on macOS at most `sa_len` bytes (netmasks are cut short); the control message is a `#[repr(C)]` `cmsghdr` + `in_pktinfo` / `in6_pktinfo` whose `CMSG_LEN` / `CMSG_SPACE` are checked against `libc` in a test, built without `unsafe`, and the `msghdr` points only at live locals |
 | `akio-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
 | `akio-sys/src/terminal.rs` | 5 (3 + 2 in its tests) | a terminal's echo and raw mode (akit A233): `tcgetattr` into a `MaybeUninit<termios>`, `tcsetattr` (`TCSANOW`, retried on `EINTR`); the tests open a pseudo-terminal (`posix_openpt`, `grantpt`, `unlockpt`, `ptsname`, `open`) and set `O_NONBLOCK` | the descriptor is a `BorrowedFd` the guard holds, so it outlives the guard; `termios` is read only after `tcgetattr` succeeded (it fills the whole structure); its layout and the flag values are checked against `libc` in `ffi::layout` |
+| `akio-sys/src/fs.rs` | 8 (2 Linux + 2 macOS, and as many in its tests) | a file system's size and free space (akit A249): `statvfs` (Linux) / `statfs` (macOS, the 64-bit-inode layout) into a `MaybeUninit`, retried on `EINTR`; the tests read the same through the `libc` crate | the path is a `CString` that outlives the call; the structure is read only after the call succeeded (it fills it); its layout is checked against `libc` in `ffi::layout` |
 | `akio-sys/src/process.rs` | 9 | `allowed_cpus` / `pin_current_thread` (`sched_getaffinity` / `sched_setaffinity` on the calling thread, a `cpu_set_t` of the size passed); self-pipe signal handler (`sigaction`, `write` from the handler), `kill`, `killpg` (akit A248, a group id above 1 only); `geteuid` (akit A247) | the handler only calls `write` (async-signal-safe) and saves and restores `errno` |
 | `akio-sys/src/fswatch.rs` | 12 (7 Linux, 5 macOS) | change notification for akio-http's static file cache: `inotify_init1` / `inotify_add_watch` / `inotify_rm_watch`, `ppoll` on the inotify fd and an eventfd, `read` of events (Linux); `kqueue`, `fcntl`, `kevent` changes and waits with `EVFILT_VNODE` / `EVFILT_USER` (macOS) | fds owned immediately; paths are NUL-terminated `CString`s; reads stay within the buffer and records are parsed from bytes; the kevent `udata` is a watch id, never dereferenced; `O_EVTONLY` descriptors are opened by `std` and owned by the watcher |
 | `akio-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |

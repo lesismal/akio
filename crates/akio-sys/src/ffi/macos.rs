@@ -257,6 +257,35 @@ pub const VMIN: usize = 16;
 pub const VTIME: usize = 17;
 pub const TCSANOW: c_int = 0;
 
+// ---- file systems (statfs) -------------------------------------------------------------------
+
+/// `struct statfs` in its 64-bit-inode layout (`_DARWIN_FEATURE_64_BIT_INODE`: the only one on
+/// aarch64, `statfs$INODE64` on x86_64), whose block counts are 64-bit; `statvfs`'s are 32-bit
+/// (`fsblkcnt_t` is an `unsigned int`), too small for a large volume.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct statfs {
+    pub f_bsize: u32,
+    pub f_iosize: i32,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_fsid: [i32; 2],
+    pub f_owner: uid_t,
+    pub f_type: u32,
+    pub f_flags: u32,
+    pub f_fssubtype: u32,
+    pub f_fstypename: [c_char; 16],    // MFSTYPENAMELEN
+    pub f_mntonname: [c_char; 1024],   // MAXPATHLEN
+    pub f_mntfromname: [c_char; 1024], // MAXPATHLEN
+    pub f_flags_ext: u32,
+    pub f_reserved: [u32; 7],
+}
+
+const _: () = assert!(size_of::<statfs>() == 2168 && align_of::<statfs>() == 8);
+
 // ---- libSystem functions -------------------------------------------------------------------
 
 // Soundness of the declarations: each matches the prototype in the macOS SDK headers (types as laid out
@@ -325,4 +354,7 @@ unsafe extern "C" {
 
     pub fn tcgetattr(fd: c_int, t: *mut termios) -> c_int;
     pub fn tcsetattr(fd: c_int, action: c_int, t: *const termios) -> c_int;
+
+    #[cfg_attr(target_arch = "x86_64", link_name = "statfs$INODE64")]
+    pub fn statfs(path: *const c_char, buf: *mut statfs) -> c_int;
 }

@@ -10,6 +10,16 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a file system's size and free space (akio-sys)
+
+akit's A249, for its LLM node, which reports each mounted file system's size and free space (fit
+reads them with `syscall.Statfs`) without running `df`. `akio_sys::fs::space(path)` returns a
+`Space` with `total`, `free` (counting what is kept for root) and `available` (to a process that is
+not root, `df`'s "available"), in bytes, of the file system the path is on: `statvfs(3)` on Linux,
+`statfs(2)` on macOS (whose `statvfs` counts blocks in 32 bits). It may block on a network file
+system whose server does not answer. Linux and macOS, through the own `ffi` bindings (checked
+against `libc`).
+
 ### Added: a signal to a process group (akio-sys)
 
 akit's A248, for its LLM node, which runs each job in a process group of its own and kills the

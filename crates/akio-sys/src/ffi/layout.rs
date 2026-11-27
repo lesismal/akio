@@ -542,6 +542,48 @@ fn macos_constants() {
     }
 }
 
+#[test]
+fn file_system_space_matches_libc() {
+    #[cfg(target_os = "linux")]
+    same_layout!(
+        super::statvfs,
+        libc::statvfs,
+        f_bsize,
+        f_frsize,
+        f_blocks,
+        f_bfree,
+        f_bavail,
+        f_files,
+        f_ffree,
+        f_favail,
+        f_fsid,
+        f_flag,
+        f_namemax
+    );
+    #[cfg(target_os = "macos")]
+    same_layout!(
+        super::statfs,
+        libc::statfs,
+        f_bsize,
+        f_iosize,
+        f_blocks,
+        f_bfree,
+        f_bavail,
+        f_files,
+        f_ffree,
+        f_fsid,
+        f_owner,
+        f_type,
+        f_flags,
+        f_fssubtype,
+        f_fstypename,
+        f_mntonname,
+        f_mntfromname,
+        f_flags_ext,
+        f_reserved
+    );
+}
+
 /// The declared functions link and behave: errno is the C library's.
 #[test]
 fn termios_matches_libc() {

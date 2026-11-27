@@ -503,6 +503,29 @@ pub const VTIME: usize = 5;
 pub const VMIN: usize = 6;
 pub const TCSANOW: c_int = 0;
 
+// ---- file systems (statvfs) -----------------------------------------------------------------
+
+/// `struct statvfs` of the C library (glibc and musl, 64-bit: `fsblkcnt_t` and `fsfilcnt_t` are
+/// 64-bit; glibc's `f_type` and the spare words of both are `__f_spare` here).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct statvfs {
+    pub f_bsize: c_ulong,
+    pub f_frsize: c_ulong,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_favail: u64,
+    pub f_fsid: c_ulong,
+    pub f_flag: c_ulong,
+    pub f_namemax: c_ulong,
+    pub __f_spare: [c_int; 6],
+}
+
+const _: () = assert!(size_of::<statvfs>() == 112 && align_of::<statvfs>() == 8);
+
 // ---- ancillary data (the CMSG_* macros) -----------------------------------------------------
 
 const fn cmsg_align(len: usize) -> usize {
@@ -670,4 +693,6 @@ unsafe extern "C" {
 
     pub fn tcgetattr(fd: c_int, t: *mut termios) -> c_int;
     pub fn tcsetattr(fd: c_int, action: c_int, t: *const termios) -> c_int;
+
+    pub fn statvfs(path: *const c_char, buf: *mut statvfs) -> c_int;
 }
