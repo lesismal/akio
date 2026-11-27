@@ -1016,6 +1016,9 @@ pub(crate) struct Rtc {
     latch_took: bool,
     /// The next RFC 6263 keepalive without ICE (ADR-086).
     keepalive_next: Option<Instant>,
+    /// SFU state (ADR-187): the receive bitrate cap told as REMB, when consent failure is
+    /// reported.
+    fwd: forward::PeerFwd,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -1076,6 +1079,10 @@ impl Rtc {
         let mut ice_cfg = IceConfig::new(lite, false);
         ice_cfg.aggressive_nomination = cfg.ice_aggressive;
         ice_cfg.renomination = cfg.ice_renomination;
+        if let Some((d, _)) = cfg.ice_timeouts {
+            ice_cfg.consent_timeout = d;
+            ice_cfg.consent_interval = ice_cfg.consent_interval.min(d / 3);
+        }
         let ice = IceAgent::new(ice_cfg, now);
         let (min, max) = cfg.bwe_bounds;
         let bwe = cfg.bwe.map(|b| {
@@ -1162,6 +1169,7 @@ impl Rtc {
             latch_rx: None,
             keepalive_next: None,
             latch_took: false,
+            fwd: forward::PeerFwd::default(),
             ntp_anchor: (now, akio_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -2931,6 +2939,7 @@ impl Rtc {
             self.tp_each(|s| s.tp_handle_timeout(now));
         }
         self.ice.handle_timeout(now);
+        self.consent_failed(now);
         self.latch_expire(now);
         self.keepalive(now);
         let mut failed = [false; 2];
@@ -3664,9 +3673,14 @@ impl Rtc {
                 }
                 Rtcp::TransportCc(fb) => self.cc_twcc(now, &fb),
                 Rtcp::CongestionControl(fb) => self.cc_ccfb(now, &fb),
-                Rtcp::Remb { bitrate, .. } => {
+                Rtcp::Remb { bitrate, ssrcs, .. } => {
                     self.remb = (bitrate > 0).then_some(bitrate);
                     self.apply_remote_caps();
+                    self.events
+                        .push_back(RtcEvent::Other(Other::RemoteBitrateEstimate {
+                            bitrate,
+                            ssrcs,
+                        }));
                 }
                 Rtcp::Tmmbr {
                     sender_ssrc,
@@ -3985,6 +3999,7 @@ impl Rtc {
                 ]),
             }
         }
+        self.add_remb(&mut compounds);
         compounds.extend(self.receipt_reports());
         for c in compounds {
             self.send_rtcp(&c);
@@ -4013,6 +4028,7 @@ impl Rtc {
                         let s = self.tp_ice_state(IceConnectionState::from_ice(s));
                         if s != self.ice_state {
                             self.ice_state = s;
+                            self.consent_state(now, s);
                             self.events.push_back(RtcEvent::IceState(s));
                         }
                     }
@@ -4231,6 +4247,7 @@ impl Rtc {
         min(self.sctp.as_ref().and_then(Association::poll_timeout));
         min(self.tp_timeout());
         min(self.keepalive_timeout(now));
+        min(self.fwd.fail_at);
         if self.srtp_tx.is_some() || self.tp_any_srtp() {
             min(self.next_rtcp);
             min(self.next_stats);
@@ -4444,6 +4461,7 @@ mod channels;
 mod ecn;
 mod ecn_fb;
 mod feedback;
+mod forward;
 mod keyframe;
 mod latch;
 mod pacing;
@@ -4460,6 +4478,8 @@ use receipts::{line_xr_blocks, remote_xr_blocks};
 mod tests;
 #[cfg(test)]
 mod tests_ecn;
+#[cfg(test)]
+mod tests_forward;
 #[cfg(test)]
 mod tests_mux;
 #[cfg(test)]

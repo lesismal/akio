@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：接收端码率上限以 REMB 告知，以及每个 peer 的 ICE consent 超时（akio-webrtc）
+
+akit 的 A261，用于其媒体服务器的 `max_bitrate` 与 `ice_timeout`；ADR-187。
+`Peer::set_receive_bitrate_cap(Option<u64>)` 以 REMB（draft-alvestrand-rmcat-remb，浏览器会遵守）把上限
+告诉远端发送方，覆盖接收到的每个媒体流，立即发送一次，之后每秒随 RTCP 报告发送；`None` 停止发送（远端
+保留最后一个）。`RtcConfig::set_ice_timeouts(disconnected, failed)`：consent 静默 `disconnected` 后报告
+`Disconnected`，静默 `failed` 后报告新增的 `IceConnectionState::Failed`；当 `failed` 更长时，在失去
+consent 时关闭 peer 的服务器或 endpoint 改为在 `Failed` 时关闭；不设置时一切不变。收到的 REMB 在
+`Event::Other`（`RemoteBitrateEstimate`）中报告。
+
 ### 新增：`RtcServer` 上 peer 自己的配置（akio-webrtc）
 
 akit 的 A259，用于其 WHIP/WHEP 媒体服务器：对发布者每种媒体只应答一个编解码器，对该流的观众应答同样的

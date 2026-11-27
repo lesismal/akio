@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: a receiver's bitrate cap told as REMB, and ICE consent timeouts per peer (akio-webrtc)
+
+akit's A261, for its media server's `max_bitrate` and `ice_timeout` (ADR-187).
+`Peer::set_receive_bitrate_cap(Option<u64>)` tells the remote senders the cap as REMB
+(draft-alvestrand-rmcat-remb, which browsers keep under) about every media stream received, once at
+once and then once a second with the RTCP reports; `None` stops (the remote keeps the last one).
+`RtcConfig::set_ice_timeouts(disconnected, failed)`: consent silence for `disconnected` reports
+`Disconnected`, for `failed` the new `IceConnectionState::Failed`, and a server or endpoint that
+closes peers on loss of consent closes them at `Failed` when `failed` is the longer; without it
+nothing changes. A REMB received is reported in `Event::Other` (`RemoteBitrateEstimate`).
+
 ### Added: a peer's own configuration on an `RtcServer` (akio-webrtc)
 
 akit's A259, for its WHIP/WHEP media server, which answers a publisher with one codec of each kind

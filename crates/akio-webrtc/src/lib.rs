@@ -501,6 +501,17 @@ impl Peer {
         })?
     }
 
+    /// Caps what the remote sends this peer at `bps` bits per second, told as REMB
+    /// (draft-alvestrand-rmcat-remb, which browsers keep under) about every media stream
+    /// received, once now and then once a second with the RTCP reports (ADR-187). `None`
+    /// stops sending them; a browser keeps the last REMB as its limit until another comes, so
+    /// a cap is lifted with a higher one. This side has no receive-side estimate of its own
+    /// (the remote estimates the path from transport-wide feedback), so the REMB carries the
+    /// cap. Applies to every stream the peer receives.
+    pub fn set_receive_bitrate_cap(&self, bps: Option<u64>) {
+        let _ = self.with_rtc_inner(|rtc| rtc.set_receive_bitrate_cap(bps));
+    }
+
     /// The payload type negotiated on `mid` for a codec, e.g. [`Codec::Vp8`].
     pub fn payload_type(&self, mid: Mid, codec: Codec) -> Option<Pt> {
         lock(&self.0.state).rtc.payload_type(mid, codec)
@@ -745,12 +756,16 @@ impl Peer {
                         }
                     }
                     Output::Event(e) => {
+                        // With a failed timeout past the disconnected one, consent loss
+                        // closes at `Failed` (ADR-187).
+                        let lost = if st.rtc.fails_after_disconnect() {
+                            IceConnectionState::Failed
+                        } else {
+                            IceConnectionState::Disconnected
+                        };
                         let dead = matches!(e, RtcEvent::Closed)
                             || (close_on_disconnect
-                                && matches!(
-                                    e,
-                                    RtcEvent::IceState(IceConnectionState::Disconnected)
-                                ));
+                                && matches!(e, RtcEvent::IceState(s) if s == lost));
                         evs.push(Ev::Rtc(Box::new(e)));
                         if dead {
                             died = true;

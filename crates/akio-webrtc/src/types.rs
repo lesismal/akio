@@ -602,6 +602,9 @@ pub enum IceConnectionState {
     Completed,
     /// Connectivity was lost (consent freshness failed).
     Disconnected,
+    /// Connectivity stayed lost for the failed timeout of
+    /// [`RtcConfig::set_ice_timeouts`]; only reported with that setting.
+    Failed,
 }
 
 impl IceConnectionState {
@@ -820,6 +823,9 @@ pub(crate) enum Other {
         reporter: u32,
         metrics: akio_rtp::VoipMetrics,
     },
+    /// A remote receiver's REMB (draft-alvestrand-rmcat-remb): the most it wants the streams
+    /// it names sent at (bits per second).
+    RemoteBitrateEstimate { bitrate: u64, ssrcs: Vec<u32> },
     /// The SDES items (RFC 3550 §6.5) a remote source sends, when they first arrive or
     /// change.
     SourceDescription {
@@ -900,6 +906,9 @@ pub(crate) struct ConfigInner {
     pub(crate) delay_sensitivity: akio_rtp::DelaySensitivity,
     /// RFC 6263 keepalives without ICE (ADR-086); zero: none.
     pub(crate) keepalive: Duration,
+    /// ICE consent: `(disconnected, failed)` timeouts (ADR-187); `None`: the agent's 30 s,
+    /// Disconnected only.
+    pub(crate) ice_timeouts: Option<(Duration, Duration)>,
 }
 
 impl Default for ConfigInner {
@@ -954,6 +963,7 @@ impl Default for ConfigInner {
             keyframe_on_loss: true,
             delay_sensitivity: akio_rtp::DelaySensitivity::Default,
             keepalive: Duration::ZERO,
+            ice_timeouts: None,
         }
     }
 }
@@ -973,6 +983,7 @@ impl fmt::Debug for RtcConfig {
             .field("rtcp_xr", &self.0.xr)
             .field("tmmbr", &self.0.tmmbr)
             .field("ice_renomination", &self.0.ice_renomination)
+            .field("ice_timeouts", &self.0.ice_timeouts)
             .field("ice_aggressive_nomination", &self.0.ice_aggressive)
             .field("dtls13", &self.0.dtls13)
             .field("cryptex", &self.0.cryptex)
@@ -1486,6 +1497,27 @@ impl RtcConfig {
     #[must_use]
     pub fn set_plain_keepalive(mut self, every: Duration) -> Self {
         self.0.keepalive = every;
+        self
+    }
+
+    /// How long the remote may stay silent on ICE (no consent: no valid check for an ICE-lite
+    /// peer, no check answered for a full agent, RFC 7675) before the peer reports
+    /// [`IceConnectionState::Disconnected`], and before it reports
+    /// [`IceConnectionState::Failed`] (ADR-187), as a browser's `disconnected` and `failed`
+    /// ICE states. Consent coming back before `failed` returns it to `Connected`. With
+    /// `failed` past `disconnected`, the server or endpoint that closes peers on loss of
+    /// consent ([`RtcServer::close_on_disconnect`](crate::RtcServer::close_on_disconnect),
+    /// the default) closes the peer at `Failed` instead of at `Disconnected`; with `failed`
+    /// at or below `disconnected` there is no `Failed` and the peer closes at `Disconnected`,
+    /// as without this setting (30 s). `disconnected` is at least 1 s; a full agent checks
+    /// consent at least three times within it (every 5 s, or more often), and the remote must
+    /// check more often than that too (browsers do every few seconds; an `Endpoint` peer every
+    /// 5 s unless its own configuration sets this). Applies to peers made with this
+    /// configuration.
+    #[must_use]
+    pub fn set_ice_timeouts(mut self, disconnected: Duration, failed: Duration) -> Self {
+        let d = disconnected.max(Duration::from_secs(1));
+        self.0.ice_timeouts = Some((d, failed));
         self
     }
 
