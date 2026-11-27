@@ -200,7 +200,7 @@ fn listeners_added_while_running_serve_next_to_the_others() {
     let mut a = connect(first);
     echo_once(&mut a, b"before");
     let stop_hammer = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let hammered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hammered = Arc::new(AtomicUsize::new(0));
     let hammer = {
         let (stop, hammered) = (stop_hammer.clone(), hammered.clone());
         thread::spawn(move || {
