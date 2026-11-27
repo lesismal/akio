@@ -10,6 +10,30 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: the pressure watcher samples every 500 ms, settable, and can be switched off; pools are sampled by hand too (akio-pool, akio-core, akio)
+
+Aligned with fib's taskpool (`SetAutoSample`, `SetSampleInterval`, `Sample`). The watcher now
+samples the pools under pressure every 500 ms (`DEFAULT_SAMPLE_INTERVAL`; was 100 ms), two
+wake-ups a second while a pool is past half, and lets a pool (or an I/O thread's command list)
+go once it has stayed calm for 2 s (was 1 s), counted from the first calm sample to a later one,
+so never sooner than two samples apart. `akio_pool::set_sample_interval`
+(`akio::set_pool_sample_interval`) sets the interval at once: a running watcher is woken and
+starts the new interval from then; zero sets the default again; `sample_interval()` reads it.
+Automatic sampling stays on by default; `akio_pool::set_auto_sample(false)`
+(`akio::set_pool_auto_sample`) switches it off, at once: the watcher lets every pool go at its
+next pass, without a summary, and exits, and a submission past half of `queue_capacity` reads the
+switch and nothing more. `auto_sample()` (`akio::pool_auto_sample`) reads it.
+
+`akio_pool::sample()` (`akio::sample_pools`) samples every pool of the process once (the
+engine's logical pool, the protocol crates' pools, an application's own), in the order created,
+and returns a `PoolSample` for each (name, `id`, `max_threads`, `queue_capacity`, `PoolStats`),
+for a process to call from its own status or metrics endpoint; `Pool::sample()` samples one. A
+sample by hand logs and counts the rises to 50, 75, 90 and 100% as the watcher's does: the level
+reached and the rate limits are the pool's, shared by both, so a rise is counted once whoever
+sees it, and a refusal or a stand-in limit hit since the sample before counts as 100%. It does
+not hand the pool to the watcher or change the watcher's calm timing. Pools are found through a
+registry of weak references, pruned as pools are dropped. `Pool::id()` numbers pools from 1.
+
 ### Fixed: a short proxy timeout fired up to a second late (akio-socks)
 
 The proxy's timeouts (handshake, idle, connect) are checked by one watchdog thread per process,

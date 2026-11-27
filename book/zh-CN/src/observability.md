@@ -17,6 +17,7 @@
 | `Engine::connections(timeout)` | 连接表：每个连接一个 `ConnInfo`（id、对端、本端、所属线程、存活时长、空闲时长、收发字节、排队字节、是否暂停读、是否背压、transport、是否 UDP）。通过询问每个 I/O 线程收集；不要在 I/O 线程的回调里调用 |
 | `Engine::slow_callbacks()` | 最近的慢回调（最多 256 条），由旧到新 |
 | `Engine::pool_stats()` | 逻辑线程池的线程数、空闲数、排队数、完成数、panic 数、拒绝数；排队的续作任务数、最深积压、在 `akio::blocking` 里阻塞的线程数、补位线程数、碰到补位上限的次数；各档压力告警次数，以及池子此刻是否被监视（[阻塞任务](concepts/blocking.md)） |
+| `akio::sample_pools()` | 对进程里每个线程池采样一次（engine 的、协议 crate 的、你自己的 `Pool`），返回每个池的名字、id、上限和 `PoolStats`；发现的升档会记日志并计入 `warnings`。在你自己的状态接口里调用，与压力监视线程是否也在采样无关（默认开启，池子积压过半时每 500 ms 采样一次：`akio::set_pool_auto_sample`、`akio::set_pool_sample_interval`；[阻塞任务](concepts/blocking.md)） |
 | `Engine::udp_stats()` | 打开的 UDP 对端数，以及被 `udp_max_peers` 拒绝的数据报数 |
 | `Engine::accel_status()` | 每个 listener 的 eBPF 分流状态 |
 | `Telemetry::collect()`、`Telemetry::render_prometheus()` | 已注册收集器的 `Families`（Prometheus 或 JSON）；engine 序列加收集器序列，即 `metrics_handler` 输出的内容 |

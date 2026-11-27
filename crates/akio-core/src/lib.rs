@@ -46,6 +46,12 @@ pub const UNIX_ADDR: std::net::SocketAddr = std::net::SocketAddr::V4(std::net::S
 pub use akio_buf::SharedBuf;
 #[doc(hidden)]
 pub use akio_pool::ThreadHook;
+pub use akio_pool::{
+    DEFAULT_SAMPLE_INTERVAL as DEFAULT_POOL_SAMPLE_INTERVAL, PoolSample,
+    auto_sample as pool_auto_sample, sample as sample_pools,
+    sample_interval as pool_sample_interval, set_auto_sample as set_pool_auto_sample,
+    set_sample_interval as set_pool_sample_interval,
+};
 pub use akio_pool::{Job, Pool, PoolConfig, PoolStats, Rejected, blocking, on_pool_thread};
 pub use config::{Config, SlowCallback, SlowHook};
 #[cfg(target_os = "linux")]

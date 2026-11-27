@@ -71,6 +71,11 @@ pub use akio_tun as tun;
 #[cfg(feature = "wasm")]
 pub use akio_wasm as wasm;
 
+/// How often the pressure watcher samples the pools under pressure unless
+/// [`set_pool_sample_interval`] says otherwise: 500 ms.
+pub use akio_core::DEFAULT_POOL_SAMPLE_INTERVAL;
+/// One pool as [`sample_pools`] found it.
+pub use akio_core::PoolSample;
 /// Runs `f`, a wait, telling the pool of the calling thread (the engine's logical pool, or a
 /// [`Pool`] of your own) that this thread is blocked meanwhile, so that the pool may start a
 /// thread in its place: a pool task that waits for something only another task of the same
@@ -87,6 +92,29 @@ pub use akio_core::blocking;
 /// Whether the calling thread is a thread of an akio pool (the engine's logical pool or a
 /// [`Pool`] of your own); [`Pool::is_current`] asks about one pool.
 pub use akio_core::on_pool_thread;
+/// Whether automatic sampling of the pools is on (see [`set_pool_auto_sample`]).
+pub use akio_core::pool_auto_sample;
+/// How often the pressure watcher samples the pools under pressure (see
+/// [`set_pool_sample_interval`]).
+pub use akio_core::pool_sample_interval;
+/// Samples every pool of the process once (the engine's logical pool, the protocol crates'
+/// pools and your own [`Pool`]s): logs and counts each rise of a backlog to 50, 75, 90 or 100%
+/// of its `queue_capacity` since the sample before, and returns each pool's name, id, limits and
+/// [`PoolStats`]. For a process to call from its own status or metrics endpoint, whether or not
+/// automatic sampling is on; [`Pool::sample`] samples one pool.
+pub use akio_core::sample_pools;
+/// Switches automatic sampling of every pool's backlog on or off (on by default): on, a pool
+/// whose queue passes half of `queue_capacity` is watched by the `akio-pool-watch` thread,
+/// which samples it every [`pool_sample_interval`] and logs its pressure (target `akio-pool`)
+/// until it has stayed calm for 2 s, and the I/O threads' command lists are watched past 1024
+/// commands. No thread runs while every pool
+/// is calm ([blocking work](https://lesismal.github.io/akio/en/concepts/blocking.html)).
+pub use akio_core::set_pool_auto_sample;
+/// Sets how often the pressure watcher samples the pools under pressure, at once (a running
+/// watcher starts the new interval from now); zero sets [`DEFAULT_POOL_SAMPLE_INTERVAL`] (500 ms)
+/// again. A longer interval costs a process under pressure fewer wake-ups and logs later; a pool
+/// is let go no sooner than two samples apart.
+pub use akio_core::set_pool_sample_interval;
 pub use akio_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnHandle, ConnInfo, DatagramSender, Datagrams,
     DatagramsHandler, DatagramsIter, DialOptions, Error, FnAcceptor, Handler, IcmpError, Live,

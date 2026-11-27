@@ -5,6 +5,7 @@ pub use akio::Config
 pub use akio::Conn
 pub use akio::ConnHandle
 pub use akio::ConnInfo
+pub use akio::DEFAULT_POOL_SAMPLE_INTERVAL
 pub use akio::DatagramSender
 pub use akio::Datagrams
 pub use akio::DatagramsHandler
@@ -23,6 +24,7 @@ pub use akio::Metrics
 pub use akio::Part
 pub use akio::Pool
 pub use akio::PoolConfig
+pub use akio::PoolSample
 pub use akio::PoolStats
 pub use akio::Rejected
 pub use akio::ReloadReport
@@ -45,6 +47,11 @@ pub use akio::fn_acceptor
 pub use akio::log
 pub use akio::metrics
 pub use akio::on_pool_thread
+pub use akio::pool_auto_sample
+pub use akio::pool_sample_interval
+pub use akio::sample_pools
+pub use akio::set_pool_auto_sample
+pub use akio::set_pool_sample_interval
 pub use akio::telemetry
 pub use akio::timer
 pub use akio::tls

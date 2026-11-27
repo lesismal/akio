@@ -125,40 +125,63 @@ on the pool. `max_blocked_threads = 0` turns the stand-ins off.
 ### Pressure: what the pool logs
 
 A pool says when it is under pressure, through `akio-log` (target `akio-pool`, with the pool's
-`name` in the message and the `pool` field), and costs nothing while it is not: no timer, no
-thread. A submission that finds the backlog (new and resumed jobs waiting) past half of
-`queue_capacity`, a submission refused for a full queue, and work held up by
-`max_blocked_threads` each hand the pool to a watcher thread, `akio-pool-watch`, started then
-and shared by every pool of the process. While some pool is watched, it samples the watched
-pools every 100 ms:
+`name` in the message and the `pool` field), each time its backlog (new and resumed jobs
+waiting) is sampled, two ways:
+
+- **Automatically**, unless `akio::set_pool_auto_sample(false)` switches it off (it takes
+  effect at once, and can be switched on again). It costs nothing while every pool is calm: no
+  timer, no thread. A submission that finds the backlog past half of `queue_capacity`, a
+  submission refused for a full queue, and work held up by `max_blocked_threads` each hand the
+  pool to a watcher thread, `akio-pool-watch`, started then and shared by every pool of the
+  process. It samples the watched pools every 500 ms (`akio::set_pool_sample_interval` sets
+  another interval, at once; a process under pressure wakes for it twice a second by default),
+  and once a pool's backlog has stayed under 40% for 2 s, with no refusal and no stand-in limit
+  hit, lets it go with one info line summing up the episode (how long, the deepest backlog, the
+  refusals, the threads started for blocked ones). When no pool is left, the watcher exits; the
+  next pool past the line starts it again. Switched off, it lets every pool go at its next pass
+  and exits, and a submission past the line reads the switch and nothing more.
+
+- **By hand.** `akio::sample_pools()` samples every pool of the process once (the engine's
+  logical pool, the protocol crates' pools such as `akio-http-disk`, and your own `Pool`s) and
+  returns each one's name, id, `max_threads`, `queue_capacity` and `PoolStats`; `Pool::sample()`
+  samples one pool. Call it from your own status or metrics endpoint: each call is one sample,
+  so the lines it logs follow how often the endpoint is asked, whether or not the watcher
+  samples the pools too.
+
+  ```rust,ignore
+  // In an admin route of your own.
+  for p in akio::sample_pools() {
+      writeln!(out, "{} #{}: {}/{} waiting, warnings {:?}",
+          p.name, p.id, p.stats.queued + p.stats.resumes, p.queue_capacity, p.stats.warnings)?;
+  }
+  ```
+
+Either way, a sample logs what changed since the sample before, whoever took it:
 
 - the backlog rising to 50, 75 or 90% of `queue_capacity` is a warning, to 100% (new work
   refused) an error; a level is left only once the backlog falls 10 points below it, and a
-  refusal or a hit of the stand-in limit between two samples counts as 100%, so a burst the
+  refusal or a hit of the stand-in limit since the sample before counts as 100%, so a burst the
   samples miss is still seen;
 - threads blocked at the `max_blocked_threads` ceiling get a warning of their own;
-- each line is logged at most once per 10 s per pool and level; the next one says how many were
-  held back meanwhile;
-- once the backlog has stayed under 40% for a second, with no refusal and no stand-in limit hit,
-  the pool leaves with one info line summing up the episode (how long, the deepest backlog, the
-  refusals, the threads started for blocked ones), itself at most once per 10 s per pool, as
-  above. When no pool is left, the watcher exits; the
-  next pool past the line starts it again.
+- each line, the watcher's summary included, is logged at most once per 10 s per pool and
+  level; the next one says how many were held back meanwhile.
 
 `PoolStats::warnings` counts the rises per level (50, 75, 90, 100%; held-back lines included)
-and `PoolStats::watched` tells whether the pool is watched now. The metrics endpoint exports
+that samples found; `PoolStats::max_queued` is kept by every submission, sampled or not. `PoolStats::watched` tells whether the watcher watches the pool
+now. The metrics endpoint exports
 them for the engine's pool as `akio_pool_pressure_warnings_total{level="50"|"75"|"90"|"100"}`
 and `akio_pool_watched`, beside `akio_pool_resumes`, `akio_pool_max_queued`,
 `akio_pool_blocked`, `akio_pool_compensated_total` and `akio_pool_blocked_at_ceiling_total`
 ([Observability](../observability.md)). A warning at 50% is a sign to look, not a fault; an
 error at 100% means `Overloaded` answers are going out.
 
-The same watcher looks after the I/O threads' command lists (what other threads post to a loop:
-wake-ups, closes, `run_on_loop` work), which have no capacity of their own. Each loop records
-the deepest batch it took (`akio_loop_max_command_batch`); a batch of more than 1024 commands
-hands that loop to the watcher, which warns when batches pass 1024 and 16384 commands, logs an
-error past 131072, and lets the loop go, with an info line, once no batch has passed 1024 for a
-second. A loop that takes such batches is being fed faster than it runs, or is held up by a
+The same watcher, under the same switch, looks after the I/O threads' command lists (what
+other threads post to a loop: wake-ups, closes, `run_on_loop` work), which have no capacity of
+their own. Each loop records the deepest batch it took (`akio_loop_max_command_batch`, whether
+or not the switch is on); with automatic sampling on, a batch of more than 1024 commands hands
+that loop to the watcher, which warns when batches pass 1024 and 16384 commands, logs an
+error past 131072, and lets the loop go, with an info line, once no batch has passed 1024 for
+2 s. A loop that takes such batches is being fed faster than it runs, or is held up by a
 callback that blocks.
 
 ## A pool of your own

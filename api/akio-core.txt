@@ -1,12 +1,19 @@
 pub mod akio_core
+pub use akio_core::DEFAULT_POOL_SAMPLE_INTERVAL
 pub use akio_core::Job
 pub use akio_core::Pool
 pub use akio_core::PoolConfig
+pub use akio_core::PoolSample
 pub use akio_core::PoolStats
 pub use akio_core::Rejected
 pub use akio_core::SharedBuf
 pub use akio_core::blocking
 pub use akio_core::on_pool_thread
+pub use akio_core::pool_auto_sample
+pub use akio_core::pool_sample_interval
+pub use akio_core::sample_pools
+pub use akio_core::set_pool_auto_sample
+pub use akio_core::set_pool_sample_interval
 pub mod akio_core::metrics
 #[non_exhaustive] pub enum akio_core::metrics::Kind
 pub akio_core::metrics::Kind::Counter

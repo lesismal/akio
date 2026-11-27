@@ -10,6 +10,25 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：压力监视线程改为每 500 ms 采样、间隔可设、可以关闭；线程池也可以手动采样（akio-pool、akio-core、akio）
+
+与 fib 的 taskpool（`SetAutoSample`、`SetSampleInterval`、`Sample`）对齐。监视线程现在每 500 ms
+采样一次承压的线程池（`DEFAULT_SAMPLE_INTERVAL`；原来是 100 ms），有池积压过半时每秒唤醒两次；线程池
+（或 I/O 线程的命令列表）平静 2 秒（原来是 1 秒）后放开，从第一次平静的采样算到后面某次采样，所以至少
+相隔两次采样。`akio_pool::set_sample_interval`（`akio::set_pool_sample_interval`）立即设置间隔：运行中
+的监视线程被唤醒，从那时起按新间隔采样；设为零恢复默认；`sample_interval()` 读取它。自动采样仍默认开启；
+`akio_pool::set_auto_sample(false)`（`akio::set_pool_auto_sample`）立即关闭它：监视线程在下一轮放开
+所有线程池（不记总结）并退出，积压超过 `queue_capacity` 一半的提交只读一下开关，别的什么也不做。
+`auto_sample()`（`akio::pool_auto_sample`）读取开关。
+
+`akio_pool::sample()`（`akio::sample_pools`）对进程里每个线程池（engine 的逻辑线程池、协议 crate 的
+线程池、应用自己的线程池）按创建顺序采样一次，为每个池返回一个 `PoolSample`（名字、`id`、`max_threads`、
+`queue_capacity`、`PoolStats`），供进程在自己的状态或指标接口里调用；`Pool::sample()` 只采样一个池。
+手动采样和监视线程一样记录并统计升到 50、75、90、100% 的次数：已到的档位和限速状态属于线程池，两者共用，
+所以一次升档不论谁先看到都只计一次；自上一次采样以来的拒绝或补位上限按 100% 计。手动采样不会把线程池交给
+监视线程，也不影响监视线程的平静计时。线程池通过弱引用登记表找到，池被释放后从表中清掉。`Pool::id()`
+从 1 开始给线程池编号。
+
 ### 修复：较短的代理超时最多晚一秒才触发（akio-socks）
 
 代理的超时（握手、空闲、连接）由每个进程一个看门狗线程检查，周期为使用中最短超时的四分之一（10 ms 到

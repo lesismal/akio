@@ -1,41 +1,110 @@
-//! The pressure watcher: one thread for the whole process, `akio-pool-watch`, that runs only
-//! while some pool is under pressure.
+//! Sampling the pools' backlogs: by the pressure watcher, one thread for the whole process,
+//! `akio-pool-watch`, that runs only while some pool is under pressure (unless
+//! [`set_auto_sample`] switches it off), and by hand ([`sample`], [`Pool::sample`]).
 //!
-//! No timer runs while every pool is calm. A submitter that finds the backlog (new and resumed
-//! jobs waiting) past half of `queue_capacity`, or is refused for a full queue, or finds work
-//! held up by the stand-in limit (`blocked_at_ceiling`), marks its pool watched under the pool's
-//! lock and, once that lock is dropped, puts the pool in the watch list, starting the thread if
-//! none runs. The thread samples the listed pools every [`SAMPLE`]: it logs each rise of the
-//! backlog to 50, 75, 90 and 100% of the capacity ([`LEVELS`]), and lets a pool go, with a
-//! summary, once its backlog has stayed under 40% ([`LEVELS`]`[0]` less [`HYSTERESIS`]) for
-//! [`CALM_SAMPLES`] samples in a row with no refusal and no stand-in limit hit (the summary is
-//! rate limited per pool as the level lines are, [`LOG_EVERY`]). With the list empty the thread
-//! exits; the next pool to pass the line starts another one.
+//! A sample ([`observe`]) looks at a pool under its lock: it logs each rise of the backlog to
+//! 50, 75, 90 and 100% of the capacity ([`LEVELS`]) since the sample before, the watcher's or
+//! one by hand, which share the level reached and the rate limits ([`PoolWatch`]).
 //!
-//! The same thread watches the command queues of the I/O threads ([`DepthWatch`]): a loop that
-//! takes a batch of more than [`DepthWatch::LINE`] commands reports it, and the watcher logs
-//! each rise past 1024, 16384 and 131072 commands ([`DEPTH_LEVELS`]) until no batch has passed
-//! the line for [`CALM_SAMPLES`] samples.
+//! No timer runs while every pool is calm, nor ever while automatic sampling is off. With it
+//! on (the default), a submitter that finds the backlog (new and resumed jobs waiting) past half of
+//! `queue_capacity`, or is refused for a full queue, or finds work held up by the stand-in limit
+//! (`blocked_at_ceiling`), marks its pool watched under the pool's lock and, once that lock is
+//! dropped, puts the pool in the watch list, starting the thread if none runs. The thread
+//! samples the listed pools every [`sample_interval`] (500 ms unless [`set_sample_interval`]
+//! says otherwise), and lets a pool go, with a summary, once its backlog has stayed under 40%
+//! ([`LEVELS`]`[0]` less [`HYSTERESIS`]) for [`CALM`] with no refusal and no stand-in limit hit,
+//! as samples at least that far apart found it (the summary is rate limited per pool as the
+//! level lines are, [`LOG_EVERY`]). With the list empty the thread exits; the next
+//! pool to pass the line starts another one. Switched off, the watcher lets every pool go at its
+//! next pass, without a summary, and exits.
+//!
+//! The same thread watches the command queues of the I/O threads ([`DepthWatch`]), under the
+//! same switch: a loop that takes a batch of more than [`DepthWatch::LINE`] commands reports it,
+//! and the watcher logs each rise past 1024, 16384 and 131072 commands ([`DEPTH_LEVELS`]) until
+//! no batch has passed the line for [`CALM`].
 //!
 //! Locks: a submitter takes the pool's lock, drops it, then takes [`WATCH`]; it never holds
 //! both. Only the watcher holds both, and always [`WATCH`] first, so they cannot deadlock. The
 //! watcher never drops a pool (the last `Arc` it upgraded) while holding [`WATCH`]: a pool's
-//! drop drops its queued jobs, whose destructors may submit to a pool and register it.
+//! drop drops its queued jobs, whose destructors may submit to a pool and register it. The
+//! registry of pools ([`REGISTRY`]) is never held with another lock, and no pool is dropped
+//! under it, for the same reason. The watcher waits out the interval on [`WATCH_CV`], with
+//! [`WATCH`], so that [`set_sample_interval`] can wake it.
 
 use std::{
     mem, ptr,
-    sync::{Mutex, MutexGuard, Weak, atomic::AtomicBool},
+    sync::{
+        Condvar, Mutex, MutexGuard, Weak,
+        atomic::{AtomicBool, AtomicU64},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use std::sync::Arc;
 
-use super::{Ordering, Pool};
+use super::{Ordering, Pool, PoolStats, State};
 
-/// How often the watcher samples the pools in its list. A sample is about time: the backlog is
-/// a level held over time, and the logs are rate limited in time.
-const SAMPLE: Duration = Duration::from_millis(100);
+/// [`set_auto_sample`]'s switch, on unless switched off.
+static AUTO_SAMPLE: AtomicBool = AtomicBool::new(true);
+
+/// Switches automatic sampling on or off for every pool of the process, and for the I/O
+/// threads' command lists ([`DepthWatch`]). On by default.
+///
+/// On, a pool whose backlog passes half of `queue_capacity` (or that refuses work, or hits the
+/// stand-in limit) is watched by the pressure watcher thread, which samples it every
+/// [`sample_interval`], logs its pressure and lets it go once it has stayed calm for 2 s (see
+/// the [crate docs](crate)); no thread runs while every pool is calm. It takes effect at once:
+/// switched off, the watcher lets every pool go at its next look, without a summary, and exits,
+/// and a submission past the line reads the switch and nothing more; switched back on, a pool is
+/// watched at its next submission past the line.
+///
+/// [`sample`] and [`Pool::sample`] sample by hand either way.
+pub fn set_auto_sample(on: bool) {
+    AUTO_SAMPLE.store(on, Ordering::Relaxed);
+}
+
+/// Whether automatic sampling is on (see [`set_auto_sample`]).
+pub fn auto_sample() -> bool {
+    AUTO_SAMPLE.load(Ordering::Relaxed)
+}
+
+/// How often the watcher samples the pools in its list unless [`set_sample_interval`] says
+/// otherwise: often enough that a backlog left deep is logged within half a second, seldom
+/// enough that watching it costs a process under pressure two wake-ups a second. A sample is
+/// about time: the backlog is a level held over time, and the logs are rate limited in time.
+pub const DEFAULT_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// [`set_sample_interval`]'s, in nanoseconds.
+static SAMPLE_INTERVAL: AtomicU64 = AtomicU64::new(DEFAULT_SAMPLE_INTERVAL.as_nanos() as u64);
+
+/// Sets how often the pressure watcher samples the pools (and command lists) in its list, at
+/// once: a watcher running is woken and starts the new interval from now. Zero sets
+/// [`DEFAULT_SAMPLE_INTERVAL`] again. A longer interval costs a process under pressure fewer
+/// wake-ups and logs later; a pool is let go no sooner than two samples apart, even when that
+/// is longer than the 2 s of calm it otherwise takes. Samples taken by hand ([`sample`],
+/// [`Pool::sample`]) follow no interval.
+pub fn set_sample_interval(d: Duration) {
+    let d = if d.is_zero() {
+        DEFAULT_SAMPLE_INTERVAL
+    } else {
+        d
+    };
+    let nanos = u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+    SAMPLE_INTERVAL.store(nanos, Ordering::Relaxed);
+    let mut w = watch_lock();
+    if w.running {
+        w.interval_set = true;
+        drop(w);
+        WATCH_CV.notify_all();
+    }
+}
+
+/// How often the pressure watcher samples the pools in its list (see [`set_sample_interval`]).
+pub fn sample_interval() -> Duration {
+    Duration::from_nanos(SAMPLE_INTERVAL.load(Ordering::Relaxed))
+}
 
 /// The levels, in percent of `queue_capacity`, whose rise is logged (warn, error at 100%).
 const LEVELS: [usize; 4] = [50, 75, 90, 100];
@@ -44,19 +113,32 @@ const LEVELS: [usize; 4] = [50, 75, 90, 100];
 /// hovering at a line does not log each crossing.
 const HYSTERESIS: usize = 10;
 
-/// Samples in a row (1 s) a pool must stay calm before it leaves the list.
-const CALM_SAMPLES: u32 = 10;
+/// How long a pool (or command list) must stay calm, from the first sample that found it calm
+/// to a later one, before it leaves the list.
+const CALM: Duration = Duration::from_secs(2);
+
+/// Whether something calm since `since` (the first calm sample) has been calm long enough at
+/// the sample taken `now`.
+fn calm_enough(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|t| now.duration_since(t) >= CALM)
+}
 
 /// At most one log line per pool and level (and for the stand-in limit, and for the summary
 /// of an episode) this often; the next one says how many were held back meanwhile.
 const LOG_EVERY: Duration = Duration::from_secs(10);
 
-/// The watcher's memory of one pool, kept in the pool's state (under its lock) across episodes,
-/// so a pool going in and out of pressure is still rate limited.
+/// The samples' memory of one pool, kept in the pool's state (under its lock) across episodes,
+/// so a pool going in and out of pressure is still rate limited, and shared by the watcher and
+/// the samples taken by hand, so a rise is counted and logged once whoever sees it.
 #[derive(Default)]
 pub(crate) struct PoolWatch {
     /// [`PoolStats::warnings`](crate::PoolStats::warnings).
     pub(crate) warnings: [u64; 4],
+    /// 0, or `i + 1` while at [`LEVELS`]`[i]`.
+    level: usize,
+    /// `refused_full` and `blocked_at_ceiling` as the last sample saw them.
+    refused_seen: u64,
+    ceiling_seen: u64,
     /// When each level was last logged.
     last_log: [Option<Instant>; 4],
     /// Rises of each level not logged since it was last logged.
@@ -140,13 +222,21 @@ struct Watch {
     running: bool,
     /// The last thread started.
     handle: Option<JoinHandle<()>>,
+    /// [`set_sample_interval`] was called while a thread served the list: it starts the new
+    /// interval from then. Cleared by the thread.
+    interval_set: bool,
 }
 
 static WATCH: Mutex<Watch> = Mutex::new(Watch {
     pools: Vec::new(),
     running: false,
     handle: None,
+    interval_set: false,
 });
+
+/// What the watcher waits on between two passes, with [`WATCH`]: [`set_sample_interval`]
+/// wakes it.
+static WATCH_CV: Condvar = Condvar::new();
 
 /// The watcher thread could not be started once already (reported once).
 static SPAWN_FAILED: AtomicBool = AtomicBool::new(false);
@@ -216,6 +306,114 @@ fn register(t: Target) {
     }
 }
 
+/// The pools created, for [`sample`], held weakly: a pool dropped is pruned at the next look,
+/// or as pools are created ([`enroll`]). `live` is how many were alive at the last prune.
+struct Registry {
+    pools: Vec<Weak<Pool>>,
+    live: usize,
+}
+
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
+    pools: Vec::new(),
+    live: 0,
+});
+
+fn registry_lock() -> MutexGuard<'static, Registry> {
+    REGISTRY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The next pool's [`Pool::id`].
+pub(crate) fn next_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Adds a pool just created to the registry, first pruning the dropped ones if they could be
+/// half of it, so a process that creates pools and never samples them holds no more than
+/// twice the live ones.
+pub(crate) fn enroll(pool: &Weak<Pool>) {
+    let mut r = registry_lock();
+    if r.pools.len() >= 2 * r.live.max(64) {
+        r.pools.retain(|p| p.strong_count() > 0);
+        r.live = r.pools.len();
+    }
+    r.pools.push(pool.clone());
+}
+
+/// One pool, as [`sample`] found it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PoolSample {
+    /// [`PoolConfig::name`](crate::PoolConfig::name).
+    pub name: String,
+    /// [`Pool::id`]: tells pools of the same name apart.
+    pub id: u64,
+    /// The `max_threads` the pool runs with.
+    pub max_threads: usize,
+    /// The `queue_capacity` the pool runs with: the backlog's levels are shares of it.
+    pub queue_capacity: usize,
+    /// The pool's counters, right after the sample ([`Pool::sample`]).
+    pub stats: PoolStats,
+}
+
+/// Samples every pool of the process that is not dropped or shut down, the engine's logical
+/// pool and the protocol crates' pools included, as [`Pool::sample`] does, and reports each, in
+/// the order they were created.
+///
+/// It is for a process to call from its own status or metrics endpoint: each call is one
+/// sample of every pool, so the warnings it counts and logs follow how often the endpoint is
+/// asked. It works whether or not automatic sampling is on ([`set_auto_sample`]), and
+/// does not disturb the watcher's timing.
+pub fn sample() -> Vec<PoolSample> {
+    let pools: Vec<Arc<Pool>> = {
+        let mut r = registry_lock();
+        let pools: Vec<Arc<Pool>> = r.pools.iter().filter_map(Weak::upgrade).collect();
+        if pools.len() < r.pools.len() {
+            r.pools.retain(|p| p.strong_count() > 0);
+        }
+        r.live = r.pools.len();
+        pools
+        // The pools are dropped, if this held the last `Arc`, after the lock.
+    };
+    pools
+        .iter()
+        .filter_map(|p| {
+            let stats = p.sample_open()?;
+            Some(PoolSample {
+                name: p.cfg.name.clone(),
+                id: p.id,
+                max_threads: p.cfg.max_threads,
+                queue_capacity: p.cfg.queue_capacity,
+                stats,
+            })
+        })
+        .collect()
+}
+
+impl Pool {
+    /// Samples the pool once and reports its counters: logs (target `akio-pool`) and counts in
+    /// [`PoolStats::warnings`] each rise of the backlog to 50, 75, 90 or 100% of
+    /// `queue_capacity` since the sample before, by hand or by the watcher, as the watcher
+    /// does. It does not hand the pool to the watcher, and works whether or not
+    /// automatic sampling is on ([`set_auto_sample`]). [`sample`] samples every pool.
+    pub fn sample(&self) -> PoolStats {
+        self.sample_open().unwrap_or_else(|| self.stats())
+    }
+
+    /// [`sample`](Self::sample), `None` once the pool is shut down (nothing sampled).
+    fn sample_open(&self) -> Option<PoolStats> {
+        let look = {
+            let mut st = self.lock();
+            if st.closed {
+                return None;
+            }
+            observe(self, &mut st, Instant::now())
+        };
+        log(&self.cfg.name, &look);
+        Some(self.stats())
+    }
+}
+
 /// The level a backlog of `n` reaches against `cap`: 0 under the first line, `i + 1` past
 /// [`LEVELS`]`[i]` (50, 75 and 90% are passed when exceeded, 100% when the queue is full).
 fn level_of(n: usize, cap: usize) -> usize {
@@ -238,32 +436,97 @@ fn calm(n: usize, cap: usize) -> bool {
     below(n, cap, LEVELS[0] - HYSTERESIS)
 }
 
+/// What a sample found, to be logged once the pool's lock is dropped ([`log`]).
+pub(crate) struct Look {
+    /// The backlog sampled and the capacity.
+    backlog: usize,
+    capacity: usize,
+    /// A rise to this level, and the rises held back before it.
+    rise: Option<(usize, u64)>,
+    /// The stand-in limit was hit: threads blocked, `blocked_at_ceiling`, lines held back.
+    ceiling: Option<(usize, u64, u64)>,
+}
+
+/// One sample of a pool (under its lock), the watcher's or one taken by hand: counts a warning
+/// at the highest level the backlog has risen to since the sample before (a refusal or a hit of
+/// the stand-in limit since then counts as 100%: a burst the backlog may no longer show), and
+/// lets a level go once the backlog has fallen [`HYSTERESIS`] points under it.
+pub(crate) fn observe(p: &Pool, st: &mut State, now: Instant) -> Look {
+    let capacity = p.cfg.queue_capacity;
+    let backlog = st.queue.len() + st.resumes.len();
+    let (refused_full, at_ceiling, blocked) = (st.refused_full, st.blocked_at_ceiling, st.blocked);
+    let w = &mut st.watch;
+    let refused = mem::replace(&mut w.refused_seen, refused_full) != refused_full;
+    let ceiling = mem::replace(&mut w.ceiling_seen, at_ceiling) != at_ceiling;
+    let reach = if refused || ceiling {
+        LEVELS.len()
+    } else {
+        level_of(backlog, capacity)
+    };
+    let mut look = Look {
+        backlog,
+        capacity,
+        rise: None,
+        ceiling: None,
+    };
+    if reach > w.level {
+        w.level = reach;
+        let i = reach - 1;
+        w.warnings[i] += 1;
+        look.rise = may_log(&mut w.last_log[i], &mut w.held[i], now).map(|h| (i, h));
+    } else {
+        while w.level > 0 && below(backlog, capacity, LEVELS[w.level - 1] - HYSTERESIS) {
+            w.level -= 1;
+        }
+    }
+    if ceiling {
+        look.ceiling = may_log(&mut w.ceiling_last_log, &mut w.ceiling_held, now)
+            .map(|h| (blocked, at_ceiling, h));
+    }
+    look
+}
+
+/// Logs what a sample of pool `name` found.
+pub(crate) fn log(name: &str, look: &Look) {
+    let cap = look.capacity;
+    if let Some((i, held)) = look.rise {
+        let (level, backlog, more) = (LEVELS[i], look.backlog, held_back(held));
+        if level == 100 {
+            akio_log::error!(target: "akio-pool", pool:% = name, level = level, backlog = backlog, capacity = cap, held_back = held;
+                "pool {name}: queue full ({backlog}/{cap} jobs waiting), new work is refused{more}");
+        } else {
+            akio_log::warn!(target: "akio-pool", pool:% = name, level = level, backlog = backlog, capacity = cap, held_back = held;
+                "pool {name}: queue past {level}% ({backlog}/{cap} jobs waiting){more}");
+        }
+    }
+    if let Some((blocked, total, held)) = look.ceiling {
+        let more = held_back(held);
+        akio_log::warn!(target: "akio-pool", pool:% = name, blocked = blocked, blocked_at_ceiling = total, held_back = held;
+            "pool {name}: queued work waits for a thread while {blocked} threads are blocked in akio::blocking, past max_blocked_threads{more}");
+    }
+}
+
 /// One pool's episode of pressure, as the watcher thread follows it.
 struct Episode {
     pool: Weak<Pool>,
     /// Set on the first sample.
     started: bool,
     name: String,
-    /// 0, or `i + 1` while at [`LEVELS`]`[i]`.
-    level: usize,
-    /// Calm samples in a row.
-    calm: u32,
+    /// The first sample of the calm going on now, if it is calm.
+    calm_since: Option<Instant>,
     start: Instant,
     /// The deepest backlog sampled, and the capacity.
     peak: usize,
     capacity: usize,
-    /// Refusals for a full queue seen in this episode.
-    refusals: u64,
+    /// `refused_full` when the episode began (as the sample before it saw it), for the
+    /// summary.
+    refused0: u64,
+    /// `refused_full` and `blocked_at_ceiling` at this episode's last sample: a change since
+    /// is not calm, whoever else sampled the pool meanwhile.
+    refused_last: u64,
+    ceiling_last: u64,
     /// `compensated` when the episode was first sampled.
     compensated0: u64,
-}
-
-/// What a sample found that is to be logged, once the pool's lock is dropped.
-struct Logs {
-    /// A rise to this level, the backlog then, and the rises held back before it.
-    rise: Option<(usize, usize, u64)>,
-    /// The stand-in limit was hit: threads blocked, `blocked_at_ceiling`, lines held back.
-    ceiling: Option<(usize, u64, u64)>,
 }
 
 impl Episode {
@@ -272,18 +535,23 @@ impl Episode {
             pool,
             started: false,
             name: String::new(),
-            level: 0,
-            calm: 0,
+            calm_since: None,
             start: Instant::now(),
             peak: 0,
             capacity: 0,
-            refusals: 0,
+            refused0: 0,
+            refused_last: 0,
+            ceiling_last: 0,
             compensated0: 0,
         }
     }
 
-    /// Samples the pool. False when it is gone or shut down (to be removed).
+    /// Samples the pool. False when it is gone or shut down, or automatic sampling is off (to
+    /// be removed).
     fn sample(&mut self, now: Instant) -> bool {
+        if !auto_sample() {
+            return false;
+        }
         let Some(p) = self.pool.upgrade() else {
             return false;
         };
@@ -291,79 +559,37 @@ impl Episode {
         if st.closed {
             return false;
         }
-        let cap = p.cfg.queue_capacity;
-        let backlog = st.queue.len() + st.resumes.len();
-        let refused = mem::take(&mut st.refused_since);
-        let ceiling = mem::take(&mut st.ceiling_since);
         if !self.started {
             self.started = true;
             self.name = p.cfg.name.clone();
             self.start = now;
-            self.capacity = cap;
+            self.capacity = p.cfg.queue_capacity;
             self.compensated0 = st.compensated;
+            // What happened since the sample before this episode is this episode's: the
+            // refusal that started it, say.
+            self.refused0 = st.watch.refused_seen;
+            self.refused_last = st.watch.refused_seen;
+            self.ceiling_last = st.watch.ceiling_seen;
         }
-        self.refusals += refused;
-        self.peak = self.peak.max(backlog);
-        // A refusal or the stand-in limit hit between two samples is a burst the backlog may
-        // no longer show: it counts as 100%.
-        let reach = if refused > 0 || ceiling > 0 {
-            LEVELS.len()
+        let look = observe(&p, &mut st, now);
+        let quiet =
+            st.refused_full == self.refused_last && st.blocked_at_ceiling == self.ceiling_last;
+        self.refused_last = st.refused_full;
+        self.ceiling_last = st.blocked_at_ceiling;
+        self.peak = self.peak.max(look.backlog);
+        self.calm_since = if quiet && calm(look.backlog, look.capacity) {
+            self.calm_since.or(Some(now))
         } else {
-            level_of(backlog, cap)
-        };
-        let mut logs = Logs {
-            rise: None,
-            ceiling: None,
-        };
-        if reach > self.level {
-            self.level = reach;
-            let i = reach - 1;
-            let w = &mut st.watch;
-            w.warnings[i] += 1;
-            logs.rise = may_log(&mut w.last_log[i], &mut w.held[i], now).map(|h| (i, backlog, h));
-        } else {
-            while self.level > 0 && below(backlog, cap, LEVELS[self.level - 1] - HYSTERESIS) {
-                self.level -= 1;
-            }
-        }
-        if ceiling > 0 {
-            let (blocked, total) = (st.blocked, st.blocked_at_ceiling);
-            let w = &mut st.watch;
-            logs.ceiling = may_log(&mut w.ceiling_last_log, &mut w.ceiling_held, now)
-                .map(|h| (blocked, total, h));
-        }
-        self.calm = if refused == 0 && ceiling == 0 && calm(backlog, cap) {
-            self.calm + 1
-        } else {
-            0
+            None
         };
         drop(st);
-        self.log(&logs, cap);
+        log(&self.name, &look);
         true
     }
 
-    fn log(&self, logs: &Logs, cap: usize) {
-        let name = &self.name;
-        if let Some((i, backlog, held)) = logs.rise {
-            let level = LEVELS[i];
-            let more = held_back(held);
-            if level == 100 {
-                akio_log::error!(target: "akio-pool", pool:% = name, level = level, backlog = backlog, capacity = cap, held_back = held;
-                    "pool {name}: queue full ({backlog}/{cap} jobs waiting), new work is refused{more}");
-            } else {
-                akio_log::warn!(target: "akio-pool", pool:% = name, level = level, backlog = backlog, capacity = cap, held_back = held;
-                    "pool {name}: queue past {level}% ({backlog}/{cap} jobs waiting){more}");
-            }
-        }
-        if let Some((blocked, total, held)) = logs.ceiling {
-            let more = held_back(held);
-            akio_log::warn!(target: "akio-pool", pool:% = name, blocked = blocked, blocked_at_ceiling = total, held_back = held;
-                "pool {name}: queued work waits for a thread while {blocked} threads are blocked in akio::blocking, past max_blocked_threads{more}");
-        }
-    }
-
-    /// The pool has been calm long enough, or is gone or shut down: takes it off the list if
-    /// it still is calm, re-checked under both locks. True when it left.
+    /// The pool has been calm long enough, or is gone or shut down, or automatic sampling is
+    /// off: takes it off the list if it still is calm (or gone, shut down, or sampling off),
+    /// re-checked under both locks. True when it left.
     ///
     /// Why no registration is lost: `watched` is set by submitters and cleared here, both
     /// under the pool's lock. A submission that put the backlog past the line before this
@@ -378,41 +604,46 @@ impl Episode {
         // docs): `w` is declared after `p`, so it is dropped first.
         let p = self.pool.upgrade();
         let mut w = watch_lock();
-        // `Some((compensated so far, summaries held back))` when it leaves calm and its summary
-        // is due, `None` when it is gone or shut down, or the summary is held back.
+        // Read under `WATCH`: a submitter registers only after reading it on, and then waits
+        // for `WATCH` to put the pool back.
+        let off = !auto_sample();
+        // `Some((compensated so far, refused so far, summaries held back))` when it leaves calm
+        // and its summary is due, `None` when it is gone or shut down, sampling is off, or the
+        // summary is held back.
         let summary = match &p {
             None => None,
             Some(p) => {
                 let mut st = p.lock();
                 let backlog = st.queue.len() + st.resumes.len();
-                let calm = st.refused_since == 0
-                    && st.ceiling_since == 0
+                let calm = st.refused_full == self.refused_last
+                    && st.blocked_at_ceiling == self.ceiling_last
                     && calm(backlog, p.cfg.queue_capacity);
-                if !st.closed && !calm {
+                if !st.closed && !off && !calm {
                     drop(st);
-                    self.calm = 0;
+                    self.calm_since = None;
                     return false;
                 }
                 st.watched = false;
-                if st.closed || !self.started {
+                if st.closed || off || !self.started {
                     None
                 } else {
                     // Rate limited per pool, as the level lines are.
-                    let compensated = st.compensated;
+                    let (compensated, refused) = (st.compensated, st.refused_full);
                     let w = &mut st.watch;
                     may_log(&mut w.over_last_log, &mut w.over_held, Instant::now())
-                        .map(|held| (compensated, held))
+                        .map(|held| (compensated, refused, held))
                 }
             }
         };
         let me: *const Pool = self.pool.as_ptr();
         w.pools.retain(|t| !t.is(me.cast()));
         drop(w);
-        if let Some((compensated, held)) = summary {
+        if let Some((compensated, refused, held)) = summary {
             let compensated = compensated.saturating_sub(self.compensated0);
+            let refused = refused.saturating_sub(self.refused0);
             let name = &self.name;
             let secs = self.start.elapsed().as_secs_f64();
-            let (peak, cap, refused) = (self.peak, self.capacity, self.refusals);
+            let (peak, cap) = (self.peak, self.capacity);
             let more = held_back(held);
             akio_log::info!(target: "akio-pool", pool:% = name, seconds = secs, peak = peak, capacity = cap, refused = refused, compensated = compensated, held_back = held;
                 "pool {name}: pressure over after {secs:.1} s (peak {peak}/{cap} jobs waiting, {refused} refused, {compensated} threads started for blocked ones){more}");
@@ -421,7 +652,8 @@ impl Episode {
     }
 }
 
-/// The watcher thread: samples the listed pools every [`SAMPLE`] while the list is not empty.
+/// The watcher thread: samples the listed pools every [`sample_interval`] while the list is
+/// not empty.
 fn watch_loop() {
     let mut eps: Vec<Episode> = Vec::new();
     let mut deps: Vec<DepthEpisode> = Vec::new();
@@ -447,20 +679,37 @@ fn watch_loop() {
         let now = Instant::now();
         eps.retain_mut(|e| {
             let alive = e.sample(now);
-            !((!alive || e.calm >= CALM_SAMPLES) && e.try_leave())
+            !((!alive || calm_enough(e.calm_since, now)) && e.try_leave())
         });
         deps.retain_mut(|e| {
             let alive = e.sample(now);
-            !((!alive || e.calm >= CALM_SAMPLES) && e.try_leave())
+            !((!alive || calm_enough(e.calm_since, now)) && e.try_leave())
         });
-        {
-            let mut w = watch_lock();
-            if w.pools.is_empty() {
-                w.running = false;
-                return;
-            }
+        let mut w = watch_lock();
+        if w.pools.is_empty() {
+            w.running = false;
+            w.interval_set = false;
+            return;
         }
-        thread::sleep(SAMPLE);
+        // The next pass one interval from now, or from when the interval is set again (`None`:
+        // an interval past what an `Instant` holds, waited out as long as the wait goes).
+        let from_now = || Instant::now().checked_add(sample_interval());
+        let mut next = from_now();
+        loop {
+            if mem::take(&mut w.interval_set) {
+                next = from_now();
+            }
+            let left = next.map_or(Duration::MAX, |t| {
+                t.saturating_duration_since(Instant::now())
+            });
+            if left.is_zero() {
+                break;
+            }
+            w = WATCH_CV
+                .wait_timeout(w, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
     }
 }
 
@@ -481,7 +730,7 @@ fn depth_level_of(n: usize) -> usize {
 /// past [`LINE`](Self::LINE): an I/O thread's command list, which other threads post to and
 /// the loop takes whole. The first report past the line puts it in the pressure watcher's
 /// list; the watcher logs each rise past 1024, 16384 and 131072 commands and lets it go once
-/// no batch has passed the line for a second. `#[doc(hidden)]`: backend-facing.
+/// no batch has passed the line for 2 s. `#[doc(hidden)]`: backend-facing.
 #[doc(hidden)]
 pub struct DepthWatch {
     me: Weak<DepthWatch>,
@@ -533,9 +782,10 @@ impl DepthWatch {
     /// The owner took a batch of `depth` commands, more than [`LINE`](Self::LINE) (smaller ones
     /// are ignored): recorded for the watcher's next sample, and the queue registered with it
     /// if it is not watched yet.
+    /// Ignored while automatic sampling is off ([`set_auto_sample`]).
     #[cold]
     pub fn report(&self, depth: usize) {
-        if depth <= Self::LINE {
+        if depth <= Self::LINE || !auto_sample() {
             return;
         }
         let register_it = {
@@ -566,7 +816,8 @@ struct DepthEpisode {
     started: bool,
     name: String,
     level: usize,
-    calm: u32,
+    /// The first sample of the calm going on now, if it is calm.
+    calm_since: Option<Instant>,
     start: Instant,
     peak: usize,
 }
@@ -578,14 +829,17 @@ impl DepthEpisode {
             started: false,
             name: String::new(),
             level: 0,
-            calm: 0,
+            calm_since: None,
             start: Instant::now(),
             peak: 0,
         }
     }
 
-    /// Samples the queue. False when it is gone.
+    /// Samples the queue. False when it is gone, or automatic sampling is off.
     fn sample(&mut self, now: Instant) -> bool {
+        if !auto_sample() {
+            return false;
+        }
         let Some(q) = self.queue.upgrade() else {
             return false;
         };
@@ -611,7 +865,11 @@ impl DepthEpisode {
                 self.level -= 1;
             }
         }
-        self.calm = if deepest == 0 { self.calm + 1 } else { 0 };
+        self.calm_since = if deepest == 0 {
+            self.calm_since.or(Some(now))
+        } else {
+            None
+        };
         drop(st);
         if let Some((i, held)) = rise {
             let name = &self.name;
@@ -627,22 +885,24 @@ impl DepthEpisode {
         true
     }
 
-    /// No batch past the line for long enough, or the queue is gone: takes it off the list if
-    /// still so, re-checked under both locks ([`Episode::try_leave`] argues why no report is
-    /// lost). True when it left.
+    /// No batch past the line for long enough, or the queue is gone, or automatic sampling is
+    /// off: takes it off the list if still so, re-checked under both locks
+    /// ([`Episode::try_leave`] argues why no report is lost). True when it left.
     fn try_leave(&mut self) -> bool {
         let q = self.queue.upgrade();
         let mut w = watch_lock();
+        let off = !auto_sample();
         let mut summary = None;
         if let Some(q) = &q {
             let mut st = q.lock();
-            if st.deepest != 0 {
+            if st.deepest != 0 && !off {
                 drop(st);
-                self.calm = 0;
+                self.calm_since = None;
                 return false;
             }
             st.watched = false;
-            if self.started {
+            st.deepest = 0;
+            if self.started && !off {
                 let st = &mut *st;
                 summary = may_log(&mut st.over_last_log, &mut st.over_held, Instant::now());
             }
@@ -717,6 +977,8 @@ mod tests {
     /// held back.
     #[test]
     fn pressure_over_summary_is_rate_limited() {
+        // Never switched off in this binary: the two tests that need it on may overlap.
+        set_auto_sample(true);
         let p = Pool::new(crate::PoolConfig {
             min_threads: 0,
             max_threads: 1,
@@ -764,6 +1026,7 @@ mod tests {
     /// The same for a queue of deep command batches.
     #[test]
     fn depth_summary_is_rate_limited() {
+        set_auto_sample(true);
         let q = DepthWatch::new("flapping-loop".into());
         let leave = || {
             q.lock().watched = true;

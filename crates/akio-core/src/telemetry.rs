@@ -212,19 +212,21 @@ loop_counters! {
     slow_callbacks: "counter", "akio_slow_callbacks_total", "Callbacks longer than the slow-callback threshold.";
     /// The most commands (wake-ups, closes, tasks, sends posted from other threads) the thread
     /// has taken from its command list in one batch (a gauge; in `Metrics::total`, the sum over
-    /// threads). Past 1024 the pressure watcher logs it (target `akio-pool`).
+    /// threads). Past 1024 the pressure watcher logs it (target `akio-pool`), unless automatic
+    /// sampling is switched off (`akio_pool::set_auto_sample`).
     max_cmd_batch: "gauge", "akio_loop_max_command_batch", "The most commands an I/O thread took from its command list at once.";
 }
 
 impl LoopStats {
     /// The loop took a batch of `n` commands from its command list: records the deepest
     /// (`max_cmd_batch`), and hands a batch past [`DepthWatch::LINE`](akio_pool::DepthWatch::LINE)
-    /// to the pressure watcher. Called by the owning I/O thread only; below the line, a load
-    /// and a compare. Backend-facing.
+    /// to the pressure watcher while automatic sampling is on (the default,
+    /// [`akio_pool::set_auto_sample`]).
+    /// Called by the owning I/O thread only; below the line, a load and a compare. Backend-facing.
     #[inline]
     pub fn cmd_batch(&self, n: usize) {
         self.max_cmd_batch.raise_local(n as u64);
-        if n > akio_pool::DepthWatch::LINE {
+        if n > akio_pool::DepthWatch::LINE && akio_pool::auto_sample() {
             self.deep_cmd_batch(n);
         }
     }
@@ -1846,11 +1848,21 @@ mod tests {
         );
     }
 
-    /// The deepest command batch is kept; only one past the line makes a pressure watcher
-    /// handle and reports to it.
+    /// The deepest command batch is kept; only one past the line, with automatic sampling on
+    /// (the default), makes a pressure watcher handle and reports to it.
     #[test]
     fn command_batches_record_the_deepest_and_report_past_the_line() {
         let s = LoopStats::new(LoopMeta::new("epoll", None, 3));
+        // The only test of this binary that touches the switch (on by default).
+        akio_pool::set_auto_sample(false);
+        let off = LoopStats::new(LoopMeta::new("epoll", None, 4));
+        off.cmd_batch(2000);
+        assert_eq!(off.snapshot().max_cmd_batch, 2000);
+        assert!(
+            off.cmd_watch().is_none(),
+            "automatic sampling off: nothing reported"
+        );
+        akio_pool::set_auto_sample(true);
         s.cmd_batch(5);
         s.cmd_batch(2);
         s.cmd_batch(akio_pool::DepthWatch::LINE);

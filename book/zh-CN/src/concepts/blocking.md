@@ -112,33 +112,53 @@ akio 的阻塞客户端已经这样做：`ResponseFuture::wait` 和 `wait_timeou
 
 ### 压力：线程池记录什么日志
 
-线程池承压时会通过 `akio-log` 说出来（target 为 `akio-pool`，消息和 `pool` 字段里带线程池的
-`name`），不承压时没有任何开销：没有定时器，也没有线程。提交时发现积压（排队的新任务和续投任务）超过
-`queue_capacity` 的一半、提交因队列已满被拒绝、或工作被 `max_blocked_threads` 卡住，都会把线程池交给
-监视线程 `akio-pool-watch`；它在这时启动，由进程里所有线程池共用。只要还有线程池被监视，它每 100 ms
-采样一次被监视的线程池：
+线程池的积压（排队的新任务和续投任务）每被采样一次，承压情况就通过 `akio-log` 说出来（target 为
+`akio-pool`，消息和 `pool` 字段里带线程池的 `name`）。采样有两种方式：
+
+- **自动采样**，默认开启，`akio::set_pool_auto_sample(false)` 可以关掉（立即生效，也可以再打开）。
+  所有线程池都不承压时没有任何开销：没有定时器，也没有线程。提交时发现积压超过 `queue_capacity` 的
+  一半、提交因队列已满被拒绝、或工作被 `max_blocked_threads` 卡住，都会把线程池交给监视线程
+  `akio-pool-watch`；它在这时启动，由进程里所有线程池共用。它每 500 ms 采样一次被监视的线程池
+  （`akio::set_pool_sample_interval` 可以改成别的间隔，立即生效；默认下承压的进程每秒为它唤醒两次）；
+  某个池的积压连续 2 秒低于 40%，且没有拒绝、没有碰到补位上限时，放开这个池，并记一条 info 总结这一轮
+  （持续多久、最深积压、拒绝数、为阻塞线程启动的线程数）。没有线程池需要监视时监视线程退出；下一个越线
+  的线程池会再启动它。关掉开关后，监视线程在下一轮放开所有线程池并退出，越线的提交只读一下开关，别的
+  什么也不做。
+
+- **手动采样。** `akio::sample_pools()` 对进程里每个线程池采样一次（engine 的逻辑线程池、协议 crate
+  的线程池如 `akio-http-disk`，以及你自己的 `Pool`），返回每个池的名字、id、`max_threads`、
+  `queue_capacity` 和 `PoolStats`；`Pool::sample()` 只采样一个池。在你自己的状态或指标接口里调用它：
+  每调用一次就是一次采样，记下的日志多少取决于接口被访问的频率，与监视线程是否也在采样无关。
+
+  ```rust,ignore
+  // 在你自己的管理接口里。
+  for p in akio::sample_pools() {
+      writeln!(out, "{} #{}: {}/{} waiting, warnings {:?}",
+          p.name, p.id, p.stats.queued + p.stats.resumes, p.queue_capacity, p.stats.warnings)?;
+  }
+  ```
+
+两种方式下，一次采样记录的都是自上一次采样（不论谁采的）以来的变化：
 
 - 积压升到 `queue_capacity` 的 50、75 或 90% 记一条 warn，升到 100%（新工作被拒绝）记一条 error；
-  积压要比某一档低 10 个百分点才算离开这一档；两次采样之间出现的拒绝或补位上限也按 100% 计，采样
-  错过的突发仍会被看到；
+  积压要比某一档低 10 个百分点才算离开这一档；自上一次采样以来出现的拒绝或补位上限也按 100% 计，
+  采样错过的突发仍会被看到；
 - 线程在 `max_blocked_threads` 上限处阻塞时单独记一条 warn；
-- 每个线程池、每一档最多 10 秒记一条，下一条会说明这期间压下了多少条；
-- 积压连续一秒低于 40%，且没有拒绝、没有碰到补位上限时，线程池离开监视，并记一条 info 总结这一轮
-  （持续多久、最深积压、拒绝数、为阻塞线程启动的线程数），这条总结同样每个线程池最多 10 秒一条。
-  没有线程池需要监视时监视线程退出；下一个
-  越线的线程池会再启动它。
+- 每个线程池、每一档（包括监视线程的总结）最多 10 秒记一条，下一条会说明这期间压下了多少条。
 
-`PoolStats::warnings` 按档（50、75、90、100%）统计积压升档的次数（被压下的日志也计入），
-`PoolStats::watched` 表示线程池此刻是否被监视。指标端点为 engine 的线程池导出
+`PoolStats::warnings` 按档（50、75、90、100%）统计采样发现的积压升档次数（被压下的日志也计入）；
+`PoolStats::max_queued` 由每次提交更新，与是否采样无关。`PoolStats::watched` 表示监视线程此刻是否
+在监视这个池。指标端点为 engine 的线程池导出
 `akio_pool_pressure_warnings_total{level="50"|"75"|"90"|"100"}` 和 `akio_pool_watched`，以及
 `akio_pool_resumes`、`akio_pool_max_queued`、`akio_pool_blocked`、`akio_pool_compensated_total` 和
 `akio_pool_blocked_at_ceiling_total`（[可观测性](../observability.md)）。50% 的 warn 提示该看一看，
 并非故障；100% 的 error 表示正在回复 `Overloaded`。
 
-同一个监视线程也照看 I/O 线程的命令列表（其他线程投递给某个 loop 的命令：唤醒、关闭、`run_on_loop`
-工作），它们本身没有容量上限。每个 loop 记录自己一次取走的最深批次（`akio_loop_max_command_batch`）；
-一批超过 1024 条命令时，这个 loop 被交给监视线程：批次超过 1024 和 16384 条时记 warn，超过 131072
-条时记 error，连续一秒没有批次超过 1024 后放开它并记一条 info。出现这样的批次，说明 loop 收到命令的
+同一个监视线程在同一个开关下也照看 I/O 线程的命令列表（其他线程投递给某个 loop 的命令：唤醒、关闭、
+`run_on_loop` 工作），它们本身没有容量上限。每个 loop 记录自己一次取走的最深批次
+（`akio_loop_max_command_batch`，与开关无关）；自动采样打开时，一批超过 1024 条命令，这个 loop 就被
+交给监视线程：批次超过 1024 和 16384 条时记 warn，超过 131072
+条时记 error，连续 2 秒没有批次超过 1024 后放开它并记一条 info。出现这样的批次，说明 loop 收到命令的
 速度超过了它处理的速度，或者被某个阻塞的回调拖住了。
 
 ## 自己的线程池

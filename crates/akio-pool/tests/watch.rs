@@ -1,6 +1,7 @@
 //! The pressure watcher (`akio-pool-watch`): started by a pool passing half of its queue, gone
-//! once every watched pool has stayed calm. The watcher is one per process, so these tests run
-//! one at a time (`SERIAL`), each starting with no watcher running, and wait with bounded loops
+//! once every watched pool has stayed calm for 2 s. The watcher, its switch and its interval are
+//! one per process, so these tests run one at a time (`SERIAL`), each starting with no watcher
+//! running, the switch as it wants it and samples every [`FAST`], and wait with bounded loops
 //! instead of counting on exact timing.
 
 use std::{
@@ -9,13 +10,28 @@ use std::{
     time::{Duration, Instant},
 };
 
-use akio_pool::{DepthWatch, Job, Pool, PoolConfig, blocking, watch_list_has, watcher_running};
+use akio_pool::{
+    DEFAULT_SAMPLE_INTERVAL, DepthWatch, Job, Pool, PoolConfig, blocking, sample_interval,
+    set_auto_sample, set_sample_interval, watch_list_has, watcher_running,
+};
+
+/// The interval the tests sample at, so that an episode's levels show quickly; a pool still
+/// leaves only after 2 s of calm.
+const FAST: Duration = Duration::from_millis(20);
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// Takes the test lock and waits for any watcher of an earlier test to be gone.
+/// Takes the test lock, switches automatic sampling on, and waits for any watcher of an
+/// earlier test to be gone.
 fn serial() -> MutexGuard<'static, ()> {
+    serial_with(true)
+}
+
+/// [`serial`], with automatic sampling switched `on` or off.
+fn serial_with(on: bool) -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    set_auto_sample(on);
+    set_sample_interval(FAST);
     logs();
     wait_until("no watcher left from an earlier test", || {
         !watcher_running()
@@ -249,12 +265,13 @@ fn no_registration_is_lost_while_the_watcher_leaves() {
     let p = Pool::new(cfg("race", 1, 100));
     for round in 0..6u64 {
         let g = gate();
-        // Over the line, then calm: the watcher leaves about 1 s after the calm begins.
+        // Over the line, then calm: the watcher leaves 2 s (and up to a sample) after the calm
+        // begins.
         fill(&p, &g, 60);
         wait_until("watched", || watch_list_has(&p));
         open(&g);
         wait_until("drained", || p.stats().queued == 0);
-        thread::sleep(Duration::from_millis(900 + round * 50));
+        thread::sleep(Duration::from_millis(1950 + round * 20));
         // Four submitters push the pool past half at once, as the watcher may be leaving.
         let g = gate();
         p.try_execute(gate_job(&g)).expect("room");
@@ -283,7 +300,7 @@ fn no_registration_is_lost_while_the_watcher_leaves() {
 }
 
 /// An I/O thread's command list (`DepthWatch`): a batch past 1024 starts the watcher, rises
-/// past 1024 and 16384 are counted, and once no batch has passed the line for a second the
+/// past 1024 and 16384 are counted, and once no batch has passed the line for 2 s the
 /// queue leaves and the watcher exits. A second episode starts it again.
 #[test]
 fn deep_command_batches_are_watched_until_they_stop() {
@@ -317,4 +334,88 @@ fn deep_command_batches_are_watched_until_they_stop() {
         over, 1,
         "the second episode's summary came within 10 s: held back"
     );
+}
+
+/// Switched off, the watcher lets every watched pool and queue go at its next pass, with no
+/// summary, and exits; a pool past the line, or refusing work, is not watched again until it is
+/// switched back on.
+#[test]
+fn switching_automatic_sampling_off_lets_every_pool_go() {
+    let _g = serial();
+    let p = Pool::new(cfg("switched", 1, 10));
+    let q = DepthWatch::new("I/O thread switched (client)".to_owned());
+    let g = gate();
+    fill(&p, &g, 6);
+    q.report(2000);
+    assert!(p.stats().watched && q.watched());
+    wait_until("the watcher runs", watcher_running);
+    set_auto_sample(false);
+    wait_until("the pool leaves", || !watch_list_has(&p));
+    wait_until("the watcher exits", || !watcher_running());
+    assert!(!p.stats().watched && !q.watched());
+    assert!(logged("switched", "pressure over").is_empty());
+    // Past the line and refused: still not watched.
+    for _ in 0..4 {
+        p.try_execute(gate_job(&g)).expect("room");
+    }
+    assert!(p.try_execute(Box::new(|| {})).is_err());
+    q.report(2000);
+    assert!(!p.stats().watched && !q.watched() && !watcher_running());
+    // Back on, the next submission past the line hands the pool to the watcher again.
+    set_auto_sample(true);
+    assert!(p.try_execute(Box::new(|| {})).is_err());
+    assert!(p.stats().watched);
+    open(&g);
+    wait_until("the watcher exits", || !watcher_running());
+    shut(&p);
+}
+
+/// A sample by hand during an episode counts and logs a rise once, whoever sees it first, and
+/// does not keep the watcher from letting the pool go once it is calm.
+#[test]
+fn a_sample_by_hand_shares_the_levels_with_the_watcher() {
+    let _g = serial();
+    let p = Pool::new(cfg("shared", 1, 10));
+    let g = gate();
+    fill(&p, &g, 10);
+    // The watcher may have looked while the queue filled, and counted a lower rise first.
+    let s = p.sample();
+    assert_eq!(s.warnings[3], 1, "full: {:?}", s.warnings);
+    wait_until("the watcher runs", watcher_running);
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(p.sample().warnings, s.warnings, "counted once");
+    open(&g);
+    wait_until("the watcher exits", || !watcher_running());
+    assert_eq!(logged("shared", "queue full").len(), 1);
+    shut(&p);
+}
+
+/// A new interval takes effect at once: a watcher waiting out a long one is woken and samples
+/// at the new one. Zero sets the default again.
+#[test]
+fn a_new_sample_interval_takes_effect_at_once() {
+    let _g = serial();
+    let p = Pool::new(cfg("interval", 1, 10));
+    let g = gate();
+    fill(&p, &g, 6);
+    wait_until("50% counted", || p.stats().warnings[0] == 1);
+    set_sample_interval(Duration::from_secs(3600));
+    assert_eq!(sample_interval(), Duration::from_secs(3600));
+    open(&g);
+    wait_until("drained", || p.stats().queued == 0);
+    // No sample for an hour: the pool cannot be found calm.
+    thread::sleep(Duration::from_millis(300));
+    assert!(watch_list_has(&p));
+    let t = Instant::now();
+    set_sample_interval(FAST);
+    wait_until("the pool leaves", || !watch_list_has(&p));
+    assert!(
+        t.elapsed() < Duration::from_secs(5),
+        "left {:?} after the interval was set",
+        t.elapsed()
+    );
+    wait_until("the watcher exits", || !watcher_running());
+    set_sample_interval(Duration::ZERO);
+    assert_eq!(sample_interval(), DEFAULT_SAMPLE_INTERVAL);
+    shut(&p);
 }

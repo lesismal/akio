@@ -20,13 +20,23 @@
 //! thread in its place (up to [`PoolConfig::max_blocked_threads`] such threads), and the extra
 //! thread leaves as soon as it is not needed.
 //!
-//! A pool under pressure says so. When a submission finds the queue more than half full (or is
-//! refused, or finds work held up by the stand-in limit), the pool is handed to a process-wide
-//! watcher thread, `akio-pool-watch`, started then: it samples the pool every 100 ms, logs
-//! (target `akio-pool`) each time the backlog rises to 50, 75, 90 or 100% of `queue_capacity`,
-//! and lets the pool go, with a summary, once the backlog has stayed under 40% for a second. With
-//! no pool under pressure no watcher runs and no timer fires ([`PoolStats::warnings`],
-//! [`PoolStats::watched`]).
+//! A pool's backlog is sampled two ways:
+//!
+//! - Automatically, unless [`set_auto_sample`] switches it off. When a submission finds the
+//!   queue more than half full (or is refused, or finds work held up by the stand-in limit),
+//!   the pool is handed to a process-wide watcher thread, `akio-pool-watch`, started then: it
+//!   samples the pool every [`sample_interval`] (500 ms unless [`set_sample_interval`] says
+//!   otherwise) and lets it go, with a summary, once the backlog has stayed under 40% for 2 s.
+//!   With no pool under pressure no watcher runs and no timer fires.
+//! - By hand: [`sample`] looks once at every pool of the process (the engine's included), and
+//!   [`Pool::sample`] at one, so a process that serves its own status or metrics endpoint
+//!   samples its pools when it answers, as often as it is asked, whether or not the watcher
+//!   samples them too.
+//!
+//! Either way a sample logs (target `akio-pool`) each rise of the backlog to 50, 75, 90 or 100%
+//! of `queue_capacity` since the sample before, and counts it ([`PoolStats::warnings`]). With
+//! automatic sampling switched off, a submission that finds the queue deep reads the switch and
+//! nothing else, and nothing is logged but at a sample taken by hand.
 //!
 //! Guide: [Blocking work: the logical pool](https://lesismal.github.io/akio/en/concepts/blocking.html)
 //! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/akio/zh-CN/concepts/blocking.html)).
@@ -46,6 +56,10 @@ use std::{
 
 mod watch;
 
+pub use watch::{
+    DEFAULT_SAMPLE_INTERVAL, PoolSample, auto_sample, sample, sample_interval, set_auto_sample,
+    set_sample_interval,
+};
 #[doc(hidden)]
 pub use watch::{DepthWatch, watch_list_has, watcher_running};
 
@@ -178,8 +192,9 @@ pub struct PoolConfig {
     /// default `max_threads`.
     pub max_blocked_threads: usize,
     /// Jobs that may wait, new work and resumed work together; beyond it [`Pool::try_execute`]
-    /// rejects ([`Pool::resume`] does not). Past half of it the pool is watched and its pressure
-    /// logged (see the [crate docs](crate)).
+    /// rejects ([`Pool::resume`] does not). Past half of it the pool is watched and its
+    /// pressure logged, unless [`set_auto_sample`] switched that off (see the
+    /// [crate docs](crate)).
     pub queue_capacity: usize,
     /// How long a thread above `min_threads` may sit idle before it exits.
     pub keep_alive: Duration,
@@ -263,13 +278,15 @@ pub struct PoolStats {
     /// [`blocking`] than `max_blocked_threads` stands in for: a sign that limit (or a wait in a
     /// pool task) is what holds the work up.
     pub blocked_at_ceiling: u64,
-    /// Times the backlog (new and resumed jobs waiting) rose to 50, 75, 90 and 100% of
+    /// Times a sample, the watcher's or one taken by hand ([`Pool::sample`], [`sample`]), found
+    /// the backlog (new and resumed jobs waiting) risen to 50, 75, 90 and 100% of
     /// `queue_capacity`, one count per rise at the highest level reached, whether or not the
     /// log line was held back by its rate limit. A refusal, or work held up by the stand-in
-    /// limit (`blocked_at_ceiling`), between two samples counts as 100%.
+    /// limit (`blocked_at_ceiling`), since the sample before counts as 100%.
     pub warnings: [u64; 4],
-    /// Whether the pressure watcher watches the pool now: it passed half of `queue_capacity`
-    /// (or refused work, or hit the stand-in limit) and has not stayed calm since.
+    /// Whether the pressure watcher watches the pool now: automatic sampling is on, and it
+    /// passed half of `queue_capacity` (or refused work, or hit the stand-in limit) and has not
+    /// stayed calm since.
     pub watched: bool,
 }
 
@@ -294,11 +311,11 @@ struct State {
     /// The pool is in the pressure watcher's list, or a submitter is putting it there. Set by
     /// submitters, cleared by the watcher, both under this lock (`watch` module).
     watched: bool,
-    /// Refusals for a full queue since the watcher's last sample.
-    refused_since: u64,
-    /// `blocked_at_ceiling` events since the watcher's last sample.
-    ceiling_since: u64,
-    /// The watcher's per-pool memory (levels logged, rate limits), kept across episodes.
+    /// Submissions refused for a full queue, ever (not those refused once the pool was shut
+    /// down); a sample compares it with what it saw last.
+    refused_full: u64,
+    /// The samples' per-pool memory (level reached, levels logged, rate limits), kept across
+    /// episodes and shared by the watcher and samples taken by hand.
     watch: watch::PoolWatch,
     closed: bool,
     handles: Vec<JoinHandle<()>>,
@@ -324,6 +341,8 @@ struct Grown {
 /// The pool. Share it as an `Arc<Pool>`.
 pub struct Pool {
     me: Weak<Pool>,
+    /// Tells the pool from another of the same name ([`Pool::id`]).
+    id: u64,
     cfg: PoolConfig,
     state: Mutex<State>,
     cv: Condvar,
@@ -353,6 +372,7 @@ impl Pool {
         cfg.min_threads = cfg.min_threads.min(cfg.max_threads);
         let pool = Arc::new_cyclic(|me| Pool {
             me: me.clone(),
+            id: watch::next_id(),
             cfg,
             state: Mutex::new(State {
                 queue: VecDeque::new(),
@@ -365,8 +385,7 @@ impl Pool {
                 compensated: 0,
                 blocked_at_ceiling: 0,
                 watched: false,
-                refused_since: 0,
-                ceiling_since: 0,
+                refused_full: 0,
                 watch: watch::PoolWatch::default(),
                 closed: false,
                 handles: Vec::new(),
@@ -386,6 +405,7 @@ impl Pool {
                 pool.spawn_locked(&mut st);
             }
         }
+        watch::enroll(&pool.me);
         pool
     }
 
@@ -425,20 +445,21 @@ impl Pool {
         }
     }
 
-    /// Marks the pool watched (under the lock) if it is not yet; true when the caller is to
-    /// register it with the watcher once the lock is dropped.
+    /// Marks the pool watched (under the lock) if automatic sampling is on and it is not
+    /// watched yet; true when the caller is to register it with the watcher once the lock is
+    /// dropped.
     fn watch_locked(st: &mut State) -> bool {
-        if st.watched {
+        if st.watched || !auto_sample() {
             return false;
         }
         st.watched = true;
         true
     }
 
-    /// `n` submissions refused for a full queue (under the lock): counted for the watcher's
-    /// next sample. True when the caller is to register the pool.
+    /// `n` submissions refused for a full queue (under the lock): counted for the next sample.
+    /// True when the caller is to register the pool.
     fn refused_locked(st: &mut State, n: u64) -> bool {
-        st.refused_since += n;
+        st.refused_full += n;
         Self::watch_locked(st)
     }
 
@@ -512,8 +533,9 @@ impl Pool {
     /// busy with a job looks at the queue before it sleeps, so it is never woken.
     ///
     /// Also marks the pool watched when the backlog passes half of `queue_capacity` (or the
-    /// stand-in limit held work up) and it is not watched yet: one comparison and a flag read
-    /// on what the lock already guards, nothing more while the pool is calm or watched.
+    /// stand-in limit held work up), automatic sampling is on and it is not watched yet: one
+    /// comparison on what the lock already guards while the pool is calm, and a flag read and
+    /// a load of the switch once it is past the line.
     fn queued_locked(&self, st: &mut State, added: usize) -> Queued {
         let len = st.queue.len() + st.resumes.len();
         self.queued.store(len, Ordering::SeqCst);
@@ -565,7 +587,6 @@ impl Pool {
             && st.threads >= allowance
         {
             st.blocked_at_ceiling += 1;
-            st.ceiling_since += 1;
             return Grown {
                 started,
                 watch: Self::watch_locked(st),
@@ -737,6 +758,12 @@ impl Pool {
     /// The pool's name ([`PoolConfig::name`]).
     pub fn name(&self) -> &str {
         &self.cfg.name
+    }
+
+    /// A number that tells the pool from any other of the process, of the same name or not:
+    /// pools are numbered from 1 in the order they are created.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Whether the calling thread is one of this pool's threads.
