@@ -289,7 +289,13 @@ fn a_streamed_response_framed_by_its_length() {
     let seen = Arc::new(Seen::default());
     let e = start(&seen);
     let mut s = connect(&e);
-    for n in [0usize, 1, 100_000, 3 << 20] {
+    // A tap ends on its writer thread at `finish`, which may come after the client has read
+    // the whole body and after the next request's writer has finished: wait for each tap
+    // before the next request, so they are seen in order.
+    for (i, n) in [0usize, 1, 100_000, 3 << 20].into_iter().enumerate() {
+        if i > 0 {
+            seen.taps(i);
+        }
         get(&mut s, &format!("/sized/{n}"));
         let (head, body) = read_response(&mut s, false);
         assert!(head.starts_with("HTTP/1.1 200 "), "{head}");
@@ -297,6 +303,7 @@ fn a_streamed_response_framed_by_its_length() {
         assert_eq!(field(&head, "transfer-encoding"), None, "{head}");
         assert!(body == pattern(n), "{n}: the body as written");
     }
+    seen.taps(4);
     // HEAD: the length, no body, and the connection serves on.
     s.write_all(b"HEAD /sized/10 HTTP/1.1\r\nHost: x\r\n\r\n")
         .unwrap();
