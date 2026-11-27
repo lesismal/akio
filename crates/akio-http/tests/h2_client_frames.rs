@@ -853,6 +853,10 @@ fn goaway_refuses_unprocessed_streamed_requests() {
         started.send(()).unwrap();
         let (s3, _) = srv.request();
         assert!(s3 > s1);
+        // The client writes the body while the stream is open: the GOAWAY comes after it (sent
+        // at once, it could reach the client before the write, which then fails).
+        srv.until(|f| f.ty == DATA && f.sid == s3)
+            .expect("the streamed body");
         let mut p = s1.to_be_bytes().to_vec();
         p.extend_from_slice(&0u32.to_be_bytes());
         srv.send(GOAWAY, 0, 0, &p);
