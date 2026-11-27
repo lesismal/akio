@@ -414,6 +414,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for akio_ws::WsConfig
 impl core::panic::unwind_safe::UnwindSafe for akio_ws::WsConfig
 pub struct akio_ws::WsSender
 impl akio_ws::WsSender
+pub fn akio_ws::WsSender::abort(&self)
 pub fn akio_ws::WsSender::close(&self, u16, &str)
 pub fn akio_ws::WsSender::hold_reads(&self, bool)
 pub fn akio_ws::WsSender::is_open(&self) -> bool
