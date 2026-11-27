@@ -9,13 +9,15 @@
 //! A timeout never fires before it has really elapsed: the handshake start is read from the
 //! real clock, and activity is a flag the I/O threads raise (no clock read, no lock, and no write
 //! at all while it is already raised) and the watchdog stamps with its own real time when it
-//! sees it, which is never earlier than the activity. A timeout fires at most a tick late.
+//! sees it, which is never earlier than the activity. A timeout fires at most a tick late: a
+//! session whose timeout shortens the tick wakes the watchdog, which would otherwise sleep out
+//! the longer tick it had begun.
 
 use std::{
     io,
     net::{SocketAddr, ToSocketAddrs},
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -39,6 +41,10 @@ struct Watchdog {
     base: Instant,
     tick_ms: AtomicU64,
     shards: [Mutex<Vec<Weak<Watch>>>; SHARDS],
+    /// The watchdog waits out its tick on `wake`, holding `nap` while it reads the tick: a
+    /// shorter tick set meanwhile ([`Watchdog::shorten`]) is seen or wakes it.
+    nap: Mutex<()>,
+    wake: Condvar,
 }
 
 /// The process's watchdog, started on first use with period `tick` (ms).
@@ -54,12 +60,19 @@ fn spawn_watchdog(tick: u64) -> &'static Watchdog {
             base: Instant::now(),
             tick_ms: AtomicU64::new(tick),
             shards: std::array::from_fn(|_| Mutex::new(Vec::new())),
+            nap: Mutex::new(()),
+            wake: Condvar::new(),
         }));
         std::thread::Builder::new()
             .name("akio-socks-timeouts".into())
             .spawn(move || {
                 loop {
-                    std::thread::sleep(Duration::from_millis(w.tick_ms.load(Ordering::Relaxed)));
+                    {
+                        let g = w.nap.lock().unwrap_or_else(|p| p.into_inner());
+                        let tick = Duration::from_millis(w.tick_ms.load(Ordering::Relaxed));
+                        // Woken early (a shorter tick): one check now, then the new tick.
+                        drop(w.wake.wait_timeout(g, tick));
+                    }
                     let now = w.now();
                     for s in &w.shards {
                         let mut g = s.lock().unwrap_or_else(|p| p.into_inner());
@@ -102,6 +115,16 @@ impl Watchdog {
     /// Real milliseconds since the watchdog started.
     fn now(&self) -> u64 {
         self.base.elapsed().as_millis() as u64
+    }
+
+    /// Makes the tick `tick` if that is shorter, waking the watchdog: it may be sleeping a
+    /// longer tick (one set by sessions with long timeouts), which would make a short timeout
+    /// fire that much late.
+    fn shorten(&self, tick: u64) {
+        if self.tick_ms.fetch_min(tick, Ordering::Relaxed) > tick {
+            let _g = self.nap.lock().unwrap_or_else(|p| p.into_inner());
+            self.wake.notify_one();
+        }
     }
 }
 
@@ -209,7 +232,7 @@ impl Watch {
         upstream: &UpstreamSlot,
         [handshake_ms, idle_ms, connect_ms]: [u64; 3],
     ) -> Arc<Watch> {
-        w.tick_ms.fetch_min(tick, Ordering::Relaxed);
+        w.shorten(tick);
         let now = w.now();
         let watch = Arc::new(Watch {
             dog: w,
@@ -437,5 +460,25 @@ mod tests {
             "{:?}",
             t0.elapsed()
         );
+    }
+
+    /// Regression: a session whose timeout shortened the tick waited for the watchdog to sleep
+    /// out the longer tick it had begun: a 300 ms idle timeout registered just after sessions
+    /// with the default timeouts (a 1 s tick) fired about a second late (seen as the akio-socks
+    /// idle-reset test taking 1 s instead of 0.3 s when run with the others).
+    #[test]
+    fn a_shorter_timeout_wakes_a_watchdog_on_a_long_tick() {
+        let slot: UpstreamSlot = Arc::new(Mutex::new(None));
+        // A watchdog of our own, asleep for a second; a 100 ms handshake timeout registered as
+        // its tick begins (a 25 ms tick).
+        let dog = spawn_watchdog(1000);
+        let c = akio_core::fuzzing::conn_inner();
+        let t0 = Instant::now();
+        let _w = Watch::start_on(dog, 25, c.clone(), &slot, [100, 0, 0]);
+        closed_after(&c, Duration::from_secs(3)).expect("closed");
+        let t = t0.elapsed();
+        assert!(t >= Duration::from_millis(100), "fired after {t:?}");
+        // At most a 25 ms tick late, not the second the watchdog had begun to sleep.
+        assert!(t < Duration::from_millis(600), "fired after {t:?}");
     }
 }

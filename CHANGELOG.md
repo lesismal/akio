@@ -10,6 +10,15 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a short proxy timeout fired up to a second late (akio-socks)
+
+The proxy's timeouts (handshake, idle, connect) are checked by one watchdog thread per process,
+every quarter of the shortest timeout in use (10 ms to 1 s). A session whose timeout shortened
+that tick lowered it while the watchdog slept out the longer tick it had begun, so the first
+check came only after that: a 300 ms idle timeout set after sessions with the default timeouts
+(a 1 s tick) fired about a second late, not "at most a tick late". The watchdog now waits on a
+condition variable that a shorter tick signals.
+
 ### Added: settings changed on a running TURN server, and a drain (akio-turn)
 
 akit's A258, for its TURN role's reload (fit's `SetLimits`, `SetAuth` and draining server);
