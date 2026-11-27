@@ -8,7 +8,7 @@ tokio 是通用的异步运行时；akio 是没有运行时的网络库。两者
 | tokio | akio |
 |---|---|
 | 每连接一个任务，带 `.await` 点的 `async fn` | 每连接一个 `Handler`，回调（`on_data`、`on_close`） |
-| 工作窃取调度：任务可能在任意 worker 上恢复 | 每核一线程：连接永远不离开它的 I/O 线程 |
+| 工作窃取调度：任务可能在任意 worker 上恢复 | 默认同样是工作窃取：连接的每一轮可以在任意 worker 上执行，一次一轮；或者每核一线程的事件循环：连接永远不离开它的 I/O 线程 |
 | 状态存在任务的 future 里（共享时常用 `Arc<Mutex<..>>`） | 状态存在 handler 里（`&mut self`，无锁，无需 `Sync`） |
 | `socket.read(&mut buf).await` 拉取数据 | `on_data(&mut self, c, data)` 推送数据 |
 | `socket.write_all(&buf).await` 等待缓冲区空间 | `c.send(&buf)` 从不等待：写出或排队，由水位线限制 |

@@ -14,6 +14,12 @@ thread-per-core: every connection belongs to exactly one I/O thread for its whol
 - A slow callback delays its thread's other connections. Mitigations: documented non-blocking contract, explicit `spawn_blocking` (ADR-002/003), slow-callback detection with a configurable threshold.
 - Unlike fib (any idle worker runs a connection's next round), load balancing is by connection, not by round; hot connections cannot migrate. Accepted trade-off.
 
+## Update (2026-11-27): work stealing is the default
+
+TCP and Unix-domain stream listeners on epoll/kqueue that do not choose now run on
+`Scheduling::WorkStealing` (ADR-104); the model above is `Scheduling::EventLoops`, chosen per
+listener, and the only one of io_uring, DPDK, BPF-steered and UDP listeners.
+
 ## Update (2026-11-23, ADR-105)
 
 The thread a connection lives on is now chosen at accept time, not only by the kernel: a thread that accepts a connection while it holds more than `2 + min / 32` connections above the least loaded thread of its listener hands it to that thread before anything is read (`Balance::LeastConnections`, the default; `Balance::Kernel` keeps the kernel's choice). `on_open` and every later callback run on the receiving thread, so a connection still belongs to one thread for its whole life.

@@ -125,9 +125,23 @@ Limits:
 - Spoofed, ever-changing sources each get a fresh bucket; SYN cookies cover that case.
 - The source map is a bounded LRU (`max_sources`).
 
+## Work stealing (the default)
+
+A TCP or Unix-domain stream listener on epoll/kqueue that does not choose runs on work stealing
+(`Scheduling::WorkStealing`, ADR-104): a pool of workers (one per CPU, `WorkStealingConfig`, or
+`.threads(n)` of its own) runs each round of a connection (read, callbacks, write) on whichever
+worker is free, one round of a connection at a time. Per-connection state still needs no lock,
+and a connection's events are still handled in order; a slow callback holds its own worker, not
+the connections of a thread, and load spreads by work rather than by connection.
+`Engine::set_threads` does not resize a work-stealing listener: choose
+`.scheduling(Scheduling::EventLoops)` for one that should be resized. io_uring, DPDK, BPF-steered
+and UDP listeners always run on event loops (below). `AKIO_DEFAULT_SCHEDULING=event-loops` makes
+event loops the default (a test and diagnostic knob).
+
 ## Thread-per-core
 
-Every connection is owned by exactly one I/O thread from accept to close (ADR-001). That thread
+With event loops (`Scheduling::EventLoops`, and on io_uring, DPDK, BPF steering and UDP), every
+connection is owned by exactly one I/O thread from accept to close (ADR-001). That thread
 reads the socket, runs your callbacks, runs the timers of its connections and flushes their
 queues. Consequences:
 

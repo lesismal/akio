@@ -69,7 +69,8 @@ binds one as `build` does (same backend, threads, accel and filter choices) and 
 `shutdown_listener(id, drain)` also calls `on_shutdown` on them and closes those left after
 `drain`; `listeners()` lists them; `set_listener_filter` / `clear_listener_filter` swap the
 filter. See [TCP servers](protocols/tcp-udp.md#listeners-at-run-time). Thread counts change at
-runtime with `Engine::set_threads(index, n)` (builder listeners and client groups) or
+runtime with `Engine::set_threads(index, n)` (builder listeners on event loops, and client
+groups; work-stealing listeners, the default on epoll/kqueue, are not resized) or
 `set_listener_threads(id, n)` (see
 [Observability and hot reload](observability.md#io-thread-counts)).
 

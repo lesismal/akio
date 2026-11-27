@@ -192,21 +192,34 @@ pub struct UringConfig {
     pub strict: bool,
 }
 
-/// How a TCP listener's connections are scheduled onto threads (ADR-104).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// How a TCP listener's connections are scheduled onto threads (ADR-104). The default is
+/// [`WorkStealing`](Self::WorkStealing) for the listeners that can use it (TCP and Unix-domain
+/// stream listeners on epoll/kqueue without BPF steering); the others (io_uring, DPDK, BPF
+/// steering, UDP) run on [`EventLoops`](Self::EventLoops).
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Scheduling {
-    /// Thread-per-core (ADR-001, the default): each connection belongs to one I/O thread, which
-    /// reads it, runs its handler inline and writes it, for the connection's whole life.
-    #[default]
+    /// Thread-per-core (ADR-001): each connection belongs to one I/O thread, which reads it,
+    /// runs its handler inline and writes it, for the connection's whole life. The only
+    /// scheduling of io_uring, DPDK, BPF steering and UDP listeners, and the one
+    /// [`Engine::set_threads`] resizes.
     EventLoops,
-    /// A pool of workers, one per CPU, runs each round of a connection (read, handler, write) on
-    /// whichever worker is free, one round of a connection at a time; a worker with nothing to
-    /// run waits for readiness in `epoll_wait` itself (as Tokio's runtime does). Spreads load by work rather than by connection, at the cost of a hand-off per
-    /// round. epoll/kqueue only (not io_uring or DPDK); TCP only (UDP listeners keep their
-    /// loops); [`Engine::set_threads`] is refused. Listeners added, removed and drained at run
-    /// time and accept filters work as with event loops (ADR-099).
+    /// The default for TCP and Unix-domain stream listeners on epoll/kqueue: a pool of workers,
+    /// one per CPU, runs each round of a connection (read, handler, write) on whichever worker
+    /// is free, one round of a connection at a time; a worker with nothing to run waits for
+    /// readiness in `epoll_wait` itself (as Tokio's runtime does). Spreads load by work rather
+    /// than by connection, at the cost of a hand-off per round. epoll/kqueue only (not io_uring
+    /// or DPDK); TCP only (UDP listeners keep their loops); [`Engine::set_threads`] is refused.
+    /// Listeners added, removed and drained at run time and accept filters work as with event
+    /// loops (ADR-099).
     WorkStealing(WorkStealingConfig),
+}
+
+impl Default for Scheduling {
+    /// [`WorkStealing`](Self::WorkStealing) with the default thread counts.
+    fn default() -> Self {
+        Scheduling::WorkStealing(WorkStealingConfig::default())
+    }
 }
 
 /// Thread counts of [`Scheduling::WorkStealing`]. `#[non_exhaustive]`: start from
@@ -487,8 +500,9 @@ impl Listener {
     /// the io_uring listeners of the same [`UringConfig`] ring options, and one with
     /// [`Scheduling::WorkStealing`] shares the workers of the other work-stealing listeners with
     /// the same [`WorkStealingConfig`]; UDP, datagram, DPDK and BPF-steered listeners always have
-    /// their own (one per core by default). With work stealing the count itself is ignored,
-    /// [`WorkStealingConfig`] sizes the threads: it only keeps the listener's workers to itself.
+    /// their own (one per core by default). With work stealing (the default on epoll/kqueue)
+    /// it keeps the listener's workers to itself and sizes them: `n` workers, unless
+    /// [`WorkStealingConfig::workers`] sets the count.
     #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = Some(n.max(1));
@@ -505,10 +519,13 @@ impl Listener {
         self
     }
 
-    /// Chooses how this listener's connections are scheduled onto threads (default:
-    /// [`Scheduling::EventLoops`], or what `AKIO_DEFAULT_SCHEDULING` says when this is not
-    /// called: `work-stealing` or `event-loops`, a test and diagnostic knob like
-    /// `AKIO_DEFAULT_BACKEND`). ADR-104.
+    /// Chooses how this listener's connections are scheduled onto threads. When this is not
+    /// called: [`Scheduling::WorkStealing`] for a TCP or Unix-domain stream listener on
+    /// epoll/kqueue without BPF steering, unless `AKIO_DEFAULT_SCHEDULING` says `event-loops`
+    /// (a test and diagnostic knob like `AKIO_DEFAULT_BACKEND`), and
+    /// [`Scheduling::EventLoops`] for the others (io_uring, DPDK, BPF steering, UDP). Choose
+    /// `EventLoops` for a listener whose threads [`Engine::set_threads`] should resize.
+    /// ADR-104.
     #[must_use]
     pub fn scheduling(mut self, s: Scheduling) -> Self {
         self.scheduling = Some(s);
@@ -744,17 +761,20 @@ fn bind_one(
     sharing: Sharing<'_>,
 ) -> io::Result<Bound> {
     let explicit_scheduling = l.scheduling.is_some();
-    // The environment's default never overrides what the listener asked for explicitly
-    // elsewhere: io_uring (its own or `AKIO_DEFAULT_BACKEND`'s) and BPF steering need
-    // per-thread loops. (Work stealing runs accept filters too.)
-    let env_applies = matches!(l.backend, Backend::Epoll)
+    // The default (work stealing, or what `AKIO_DEFAULT_SCHEDULING` says) never overrides what
+    // the listener asked for explicitly elsewhere: io_uring (its own or
+    // `AKIO_DEFAULT_BACKEND`'s) and BPF steering need per-thread loops. (Work stealing runs
+    // accept filters too.)
+    let default_applies = matches!(l.backend, Backend::Epoll)
         && (l.backend_explicit || env_backend.is_none())
         && matches!(l.accel, Accel::None);
-    let scheduling = l
-        .scheduling
-        .take()
-        .or_else(|| env_scheduling.cloned().filter(|_| env_applies))
-        .unwrap_or_default();
+    let scheduling = l.scheduling.take().unwrap_or_else(|| {
+        if default_applies {
+            env_scheduling.cloned().unwrap_or_default()
+        } else {
+            Scheduling::EventLoops
+        }
+    });
     let balance = !l.udp && l.balance == Balance::LeastConnections;
     if let Some(b) = env_backend {
         // Per-peer UDP listeners always run on the epoll UDP loop; datagram listeners
@@ -807,7 +827,12 @@ fn bind_one(
     }
     let (group, kind) = match &scheduling {
         Scheduling::WorkStealing(rc) if !l.udp && l.datagrams.is_none() => {
-            (bind_work_stealing(l, *rc, cfg, pool)?, Kind::Tcp)
+            // `.threads(n)` / `.dedicated()`: workers of its own, that many unless chosen.
+            let mut rc = *rc;
+            if rc.workers == 0 {
+                rc.workers = l.threads.unwrap_or(0);
+            }
+            (bind_work_stealing(l, rc, cfg, pool)?, Kind::Tcp)
         }
         _ => bind_group(l, cfg, pool)?,
     };
@@ -1799,10 +1824,12 @@ fn env_default_scheduling() -> Option<Scheduling> {
     parse_default_scheduling(std::env::var("AKIO_DEFAULT_SCHEDULING").ok().as_deref())
 }
 
+/// What `AKIO_DEFAULT_SCHEDULING` asks of the listeners that do not choose (`None`: the
+/// default, work stealing).
 fn parse_default_scheduling(v: Option<&str>) -> Option<Scheduling> {
     match v? {
-        "work-stealing" => Some(Scheduling::WorkStealing(WorkStealingConfig::default())),
-        "" | "event-loops" => None,
+        "event-loops" => Some(Scheduling::EventLoops),
+        "" | "work-stealing" => None,
         other => {
             log_or_stderr(
                 akio_log::Level::Warn,
@@ -2257,8 +2284,9 @@ impl Engine {
 
     /// Changes the number of I/O threads of group `index` (in [`local_addrs`](Self::local_addrs)
     /// order: the listeners, then the client groups) to `threads` (at least 1) while the engine
-    /// runs (ADR-028). TCP listeners and client groups on epoll, kqueue and io_uring support it.
-    /// For a listener that shares I/O threads (ADR-130) it resizes the shared group, so every
+    /// runs (ADR-028). TCP listeners on event loops ([`Scheduling::EventLoops`]: chosen, or on
+    /// io_uring) and client groups on epoll, kqueue and io_uring support it; work-stealing
+    /// listeners, the default on epoll/kqueue, do not. For a listener that shares I/O threads (ADR-130) it resizes the shared group, so every
     /// listener of that group gets the new count.
     ///
     /// * **Growing** starts new I/O threads (or reactivates retiring ones) and gives each a
@@ -2279,7 +2307,8 @@ impl Engine {
     /// from an I/O thread's callback.
     /// [`Metrics::loops`] shows retiring threads (`retiring`). Errors: `Unsupported` for UDP
     /// listeners of both kinds (a socket added or removed from a UDP `SO_REUSEPORT` group would
-    /// move peers between threads), DPDK groups and listeners with BPF steering (`Accel::Ebpf`); `NotFound`
+    /// move peers between threads), work-stealing listeners, DPDK groups and listeners with BPF
+    /// steering (`Accel::Ebpf`); `NotFound`
     /// for an index out of range; `InvalidInput` before [`start`](Self::start); `NotConnected`
     /// after [`shutdown`](Self::shutdown).
     pub fn set_threads(&self, index: usize, threads: usize) -> io::Result<()> {

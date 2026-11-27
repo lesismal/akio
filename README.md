@@ -2,9 +2,10 @@
 
 English | [简体中文](README.zh-CN.md)
 
-`akio` is an event-driven, thread-per-core network library for Rust, the Rust counterpart of the
-Go library [fib](https://github.com/lesismal/fib). Callbacks run inline on the connection's I/O
-thread, a cloneable `Conn` handle can be used from any thread, blocking work goes to an explicit
+`akio` is an event-driven network library for Rust, the Rust counterpart of the Go library
+[fib](https://github.com/lesismal/fib). A connection's callbacks run one at a time: by default on
+whichever work-stealing worker is free (epoll/kqueue), or inline on the connection's own I/O
+thread with thread-per-core event loops (chosen per listener, and always on io_uring), a cloneable `Conn` handle can be used from any thread, blocking work goes to an explicit
 logical pool, and each listener picks its own backend (epoll/kqueue or io_uring) with optional
 eBPF steering. There is no async runtime. (Formerly named *flash*, then *only*; renamed before 1.0.0, see
 [CHANGELOG.md](CHANGELOG.md).)
@@ -17,7 +18,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 
 | Area | What is there |
 |---|---|
-| Engine | per-listener backends: epoll (Linux), kqueue (macOS), io_uring (Linux 5.19+, falls back to epoll); thread-per-core I/O threads; `SO_REUSEPORT` accept distribution; eBPF/classic-BPF steering (`Accel::Ebpf`) and an in-kernel sockmap relay |
+| Engine | per-listener backends: epoll (Linux), kqueue (macOS), io_uring (Linux 5.19+, falls back to epoll); work-stealing workers (the default on epoll/kqueue) or thread-per-core I/O threads; `SO_REUSEPORT` accept distribution; eBPF/classic-BPF steering (`Accel::Ebpf`) and an in-kernel sockmap relay |
 | Connections | `Conn` is `Clone + Send + Sync`; non-blocking `send` from any thread with direct writes, corking, `writev`, `sendfile`; backpressure (watermarks, `hold_reads`, `on_drain`, `max_queued_bytes`); idle timeouts; async dial; graceful shutdown |
 | Blocking work | adaptive bounded logical pool, `Conn::spawn_blocking` with completions back on the I/O thread, ordered response slots, slow-callback detection |
 | UDP | one `Conn` per peer, or connectionless batches to a `DatagramsHandler` (no peer table), `recvmmsg`/`sendmmsg`, UDP GSO/GRO, peer caps, UDP dial, multicast groups on a shared port (IPv6 groups joined per interface: `Engine::bind_udp_multicast_on`) |

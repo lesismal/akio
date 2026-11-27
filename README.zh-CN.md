@@ -2,8 +2,8 @@
 
 [English](README.md) | 简体中文
 
-akio 是 Rust 的事件驱动、每核一线程网络库，是 Go 库 [fib](https://github.com/lesismal/fib) 的
-Rust 对应物。回调直接在连接所属的 I/O 线程上执行，可克隆的 `Conn` 句柄可以在任何线程使用，
+akio 是 Rust 的事件驱动网络库，是 Go 库 [fib](https://github.com/lesismal/fib) 的
+Rust 对应物。同一连接的回调一次只执行一个：默认在空闲的工作窃取 worker 上执行（epoll/kqueue），或者用每核一线程的事件循环直接在连接所属的 I/O 线程上执行（按 listener 选择，io_uring 总是如此），可克隆的 `Conn` 句柄可以在任何线程使用，
 阻塞任务交给显式的逻辑线程池，每个 listener 独立选择后端（epoll/kqueue 或 io_uring），并可选
 eBPF 分流。没有异步运行时。（原名 *flash*，后为 *only*，在 1.0.0 之前更名，见 [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)。）
 
@@ -15,7 +15,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 
 | 方面 | 内容 |
 |---|---|
-| 引擎 | 按 listener 选择后端：epoll（Linux）、kqueue（macOS）、io_uring（Linux 5.19+，不可用时回退到 epoll）；每核一线程的 I/O 线程；`SO_REUSEPORT` 分发连接；eBPF/经典 BPF 分流（`Accel::Ebpf`）以及内核内 sockmap 转发 |
+| 引擎 | 按 listener 选择后端：epoll（Linux）、kqueue（macOS）、io_uring（Linux 5.19+，不可用时回退到 epoll）；工作窃取 worker（epoll/kqueue 上的默认）或每核一线程的 I/O 线程；`SO_REUSEPORT` 分发连接；eBPF/经典 BPF 分流（`Accel::Ebpf`）以及内核内 sockmap 转发 |
 | 连接 | `Conn` 是 `Clone + Send + Sync`；任意线程非阻塞 `send`，支持直接写、cork、`writev`、`sendfile`；背压（水位线、`hold_reads`、`on_drain`、`max_queued_bytes`）；空闲超时；异步 dial；优雅停机 |
 | 阻塞任务 | 自适应、有界的逻辑线程池，`Conn::spawn_blocking` 的完成回调回到 I/O 线程，有序响应槽位，慢回调检测 |
 | UDP | 每个对端一个 `Conn`，或按批交给 `DatagramsHandler` 的无连接方式（没有对端表），`recvmmsg`/`sendmmsg`，UDP GSO/GRO，对端数量上限，UDP dial，共享端口上的组播组（IPv6 组按接口加入：`Engine::bind_udp_multicast_on`） |

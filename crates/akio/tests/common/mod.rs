@@ -16,11 +16,13 @@ pub(crate) fn backend() -> Backend {
     }
 }
 
-/// Listeners default to work-stealing scheduling (`AKIO_DEFAULT_SCHEDULING=work-stealing`,
-/// ADR-104): tests of what only per-thread loops do (thread resizing, one metrics row per I/O
-/// thread) skip.
+/// Listeners that do not choose run on work stealing (the default on epoll/kqueue, unless
+/// `AKIO_DEFAULT_SCHEDULING=event-loops`; never with `AKIO_TEST_BACKEND=uring`, ADR-104):
+/// tests of what only per-thread loops do (thread resizing, one metrics row per I/O thread)
+/// skip, or choose event loops.
 pub(crate) fn work_stealing() -> bool {
-    std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("work-stealing")
+    std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() != Ok("event-loops")
+        && std::env::var("AKIO_TEST_BACKEND").as_deref() != Ok("uring")
 }
 
 /// `read` that retries `EINTR`: with an io_uring ring in the same process, a blocking std read

@@ -113,9 +113,21 @@ println!("{:?} {:?}", limiter.mode(), limiter.stats()?);
 - 伪造且不断变化的源地址各自拿到新桶，这种情况靠 SYN cookies 应对。
 - 源表是有上限的 LRU（`max_sources`）。
 
+## 工作窃取（默认）
+
+epoll/kqueue 上没有显式选择调度方式的 TCP 或 Unix 域流 listener 使用工作窃取
+（`Scheduling::WorkStealing`，ADR-104）：一组 worker（默认每个 CPU 一个，由 `WorkStealingConfig`
+或 listener 自己的 `.threads(n)` 决定）在任意空闲的 worker 上执行连接的每一轮（读、回调、写），同一个
+连接一次只执行一轮。每连接状态仍然不需要锁，同一个连接的事件仍然按顺序处理；慢回调只占住它自己的
+worker，而不是拖住一个线程上的所有连接，负载按工作量而不是按连接分摊。`Engine::set_threads` 不会调整
+工作窃取 listener 的线程数：需要调整的 listener 请选择 `.scheduling(Scheduling::EventLoops)`。
+io_uring、DPDK、BPF 引流和 UDP 的 listener 总是使用事件循环（见下）。
+`AKIO_DEFAULT_SCHEDULING=event-loops` 把默认改为事件循环（测试和诊断开关）。
+
 ## 每核一线程
 
-每个连接从 accept 到关闭都只由一个 I/O 线程拥有（ADR-001）。这个线程读 socket、执行你的
+使用事件循环时（`Scheduling::EventLoops`，以及 io_uring、DPDK、BPF 引流和 UDP），每个连接从 accept
+到关闭都只由一个 I/O 线程拥有（ADR-001）。这个线程读 socket、执行你的
 回调、运行其连接的定时器并刷出它们的发送队列。由此可知：
 
 - 每连接状态不需要锁，也不需要 `Sync`。

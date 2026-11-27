@@ -5,7 +5,22 @@ English | [简体中文](104-work-stealing-scheduling.zh-CN.md)
 Status: proposed (2026-11-23; updated 2026-11-24: workers drive the pollers, measurements;
 second revision 2026-11-24: accepts and closes on the workers, fewer wake-ups at light load;
 third revision 2026-11-24: run-time listeners, accept filters, a live write timeout; renamed
-2026-11-26: `Scheduling::Loops` is `EventLoops`, `Scheduling::Rounds` is `WorkStealing`)
+2026-11-26: `Scheduling::Loops` is `EventLoops`, `Scheduling::Rounds` is `WorkStealing`;
+2026-11-27: work stealing is the default)
+
+## Update (2026-11-27): work stealing is the default
+
+A TCP or Unix-domain stream listener on epoll/kqueue without BPF steering that does not call
+`Listener::scheduling` now runs on `Scheduling::WorkStealing(WorkStealingConfig::default())`, and
+`Scheduling::default()` is that. The others (io_uring, its own or `AKIO_DEFAULT_BACKEND`'s; DPDK;
+BPF steering; UDP and datagram listeners) keep `EventLoops`, the only scheduling they have.
+`AKIO_DEFAULT_SCHEDULING=event-loops` makes event loops the default again (the test and
+diagnostic knob, as `work-stealing` was); `work-stealing` is accepted and changes nothing.
+`.threads(n)` on a work-stealing listener now sizes its own workers (`n`, unless
+`WorkStealingConfig::workers` sets the count); it used to keep them to itself only.
+`Engine::set_threads` still refuses a work-stealing listener: a listener that should be resized
+chooses `EventLoops`. Where the text below says event loops are the default, it describes the
+state before this update.
 
 ## Update (2026-11-26): the modes renamed
 

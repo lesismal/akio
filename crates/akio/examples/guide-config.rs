@@ -14,7 +14,7 @@ use std::{
 
 use akio::{
     Accel, Acceptor, Backend, Config, Conn, EbpfConfig, Engine, Handler, Listener, PoolConfig,
-    SlowHook, UringConfig, ebpf::Steering, fn_acceptor,
+    Scheduling, SlowHook, UringConfig, ebpf::Steering, fn_acceptor,
 };
 
 struct Echo;
@@ -93,9 +93,11 @@ fn main() -> std::io::Result<()> {
         Engine::builder()
             .config(cfg.clone())
             .pool(pool)
-            // epoll (kqueue on macOS), two I/O threads.
+            // epoll (kqueue on macOS), two I/O threads of its own, on event loops (which
+            // `set_threads` resizes; work stealing is the default).
             .listen(
                 Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .scheduling(Scheduling::EventLoops)
                     .threads(2)
                     .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
             )

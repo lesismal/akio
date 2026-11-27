@@ -5,7 +5,19 @@
 状态：提议中（2026-11-23；2026-11-24 更新：由 worker 驱动 poller，补充测量；2026-11-24 第二次修订：
 accept 与关闭改在 worker 上进行，轻负载时减少唤醒；2026-11-24 第三次修订：运行时增删 listener、accept 过滤器、
 运行时修改的写超时；2026-11-26 改名：`Scheduling::Loops` 改为 `EventLoops`，`Scheduling::Rounds` 改为
-`WorkStealing`）
+`WorkStealing`；2026-11-27：工作窃取成为默认）
+
+## 更新（2026-11-27）：工作窃取成为默认
+
+epoll/kqueue 上、没有 BPF 引流、也没有调用 `Listener::scheduling` 的 TCP 或 Unix 域流 listener，
+现在使用 `Scheduling::WorkStealing(WorkStealingConfig::default())`，`Scheduling::default()` 也是它。
+其余 listener（io_uring，无论是自己选的还是 `AKIO_DEFAULT_BACKEND` 指定的；DPDK；BPF 引流；UDP 和
+数据报 listener）仍使用 `EventLoops`，这也是它们唯一的调度方式。`AKIO_DEFAULT_SCHEDULING=event-loops`
+把默认改回事件循环（测试和诊断开关，作用与原来的 `work-stealing` 相同）；`work-stealing` 仍可识别，
+不改变任何行为。工作窃取 listener 上的 `.threads(n)` 现在决定它自己那组 worker 的数量（`n` 个，除非
+`WorkStealingConfig::workers` 另行指定）；原来它只表示独占 worker。`Engine::set_threads` 仍然拒绝
+工作窃取 listener：需要调整线程数的 listener 请选择 `EventLoops`。下文凡是说事件循环是默认的地方，
+描述的都是这次更新之前的状态。
 
 ## 更新（2026-11-26）：两种模式改名
 

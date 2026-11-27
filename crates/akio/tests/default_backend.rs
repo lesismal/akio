@@ -93,6 +93,8 @@ fn run_child(value: Option<&str>) -> [String; 3] {
         "--test-threads=1",
     ])
     .env(CHILD, "1")
+    // Work-stealing listeners (the default on epoll) report their own backend name (ADR-104).
+    .env("AKIO_DEFAULT_SCHEDULING", "event-loops")
     .env_remove("AKIO_DEFAULT_BACKEND");
     if let Some(v) = value {
         cmd.env("AKIO_DEFAULT_BACKEND", v);
@@ -124,18 +126,12 @@ fn child_report() {
 
 #[test]
 fn unset_keeps_epoll() {
-    if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("work-stealing") {
-        return; // work-stealing listeners report their own backend name (ADR-104)
-    }
     assert_eq!(run_child(None), ["epoll", "epoll", "udp"]);
     assert_eq!(run_child(Some("epoll")), ["epoll", "epoll", "udp"]);
 }
 
 #[test]
 fn uring_applies_only_to_listeners_without_an_explicit_backend() {
-    if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("work-stealing") {
-        return; // work-stealing listeners report their own backend name (ADR-104)
-    }
     // Where io_uring is missing the default listener falls back to epoll (with a warning).
     let want = if uring_available() {
         "io_uring"
@@ -148,8 +144,5 @@ fn uring_applies_only_to_listeners_without_an_explicit_backend() {
 
 #[test]
 fn unknown_value_is_ignored() {
-    if std::env::var("AKIO_DEFAULT_SCHEDULING").as_deref() == Ok("work-stealing") {
-        return; // work-stealing listeners report their own backend name (ADR-104)
-    }
     assert_eq!(run_child(Some("kqueue")), ["epoll", "epoll", "udp"]);
 }

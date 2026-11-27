@@ -8,7 +8,7 @@ overlapping problems with different shapes, and they can live in the same proces
 | tokio | `akio` |
 |---|---|
 | a task per connection, `async fn` with `.await` points | a `Handler` per connection, callbacks (`on_data`, `on_close`) |
-| work-stealing scheduler: a task may resume on any worker | thread-per-core: a connection never leaves its I/O thread |
+| work-stealing scheduler: a task may resume on any worker | work stealing too by default: a connection's rounds run on any worker, one at a time; or thread-per-core event loops: a connection never leaves its I/O thread |
 | state lives in the task's future (often `Arc<Mutex<..>>` when shared) | state lives in the handler (`&mut self`, no lock, no `Sync`) |
 | `socket.read(&mut buf).await` pulls data | `on_data(&mut self, c, data)` is pushed data |
 | `socket.write_all(&buf).await` waits for buffer space | `c.send(&buf)` never waits: it writes or queues, bounded by watermarks |

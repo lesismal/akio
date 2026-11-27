@@ -23,9 +23,11 @@ sans-io protocol state machines, and no async runtime.
 
 ## What makes `akio` different
 
-- **Thread-per-core.** Every connection belongs to exactly one I/O thread for its whole life.
-  Your callbacks run inline on that thread, so per-connection state needs no lock and no
-  `Sync`.
+- **One round of a connection at a time.** A connection's callbacks never run concurrently, so
+  per-connection state needs no lock and no `Sync`. By default (epoll/kqueue) each round of a
+  connection (read, callbacks, write) runs on whichever work-stealing worker is free; with
+  thread-per-core event loops (`Scheduling::EventLoops`, and always on io_uring) a connection
+  belongs to one I/O thread for its whole life and the callbacks run inline on it.
 - **Callbacks, not futures.** A `Handler` gets `on_data(&mut self, conn, bytes)`. There is no
   executor, no task per connection and no `.await` on the hot path.
 - **A thread-safe connection handle.** `Conn` is `Clone + Send + Sync`: any thread may `send`,

@@ -68,8 +68,8 @@ TCP listener 可以在 engine 运行时增加和移除（ADR-099）：`Engine::a
 已有连接继续运行；`shutdown_listener(id, drain)` 还会对它们调用 `on_shutdown`，并在 `drain` 之后关闭
 剩余连接；`listeners()` 列出它们；`set_listener_filter` / `clear_listener_filter` 替换过滤器。见
 [TCP 服务器](protocols/tcp-udp.md#运行时的-listener)。线程数可以在运行时用
-`Engine::set_threads(index, n)`（builder 的 listener 和 client 组）或 `set_listener_threads(id, n)`
-修改（见[可观测性与热更新](observability.md#io-线程数)）。
+`Engine::set_threads(index, n)`（使用事件循环的 builder listener 和 client 组；epoll/kqueue 上默认的
+工作窃取 listener 不能调整）或 `set_listener_threads(id, n)` 修改（见[可观测性与热更新](observability.md#io-线程数)）。
 
 `UringConfig`：`entries`（SQ 深度，0 = 默认）、`sqpoll`（内核 SQ 轮询线程，false）、`strict`
 （失败而不是回退到 epoll，false）。

@@ -85,7 +85,8 @@ fn main() -> std::io::Result<()> {
                 1, threads,
             )))
         } else {
-            l
+            // `epoll` and `uring` are per-thread loops (work stealing is the default on epoll).
+            l.scheduling(Scheduling::EventLoops)
         }
     };
     let builder = || {

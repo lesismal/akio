@@ -10,6 +10,23 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：epoll/kqueue 上 TCP listener 的默认调度改为工作窃取（akio）
+
+epoll/kqueue 上、没有 BPF 引流、也没有调用 `Listener::scheduling` 的 TCP 或 Unix 域流 listener，现在
+使用 `Scheduling::WorkStealing`（ADR-104）：一组 worker 在任意空闲的 worker 上执行连接的每一轮（读、
+回调、写），同一个连接一次只执行一轮；原来是每个连接终生留在一个 I/O 线程上（ADR-001）。
+`Scheduling::default()` 是 `WorkStealing(WorkStealingConfig::default())`。io_uring、DPDK、BPF 引流、
+UDP 和数据报 listener 仍使用事件循环。对没有显式选择的应用，变化如下：
+
+- `Engine::set_threads` / `set_listener_threads` 拒绝这类 listener（`Unsupported`）：需要在运行时调整
+  线程数的 listener，请选择 `.scheduling(Scheduling::EventLoops)`。
+- 工作窃取 listener 上的 `.threads(n)` 决定它自己那组 worker 的数量（`n` 个，除非
+  `WorkStealingConfig::workers` 另行指定）；原来只是独占默认数量的 worker。
+- `Metrics::loops` 为这个 listener 的每个工作窃取 worker 和 poller 各列一行，而不是每个 I/O 线程一行。
+
+`AKIO_DEFAULT_SCHEDULING=event-loops` 让没有显式选择的 listener 恢复使用事件循环；`work-stealing` 仍可
+识别。`http-bench` 示例的 `epoll` 和 `uring` 模式现在显式要求事件循环，与之前测量的一致。
+
 ### 修复：HTTP/3 上传的 `finish` 不会被自己的响应判为失败；io_uring 上 `remove_listener` 返回时被移除的监听套接字已经关闭（akio-h3、akio-uring）
 
 `H3Upload::finish` 在发出 body 结尾之后，才去读请求是否已经失败。响应完整收到时会把上传标记为结束，

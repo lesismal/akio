@@ -10,6 +10,27 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: work stealing is the default scheduling of TCP listeners on epoll/kqueue (akio)
+
+A TCP or Unix-domain stream listener on epoll/kqueue without BPF steering that does not call
+`Listener::scheduling` now runs on `Scheduling::WorkStealing` (ADR-104): a pool of workers runs
+each round of a connection (read, callbacks, write) on whichever is free, one round of a
+connection at a time, instead of every connection staying on one I/O thread (ADR-001).
+`Scheduling::default()` is `WorkStealing(WorkStealingConfig::default())`. io_uring, DPDK,
+BPF-steered, UDP and datagram listeners keep event loops. What changes for an application that
+did not choose:
+
+- `Engine::set_threads` / `set_listener_threads` refuse such a listener (`Unsupported`): choose
+  `.scheduling(Scheduling::EventLoops)` for one whose threads change at run time.
+- `.threads(n)` on a work-stealing listener sizes its own workers (`n`, unless
+  `WorkStealingConfig::workers` does); it used to keep the default count to itself.
+- `Metrics::loops` has a row per work-stealing worker and poller of the listener, not one per
+  I/O thread.
+
+`AKIO_DEFAULT_SCHEDULING=event-loops` restores event loops for the listeners that do not choose;
+`work-stealing` is still accepted. The `http-bench` example's `epoll` and `uring` modes now ask
+for event loops explicitly, as they measured before.
+
 ### Fixed: an HTTP/3 upload's `finish` is not refused by its own response; a removed io_uring listener is closed when `remove_listener` returns (akio-h3, akio-uring)
 
 `H3Upload::finish` read back whether the request had failed after sending the end of the body.
