@@ -31,7 +31,8 @@
 - `TurnConfig::tcp_connect_timeout`（30 秒）：Connect 等待对端的时长，与引擎的 `connect_timeout` 无关。
 - 供嵌入它的服务器使用（ADR-186）：`TurnConfig::relay_ports`（中继地址使用防火墙开放的端口范围）、
   `nonce_secret`（同一负载均衡器后面的服务器互相接受对方的 nonce）、`max_stream_message`（TCP 或 TLS
-  客户端可发送的最大消息）。
+  客户端可发送的最大消息）；`on_relay`（按用户名得知每个中继的数据报：用于带宽限制）、`on_event`（分配、刷新、
+  释放、拒绝、凭据失败）、`TurnServer::holds_relay`（服务器的中继地址，供对端过滤器使用）以及更多 `TurnStats`。
 - `TurnCore`：同一服务器的 sans-io 状态机。
 
 ```rust,no_run

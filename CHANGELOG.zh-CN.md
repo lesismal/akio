@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：供嵌入 akio-turn 的服务器使用的钩子（akio-turn）
+
+akit 的 A257，用于其 TURN 角色（fit 的 `user_bandwidth`、其事件与指标，以及只能经由中继端口访问的自身地址）；
+ADR-186 更新 1。`TurnConfig::on_relay(|user, to_peer, bytes| -> bool)`：每个即将经 UDP 中继转发的数据报，在
+许可、信道与对端策略放行后都会询问它，返回 false 则丢弃（在 I/O 线程上，持有分配所在分片的锁）。
+`TurnConfig::on_event(|e: &TurnEvent|)`：在应答之后、不持有任何锁时收到 `Allocated`、`Refreshed`、
+`Freed { reason, to_peer, to_client }`、`Refused { method, code }` 与 `AuthFailed { method, code }`，附带
+用户名、客户端与中继地址（直接驱动的核心用 `TurnCore::flush_events`）。`TurnServer::holds_relay(addr)`（以及
+`TurnCore::holds_relay`）不锁分片地判断服务器的中继地址（公网的或绑定的），供对端过滤器使用。`TurnStats` 新增
+`permissions`、`channels`、`pending`、`dropped`、`refused`、`to_peer_bytes` 与 `to_client_bytes`，并实现
+`AddAssign`；新增 `TurnServer::allocations()`。
+
 ### 新增：中继端口范围、共享的 nonce 密钥与流消息上限（akio-turn）
 
 akit 的 A256，用于其 TURN 角色（fit 的 `port_min`/`port_max`、`nonce_secret` 与 `max_stream_message`）；

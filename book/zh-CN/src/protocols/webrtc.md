@@ -672,6 +672,30 @@ let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
 不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
 socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 
+### 供嵌入的服务器使用的钩子
+
+嵌入 `TurnServer` 的服务器（akit 的 TURN 角色，ADR-186）可以得知它中继了什么、它的分配发生了什么：
+
+- `TurnConfig::on_relay(|user, to_peer, bytes| -> bool)`：每个即将经 UDP 中继转发的数据报，在许可、信道与
+  对端策略放行之后都会询问它；返回 false 则丢弃。按用户名的带宽限制放在这里。它在持有分配所在分片锁的 I/O
+  线程上运行：不得阻塞，也不得调用会锁分片的服务器方法（`stats`）。
+- `TurnConfig::on_event(|e: &TurnEvent| ..)`：在应答发出、不持有任何锁之后收到 `Allocated`、`Refreshed`、
+  `Freed { reason, to_peer, to_client }`、`Refused { method, code }` 与 `AuthFailed { method, code }`，附带
+  用户名、客户端与中继地址。
+- `TurnServer::holds_relay(addr)`：不锁分片地判断某地址是否是服务器的中继地址（告知客户端的或绑定的），使对端
+  过滤器可以让客户端互相访问对方的中继，同时服务器自身的其他端口仍对中继关闭。
+- `TurnStats` 统计许可、信道、等待中的分配、丢弃的数据报、拒绝次数以及每个方向中继的字节数；
+  `TurnServer::allocations()` 只读一个计数器。
+
+```rust,ignore
+let turn: Arc<OnceLock<TurnServer>> = Arc::default();
+let t = turn.clone();
+let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
+    .on_relay(move |user, to_peer, n| limiter.allow(user, to_peer, n))
+    .on_event(|e| log::debug!("{:?} {} {:?}", e.kind, e.user, e.relay))
+    .peer_allowed(move |p| !denied_by_default(p.ip()) || t.get().is_some_and(|s| s.holds_relay(p)));
+```
+
 ### TCP 与 TLS 上的 TURN
 
 `turn.stream()` 是 TCP listener 的 acceptor，用 `akio::tls::Tls` 包装后用于 TLS listener（`turns:`，通常

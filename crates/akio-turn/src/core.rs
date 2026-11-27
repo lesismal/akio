@@ -183,6 +183,14 @@ pub trait TurnEnv {
 /// Decides which peers clients may relay to (see [`TurnConfig::peer_allowed`]).
 pub type PeerFilter = Arc<dyn Fn(SocketAddr) -> bool + Send + Sync>;
 
+/// Hears each datagram about to be relayed: the allocation's username, whether it goes toward
+/// the peer (else toward the client), and its payload's length; false drops it (see
+/// [`TurnConfig::on_relay`]).
+pub type RelayHook = Arc<dyn Fn(&str, bool, usize) -> bool + Send + Sync>;
+
+/// Hears what happens to allocations and requests (see [`TurnConfig::on_event`]).
+pub type EventHook = Arc<dyn Fn(&TurnEvent) + Send + Sync>;
+
 /// TURN server settings.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -308,6 +316,26 @@ pub struct TurnConfig {
     /// message claims more is closed. Default (and most):
     /// [`framing::MAX_FRAME`](crate::framing::MAX_FRAME), every message TURN can carry.
     pub max_stream_message: usize,
+    /// Hears each datagram about to be relayed through a UDP relay, once the permission, the
+    /// channel and the peer policy let it through: ChannelData and Send indications from the
+    /// client (toward the peer: `true`), and the peer's datagrams for it (`false`). It is told
+    /// the allocation's username and the payload's length (the peer's datagram, the
+    /// indication's `DATA`, the ChannelData's application data); returning false drops the
+    /// datagram (counted in [`TurnStats::dropped`]). This is where an embedding server limits a
+    /// username's bandwidth and counts its bytes. It runs on the I/O thread that read the
+    /// datagram, with the allocation's shard locked: it must not block, nor call the
+    /// server's methods that lock shards (those that say they do not are fine). The bytes of a
+    /// TCP allocation's connections (RFC 6062) go as they are, unseen by it.
+    pub on_relay: Option<RelayHook>,
+    /// Hears what happens to allocations and to requests: allocated, refreshed, freed (and
+    /// why), refused after the credentials passed, credentials that failed ([`TurnEvent`]),
+    /// for logs and metrics. [`TurnServer`] calls it on the thread that handled the message
+    /// (or swept the allocations, or closed them), once the answer is sent and no lock of its
+    /// own is held: it may call any of the server's methods. A [`TurnCore`] driven directly
+    /// keeps the events until [`TurnCore::flush_events`].
+    ///
+    /// [`TurnServer`]: crate::TurnServer
+    pub on_event: Option<EventHook>,
 }
 
 impl fmt::Debug for TurnConfig {
@@ -359,6 +387,8 @@ impl TurnConfig {
             relay_ports: None,
             nonce_secret: None,
             max_stream_message: crate::framing::MAX_FRAME,
+            on_relay: None,
+            on_event: None,
         }
     }
 
@@ -383,6 +413,40 @@ impl TurnConfig {
     pub fn max_stream_message(mut self, n: usize) -> Self {
         self.max_stream_message = n;
         self
+    }
+
+    /// Sets [`on_relay`](Self::on_relay).
+    #[must_use]
+    pub fn on_relay(
+        mut self,
+        f: impl Fn(&str, bool, usize) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.on_relay = Some(Arc::new(f));
+        self
+    }
+
+    /// Sets [`on_event`](Self::on_event).
+    #[must_use]
+    pub fn on_event(mut self, f: impl Fn(&TurnEvent) + Send + Sync + 'static) -> Self {
+        self.on_event = Some(Arc::new(f));
+        self
+    }
+
+    /// Where an address clients are told of (or one bound) is bound: itself, or, for an address
+    /// on `public_ip` or `additional_public_ip`, that port on the relay address behind it.
+    pub(crate) fn bound_of(&self, addr: SocketAddr) -> [Option<SocketAddr>; 2] {
+        let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+        let behind = if self.public_ip == Some(addr.ip()) {
+            Some(self.relay_ip)
+        } else if self.additional_public_ip == Some(addr.ip()) {
+            self.additional_relay_ip
+        } else {
+            None
+        };
+        [
+            Some(addr),
+            behind.map(|ip| SocketAddr::new(ip, addr.port())),
+        ]
     }
 
     /// Sets [`public_ip`](Self::public_ip).
@@ -558,6 +622,9 @@ struct Allocation {
     /// When the client was last told of a datagram of its dropped at TTL 1 (ICMP time
     /// exceeded), to tell it at most once per [`TTL_ICMP_GAP`].
     ttl_icmp_at: Option<Instant>,
+    /// What it relayed client to peer, and peer to client.
+    to_peer: Traffic,
+    to_client: Traffic,
 }
 
 /// The least time between two "time exceeded" indications to one client: one tells it what
@@ -647,6 +714,154 @@ pub struct TurnStats {
     /// Datagrams not relayed because they arrived with a TTL / hop limit of 1, with nothing
     /// left for the hop through the server ([`TurnConfig::copy_ttl`]).
     pub ttl_expired: u64,
+    /// Permissions the allocations hold now (expired ones the next sweep forgets among them).
+    pub permissions: usize,
+    /// Channels the allocations have bound now (expired ones the next sweep forgets among
+    /// them).
+    pub channels: usize,
+    /// Allocations waiting for their relayed addresses to be bound: [`TurnServer`] binds the
+    /// sockets of an authenticated Allocate before it takes the allocation's lock. Always 0 for
+    /// a [`TurnCore`].
+    ///
+    /// [`TurnServer`]: crate::TurnServer
+    pub pending: usize,
+    /// Datagrams from clients and peers the server did nothing with: not STUN or ChannelData,
+    /// malformed, without an allocation, a permission or a channel, refused by the peer
+    /// policy or [`TurnConfig::on_relay`], or past their TTL. Requests are answered, so never
+    /// counted.
+    pub dropped: u64,
+    /// Requests whose credentials passed answered with an error ([`TurnEventKind::Refused`]).
+    pub refused: u64,
+    /// Payload bytes relayed client to peer (see [`TurnConfig::on_relay`]).
+    pub to_peer_bytes: u64,
+    /// Payload bytes relayed peer to client.
+    pub to_client_bytes: u64,
+}
+
+impl std::ops::AddAssign for TurnStats {
+    /// Adds `o`'s counters and gauges to these (saturating): the sum over several servers.
+    fn add_assign(&mut self, o: TurnStats) {
+        self.allocations = self.allocations.saturating_add(o.allocations);
+        self.to_peer = self.to_peer.saturating_add(o.to_peer);
+        self.to_client = self.to_client.saturating_add(o.to_client);
+        self.auth_failures = self.auth_failures.saturating_add(o.auth_failures);
+        self.tcp_connections = self.tcp_connections.saturating_add(o.tcp_connections);
+        self.icmp = self.icmp.saturating_add(o.icmp);
+        self.ttl_expired = self.ttl_expired.saturating_add(o.ttl_expired);
+        self.permissions = self.permissions.saturating_add(o.permissions);
+        self.channels = self.channels.saturating_add(o.channels);
+        self.pending = self.pending.saturating_add(o.pending);
+        self.dropped = self.dropped.saturating_add(o.dropped);
+        self.refused = self.refused.saturating_add(o.refused);
+        self.to_peer_bytes = self.to_peer_bytes.saturating_add(o.to_peer_bytes);
+        self.to_client_bytes = self.to_client_bytes.saturating_add(o.to_client_bytes);
+    }
+}
+
+/// Datagrams relayed one way, and their payload bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Traffic {
+    /// Datagrams.
+    pub datagrams: u64,
+    /// Their payload bytes (what [`TurnConfig::on_relay`] is told).
+    pub bytes: u64,
+}
+
+impl Traffic {
+    fn add(&mut self, n: usize) {
+        self.datagrams += 1;
+        self.bytes = self.bytes.saturating_add(n as u64);
+    }
+}
+
+/// Why an allocation ended ([`TurnEventKind::Freed`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FreeReason {
+    /// The client deleted it: a Refresh with a zero lifetime.
+    Deleted,
+    /// Its lifetime ran out.
+    Expired,
+    /// The server closed it ([`TurnServer::close_all`](crate::TurnServer::close_all), its
+    /// listener shut down), or the client's TCP, TLS or DTLS connection ended.
+    Closed,
+}
+
+impl FreeReason {
+    /// `"deleted"`, `"expired"` or `"closed"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FreeReason::Deleted => "deleted",
+            FreeReason::Expired => "expired",
+            FreeReason::Closed => "closed",
+        }
+    }
+}
+
+impl fmt::Display for FreeReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a [`TurnEvent`] reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TurnEventKind {
+    /// An allocation was made, for [`TurnEvent::lifetime`]. Not said again for a
+    /// retransmission of its Allocate.
+    Allocated,
+    /// A Refresh extended an allocation by [`TurnEvent::lifetime`].
+    Refreshed,
+    /// An allocation ended, having relayed `to_peer` and `to_client` (through UDP relays).
+    Freed {
+        /// Why.
+        reason: FreeReason,
+        /// What it relayed client to peer.
+        to_peer: Traffic,
+        /// What it relayed peer to client.
+        to_client: Traffic,
+    },
+    /// A request whose credentials passed was answered with error `code`: a quota (486), a
+    /// capacity (508), a forbidden peer (403), a mismatch (437, 441, 443), an
+    /// unknown attribute (420), a bad request (400), an unsupported transport or family (442,
+    /// 440), a failed connection (446). `method` is the request's.
+    Refused {
+        /// The request's method.
+        method: Method,
+        /// The error code it was answered with.
+        code: u16,
+    },
+    /// A request came with credentials that did not pass: a wrong username, password or
+    /// realm (401), or incomplete ones (400); [`TurnEvent::user`] is the name it claimed. A
+    /// request without credentials (how every client starts) and one with a stale nonce (438)
+    /// are not failures.
+    AuthFailed {
+        /// The request's method.
+        method: Method,
+        /// The error code it was answered with.
+        code: u16,
+    },
+}
+
+/// One thing that happened to an allocation or a request ([`TurnConfig::on_event`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TurnEvent {
+    /// What happened.
+    pub kind: TurnEventKind,
+    /// The allocation's username, or the request's.
+    pub user: String,
+    /// The client: the address its allocation is keyed by (for a DTLS client that moved, the
+    /// one it started from).
+    pub client: SocketAddr,
+    /// The relayed address of the client's allocation as clients are told of it (the IPv4 one
+    /// of a dual allocation), if it has one.
+    pub relay: Option<SocketAddr>,
+    /// The lifetime granted ([`Allocated`](TurnEventKind::Allocated),
+    /// [`Refreshed`](TurnEventKind::Refreshed)); zero otherwise.
+    pub lifetime: Duration,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -708,6 +923,16 @@ impl Shared {
             reservations: Mutex::new(HashMap::new()),
             next_conn: AtomicU32::new(u32::from_be_bytes(start)),
         }
+    }
+
+    /// Allocations open in all shards.
+    pub(crate) fn allocations(&self) -> usize {
+        self.allocations.load(Ordering::Relaxed)
+    }
+
+    /// Whether `user`'s credentials check out for `m`, and its key.
+    fn key_for(&self, m: &Message<'_>, user: &str, realm: &str) -> Option<[u8; 16]> {
+        (self.cfg.auth)(user, realm).filter(|k| realm == self.cfg.realm && m.check_integrity(k))
     }
 
     /// A new `CONNECTION-ID`: unique among the server's connections until 2^32 more were made.
@@ -817,7 +1042,7 @@ impl Shared {
         };
         let ok = realm == self.cfg.realm
             && self.nonce_valid(now, client, nonce)
-            && (self.cfg.auth)(user, realm).is_some_and(|k| m.check_integrity(&k));
+            && self.key_for(&m, user, realm).is_some();
         if ok {
             ips.extend(self.cfg.relay_ip_for(v6));
             if additional {
@@ -904,6 +1129,9 @@ pub struct TurnCore {
     /// Clients of TCP allocations by connection id.
     by_conn: HashMap<u32, SocketAddr>,
     stats: TurnStats,
+    /// Events for `TurnConfig::on_event` (kept only when it is set), delivered once the
+    /// caller's lock is released.
+    events: Vec<TurnEvent>,
 }
 
 impl fmt::Debug for TurnCore {
@@ -935,6 +1163,7 @@ impl TurnCore {
             by_tcp_relay: HashMap::new(),
             by_conn: HashMap::new(),
             stats: TurnStats::default(),
+            events: Vec::new(),
         }
     }
 
@@ -943,11 +1172,62 @@ impl TurnCore {
         &self.shared.cfg
     }
 
+    /// Whether `addr` is a relayed address of an allocation this core holds, as clients are
+    /// told of it or as it is bound.
+    pub fn holds_relay(&self, addr: SocketAddr) -> bool {
+        self.shared
+            .cfg
+            .bound_of(addr)
+            .into_iter()
+            .flatten()
+            .any(|a| self.by_relay.contains_key(&a) || self.by_tcp_relay.contains_key(&a))
+    }
+
+    /// Calls [`TurnConfig::on_event`] with the events kept since the last call. A [`TurnCore`]
+    /// keeps them rather than calling the hook from inside its own methods, so that its caller
+    /// can release its locks first (as [`TurnServer`](crate::TurnServer) does): call this after
+    /// each of them. Nothing is kept without the hook.
+    pub fn flush_events(&mut self) {
+        let events = self.take_events();
+        if let Some(f) = &self.shared.cfg.on_event {
+            for e in &events {
+                f(e);
+            }
+        }
+    }
+
+    /// The events kept since the last call (none without `TurnConfig::on_event`).
+    pub(crate) fn take_events(&mut self) -> Vec<TurnEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Keeps an event for `TurnConfig::on_event`.
+    fn emit(&mut self, kind: TurnEventKind, user: &str, client: SocketAddr, lifetime: Duration) {
+        if let TurnEventKind::Refused { .. } = kind {
+            self.stats.refused += 1;
+        }
+        if self.shared.cfg.on_event.is_none() {
+            return;
+        }
+        let relay = self.relay_of(client);
+        self.events.push(TurnEvent {
+            kind,
+            user: user.to_owned(),
+            client,
+            relay,
+            lifetime,
+        });
+    }
+
     /// Counters.
     pub fn stats(&self) -> TurnStats {
         let mut s = self.stats;
         s.allocations = self.allocs.len();
         s.tcp_connections = self.by_conn.len();
+        for a in self.allocs.values() {
+            s.permissions += a.perms.len();
+            s.channels += a.chans.len();
+        }
         s
     }
 
@@ -1040,25 +1320,52 @@ impl TurnCore {
         ip: IpFields,
         env: &mut dyn TurnEnv,
     ) {
-        if is_channel_data(data) {
-            self.channel_data(now, client, data, ip, env);
-            return;
-        }
-        if !is_stun(data) {
-            return;
-        }
-        let Ok(m) = Message::parse(data) else {
-            return;
-        };
-        match m.class() {
-            Class::Request => self.request(now, client, &m, env),
-            Class::Indication if m.method() == Method::SEND => {
-                self.send_indication(now, client, &m, ip, env);
+        let used = if is_channel_data(data) {
+            self.channel_data(now, client, data, ip, env)
+        } else if !is_stun(data) {
+            false
+        } else {
+            match Message::parse(data) {
+                Ok(m) => match m.class() {
+                    Class::Request => self.request(now, client, &m, env),
+                    Class::Indication if m.method() == Method::SEND => {
+                        self.send_indication(now, client, &m, ip, env)
+                    }
+                    _ => false,
+                },
+                Err(_) => false,
             }
-            _ => {}
+        };
+        if !used {
+            self.stats.dropped += 1;
         }
     }
 
+    /// Whether [`TurnConfig::on_relay`] lets `n` bytes of `client`'s allocation go toward the
+    /// peer (`to_peer`) or the client; when it does, they are counted.
+    fn pass(&mut self, client: SocketAddr, to_peer: bool, n: usize) -> bool {
+        let Some(a) = self.allocs.get_mut(&client) else {
+            return false;
+        };
+        if let Some(f) = &self.shared.cfg.on_relay {
+            if !f(&a.user, to_peer, n) {
+                return false;
+            }
+        }
+        let bytes = n as u64;
+        if to_peer {
+            a.to_peer.add(n);
+            self.stats.to_peer += 1;
+            self.stats.to_peer_bytes = self.stats.to_peer_bytes.saturating_add(bytes);
+        } else {
+            a.to_client.add(n);
+            self.stats.to_client += 1;
+            self.stats.to_client_bytes = self.stats.to_client_bytes.saturating_add(bytes);
+        }
+        true
+    }
+
+    /// ChannelData from `client`: whether it was relayed.
     fn channel_data(
         &mut self,
         now: Instant,
@@ -1066,36 +1373,41 @@ impl TurnCore {
         data: &[u8],
         ip: IpFields,
         env: &mut dyn TurnEnv,
-    ) {
+    ) -> bool {
         let ch = u16::from_be_bytes([data[0], data[1]]);
         let len = usize::from(u16::from_be_bytes([data[2], data[3]]));
         if data.len() < 4 + len {
-            return;
+            return false;
         }
         let Some(a) = self.allocs.get(&client) else {
-            return;
+            return false;
         };
         if a.tcp.is_some() {
-            return;
+            return false;
         }
         let Some(&(peer, exp)) = a.chans.get(&ch) else {
-            return;
+            return false;
         };
         let Some(r) = a.relay_for(peer, now) else {
-            return;
+            return false;
         };
         if exp <= now || !self.peer_ok(peer) {
-            return;
+            return false;
         }
         let relay = r.relay;
         let Some(out) = self.relayed(ip) else {
             self.ttl_exceeded(now, client, relay, peer, env);
-            return;
+            return false;
         };
-        self.stats.to_peer += 1;
-        env.send_to_peer_ip(relay, peer, &data[4..4 + len], out);
+        let payload = &data[4..4 + len];
+        if !self.pass(client, true, payload.len()) {
+            return false;
+        }
+        env.send_to_peer_ip(relay, peer, payload, out);
+        true
     }
 
+    /// A Send indication from `client`: whether its data was relayed.
     fn send_indication(
         &mut self,
         now: Instant,
@@ -1103,42 +1415,45 @@ impl TurnCore {
         m: &Message<'_>,
         ip: IpFields,
         env: &mut dyn TurnEnv,
-    ) {
+    ) -> bool {
         let (Some(peer), Some(payload)) =
             (m.get_xor_addr(attr::XOR_PEER_ADDRESS), m.get(attr::DATA))
         else {
-            return;
+            return false;
         };
         // Section 11.2: a server that cannot set DF treats the attribute as unknown and
         // comprehension-required, which drops the indication.
         let df = m.has(attr::DONT_FRAGMENT);
         if df && !env.sets_dont_fragment() {
-            return;
+            return false;
         }
         let Some(a) = self.allocs.get(&client) else {
-            return;
+            return false;
         };
         if a.tcp.is_some() || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
-            return;
+            return false;
         }
         let Some(r) = a.relay_for(peer, now) else {
-            return;
+            return false;
         };
         if !self.peer_ok(peer) {
-            return;
+            return false;
         }
         let relay = r.relay;
         let Some(mut out) = self.relayed(ip) else {
             self.ttl_exceeded(now, client, relay, peer, env);
-            return;
+            return false;
         };
         // DF applies IPv4 to IPv4 over UDP (section 14; translations to or from IPv6 ignore
         // the attribute, section 13), and to everything from a stream client (section 15).
         let v4 = |a: SocketAddr| a.ip().to_canonical().is_ipv4();
         out.dont_fragment =
             df && (env.pads_channel_data(client) || (v4(client) && v4(peer) && relay.is_ipv4()));
-        self.stats.to_peer += 1;
+        if !self.pass(client, true, payload.len()) {
+            return false;
+        }
         env.send_to_peer_ip(relay, peer, payload, out);
+        true
     }
 
     /// A datagram from `peer` on the relay socket bound at `relay`: relayed to the allocation's
@@ -1200,11 +1515,26 @@ impl TurnCore {
         ip: IpFields,
         env: &mut dyn TurnEnv,
     ) {
+        if !self.peer_datagram(now, relay, peer, data, ip, env) {
+            self.stats.dropped += 1;
+        }
+    }
+
+    /// [`handle_peer_ip`](Self::handle_peer_ip): whether the datagram was relayed.
+    fn peer_datagram(
+        &mut self,
+        now: Instant,
+        relay: SocketAddr,
+        peer: SocketAddr,
+        data: &[u8],
+        ip: IpFields,
+        env: &mut dyn TurnEnv,
+    ) -> bool {
         let Some(&client) = self.by_relay.get(&relay) else {
-            return;
+            return false;
         };
         let Some(a) = self.allocs.get(&client) else {
-            return;
+            return false;
         };
         // The relayed address it arrived on, alive, and of the peer's family.
         let live = a
@@ -1212,10 +1542,10 @@ impl TurnCore {
             .iter()
             .any(|r| r.relay == relay && r.expires > now && r.relay.is_ipv6() == peer.is_ipv6());
         if !live || !a.perms.get(&peer.ip()).is_some_and(|&e| e > now) {
-            return;
+            return false;
         }
         if !self.peer_ok(peer) || data.len() > usize::from(u16::MAX) {
-            return;
+            return false;
         }
         let ch = a
             .chan_of
@@ -1227,10 +1557,12 @@ impl TurnCore {
         } else {
             match self.relayed(ip) {
                 Some(out) => out,
-                None => return,
+                None => return false,
             }
         };
-        self.stats.to_client += 1;
+        if !self.pass(client, false, data.len()) {
+            return false;
+        }
         match ch {
             Some(ch) => {
                 let mut buf = Vec::with_capacity(4 + data.len() + 3);
@@ -1257,6 +1589,7 @@ impl TurnCore {
                 env.send_to_client_ip(client, &msg, out);
             }
         }
+        true
     }
 
     /// The fields a datagram that came in with `ip` is relayed with: the ECN codepoint, the
@@ -1410,7 +1743,7 @@ impl TurnCore {
                     .collect()
             });
             for v6 in gone {
-                self.remove_family(c, v6, env);
+                self.remove_family(c, v6, FreeReason::Expired, env);
             }
         }
         self.tcp_timeouts(now, env);
@@ -1441,7 +1774,7 @@ impl TurnCore {
         }
         let all: Vec<SocketAddr> = self.allocs.keys().copied().collect();
         for c in all {
-            self.remove(c, env);
+            self.remove(c, FreeReason::Closed, env);
         }
     }
 
@@ -1449,12 +1782,25 @@ impl TurnCore {
     /// connection closed (RFC 8656 section 3.1: an allocation over a stream lives as long as
     /// the connection).
     pub fn remove_client(&mut self, client: SocketAddr, env: &mut dyn TurnEnv) {
-        self.remove(client, env);
+        self.remove(client, FreeReason::Closed, env);
     }
 
-    fn remove(&mut self, client: SocketAddr, env: &mut dyn TurnEnv) {
+    fn remove(&mut self, client: SocketAddr, why: FreeReason, env: &mut dyn TurnEnv) {
         if let Some(a) = self.allocs.remove(&client) {
             self.shared.release(&a.user);
+            if self.shared.cfg.on_event.is_some() {
+                self.events.push(TurnEvent {
+                    kind: TurnEventKind::Freed {
+                        reason: why,
+                        to_peer: a.to_peer,
+                        to_client: a.to_client,
+                    },
+                    user: a.user.clone(),
+                    client,
+                    relay: a.relays.first().map(|r| r.public),
+                    lifetime: Duration::ZERO,
+                });
+            }
             match a.tcp {
                 Some(tcp) => {
                     // RFC 6062 section 5.5: the data connections go with the allocation.
@@ -1479,12 +1825,18 @@ impl TurnCore {
 
     /// Frees the relayed address of the IPv6 (`v6`) or IPv4 family of `client`'s allocation,
     /// with its permissions and channels; the allocation goes with its last one.
-    fn remove_family(&mut self, client: SocketAddr, v6: bool, env: &mut dyn TurnEnv) {
+    fn remove_family(
+        &mut self,
+        client: SocketAddr,
+        v6: bool,
+        why: FreeReason,
+        env: &mut dyn TurnEnv,
+    ) {
         let Some(a) = self.allocs.get_mut(&client) else {
             return;
         };
         if a.tcp.is_some() || a.relays.iter().all(|r| r.relay.is_ipv6() == v6) {
-            self.remove(client, env);
+            self.remove(client, why, env);
             return;
         }
         let Some(i) = a.relays.iter().position(|r| r.relay.is_ipv6() == v6) else {
@@ -1536,22 +1888,23 @@ impl TurnCore {
         Self::finish(b, m, None)
     }
 
+    /// A request from `client`: false when it was not answered (a bad `FINGERPRINT`).
     fn request(
         &mut self,
         now: Instant,
         client: SocketAddr,
         m: &Message<'_>,
         env: &mut dyn TurnEnv,
-    ) {
+    ) -> bool {
         if m.has(attr::FINGERPRINT) && !m.check_fingerprint() {
-            return;
+            return false;
         }
         if m.method() == Method::BINDING {
             let b = self
                 .base(m, Class::Success)
                 .xor_addr(attr::XOR_MAPPED_ADDRESS, client);
             env.send_to_client(client, &Self::finish(b, m, None));
-            return;
+            return true;
         }
         if m.method() == Method::CONNECTION_BIND {
             // On a new connection of the client, with the credentials of its control
@@ -1563,7 +1916,7 @@ impl TurnCore {
                     env.connection_bound(client, id);
                 }
             }
-            return;
+            return true;
         }
         if !matches!(
             m.method(),
@@ -1575,13 +1928,13 @@ impl TurnCore {
         ) {
             let r = Reject(400, "Bad Request");
             env.send_to_client(client, &self.error(m, &r, None));
-            return;
+            return true;
         }
         // Long-term credentials (RFC 8489 section 9.2).
         if !m.has(attr::MESSAGE_INTEGRITY) {
             let out = self.challenge(now, client, m, 401, "Unauthorized");
             env.send_to_client(client, &out);
-            return;
+            return true;
         }
         let (Some(user), Some(realm), Some(nonce)) = (
             m.get_str(attr::USERNAME),
@@ -1589,19 +1942,19 @@ impl TurnCore {
             m.get_str(attr::NONCE),
         ) else {
             env.send_to_client(client, &self.error(m, &Reject(400, "Bad Request"), None));
-            return;
+            self.auth_failed(m, client, 400);
+            return true;
         };
         if !self.nonce_valid(now, client, nonce) {
             let out = self.challenge(now, client, m, 438, "Stale Nonce");
             env.send_to_client(client, &out);
-            return;
+            return true;
         }
-        let key = (self.shared.cfg.auth)(user, realm);
-        let Some(key) = key.filter(|k| realm == self.shared.cfg.realm && m.check_integrity(k))
-        else {
+        let Some(key) = self.shared.key_for(m, user, realm) else {
             let out = self.challenge(now, client, m, 401, "Unauthorized");
             env.send_to_client(client, &out);
-            return;
+            self.auth_failed(m, client, 401);
+            return true;
         };
         // Section 7.2: a server that cannot set DF treats an Allocate's DONT-FRAGMENT as
         // unknown and comprehension-required.
@@ -1612,7 +1965,8 @@ impl TurnCore {
                 .error(420, "Unknown Attribute")
                 .attr(attr::UNKNOWN_ATTRIBUTES, &unknown);
             env.send_to_client(client, &Self::finish(b, m, Some(&key)));
-            return;
+            self.refused(m, user, client, 420);
+            return true;
         }
         if let Some(a) = self.allocs.get(&client) {
             if a.user != user {
@@ -1620,7 +1974,8 @@ impl TurnCore {
                     client,
                     &self.error(m, &Reject(441, "Wrong Credentials"), Some(&key)),
                 );
-                return;
+                self.refused(m, user, client, 441);
+                return true;
             }
         }
         let out = match m.method() {
@@ -1629,16 +1984,39 @@ impl TurnCore {
             Method::CREATE_PERMISSION => self.create_permission(now, client, m),
             Method::CONNECT => match self.connect(now, client, m, env) {
                 // Answered once the connection is up or has failed (`tcp_connected`).
-                Ok(()) => return,
+                Ok(()) => return true,
                 Err(r) => Err(r),
             },
             _ => self.channel_bind(now, client, m),
         };
         let out = match out {
             Ok(b) => Self::finish(b, m, Some(&key)),
-            Err(r) => self.error(m, &r, Some(&key)),
+            Err(r) => {
+                self.refused(m, user, client, r.0);
+                self.error(m, &r, Some(&key))
+            }
         };
         env.send_to_client(client, &out);
+        true
+    }
+
+    /// Says that `m`, whose credentials (`user`'s) passed, was answered with error `code`.
+    fn refused(&mut self, m: &Message<'_>, user: &str, client: SocketAddr, code: u16) {
+        let kind = TurnEventKind::Refused {
+            method: m.method(),
+            code,
+        };
+        self.emit(kind, user, client, Duration::ZERO);
+    }
+
+    /// Says that `m` came with credentials that did not pass, answered with error `code`.
+    fn auth_failed(&mut self, m: &Message<'_>, client: SocketAddr, code: u16) {
+        let kind = TurnEventKind::AuthFailed {
+            method: m.method(),
+            code,
+        };
+        let user = m.get_str(attr::USERNAME).unwrap_or_default();
+        self.emit(kind, user, client, Duration::ZERO);
     }
 
     fn allocate(
@@ -1877,8 +2255,11 @@ impl TurnCore {
                 chan_of: HashMap::new(),
                 tcp: tcp.then(Box::default),
                 ttl_icmp_at: None,
+                to_peer: Traffic::default(),
+                to_client: Traffic::default(),
             },
         );
+        self.emit(TurnEventKind::Allocated, user, client, life);
         b
     }
 
@@ -1909,11 +2290,12 @@ impl TurnCore {
     }
 
     fn lifetime(&self, m: &Message<'_>) -> Duration {
+        let l = &self.shared.cfg;
         match m.get_u32(attr::LIFETIME) {
             Some(s) => Duration::from_secs(u64::from(s))
-                .max(self.shared.cfg.default_lifetime)
-                .min(self.shared.cfg.max_lifetime),
-            None => self.shared.cfg.default_lifetime,
+                .max(l.default_lifetime)
+                .min(l.max_lifetime),
+            None => l.default_lifetime,
         }
     }
 
@@ -1944,18 +2326,23 @@ impl TurnCore {
         }
         if m.get_u32(attr::LIFETIME) == Some(0) {
             match family {
-                Some(v6) => self.remove_family(client, v6, env),
-                None => self.remove(client, env),
+                Some(v6) => self.remove_family(client, v6, FreeReason::Deleted, env),
+                None => self.remove(client, FreeReason::Deleted, env),
             }
             return Ok(self.base(m, Class::Success).u32(attr::LIFETIME, 0));
         }
         let life = self.lifetime(m);
+        let mut user = None;
         if let Some(a) = self.allocs.get_mut(&client) {
             for r in &mut a.relays {
                 if family.is_none_or(|v6| r.relay.is_ipv6() == v6) {
                     r.expires = now + life;
                 }
             }
+            user = self.shared.cfg.on_event.is_some().then(|| a.user.clone());
+        }
+        if let Some(user) = user {
+            self.emit(TurnEventKind::Refreshed, &user, client, life);
         }
         Ok(self
             .base(m, Class::Success)
@@ -2249,6 +2636,7 @@ impl TurnCore {
             m.get_str(attr::REALM),
             m.get_str(attr::NONCE),
         ) else {
+            self.auth_failed(m, data_client, 400);
             return Some((self.error(m, &Reject(400, "Bad Request"), None), None));
         };
         let id = m
@@ -2264,16 +2652,17 @@ impl TurnCore {
                 None,
             ));
         }
-        let key = (self.shared.cfg.auth)(user, realm);
-        let Some(key) = key.filter(|k| realm == self.shared.cfg.realm && m.check_integrity(k))
-        else {
+        let Some(key) = self.shared.key_for(m, user, realm) else {
+            self.auth_failed(m, data_client, 401);
             return Some((
                 self.challenge(now, data_client, m, 401, "Unauthorized"),
                 None,
             ));
         };
-        let bad =
-            |core: &Self| Some((core.error(m, &Reject(400, "Bad Request"), Some(&key)), None));
+        let bad = |core: &mut Self| {
+            core.refused(m, user, data_client, 400);
+            Some((core.error(m, &Reject(400, "Bad Request"), Some(&key)), None))
+        };
         let (Some(id), Some(owner)) = (id, owner) else {
             return bad(self);
         };

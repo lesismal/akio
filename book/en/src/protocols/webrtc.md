@@ -817,6 +817,33 @@ each with its own lock: datagrams of different allocations do not contend across
 the expiry sweep takes one shard at a time, and the relay socket of an authenticated Allocate
 is bound before any lock is taken. The quotas stay server-wide.
 
+### Hooks for an embedding server
+
+A server that embeds `TurnServer` (akit's TURN role, ADR-186) hears what it relays and what
+happens to its allocations:
+
+- `TurnConfig::on_relay(|user, to_peer, bytes| -> bool)` is asked about every datagram about to
+  be relayed through a UDP relay, after the permission, channel and peer policy let it through;
+  false drops it. A per-username bandwidth limit goes here. It runs on the I/O thread with the
+  allocation's shard locked: no blocking, and no server methods that lock shards (`stats`).
+- `TurnConfig::on_event(|e: &TurnEvent| ..)` hears `Allocated`, `Refreshed`, `Freed { reason,
+  to_peer, to_client }`, `Refused { method, code }` and `AuthFailed { method, code }`, with the
+  username, the client and the relayed address, once the answer is sent and no lock is held.
+- `TurnServer::holds_relay(addr)` tells the server's relayed addresses (as told to clients or as
+  bound) without locking a shard, so a peer filter can let clients reach each other's relays
+  while the server's own other ports stay closed.
+- `TurnStats` counts permissions, channels, pending allocations, dropped datagrams, refusals and
+  the bytes relayed each way; `TurnServer::allocations()` is one counter.
+
+```rust,ignore
+let turn: Arc<OnceLock<TurnServer>> = Arc::default();
+let t = turn.clone();
+let cfg = TurnConfig::new("example.org", auth, "203.0.113.7".parse()?)
+    .on_relay(move |user, to_peer, n| limiter.allow(user, to_peer, n))
+    .on_event(|e| log::debug!("{:?} {} {:?}", e.kind, e.user, e.relay))
+    .peer_allowed(move |p| !denied_by_default(p.ip()) || t.get().is_some_and(|s| s.holds_relay(p)));
+```
+
 ### TURN over TCP and TLS
 
 `turn.stream()` is the acceptor for TCP listeners, and wrapped in `akio::tls::Tls` for TLS ones

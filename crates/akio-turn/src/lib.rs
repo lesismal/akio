@@ -85,7 +85,8 @@ use akio::{Acceptor, Conn, Engine, Handler, UdpBinding};
 pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth};
 use crate::core::Shared;
 pub use crate::core::{
-    IpFields, PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default,
+    EventHook, FreeReason, IpFields, PeerFilter, RelayHook, Traffic, TurnConfig, TurnCore, TurnEnv,
+    TurnEvent, TurnEventKind, TurnStats, denied_by_default,
 };
 #[doc(hidden)]
 pub use crate::tcp::TcpPeer;
@@ -207,6 +208,8 @@ struct Inner {
     engine: OnceLock<Weak<Engine>>,
     /// TCP allocations' listeners and connections (RFC 6062).
     tcp: tcp::TcpRelays,
+    /// Authenticated Allocates whose relays are being bound (`TurnStats::pending`).
+    pending: AtomicUsize,
     me: Weak<Inner>,
 }
 
@@ -299,14 +302,29 @@ impl Inner {
         Ok((b, route))
     }
 
-    /// The relays for `msg` from `client` bound before shard `route` is locked: those of an
-    /// authenticated Allocate (one, or two for a dual allocation).
-    fn prebind(&self, now: Instant, client: SocketAddr, msg: &[u8], route: usize) -> Prebound {
-        self.shared
-            .prebind_ips(now, client, msg)
+    /// Hands `msg` from `client` to shard `route`'s core with `f`, the relays of an
+    /// authenticated Allocate (one, or two for a dual allocation) bound before the shard is
+    /// locked.
+    fn serve<R>(
+        &self,
+        now: Instant,
+        client: SocketAddr,
+        msg: &[u8],
+        route: usize,
+        f: impl FnOnce(&mut TurnCore, &mut Env<'_>) -> R,
+    ) -> R {
+        let ips = self.shared.prebind_ips(now, client, msg);
+        if ips.is_empty() {
+            return self.with_shard(route, Vec::new(), f);
+        }
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        let prebound: Prebound = ips
             .into_iter()
             .filter_map(|ip| self.bind_relay(SocketAddr::new(ip, 0), route).ok())
-            .collect()
+            .collect();
+        let r = self.with_shard(route, prebound, f);
+        self.pending.fetch_sub(1, Ordering::Relaxed);
+        r
     }
 
     /// Runs `f` on shard `i`'s state machine with the `akio` environment.
@@ -351,6 +369,7 @@ impl Inner {
         }
         let unused = std::mem::take(&mut env.prebound);
         let dials = std::mem::take(&mut env.dials);
+        let events = core.take_events();
         drop(g);
         for (b, _) in unused {
             b.close();
@@ -361,6 +380,12 @@ impl Inner {
                 for (relay, peer, id) in dials {
                     tcp::dial(&me, relay, peer, id);
                 }
+            }
+        }
+        // After the answers went, with no lock of the server's held (`TurnConfig::on_event`).
+        if let Some(hook) = self.shared.config().on_event.as_ref() {
+            for e in &events {
+                hook(e);
             }
         }
         r
@@ -593,7 +618,7 @@ pub struct TurnServer(Arc<Inner>);
 impl fmt::Debug for TurnServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TurnServer")
-            .field("allocations", &self.stats().allocations)
+            .field("allocations", &self.allocations())
             .finish_non_exhaustive()
     }
 }
@@ -617,6 +642,7 @@ impl TurnServer {
             hasher: RandomState::new(),
             engine: OnceLock::new(),
             tcp: tcp::TcpRelays::default(),
+            pending: AtomicUsize::new(0),
             me: me.clone(),
         });
         let weak = Arc::downgrade(&inner);
@@ -669,21 +695,40 @@ impl TurnServer {
         let _ = self.0.engine.set(Arc::downgrade(engine));
     }
 
-    /// Counters (allocations open, datagrams relayed, authentication failures), summed over
-    /// the shards.
+    /// Counters and gauges (allocations, permissions and channels held, datagrams and bytes
+    /// relayed, dropped, refusals, authentication failures), summed over the shards. It locks
+    /// each shard in turn and walks its allocations: for a metrics scrape, not for every
+    /// datagram, and never from inside `on_relay` or the peer filter.
     pub fn stats(&self) -> TurnStats {
         let mut t = TurnStats::default();
         for s in &self.0.shards {
-            let st = lock(s).core.stats();
-            t.allocations += st.allocations;
-            t.to_peer += st.to_peer;
-            t.to_client += st.to_client;
-            t.auth_failures += st.auth_failures;
-            t.tcp_connections += st.tcp_connections;
-            t.icmp += st.icmp;
-            t.ttl_expired += st.ttl_expired;
+            t += lock(s).core.stats();
         }
+        t.pending = self.0.pending.load(Ordering::Relaxed);
         t
+    }
+
+    /// Allocations open now: one counter, no shard locked (callable from inside the peer
+    /// filter and `on_relay`). An allocation that ends is counted out before
+    /// `TurnConfig::on_event` hears of it (freed).
+    pub fn allocations(&self) -> usize {
+        self.0.shared.allocations()
+    }
+
+    /// Whether `addr` is a relayed address of this server: as clients are told of it (on
+    /// `public_ip` or `additional_public_ip`) or as it is bound; UDP relays (an allocation's, or
+    /// a port `EVEN-PORT` set aside for one) and TCP allocations' listeners. No shard is locked:
+    /// a peer filter may ask it (of this server or another), so that clients of the server
+    /// relay to each other while its other ports stay closed to the relay.
+    pub fn holds_relay(&self, addr: SocketAddr) -> bool {
+        let inner = &self.0;
+        inner
+            .shared
+            .config()
+            .bound_of(addr)
+            .into_iter()
+            .flatten()
+            .any(|a| lock(inner.relays_of(a)).contains_key(&a) || inner.tcp.holds(a))
     }
 
     /// The relayed address of `client`'s allocation (a UDP client).
@@ -839,9 +884,8 @@ impl Handler for TurnClient {
         let now = Instant::now();
         let client = c.peer_addr();
         // An authenticated Allocate gets its relay sockets bound before the shard is locked.
-        let prebound = inner.prebind(now, client, data, self.shard);
         let ip = IpFields::new(c.rx_tos(), c.rx_ttl());
-        inner.with_shard(self.shard, prebound, |core, env| {
+        inner.serve(now, client, data, self.shard, |core, env| {
             core.handle_client_ip(now, client, data, ip, env);
         });
     }
@@ -924,8 +968,7 @@ impl Handler for TurnStreamClient {
                 peer = self.connection_bind(c, now, msg);
                 return peer.is_none(); // bound: what follows is the client's data
             }
-            let prebound = inner.prebind(now, client, msg, shard);
-            inner.with_shard(shard, prebound, |core, env| {
+            inner.serve(now, client, msg, shard, |core, env| {
                 core.handle_client(now, client, msg, env);
             });
             true
@@ -1139,8 +1182,7 @@ impl Handler for TurnDtlsClient {
         // section 14).
         let ip = IpFields::new(c.rx_tos(), c.rx_ttl());
         for msg in &out.messages {
-            let prebound = inner.prebind(now, client, msg, shard);
-            inner.with_shard(shard, prebound, |core, env| {
+            inner.serve(now, client, msg, shard, |core, env| {
                 core.handle_client_ip(now, client, msg, ip, env);
             });
         }

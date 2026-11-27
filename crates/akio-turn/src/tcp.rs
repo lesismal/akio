@@ -168,6 +168,11 @@ impl TcpRelays {
         Ok(bound)
     }
 
+    /// Whether a relay listener is bound at `addr`.
+    pub(crate) fn holds(&self, addr: SocketAddr) -> bool {
+        lock(&self.listeners).contains_key(&addr)
+    }
+
     /// Closes the relay listener bound at `relay`.
     pub(crate) fn close(&self, relay: SocketAddr) {
         let Some((_, token)) = lock(&self.listeners).remove(&relay) else {

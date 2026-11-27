@@ -10,6 +10,20 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: hooks for a server embedding akio-turn (akio-turn)
+
+akit's A257, for its TURN role (fit's `user_bandwidth`, its events and metrics, and its own
+addresses reached on relayed ports alone); ADR-186 update 1. `TurnConfig::on_relay(|user,
+to_peer, bytes| -> bool)` is asked about each datagram about to be relayed through a UDP relay,
+once the permission, channel and peer policy let it through; false drops it (on the I/O thread,
+under the allocation's shard lock). `TurnConfig::on_event(|e: &TurnEvent|)` hears `Allocated`,
+`Refreshed`, `Freed { reason, to_peer, to_client }`, `Refused { method, code }` and `AuthFailed {
+method, code }` with the username, client and relayed address, after the answer and with no lock
+held (`TurnCore::flush_events` for a core driven directly). `TurnServer::holds_relay(addr)` (and
+`TurnCore::holds_relay`) tells the server's relayed addresses, public or bound, without locking a
+shard, for a peer filter. `TurnStats` gains `permissions`, `channels`, `pending`, `dropped`,
+`refused`, `to_peer_bytes` and `to_client_bytes`, and `AddAssign`; `TurnServer::allocations()`.
+
 ### Added: a relay port range, a shared nonce secret and a stream message bound (akio-turn)
 
 akit's A256, for its TURN role (fit's `port_min`/`port_max`, `nonce_secret` and
