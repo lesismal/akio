@@ -414,32 +414,41 @@ fn a_websocket_with_its_own_queue_bound() {
         server.ws.send_binary(&msg).unwrap();
         thread::sleep(Duration::from_millis(1));
     }
-    // The kernel takes no more once the queue stays as it is.
-    let mut queued = server.ws.queued_bytes();
+    let frame = MSG + 4; // a 16 KiB binary frame's header is 4 bytes
+    // At the bound, a frame and a byte are refused. That needs the queue to sit still, the
+    // kernel taking no more: a queue unchanged for 100 ms may only be a server thread that has
+    // not run (a busy machine), and the kernel takes some once it does. A send that goes in
+    // then never passes the bound, but says the queue was not at it: settle and try again.
+    let mut tries = 0;
     loop {
-        thread::sleep(Duration::from_millis(100));
-        let now = server.ws.queued_bytes();
-        if now == queued {
+        let mut queued = server.ws.queued_bytes();
+        loop {
+            thread::sleep(Duration::from_millis(100));
+            let now = server.ws.queued_bytes();
+            if now == queued {
+                break;
+            }
+            queued = now;
+        }
+        let bound = queued + 2 * frame;
+        server.ws.set_max_queued_bytes(Some(bound)).unwrap();
+        server.ws.send_binary(&msg).unwrap();
+        server.ws.send_binary(&msg).unwrap(); // at the bound
+        let past = [server.ws.send_binary(&msg), server.ws.send_binary(b"x")];
+        assert!(
+            server.ws.queued_bytes() <= bound,
+            "the queue passed its bound"
+        );
+        server.ws.set_max_queued_bytes(None).unwrap();
+        for r in &past {
+            assert!(matches!(r, Ok(()) | Err(Error::Overloaded)), "{r:?}");
+        }
+        if past.iter().all(|r| matches!(r, Err(Error::Overloaded))) {
             break;
         }
-        queued = now;
+        tries += 1;
+        assert!(tries < 10, "the queue never settled at the bound");
     }
-    let frame = MSG + 4; // a 16 KiB binary frame's header is 4 bytes
-    server
-        .ws
-        .set_max_queued_bytes(Some(queued + 2 * frame))
-        .unwrap();
-    server.ws.send_binary(&msg).unwrap();
-    server.ws.send_binary(&msg).unwrap(); // at the bound
-    assert!(matches!(
-        server.ws.send_binary(&msg),
-        Err(Error::Overloaded)
-    ));
-    assert!(matches!(
-        server.ws.send_binary(b"x"),
-        Err(Error::Overloaded)
-    ));
-    server.ws.set_max_queued_bytes(None).unwrap();
     server.ws.send_binary(&msg).unwrap();
     client.ws.hold_reads(false);
     wait_for("the server's queue drained", || {
