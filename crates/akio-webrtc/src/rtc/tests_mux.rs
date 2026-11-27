@@ -1108,6 +1108,7 @@ fn voip_metrics_late_discard_in_a_later_interval_and_packet_length() {
             marker: false,
             rid: None,
             rtx: false,
+            ext: None,
         };
         b.rtc.deliver(now, 0, &p, &[0xfc; 40], false);
         b.rtc.jitter_release(now);
@@ -1263,6 +1264,7 @@ fn voip_metrics_late_arrival_that_plays_is_not_lost() {
                 marker: false,
                 rid: None,
                 rtx: false,
+                ext: None,
             };
             b.rtc.deliver(now, 0, &p, &[0xfc; 40], false);
             b.rtc.jitter_release(now);

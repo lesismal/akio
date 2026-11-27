@@ -640,6 +640,8 @@ struct SimEnc {
     fec: FecSend,
     /// This encoding's FlexFEC stream (unsignaled: MID and the repaired RID name it).
     fec_send: SendStream,
+    /// Forwarded RTP's renumbering on this encoding (ADR-187).
+    fwd: forward::Renumber,
 }
 
 /// The FEC state of one sent stream: its encoder and protection policy, made on the first
@@ -749,6 +751,8 @@ struct MediaLine {
     red_other: Vec<(u8, u8)>,
     /// RFC 6904 encrypted extension ids of [`ext`](Self::ext).
     enc_ids: Vec<u8>,
+    /// Forwarded RTP's renumbering on the sent stream (ADR-187).
+    fwd: forward::Renumber,
 }
 
 impl MediaLine {
@@ -777,6 +781,7 @@ impl MediaLine {
                 active: true,
                 fec: FecSend::default(),
                 fec_send: SendStream::new(random_u32(), 90_000, None, random_u32() as u16),
+                fwd: forward::Renumber::default(),
             })
             .collect();
         MediaLine {
@@ -814,6 +819,7 @@ impl MediaLine {
             red_hist_pt: None,
             red_other: Vec::new(),
             enc_ids: Vec::new(),
+            fwd: forward::Renumber::default(),
         }
     }
 
@@ -1016,6 +1022,9 @@ pub(crate) struct Rtc {
     latch_took: bool,
     /// The next RFC 6263 keepalive without ICE (ADR-086).
     keepalive_next: Option<Instant>,
+    /// SFU state (ADR-187): the receive bitrate cap told as REMB, when consent failure is
+    /// reported.
+    fwd: forward::PeerFwd,
 }
 
 /// The TMMBR requests about one sent stream and its packet rate (for the overhead term).
@@ -1076,6 +1085,10 @@ impl Rtc {
         let mut ice_cfg = IceConfig::new(lite, false);
         ice_cfg.aggressive_nomination = cfg.ice_aggressive;
         ice_cfg.renomination = cfg.ice_renomination;
+        if let Some((d, _)) = cfg.ice_timeouts {
+            ice_cfg.consent_timeout = d;
+            ice_cfg.consent_interval = ice_cfg.consent_interval.min(d / 3);
+        }
         let ice = IceAgent::new(ice_cfg, now);
         let (min, max) = cfg.bwe_bounds;
         let bwe = cfg.bwe.map(|b| {
@@ -1162,6 +1175,7 @@ impl Rtc {
             latch_rx: None,
             keepalive_next: None,
             latch_took: false,
+            fwd: forward::PeerFwd::default(),
             ntp_anchor: (now, akio_rtp::ntp_time(SystemTime::now())),
             cfg,
         })
@@ -2931,6 +2945,7 @@ impl Rtc {
             self.tp_each(|s| s.tp_handle_timeout(now));
         }
         self.ice.handle_timeout(now);
+        self.consent_failed(now);
         self.latch_expire(now);
         self.keepalive(now);
         let mut failed = [false; 2];
@@ -3199,6 +3214,7 @@ impl Rtc {
                 marker: false,
                 rid: None,
                 rtx: false,
+                ext: None,
             };
             if self.recv.contains_key(&h.ssrc) && self.deliver(now, line, &p, b.data, true) {
                 self.stats.red_recovered += 1;
@@ -3212,6 +3228,7 @@ impl Rtc {
             marker: h.marker,
             rid: h.ext.rid.as_deref(),
             rtx: false,
+            ext: Some(&h.ext),
         };
         self.deliver(now, line, &p, primary.data, false);
     }
@@ -3288,6 +3305,7 @@ impl Rtc {
                     marker: h.marker,
                     rid: h.ext.rid.as_deref(),
                     rtx: false,
+                    ext: Some(&h.ext),
                 };
                 self.deliver(now, route.line, &p, payload, false);
                 self.deliver_recovered(now, route.line, rec);
@@ -3302,6 +3320,7 @@ impl Rtc {
             marker: h.marker,
             rid: h.ext.rid.as_deref(),
             rtx: true,
+            ext: Some(&h.ext),
         };
         self.deliver(now, route.line, &p, payload, false);
     }
@@ -3321,6 +3340,7 @@ impl Rtc {
                 marker: h.marker,
                 rid: h.ext.rid.as_deref(),
                 rtx: false,
+                ext: Some(&h.ext),
             };
             self.deliver(now, line, &p, h.payload(&r), true);
         }
@@ -3462,6 +3482,7 @@ impl Rtc {
             self.cfg.reorder_video
         };
         let rtp_mode = self.cfg.rtp_mode;
+        let mid = self.media[line_idx].mid;
         let Some(recv) = recv_entry(&mut self.recv, &self.media, line_idx, p.ssrc, codec.clock)
         else {
             return false;
@@ -3496,6 +3517,10 @@ impl Rtc {
                 ),
                 received: now,
                 payload: Arc::from(payload),
+                mid,
+                rid: recv.rid.clone(),
+                codec: Some(codec.codec),
+                extensions: p.ext.map(forward::forwarded_ext).unwrap_or_default(),
             }));
             return true;
         }
@@ -3664,9 +3689,14 @@ impl Rtc {
                 }
                 Rtcp::TransportCc(fb) => self.cc_twcc(now, &fb),
                 Rtcp::CongestionControl(fb) => self.cc_ccfb(now, &fb),
-                Rtcp::Remb { bitrate, .. } => {
+                Rtcp::Remb { bitrate, ssrcs, .. } => {
                     self.remb = (bitrate > 0).then_some(bitrate);
                     self.apply_remote_caps();
+                    self.events
+                        .push_back(RtcEvent::Other(Other::RemoteBitrateEstimate {
+                            bitrate,
+                            ssrcs,
+                        }));
                 }
                 Rtcp::Tmmbr {
                     sender_ssrc,
@@ -3985,6 +4015,7 @@ impl Rtc {
                 ]),
             }
         }
+        self.add_remb(&mut compounds);
         compounds.extend(self.receipt_reports());
         for c in compounds {
             self.send_rtcp(&c);
@@ -4013,6 +4044,7 @@ impl Rtc {
                         let s = self.tp_ice_state(IceConnectionState::from_ice(s));
                         if s != self.ice_state {
                             self.ice_state = s;
+                            self.consent_state(now, s);
                             self.events.push_back(RtcEvent::IceState(s));
                         }
                     }
@@ -4231,6 +4263,7 @@ impl Rtc {
         min(self.sctp.as_ref().and_then(Association::poll_timeout));
         min(self.tp_timeout());
         min(self.keepalive_timeout(now));
+        min(self.fwd.fail_at);
         if self.srtp_tx.is_some() || self.tp_any_srtp() {
             min(self.next_rtcp);
             min(self.next_stats);
@@ -4325,6 +4358,8 @@ struct Pkt<'a> {
     rid: Option<&'a str>,
     /// A retransmission (RTX).
     rtx: bool,
+    /// Its header extensions (RTP mode hands them on).
+    ext: Option<&'a ExtensionValues>,
 }
 
 /// The receive stream of `ssrc` on `line`, made on first use (`None`: too many streams).
@@ -4444,6 +4479,7 @@ mod channels;
 mod ecn;
 mod ecn_fb;
 mod feedback;
+mod forward;
 mod keyframe;
 mod latch;
 mod pacing;
@@ -4460,6 +4496,8 @@ use receipts::{line_xr_blocks, remote_xr_blocks};
 mod tests;
 #[cfg(test)]
 mod tests_ecn;
+#[cfg(test)]
+mod tests_forward;
 #[cfg(test)]
 mod tests_mux;
 #[cfg(test)]

@@ -48,6 +48,38 @@ seconds (same format), so a nonce of a server from before this change gets a 438
 whose next message claims more is disconnected as soon as its header is in;
 `framing::FrameReader::with_max(n)` and `FrameError::TooLong` are the reader's side.
 
+### Added: RTP forwarding for an SFU (akio-webrtc, akio-rtp)
+
+akit's A260, for its media server, which forwards a publisher's packets to each viewer as they
+arrive instead of depacketizing and packetizing every frame again (ADR-187). `Peer::write_rtp(mid,
+&RtpPacket)` sends a packet received in RTP mode as it is: with this side's SSRC, the payload type
+negotiated here for its codec, its audio level, video orientation, transmission offset and playout
+delay under this side's extension ids, sequence numbers and timestamps renumbered (a source's gaps
+and late packets kept; a new source, such as a publisher replaced, continuing after the last
+packet sent), and kept for retransmission, so the viewer's NACKs are answered from what was sent.
+`RtpPacket` gains `mid`, `rid`, `codec` and `extensions`; `Codec::kind()` is public. akio-rtp:
+`SendStream::write_with_seq` writes a packet with a sequence number of the caller's, its history
+kept in sequence order.
+
+### Added: a receiver's bitrate cap told as REMB, and ICE consent timeouts per peer (akio-webrtc)
+
+akit's A261, for its media server's `max_bitrate` and `ice_timeout` (ADR-187).
+`Peer::set_receive_bitrate_cap(Option<u64>)` tells the remote senders the cap as REMB
+(draft-alvestrand-rmcat-remb, which browsers keep under) about every media stream received, once at
+once and then once a second with the RTCP reports; `None` stops (the remote keeps the last one).
+`RtcConfig::set_ice_timeouts(disconnected, failed)`: consent silence for `disconnected` reports
+`Disconnected`, for `failed` the new `IceConnectionState::Failed`, and a server or endpoint that
+closes peers on loss of consent closes them at `Failed` when `failed` is the longer; without it
+nothing changes. A REMB received is reported in `Event::Other` (`RemoteBitrateEstimate`).
+
+### Added: a peer's own configuration on an `RtcServer` (akio-webrtc)
+
+akit's A259, for its WHIP/WHEP media server, which answers a publisher with one codec of each kind
+and that stream's viewers with the same codecs. `RtcServer::accept_offer_with(config, offer,
+handler)` and `create_offer_with(config, handler, f)` (and the same on `Endpoint`) build the peer
+from `config` instead of the server's configuration closure; the ICE mode, candidates, peer limit
+and connect timeout stay the server's.
+
 ### Added: a file system's size and free space (akio-sys)
 
 akit's A249, for its LLM node, which reports each mounted file system's size and free space (fit

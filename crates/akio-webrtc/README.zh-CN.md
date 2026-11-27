@@ -30,7 +30,7 @@
   buffered-amount-low 事件。
 - **媒体**（[`akio-rtp`](../akio-rtp/README.zh-CN.md)）：RTP/RTCP，Opus、G.711、G.722、VP8、
   VP9、H.264、H.265 与 AV1 打包；无抖动缓冲延迟的组帧器（`on_media_data`；音频可选用自适应
-  抖动缓冲，`set_audio_jitter_buffer`，ADR-087）或 RTP 模式（`on_rtp`）；发送/接收报告，通用 NACK 与 RTX（RFC 4588），PLI/FIR，REMB，传输层拥塞控制
+  抖动缓冲，`set_audio_jitter_buffer`，ADR-087）或 RTP 模式（`on_rtp`，SFU 可把其包原样写给其他 peer：`write_rtp`，ADR-187）；发送/接收报告，通用 NACK 与 RTX（RFC 4588），PLI/FIR，REMB，传输层拥塞控制
   （TWCC 头扩展与反馈）及基于时延和丢包、会探测路径的带宽估计（ADR-050：开始时、受应用限制时、
   下降之后以及 ICE 候选对改变时，以短簇节奏发送最近媒体的 RTX 副本）。可选开启（`RtcConfig`，ADR-039、ADR-048）：视频
   FEC（带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC，后者也与 Chrome 一样按

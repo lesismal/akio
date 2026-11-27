@@ -150,3 +150,4 @@
 - [ADR-184：立即结束 WebSocket，丢弃排队的数据](184-websocket-abort.zh-CN.md)（2026-11-27 采纳；akit A238）
 - [ADR-185：QUIC 服务端的握手限制](185-quic-handshake-bounds.zh-CN.md)（2026-11-27 采纳；akit A245）
 - [ADR-186：供嵌入它的服务器使用的 akio-turn](186-turn-embedding-server.zh-CN.md)（2026-11-27 采纳；akit A256、A257、A258）
+- [ADR-187：SFU 需要 akio-webrtc 提供的能力：RTP 转发、接收码率上限与 consent 超时](187-webrtc-sfu.zh-CN.md)（2026-11-27 采纳；akit A260、A261）

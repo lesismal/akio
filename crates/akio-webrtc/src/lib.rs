@@ -501,6 +501,53 @@ impl Peer {
         })?
     }
 
+    /// Writes an RTP packet received from another peer in RTP mode ([`PeerHandler::on_rtp`])
+    /// on `mid`, as it is, without depacketizing it: what an SFU forwarding a publisher's
+    /// media to its viewers does on the I/O thread that received it (ADR-187). It goes out
+    ///
+    /// - with this side's SSRC of `mid` and the payload type negotiated here for the packet's
+    ///   [`codec`](RtpPacket::codec) (the first one of that codec: a viewer answered with the
+    ///   publisher's codecs, [`RtcServer::accept_offer_with`], has just those), its payload,
+    ///   marker bit and the audio level, video orientation, transmission offset and playout
+    ///   delay it carried under this side's extension ids (only those negotiated here), and
+    ///   this side's MID and send-time extensions (abs-send-time, transport-wide sequence
+    ///   number);
+    /// - renumbered: the sequence numbers and timestamps of one source (one SSRC written) are
+    ///   shifted by an offset, so a packet lost upstream stays a gap and a late one (repaired
+    ///   upstream with NACK) fills its gap; when another source is written (a publisher
+    ///   replaced, another simulcast layer), its first packet follows the last sequence number
+    ///   sent and the last timestamp by the time between their arrivals, and packets of the
+    ///   earlier source are dropped from then on. Samples written on the same line in between
+    ///   ([`write_media`](Self::write_media)) take numbers the forwarded ones then skip.
+    ///
+    /// It joins the stream's retransmission history: the remote's NACKs are answered from it
+    /// (RTX where negotiated), its PLI / FIR come to [`PeerHandler::on_keyframe_request`] of
+    /// this peer for the application to pass to the publisher
+    /// ([`request_keyframe`](Self::request_keyframe)), and the sender reports follow it. No
+    /// RED or FEC is added. Dropped before the peer is connected; [`Error::UnknownMedia`] when
+    /// `mid` does not send, [`Error::Rtc`] when the codec was not negotiated on it. On a
+    /// simulcast line it goes out as the first encoding.
+    pub fn write_rtp(&self, mid: Mid, packet: &RtpPacket) -> Result<(), Error> {
+        self.with_rtc_inner(
+            |rtc| match rtc.write_rtp(Instant::now(), mid, None, packet) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(Error::UnknownMedia),
+                Err(e) => Err(rtc_err(e)),
+            },
+        )?
+    }
+
+    /// Caps what the remote sends this peer at `bps` bits per second, told as REMB
+    /// (draft-alvestrand-rmcat-remb, which browsers keep under) about every media stream
+    /// received, once now and then once a second with the RTCP reports (ADR-187). `None`
+    /// stops sending them; a browser keeps the last REMB as its limit until another comes, so
+    /// a cap is lifted with a higher one. This side has no receive-side estimate of its own
+    /// (the remote estimates the path from transport-wide feedback), so the REMB carries the
+    /// cap. Applies to every stream the peer receives.
+    pub fn set_receive_bitrate_cap(&self, bps: Option<u64>) {
+        let _ = self.with_rtc_inner(|rtc| rtc.set_receive_bitrate_cap(bps));
+    }
+
     /// The payload type negotiated on `mid` for a codec, e.g. [`Codec::Vp8`].
     pub fn payload_type(&self, mid: Mid, codec: Codec) -> Option<Pt> {
         lock(&self.0.state).rtc.payload_type(mid, codec)
@@ -745,12 +792,16 @@ impl Peer {
                         }
                     }
                     Output::Event(e) => {
+                        // With a failed timeout past the disconnected one, consent loss
+                        // closes at `Failed` (ADR-187).
+                        let lost = if st.rtc.fails_after_disconnect() {
+                            IceConnectionState::Failed
+                        } else {
+                            IceConnectionState::Disconnected
+                        };
                         let dead = matches!(e, RtcEvent::Closed)
                             || (close_on_disconnect
-                                && matches!(
-                                    e,
-                                    RtcEvent::IceState(IceConnectionState::Disconnected)
-                                ));
+                                && matches!(e, RtcEvent::IceState(s) if s == lost));
                         evs.push(Ev::Rtc(Box::new(e)));
                         if dead {
                             died = true;
@@ -1150,9 +1201,16 @@ impl Hub {
             .clone()
     }
 
-    fn new_rtc(&self) -> Result<Rtc, Error> {
-        let config = lock(&self.config).clone();
-        let mut rtc = Rtc::new(config().0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
+    /// A new peer's stack with `config`, or the hub's configuration.
+    fn new_rtc(&self, config: Option<RtcConfig>) -> Result<Rtc, Error> {
+        let config = match config {
+            Some(c) => c,
+            None => {
+                let f = lock(&self.config).clone();
+                f()
+            }
+        };
+        let mut rtc = Rtc::new(config.0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
         let cs = lock(&self.candidates).clone();
         for c in cs {
             if self.uses(&c) {
@@ -1212,13 +1270,14 @@ impl Hub {
 
     fn accept_offer(
         self: &Arc<Hub>,
+        config: Option<RtcConfig>,
         offer: &str,
         handler: Box<dyn PeerHandler>,
     ) -> Result<(Peer, String), Error> {
         if self.full() {
             return Err(Error::TooManyPeers); // before paying for the DTLS identity and SDP
         }
-        let mut rtc = self.new_rtc()?;
+        let mut rtc = self.new_rtc(config)?;
         let answer = rtc.accept_offer(Instant::now(), offer).map_err(sdp_err)?;
         let p = self.register(rtc, handler)?;
         p.drive();
@@ -1227,13 +1286,14 @@ impl Hub {
 
     fn create_offer(
         self: &Arc<Hub>,
+        config: Option<RtcConfig>,
         handler: Box<dyn PeerHandler>,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
         if self.full() {
             return Err(Error::TooManyPeers);
         }
-        let mut rtc = self.new_rtc()?;
+        let mut rtc = self.new_rtc(config)?;
         let mut ch = rtc.changes();
         f(&mut SdpChanges(&mut ch));
         let offer = rtc
@@ -1665,7 +1725,21 @@ impl RtcServer {
         offer: &str,
         handler: H,
     ) -> Result<(Peer, String), Error> {
-        self.0.accept_offer(offer, Box::new(handler))
+        self.0.accept_offer(None, offer, Box::new(handler))
+    }
+
+    /// [`accept_offer`](Self::accept_offer) with a configuration of this peer's own in place
+    /// of the server's ([`config`](Self::config)): the codecs a media server answers a
+    /// publisher with, then that stream's viewers with the same, RTP mode, timeouts ... The
+    /// crypto provider and the ICE mode are set over it as over the server's; the server's
+    /// candidates, peer limit and connect timeout apply.
+    pub fn accept_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        offer: &str,
+        handler: H,
+    ) -> Result<(Peer, String), Error> {
+        self.0.accept_offer(Some(config), offer, Box::new(handler))
     }
 
     /// Starts a new peer with an offer made by `f` (add media, data channels); returns the
@@ -1675,7 +1749,18 @@ impl RtcServer {
         handler: H,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
-        self.0.create_offer(Box::new(handler), f)
+        self.0.create_offer(None, Box::new(handler), f)
+    }
+
+    /// [`create_offer`](Self::create_offer) with a configuration of this peer's own, as
+    /// [`accept_offer_with`](Self::accept_offer_with).
+    pub fn create_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        handler: H,
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
+    ) -> Result<(Peer, String), Error> {
+        self.0.create_offer(Some(config), Box::new(handler), f)
     }
 
     /// Open peers.
@@ -2390,7 +2475,18 @@ impl Endpoint {
         handler: H,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
-        self.0.create_offer(Box::new(handler), f)
+        self.0.create_offer(None, Box::new(handler), f)
+    }
+
+    /// [`create_offer`](Self::create_offer) with a configuration of this peer's own in place
+    /// of the endpoint's ([`config`](Self::config)), as [`RtcServer::accept_offer_with`].
+    pub fn create_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        handler: H,
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
+    ) -> Result<(Peer, String), Error> {
+        self.0.create_offer(Some(config), Box::new(handler), f)
     }
 
     /// Accepts a remote SDP offer for a new peer; returns the peer and the SDP answer.
@@ -2399,7 +2495,18 @@ impl Endpoint {
         offer: &str,
         handler: H,
     ) -> Result<(Peer, String), Error> {
-        self.0.accept_offer(offer, Box::new(handler))
+        self.0.accept_offer(None, offer, Box::new(handler))
+    }
+
+    /// [`accept_offer`](Self::accept_offer) with a configuration of this peer's own, as
+    /// [`RtcServer::accept_offer_with`].
+    pub fn accept_offer_with<H: PeerHandler>(
+        &self,
+        config: RtcConfig,
+        offer: &str,
+        handler: H,
+    ) -> Result<(Peer, String), Error> {
+        self.0.accept_offer(Some(config), offer, Box::new(handler))
     }
 
     /// Open peers.

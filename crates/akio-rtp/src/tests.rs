@@ -897,6 +897,48 @@ fn send_stream_rtx_and_history() {
 }
 
 #[test]
+fn send_stream_written_with_chosen_sequence_numbers() {
+    let map = video_map();
+    let t0 = Instant::now();
+    let ext = ExtensionValues::default();
+    let mut s = SendStream::new(0x1111, 90_000, Some(0x2222), 7);
+    let seq = |p: &[u8]| RtpHeader::parse(p, &map).unwrap().sequence_number;
+    // A gap (65535 and 0 lost upstream) across the wrap, then 0 arriving late.
+    for (n, ts) in [(65533u16, 10u32), (65534, 10), (1, 20)] {
+        let p = s.write_with_seq(t0, n, 96, false, ts, &[n as u8; 4], &ext, &map);
+        assert_eq!(seq(&p), n);
+    }
+    assert_eq!(s.next_seq(), 2);
+    s.write_with_seq(t0, 0, 96, true, 10, &[0; 4], &ext, &map);
+    assert_eq!(
+        s.next_seq(),
+        2,
+        "a late packet does not move the numbering back"
+    );
+    // NACKs find every packet written, late ones included; the gap stays a gap.
+    let r = s.resend(t0 + ms(20), &[65535, 0, 1, 65533], None, &map);
+    let got: Vec<u16> = r.iter().map(|p| seq(p)).collect();
+    assert_eq!(got, [0, 1, 65533]);
+    let h = RtpHeader::parse(&r[0], &map).unwrap();
+    assert_eq!((h.marker, h.payload(&r[0])), (true, &[0u8; 4][..]));
+    // A number written again replaces its packet.
+    s.write_with_seq(t0, 1, 96, false, 20, &[9; 4], &ext, &map);
+    let r = s.resend(t0 + ms(40), &[1], None, &map);
+    assert_eq!(
+        RtpHeader::parse(&r[0], &map).unwrap().payload(&r[0]),
+        [9; 4]
+    );
+    // Plain writes follow the highest number.
+    assert_eq!(seq(&s.write(t0, 96, false, 30, b"x", &ext, &map)), 2);
+    assert_eq!(s.packets_sent(), 6);
+    // The sender report follows the newest packet only.
+    let info = s
+        .sender_report(t0, ntp_time(std::time::SystemTime::now()))
+        .unwrap();
+    assert_eq!(info.rtp_time, 30);
+}
+
+#[test]
 fn sender_report_and_rtt() {
     let map = audio_map();
     let t0 = Instant::now();

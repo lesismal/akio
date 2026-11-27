@@ -42,6 +42,32 @@ nonce；nonce 中的有效期现在以 UNIX 秒表示（格式不变），因此
 声明的长度超过它时，一读到消息头就断开连接；读取器一侧为 `framing::FrameReader::with_max(n)` 与
 `FrameError::TooLong`。
 
+### 新增：面向 SFU 的 RTP 转发（akio-webrtc、akio-rtp）
+
+akit 的 A260，用于其媒体服务器：发布者的包一到就转发给每个观众，而不是把每帧解包再重新打包；ADR-187。
+`Peer::write_rtp(mid, &RtpPacket)` 原样发送 RTP 模式下收到的包：使用本端的 SSRC、本端为其编解码器协商的
+payload type，音量、视频方向、传输偏移与播放延迟使用本端的扩展 id，序号与时间戳重新编号（保留同一来源的
+空洞与迟到的包；新来源，例如被替换的发布者，接在最后发出的包之后），并保存以备重传，因此观众的 NACK 由
+已发出的内容应答。`RtpPacket` 新增 `mid`、`rid`、`codec` 与 `extensions`；`Codec::kind()` 改为公开。
+akio-rtp：`SendStream::write_with_seq` 以调用者给定的序号写包，其历史按序号顺序保存。
+
+### 新增：接收端码率上限以 REMB 告知，以及每个 peer 的 ICE consent 超时（akio-webrtc）
+
+akit 的 A261，用于其媒体服务器的 `max_bitrate` 与 `ice_timeout`；ADR-187。
+`Peer::set_receive_bitrate_cap(Option<u64>)` 以 REMB（draft-alvestrand-rmcat-remb，浏览器会遵守）把上限
+告诉远端发送方，覆盖接收到的每个媒体流，立即发送一次，之后每秒随 RTCP 报告发送；`None` 停止发送（远端
+保留最后一个）。`RtcConfig::set_ice_timeouts(disconnected, failed)`：consent 静默 `disconnected` 后报告
+`Disconnected`，静默 `failed` 后报告新增的 `IceConnectionState::Failed`；当 `failed` 更长时，在失去
+consent 时关闭 peer 的服务器或 endpoint 改为在 `Failed` 时关闭；不设置时一切不变。收到的 REMB 在
+`Event::Other`（`RemoteBitrateEstimate`）中报告。
+
+### 新增：`RtcServer` 上 peer 自己的配置（akio-webrtc）
+
+akit 的 A259，用于其 WHIP/WHEP 媒体服务器：对发布者每种媒体只应答一个编解码器，对该流的观众应答同样的
+编解码器。`RtcServer::accept_offer_with(config, offer, handler)` 与 `create_offer_with(config, handler,
+f)`（`Endpoint` 上同样有）用 `config` 而不是服务器的配置闭包构建 peer；ICE 模式、候选、peer 上限与连接
+超时仍是服务器的。
+
 ### 新增：文件系统的大小与可用空间（akio-sys）
 
 akit 的 A249，供其 LLM 节点使用：节点报告每个已挂载文件系统的大小与可用空间（fit 用 `syscall.Statfs`

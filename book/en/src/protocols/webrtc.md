@@ -106,6 +106,8 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 | `payload_type(mid, codec)` | the negotiated payload type of a codec |
 | `request_keyframe(mid, kind)` | PLI or FIR to the remote sender |
 | `request_layer_keyframe(mid, rid, kind)` | PLI or FIR to one received simulcast layer |
+| `write_rtp(mid, packet)` | an RTP packet received from another peer, forwarded as it is (an SFU) |
+| `set_receive_bitrate_cap(bps)` | the most the remote may send, told as REMB |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | SDP changes after the first exchange |
 | `add_remote_candidate(line)` | trickle ICE |
 | `close()` | DTLS close notify, then `on_close` |
@@ -310,6 +312,43 @@ that one with `Peer::request_layer_keyframe(mid, rid, kind)` (the `sfu` mode of
 `crates/akio-webrtc/examples/webrtc-interop.rs` does this, rewriting RTP timestamps at a
 switch). Chrome does not receive simulcast: its answer drops `a=simulcast`, and only the first
 encoding is sent to it.
+
+### An SFU: forwarding RTP
+
+A media server that forwards a publisher's media to its viewers (WHIP in, WHEP out) runs the
+publisher's peer in RTP mode and writes every packet, as it arrives, to each viewer's peer
+(ADR-187):
+
+```rust,ignore
+// The publisher's peer on the server (accepted with `set_rtp_mode(true)`):
+fn on_rtp(&mut self, _p: &Peer, pkt: &RtpPacket) {
+    for v in &self.viewers {
+        let mid = if pkt.codec.map(Codec::kind) == Some(MediaKind::Audio) { v.audio } else { v.video };
+        let _ = v.peer.write_rtp(mid, pkt);
+    }
+}
+```
+
+- `RtcServer::accept_offer_with(config, offer, handler)` (and `create_offer_with`, and the same on
+  `Endpoint`) gives a peer a configuration of its own: answer the publisher with the codecs picked
+  for the stream (`rtc_config().clear_codecs().enable_vp8(true).enable_opus(true)`, in RTP mode)
+  and its viewers with the same, so that what the publisher sends is what each viewer decodes.
+- `Peer::write_rtp(mid, &packet)` sends the packet without depacketizing it, with this peer's SSRC
+  of `mid` and the payload type it negotiated for the packet's codec (`RtpPacket::codec`; `mid`,
+  `rid` and `extensions` come with it too). Audio level, video orientation, transmission offset and
+  playout delay go out under this peer's extension ids, MID and the send-time extensions are its
+  own. Sequence numbers and timestamps are renumbered: a source's gaps (lost upstream) and late
+  packets (repaired upstream) are kept, and when another source is written (a publisher replaced,
+  another simulcast layer) it continues right after the last packet sent. Packets join the
+  retransmission history: the viewer's NACKs are answered with RTX.
+- A viewer's PLI or FIR arrives at its peer's `on_keyframe_request`; pass it to the publisher with
+  `request_keyframe` (and throttle it).
+- `Peer::set_receive_bitrate_cap(Some(bps))` on the publisher's peer tells it the most it may send
+  as REMB, once at once and then every second, which browsers keep under (TMMBR,
+  `request_max_bitrate`, they ignore).
+- `RtcConfig::set_ice_timeouts(disconnected, failed)` reports `Disconnected` after `disconnected`
+  without consent and `IceConnectionState::Failed` after `failed`; the server then closes the peer
+  at `Failed` instead of at `Disconnected` (30 s by default).
 
 ### FEC and more RTCP
 
@@ -1071,4 +1110,4 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
   the data channels. DTLS 1.3's KeyUpdate does not change SRTP's keys (ADR-086 §6).
 
 ADR-017, ADR-032, ADR-039, ADR-044, ADR-045, ADR-048, ADR-054, ADR-058, ADR-072, ADR-073,
-ADR-076, ADR-077, ADR-082, ADR-083, ADR-086 and ADR-091 have the details of what was added.
+ADR-076, ADR-077, ADR-082, ADR-083, ADR-086, ADR-091 and ADR-187 have the details of what was added.
