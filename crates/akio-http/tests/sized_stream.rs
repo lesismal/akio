@@ -44,8 +44,11 @@ fn sized(n: usize) -> Headers {
 }
 
 /// What the routes report: the writes refused, how requests ended, what taps saw. A request's
-/// end and its tap's are reported on the server's side, possibly after the client has read the
-/// whole response: wait for them ([`Seen::taps`], [`Seen::ends`]).
+/// end and its tap's are reported on the server's side, on the thread that finishes the stream
+/// (`BodyTap`, `Context::on_end`), possibly after the client has read the whole response: wait
+/// for them ([`Seen::taps`], [`Seen::ends`]). Nothing orders them across the requests of a
+/// connection: a later response's writer, its bytes held behind an earlier one still open, can
+/// finish first. A test that checks their order waits for each before the next request.
 #[derive(Default)]
 struct Seen {
     refused: Mutex<Vec<String>>,
@@ -53,12 +56,14 @@ struct Seen {
     taps: (Mutex<Vec<(usize, TapEnd)>>, Condvar),
 }
 
-/// Waits (bounded) until `v` has `n` entries, and returns what it has then.
-fn wait_len<T: Clone>(v: &(Mutex<Vec<T>>, Condvar), n: usize) -> Vec<T> {
+/// Waits (bounded) until `v` has `n` entries, and returns what it has then; fails if they do
+/// not come, rather than letting a missing report pass as one out of order.
+fn wait_len<T: Clone + std::fmt::Debug>(v: &(Mutex<Vec<T>>, Condvar), n: usize) -> Vec<T> {
     let g = v.0.lock().unwrap();
     let (g, _) =
         v.1.wait_timeout_while(g, Duration::from_secs(10), |v| v.len() < n)
             .unwrap();
+    assert!(g.len() >= n, "waited 10 s for {n} reports, got {:?}", *g);
     g.clone()
 }
 
