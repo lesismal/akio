@@ -10,6 +10,17 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: settings changed on a running TURN server, and a drain (akio-turn)
+
+akit's A258, for its TURN role's reload (fit's `SetLimits`, `SetAuth` and draining server);
+ADR-186 update 2. `TurnLimits` (lifetimes, quotas and caps; `TurnConfig::limits()`,
+`TurnServer::limits()`) and `TurnServer::set_limits`: from the next request on, the allocations
+kept, what is held past a lowered limit kept until it ends. `TurnServer::set_auth(AuthFn)`: the
+credentials from the next request on, those of allocations held included. `TurnServer::drain()`
+(and `draining()`): new allocations are refused with 508 while those held go on relaying,
+refreshing, installing permissions and binding channels; `allocations()` and the `Freed` events
+tell when it is empty. `TurnCore` has the same four.
+
 ### Added: hooks for a server embedding akio-turn (akio-turn)
 
 akit's A257, for its TURN role (fit's `user_bandwidth`, its events and metrics, and its own

@@ -42,7 +42,8 @@ and DTLS listeners, and a sans-io TURN client.
   nonces), `max_stream_message` (the largest message a TCP or TLS client may send);
   `on_relay` (each datagram relayed, by username: a bandwidth limit), `on_event` (allocated,
   refreshed, freed, refused, credentials failed), `TurnServer::holds_relay` (its relayed
-  addresses, for a peer filter) and more `TurnStats`.
+  addresses, for a peer filter) and more `TurnStats`; `set_limits`, `set_auth` and `drain` on a
+  running server.
 - `TurnCore`: the same server as a sans-io state machine.
 
 ```rust,no_run

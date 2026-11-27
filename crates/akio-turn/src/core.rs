@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use akio_crypto::hash::{Sha1, Sha256};
@@ -432,6 +432,23 @@ impl TurnConfig {
         self
     }
 
+    /// The lifetimes, quotas and caps of these settings, which a running server changes with
+    /// [`TurnServer::set_limits`](crate::TurnServer::set_limits).
+    pub fn limits(&self) -> TurnLimits {
+        TurnLimits {
+            default_lifetime: self.default_lifetime,
+            max_lifetime: self.max_lifetime,
+            permission_lifetime: self.permission_lifetime,
+            channel_lifetime: self.channel_lifetime,
+            nonce_lifetime: self.nonce_lifetime,
+            max_allocations: self.max_allocations,
+            max_allocations_per_user: self.max_allocations_per_user,
+            max_permissions: self.max_permissions,
+            max_channels: self.max_channels,
+            max_tcp_connections: self.max_tcp_connections,
+        }
+    }
+
     /// Where an address clients are told of (or one bound) is bound: itself, or, for an address
     /// on `public_ip` or `additional_public_ip`, that port on the relay address behind it.
     pub(crate) fn bound_of(&self, addr: SocketAddr) -> [Option<SocketAddr>; 2] {
@@ -824,7 +841,7 @@ pub enum TurnEventKind {
         to_client: Traffic,
     },
     /// A request whose credentials passed was answered with error `code`: a quota (486), a
-    /// capacity (508), a forbidden peer (403), a mismatch (437, 441, 443), an
+    /// capacity or a drain (508), a forbidden peer (403), a mismatch (437, 441, 443), an
     /// unknown attribute (420), a bad request (400), an unsupported transport or family (442,
     /// 440), a failed connection (446). `method` is the request's.
     Refused {
@@ -864,15 +881,114 @@ pub struct TurnEvent {
     pub lifetime: Duration,
 }
 
+/// The lifetimes, quotas and caps of a server, which it changes while running
+/// ([`TurnServer::set_limits`](crate::TurnServer::set_limits)): what [`TurnConfig`]'s fields
+/// of the same names start it with. Read one with [`TurnConfig::limits`] or
+/// [`TurnServer::limits`](crate::TurnServer::limits), change its fields, set it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TurnLimits {
+    /// [`TurnConfig::default_lifetime`].
+    pub default_lifetime: Duration,
+    /// [`TurnConfig::max_lifetime`] (taken as `default_lifetime` when less).
+    pub max_lifetime: Duration,
+    /// [`TurnConfig::permission_lifetime`].
+    pub permission_lifetime: Duration,
+    /// [`TurnConfig::channel_lifetime`].
+    pub channel_lifetime: Duration,
+    /// [`TurnConfig::nonce_lifetime`].
+    pub nonce_lifetime: Duration,
+    /// [`TurnConfig::max_allocations`].
+    pub max_allocations: usize,
+    /// [`TurnConfig::max_allocations_per_user`].
+    pub max_allocations_per_user: usize,
+    /// [`TurnConfig::max_permissions`].
+    pub max_permissions: usize,
+    /// [`TurnConfig::max_channels`].
+    pub max_channels: usize,
+    /// [`TurnConfig::max_tcp_connections`].
+    pub max_tcp_connections: usize,
+}
+
+/// [`TurnLimits`] read without a lock by every shard: a field each. A change racing a request
+/// may meet it half applied, which no request can tell from a change just before or after it.
+struct LiveLimits {
+    /// Nanoseconds: default, max, permission, channel, nonce lifetimes.
+    lifetimes: [AtomicU64; 5],
+    /// Allocations, per user, permissions, channels, TCP connections.
+    caps: [AtomicUsize; 5],
+}
+
+impl LiveLimits {
+    fn new(l: TurnLimits) -> LiveLimits {
+        let z = || AtomicU64::new(0);
+        let c = || AtomicUsize::new(0);
+        let live = LiveLimits {
+            lifetimes: [z(), z(), z(), z(), z()],
+            caps: [c(), c(), c(), c(), c()],
+        };
+        live.set(l);
+        live
+    }
+
+    fn set(&self, l: TurnLimits) {
+        let nanos = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
+        let ds = [
+            l.default_lifetime,
+            l.max_lifetime.max(l.default_lifetime),
+            l.permission_lifetime,
+            l.channel_lifetime,
+            l.nonce_lifetime,
+        ];
+        for (a, d) in self.lifetimes.iter().zip(ds) {
+            a.store(nanos(d), Ordering::Relaxed);
+        }
+        let cs = [
+            l.max_allocations,
+            l.max_allocations_per_user,
+            l.max_permissions,
+            l.max_channels,
+            l.max_tcp_connections,
+        ];
+        for (a, c) in self.caps.iter().zip(cs) {
+            a.store(c, Ordering::Relaxed);
+        }
+    }
+
+    fn get(&self) -> TurnLimits {
+        let d = |i: usize| Duration::from_nanos(self.lifetimes[i].load(Ordering::Relaxed));
+        let c = |i: usize| self.caps[i].load(Ordering::Relaxed);
+        TurnLimits {
+            default_lifetime: d(0),
+            max_lifetime: d(1),
+            permission_lifetime: d(2),
+            channel_lifetime: d(3),
+            nonce_lifetime: d(4),
+            max_allocations: c(0),
+            max_allocations_per_user: c(1),
+            max_permissions: c(2),
+            max_channels: c(3),
+            max_tcp_connections: c(4),
+        }
+    }
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What the shards of one server share: the immutable settings and nonce key (read without a
-/// lock), and the server-wide quotas and `EVEN-PORT` reservations (locked only by Allocate,
-/// allocation removal and the sweep, never per datagram).
+/// What the shards of one server share: the settings and nonce key (read without a lock), the
+/// limits (atomics, read without a lock), the credentials (read-locked per request), and the
+/// server-wide quotas and `EVEN-PORT` reservations (locked only by Allocate, allocation removal
+/// and the sweep, never per datagram).
 pub(crate) struct Shared {
     cfg: TurnConfig,
+    /// The credentials in force: `cfg.auth`, or what `set_auth` set since.
+    auth: RwLock<AuthFn>,
+    /// The lifetimes, quotas and caps in force.
+    limits: LiveLimits,
+    /// New allocations are refused (508).
+    draining: AtomicBool,
     nonce_key: [u8; 32],
     epoch: Instant,
     /// `epoch` in UNIX seconds: nonces carry absolute expiries, so that servers sharing a
@@ -914,6 +1030,9 @@ impl Shared {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         Shared {
+            auth: RwLock::new(cfg.auth.clone()),
+            limits: LiveLimits::new(cfg.limits()),
+            draining: AtomicBool::new(false),
             cfg,
             nonce_key,
             epoch: Instant::now(),
@@ -925,6 +1044,38 @@ impl Shared {
         }
     }
 
+    /// The credentials in force.
+    pub(crate) fn auth(&self) -> AuthFn {
+        self.auth
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_auth(&self, auth: AuthFn) {
+        *self
+            .auth
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = auth;
+    }
+
+    /// The lifetimes, quotas and caps in force.
+    pub(crate) fn limits(&self) -> TurnLimits {
+        self.limits.get()
+    }
+
+    pub(crate) fn set_limits(&self, l: TurnLimits) {
+        self.limits.set(l);
+    }
+
+    pub(crate) fn drain(&self) {
+        self.draining.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn draining(&self) -> bool {
+        self.draining.load(Ordering::Relaxed)
+    }
+
     /// Allocations open in all shards.
     pub(crate) fn allocations(&self) -> usize {
         self.allocations.load(Ordering::Relaxed)
@@ -932,7 +1083,8 @@ impl Shared {
 
     /// Whether `user`'s credentials check out for `m`, and its key.
     fn key_for(&self, m: &Message<'_>, user: &str, realm: &str) -> Option<[u8; 16]> {
-        (self.cfg.auth)(user, realm).filter(|k| realm == self.cfg.realm && m.check_integrity(k))
+        let auth = self.auth();
+        auth(user, realm).filter(|k| realm == self.cfg.realm && m.check_integrity(k))
     }
 
     /// A new `CONNECTION-ID`: unique among the server's connections until 2^32 more were made.
@@ -951,12 +1103,13 @@ impl Shared {
 
     /// Takes one allocation of the server-wide and per-user quotas.
     fn reserve(&self, user: &str) -> Result<(), Reject> {
+        let l = self.limits();
         let mut users = lock(&self.per_user);
-        if self.allocations.load(Ordering::Relaxed) >= self.cfg.max_allocations {
+        if self.allocations.load(Ordering::Relaxed) >= l.max_allocations {
             return Err(Reject(508, "Insufficient Capacity"));
         }
         let n = users.get(user).copied().unwrap_or(0);
-        if n >= self.cfg.max_allocations_per_user {
+        if n >= l.max_allocations_per_user {
             return Err(Reject(486, "Allocation Quota Reached"));
         }
         users.insert(user.to_owned(), n + 1);
@@ -978,7 +1131,7 @@ impl Shared {
 
     fn nonce(&self, now: Instant, client: SocketAddr) -> String {
         let exp = self.epoch_unix
-            + (now + self.cfg.nonce_lifetime)
+            + (now + self.limits().nonce_lifetime)
                 .saturating_duration_since(self.epoch)
                 .as_secs();
         format!("{exp:016x}{}", self.nonce_mac(exp, client))
@@ -1014,7 +1167,7 @@ impl Shared {
     /// free.
     pub(crate) fn prebind_ips(&self, now: Instant, client: SocketAddr, data: &[u8]) -> Vec<IpAddr> {
         let mut ips = Vec::new();
-        if !is_stun(data) {
+        if !is_stun(data) || self.draining() {
             return ips;
         }
         let Ok(m) = Message::parse(data) else {
@@ -1167,9 +1320,38 @@ impl TurnCore {
         }
     }
 
-    /// The settings.
+    /// The settings it was made with: the limits and credentials changed since are
+    /// [`limits`](Self::limits) and [`set_auth`](Self::set_auth)'s.
     pub fn config(&self) -> &TurnConfig {
         &self.shared.cfg
+    }
+
+    /// The lifetimes, quotas and caps in force.
+    pub fn limits(&self) -> TurnLimits {
+        self.shared.limits()
+    }
+
+    /// Changes the lifetimes, quotas and caps from the next request on (see
+    /// [`TurnServer::set_limits`](crate::TurnServer::set_limits)).
+    pub fn set_limits(&self, limits: TurnLimits) {
+        self.shared.set_limits(limits);
+    }
+
+    /// Changes the credentials from the next request on (see
+    /// [`TurnServer::set_auth`](crate::TurnServer::set_auth)).
+    pub fn set_auth(&self, auth: AuthFn) {
+        self.shared.set_auth(auth);
+    }
+
+    /// Refuses new allocations with 508 from now on (see
+    /// [`TurnServer::drain`](crate::TurnServer::drain)).
+    pub fn drain(&self) {
+        self.shared.drain();
+    }
+
+    /// Whether [`drain`](Self::drain) was called.
+    pub fn draining(&self) -> bool {
+        self.shared.draining()
     }
 
     /// Whether `addr` is a relayed address of an allocation this core holds, as clients are
@@ -2052,6 +2234,10 @@ impl TurnCore {
             }
             return Err(Reject(437, "Allocation Mismatch"));
         }
+        // A server draining keeps what it holds and takes nothing new.
+        if self.shared.draining() {
+            return Err(Reject(508, "Insufficient Capacity"));
+        }
         let Some(t) = m.get(attr::REQUESTED_TRANSPORT) else {
             return Err(Reject(400, "Bad Request"));
         };
@@ -2290,7 +2476,7 @@ impl TurnCore {
     }
 
     fn lifetime(&self, m: &Message<'_>) -> Duration {
-        let l = &self.shared.cfg;
+        let l = self.shared.limits();
         match m.get_u32(attr::LIFETIME) {
             Some(s) => Duration::from_secs(u64::from(s))
                 .max(l.default_lifetime)
@@ -2373,8 +2559,8 @@ impl TurnCore {
         {
             return Err(Reject(403, "Forbidden"));
         }
-        let cfg = &self.shared.cfg;
-        let (max, life) = (cfg.max_permissions, cfg.permission_lifetime);
+        let l = self.shared.limits();
+        let (max, life) = (l.max_permissions, l.permission_lifetime);
         let Some(a) = self.allocs.get_mut(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
         };
@@ -2414,9 +2600,9 @@ impl TurnCore {
         if !self.peer_ok(peer) {
             return Err(Reject(403, "Forbidden"));
         }
-        let cfg = &self.shared.cfg;
-        let (maxc, maxp) = (cfg.max_channels, cfg.max_permissions);
-        let (cl, pl) = (cfg.channel_lifetime, cfg.permission_lifetime);
+        let l = self.shared.limits();
+        let (maxc, maxp) = (l.max_channels, l.max_permissions);
+        let (cl, pl) = (l.channel_lifetime, l.permission_lifetime);
         let Some(a) = self.allocs.get_mut(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
         };
@@ -2459,7 +2645,7 @@ impl TurnCore {
         m: &Message<'_>,
         env: &mut dyn TurnEnv,
     ) -> Result<(), Reject> {
-        let max = self.shared.cfg.max_tcp_connections;
+        let max = self.shared.limits().max_tcp_connections;
         let Some(a) = self.allocs.get(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
         };
@@ -2554,7 +2740,7 @@ impl TurnCore {
         env: &mut dyn TurnEnv,
     ) -> Option<u32> {
         let client = *self.by_tcp_relay.get(&relay)?;
-        let max = self.shared.cfg.max_tcp_connections;
+        let max = self.shared.limits().max_tcp_connections;
         if !self.peer_ok(peer) {
             return None;
         }

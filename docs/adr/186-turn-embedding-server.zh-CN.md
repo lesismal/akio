@@ -2,7 +2,7 @@
 
 [English](186-turn-embedding-server.md) | 简体中文
 
-状态：已采纳（2026-11-27）。akit 的 A256；A257（更新 1）。
+状态：已采纳（2026-11-27）。akit 的 A256；A257（更新 1）；A258（更新 2）。
 
 ## 背景
 
@@ -79,3 +79,31 @@ fit 的角色通过 fib 的 `OnRelay` 限制每个用户名每秒在每个方向
 
 akit 在 `on_relay` 中沿用 fit 的限速器，把事件计入 `akit_turn_*` 指标和日志，并在其对端过滤器中通过
 `holds_relay` 经由中继端口访问自身地址。
+
+## 更新 2：运行中服务器的设置变更与排空（A258）
+
+fit 的重新加载会就地修改运行中服务器的配额、上限、生存期与凭据（fib 的 `SetLimits` 与 `SetAuth`），保留已有
+分配；地址变化时，它启动新服务器并排空旧服务器（`Shutdown` 中 fib 的 `Drain`：新分配以 508 拒绝，已有分配继续
+中继与刷新，直到结束或排空时间耗尽）。akio-turn 的 `TurnConfig` 由各分片无锁读取，此后不再修改，`close_all`
+是唯一的关闭方式；任何限制的变化都会让 akit 启动新服务器。
+
+1. **`TurnLimits`**（`default_lifetime`、`max_lifetime`、`permission_lifetime`、`channel_lifetime`、
+   `nonce_lifetime`、`max_allocations`、`max_allocations_per_user`、`max_permissions`、`max_channels`、
+   `max_tcp_connections`；`#[non_exhaustive]`，通过 `TurnConfig::limits()` 或 `TurnServer::limits()` 读取，
+   逐字段修改）与 **`TurnServer::set_limits`**（以及 `TurnCore` 的同名方法）。服务器把每项保存在一个原子变量
+   中，在请求原本读取配置的地方用 relaxed 读取：任何路径都没有增加锁，数据报也从不读取它们。与请求并发的修改
+   可能只被看到一部分，这与在请求之前或之后修改无法区分。它们从下一个请求起生效：超过降低后的配额或上限的已有
+   内容保留到结束（超过上限的许可不会被刷新），已授予的生存期照常走完，已发出的 nonce 保持其有效期。
+   `max_lifetime` 小于 `default_lifetime` 时按 `default_lifetime` 处理，与 `TurnConfig::lifetimes` 相同。
+   `TurnConfig` 的字段仍是服务器创建时的值。
+2. **`TurnServer::set_auth(AuthFn)`**（以及 `TurnCore` 的同名方法）：凭据放在共享状态中的读写锁之后；每个请求
+   （以及 Allocate 在加锁前的检查）在读锁下克隆 `Arc`，在锁外调用该函数。从下一个请求起生效，包括已有分配的
+   请求：被拒绝的用户不能再刷新，其分配随生存期结束。
+3. **`TurnServer::drain()`**（以及 `draining()`、`TurnCore::drain`）：一个标志。设置后，没有分配的客户端的
+   Allocate 在凭据通过后以 508 应答（产生 `Refused` 事件），包括认领 `EVEN-PORT` 预留端口的请求，也不会为它在
+   加锁前绑定中继；建立了分配的那个 Allocate 的重传仍得到原来的应答，刷新、许可、信道、Connect 与中继照常进行。
+   它不可撤销。`TurnServer::allocations()` 与 `Freed` 事件表明何时已空；之后由服务器的所有者关闭它（`close_all`
+   或关闭其监听），可以立即关闭，也可以在排空时间耗尽时关闭。akio-turn 没有为此等待的定时器。
+
+akit 把配额、上限与生存期从会导致启动新服务器的设置中移出，改为就地设置；被重新加载替换的服务器进入排空，
+拒绝新分配，直到时间耗尽。

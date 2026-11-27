@@ -687,6 +687,11 @@ socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 - `TurnStats` 统计许可、信道、等待中的分配、丢弃的数据报、拒绝次数以及每个方向中继的字节数；
   `TurnServer::allocations()` 只读一个计数器。
 
+重新加载时可以就地修改运行中的服务器：`turn.set_limits(l)`（用 `turn.limits()` 读取的 `TurnLimits`：生存期、
+配额与上限，从下一个请求起生效，已有内容保留）与 `turn.set_auth(auth)`。被替换的服务器调用 `turn.drain()`：新
+分配得到 508，已有分配继续中继与刷新；`turn.allocations()` 与 `Freed` 事件表明何时已空，之后由所有者关闭它
+（`close_all`）。
+
 ```rust,ignore
 let turn: Arc<OnceLock<TurnServer>> = Arc::default();
 let t = turn.clone();

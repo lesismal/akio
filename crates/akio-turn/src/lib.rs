@@ -86,7 +86,7 @@ pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth
 use crate::core::Shared;
 pub use crate::core::{
     EventHook, FreeReason, IpFields, PeerFilter, RelayHook, Traffic, TurnConfig, TurnCore, TurnEnv,
-    TurnEvent, TurnEventKind, TurnStats, denied_by_default,
+    TurnEvent, TurnEventKind, TurnLimits, TurnStats, denied_by_default,
 };
 #[doc(hidden)]
 pub use crate::tcp::TcpPeer;
@@ -619,6 +619,7 @@ impl fmt::Debug for TurnServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TurnServer")
             .field("allocations", &self.allocations())
+            .field("draining", &self.draining())
             .finish_non_exhaustive()
     }
 }
@@ -709,8 +710,8 @@ impl TurnServer {
     }
 
     /// Allocations open now: one counter, no shard locked (callable from inside the peer
-    /// filter and `on_relay`). An allocation that ends is counted out before
-    /// `TurnConfig::on_event` hears of it (freed).
+    /// filter and `on_relay`). After [`drain`](Self::drain), watch it run out: each allocation
+    /// that ends is told to `TurnConfig::on_event` (freed), then counted out here.
     pub fn allocations(&self) -> usize {
         self.0.shared.allocations()
     }
@@ -729,6 +730,43 @@ impl TurnServer {
             .into_iter()
             .flatten()
             .any(|a| lock(inner.relays_of(a)).contains_key(&a) || inner.tcp.holds(a))
+    }
+
+    /// The lifetimes, quotas and caps in force (no shard locked).
+    pub fn limits(&self) -> TurnLimits {
+        self.0.shared.limits()
+    }
+
+    /// Changes the lifetimes, quotas and caps while the server runs, from the next request
+    /// on; the allocations are kept. An allocation, permission, channel or connection held
+    /// past a lowered quota or cap is kept until it ends, and a lifetime already granted runs
+    /// its course; a nonce already issued keeps its expiry. A `max_lifetime` under
+    /// `default_lifetime` is taken as `default_lifetime`. No shard is locked.
+    pub fn set_limits(&self, limits: TurnLimits) {
+        self.0.shared.set_limits(limits);
+    }
+
+    /// Changes how credentials are checked, from the next request on, those of the
+    /// allocations already made included: a user the new function refuses can no longer
+    /// refresh, and its allocations end with their lifetimes. The function is called on the
+    /// I/O threads, with no lock of the server's held. No shard is locked.
+    pub fn set_auth(&self, auth: AuthFn) {
+        self.0.shared.set_auth(auth);
+    }
+
+    /// Starts a drain, for a server being replaced: new allocations are refused with 508
+    /// (Insufficient Capacity), as is an Allocate that would claim a port `EVEN-PORT` set
+    /// aside, while those held go on relaying, refreshing, installing permissions and binding
+    /// channels until they end, or [`close_all`](Self::close_all) ends them. Their clients move
+    /// to another server as their refreshes fail or their lifetimes run out. It cannot be
+    /// undone. No shard is locked; watch [`allocations`](Self::allocations).
+    pub fn drain(&self) {
+        self.0.shared.drain();
+    }
+
+    /// Whether [`drain`](Self::drain) was called.
+    pub fn draining(&self) -> bool {
+        self.0.shared.draining()
     }
 
     /// The relayed address of `client`'s allocation (a UDP client).

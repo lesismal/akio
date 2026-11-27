@@ -2,7 +2,7 @@
 
 English | [简体中文](186-turn-embedding-server.zh-CN.md)
 
-Status: accepted (2026-11-27). akit's A256; A257 (update 1).
+Status: accepted (2026-11-27). akit's A256; A257 (update 1); A258 (update 2).
 
 ## Context
 
@@ -106,3 +106,42 @@ datagram or per event, and `TurnStats` counted allocations and datagrams.
 
 akit keeps fit's limiter in `on_relay`, counts the events into `akit_turn_*` and its logger, and
 reaches its own addresses on its relayed ports through `holds_relay` in its peer filter.
+
+## Update 2: settings changed on a running server, and a drain (A258)
+
+fit's reload changes a running server's quotas, caps and lifetimes and its credentials in place
+(fib's `SetLimits` and `SetAuth`), the allocations kept; when its addresses change it starts a new
+server and drains the old one (fib's `Drain` under `Shutdown`: new allocations refused with 508,
+those held relayed and refreshed until they end or the drain's time runs out). akio-turn's
+`TurnConfig` was read by every shard without a lock and never set again, and `close_all` was the
+only way down; akit started a new server for any change of a limit.
+
+1. **`TurnLimits`** (`default_lifetime`, `max_lifetime`, `permission_lifetime`,
+   `channel_lifetime`, `nonce_lifetime`, `max_allocations`, `max_allocations_per_user`,
+   `max_permissions`, `max_channels`, `max_tcp_connections`; `#[non_exhaustive]`, read with
+   `TurnConfig::limits()` or `TurnServer::limits()`, changed field by field) and
+   **`TurnServer::set_limits`** (and `TurnCore`'s). The server keeps them in an atomic each, read
+   with relaxed loads where requests read the configuration before: no lock is added on any path,
+   and a datagram never reads them. A change that races a request may be seen half applied, which
+   no request can tell from a change just before or after it. They apply from the next request
+   on: what is held past a lowered quota or cap is kept until it ends (a permission over the cap
+   is not refreshed), a lifetime already granted runs its course, a nonce already issued keeps
+   its expiry. `max_lifetime` under `default_lifetime` reads as `default_lifetime`, as
+   `TurnConfig::lifetimes` does. `TurnConfig`'s fields stay what the server was made with.
+2. **`TurnServer::set_auth(AuthFn)`** (and `TurnCore`'s): the credentials sit behind a read-write
+   lock in the shared state; each request (and the pre-lock check of an Allocate) clones the
+   `Arc` under the read lock and calls the function outside it. From the next request on, those
+   of allocations held included: a user refused can no longer refresh, and its allocations end
+   with their lifetimes.
+3. **`TurnServer::drain()`** (and `draining()`, `TurnCore::drain`): a flag. Once set, an Allocate
+   of a client without an allocation is answered 508 after its credentials pass (a `Refused`
+   event), a claim of a port `EVEN-PORT` set aside included, and no relay is bound ahead of the
+   lock for it; a retransmission of the Allocate that made an allocation still gets its answer,
+   and refreshes, permissions, channels, Connects and relaying go on. It cannot be undone.
+   `TurnServer::allocations()` and the `Freed` events tell when it is empty; the server is then
+   closed by its owner (`close_all`, or its listeners shut down), at once or when its drain time
+   runs out. No timer of akio-turn's waits for it.
+
+akit takes the quotas, caps and lifetimes out of the settings that start a new server and sets
+them in place; a server a reload replaced drains, refusing new allocations, until its time runs
+out.

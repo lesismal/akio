@@ -1,9 +1,7 @@
-//! The hooks of an embedding server (`on_relay`, `on_event`, `holds_relay`) and the shared
-//! nonce key, on the state machine.
+//! The hooks of an embedding server (`on_relay`, `on_event`, `holds_relay`), the limits and
+//! credentials changed in place, the drain and the shared nonce key, on the state machine.
 
 use super::*;
-use std::sync::atomic::AtomicBool;
-
 use crate::fuzzing::{CLIENT, REALM, USER};
 use crate::stun::{long_term_key, transaction_id};
 
@@ -269,6 +267,139 @@ fn events_and_relay_hook() {
     assert_eq!(
         freed,
         [FreeReason::Expired, FreeReason::Expired, FreeReason::Closed]
+    );
+}
+
+/// Quotas, caps and lifetimes change in place: the next request goes by them, what is held is
+/// kept.
+#[test]
+fn limits_change_in_place() {
+    let now = Instant::now();
+    let (mut core, _, _) = core(now, Arc::default());
+    let mut env = Env::default();
+    let mut l = core.limits();
+    assert_eq!(l, core.config().limits());
+    l.max_allocations_per_user = 1;
+    l.default_lifetime = Duration::from_secs(900);
+    l.max_lifetime = Duration::from_secs(60); // taken as the default lifetime
+    core.set_limits(l);
+    assert_eq!(core.limits().max_lifetime, Duration::from_secs(900));
+    core.handle_client(now, CLIENT, &allocate(&core, now, CLIENT), &mut env);
+    assert_eq!(env.last().get_u32(attr::LIFETIME), Some(900));
+    let other: SocketAddr = "10.0.0.2:4000".parse().unwrap();
+    core.handle_client(now, other, &allocate(&core, now, other), &mut env);
+    assert_eq!(env.code(), Some(486));
+    l.max_allocations_per_user = 2;
+    core.set_limits(l);
+    core.handle_client(now, other, &allocate(&core, now, other), &mut env);
+    assert_eq!(env.last().class(), Class::Success);
+    // Lowered caps keep what is held and refuse more.
+    let cp = |core: &TurnCore, p: &str| {
+        authed(
+            core,
+            now,
+            CLIENT,
+            req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, p.parse().unwrap()),
+        )
+    };
+    core.handle_client(now, CLIENT, &cp(&core, "10.1.1.1:1"), &mut env);
+    core.handle_client(now, CLIENT, &cp(&core, "10.1.1.2:1"), &mut env);
+    l.max_permissions = 1;
+    l.permission_lifetime = Duration::from_secs(30);
+    core.set_limits(l);
+    core.handle_client(now, CLIENT, &cp(&core, "10.1.1.3:1"), &mut env);
+    assert_eq!(env.code(), Some(508));
+    assert_eq!(core.stats().permissions, 2);
+    // Over the cap even one held is not refreshed: what is held runs out.
+    core.handle_client(now, CLIENT, &cp(&core, "10.1.1.1:1"), &mut env);
+    assert_eq!(env.code(), Some(508), "two held, one allowed");
+    core.handle_timeout(now + Duration::from_secs(301), &mut env);
+    let later = now + Duration::from_secs(301);
+    let cp_later = authed(
+        &core,
+        later,
+        CLIENT,
+        req(Method::CREATE_PERMISSION)
+            .xor_addr(attr::XOR_PEER_ADDRESS, "10.1.1.3:1".parse().unwrap()),
+    );
+    core.handle_client(later, CLIENT, &cp_later, &mut env);
+    assert_eq!(env.last().class(), Class::Success);
+    core.handle_timeout(later + Duration::from_secs(31), &mut env);
+    assert_eq!(core.stats().permissions, 0, "the new permission lifetime");
+    // The nonce lifetime.
+    l.nonce_lifetime = Duration::from_secs(5);
+    core.set_limits(l);
+    let n = core.fuzz_nonce(now, CLIENT);
+    assert!(
+        core.shared
+            .nonce_valid(now + Duration::from_secs(5), CLIENT, &n)
+    );
+    assert!(
+        !core
+            .shared
+            .nonce_valid(now + Duration::from_secs(6), CLIENT, &n)
+    );
+}
+
+/// A draining core refuses new allocations (508, and no relay bound ahead of the lock) and
+/// serves those it holds, a retransmission of their Allocate included.
+#[test]
+fn drain() {
+    let now = Instant::now();
+    let (mut core, seen, _) = core(now, Arc::default());
+    let mut env = Env::default();
+    let first = allocate(&core, now, CLIENT);
+    core.handle_client(now, CLIENT, &first, &mut env);
+    assert!(!core.draining());
+    core.drain();
+    assert!(core.draining());
+    let other: SocketAddr = "10.0.0.2:4000".parse().unwrap();
+    let a = allocate(&core, now, other);
+    assert!(core.shared.prebind_ips(now, other, &a).is_empty());
+    core.handle_client(now, other, &a, &mut env);
+    assert_eq!(env.code(), Some(508));
+    core.handle_client(now, CLIENT, &first, &mut env);
+    assert_eq!(env.last().class(), Class::Success, "a retransmission");
+    let r = authed(&core, now, CLIENT, req(Method::REFRESH));
+    core.handle_client(now, CLIENT, &r, &mut env);
+    assert_eq!(env.last().class(), Class::Success);
+    let cp = authed(
+        &core,
+        now,
+        CLIENT,
+        req(Method::CREATE_PERMISSION).xor_addr(attr::XOR_PEER_ADDRESS, PEER.parse().unwrap()),
+    );
+    core.handle_client(now, CLIENT, &cp, &mut env);
+    assert_eq!(env.last().class(), Class::Success);
+    core.flush_events();
+    let k = kinds(&seen);
+    assert!(k.contains(&TurnEventKind::Refused {
+        method: Method::ALLOCATE,
+        code: 508
+    }));
+    assert_eq!(core.shared.allocations(), 1);
+}
+
+/// New credentials apply from the next request on, those of allocations held included.
+#[test]
+fn auth_changes_in_place() {
+    let now = Instant::now();
+    let (mut core, _, _) = core(now, Arc::default());
+    let mut env = Env::default();
+    core.handle_client(now, CLIENT, &allocate(&core, now, CLIENT), &mut env);
+    core.set_auth(crate::static_auth(REALM, [(USER.0, "new")]));
+    let r = authed(&core, now, CLIENT, req(Method::REFRESH));
+    core.handle_client(now, CLIENT, &r, &mut env);
+    assert_eq!(env.code(), Some(401));
+    let r = authed_as(&core, now, CLIENT, (USER.0, "new"), req(Method::REFRESH));
+    core.handle_client(now, CLIENT, &r, &mut env);
+    assert_eq!(env.last().class(), Class::Success);
+    // And for the Allocates bound ahead of the lock.
+    let other: SocketAddr = "10.0.0.2:4000".parse().unwrap();
+    assert!(
+        core.shared
+            .prebind_ips(now, other, &allocate(&core, now, other))
+            .is_empty()
     );
 }
 

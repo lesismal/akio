@@ -835,6 +835,12 @@ happens to its allocations:
 - `TurnStats` counts permissions, channels, pending allocations, dropped datagrams, refusals and
   the bytes relayed each way; `TurnServer::allocations()` is one counter.
 
+A reload changes a running server in place: `turn.set_limits(l)` (a `TurnLimits` read with
+`turn.limits()`: lifetimes, quotas and caps, from the next request on, what is held kept) and
+`turn.set_auth(auth)`. A server being replaced calls `turn.drain()`: new allocations get 508 while
+those held go on relaying and refreshing; `turn.allocations()` and the `Freed` events tell when it
+is empty, and its owner then closes it (`close_all`).
+
 ```rust,ignore
 let turn: Arc<OnceLock<TurnServer>> = Arc::default();
 let t = turn.clone();

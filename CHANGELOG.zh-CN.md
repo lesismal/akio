@@ -10,6 +10,15 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：就地修改运行中 TURN 服务器的设置，以及排空（akio-turn）
+
+akit 的 A258，用于其 TURN 角色的重新加载（fit 的 `SetLimits`、`SetAuth` 与排空中的服务器）；ADR-186 更新 2。
+`TurnLimits`（生存期、配额与上限；`TurnConfig::limits()`、`TurnServer::limits()`）与
+`TurnServer::set_limits`：从下一个请求起生效，保留已有分配，超过降低后限制的已有内容保留到结束。
+`TurnServer::set_auth(AuthFn)`：从下一个请求起使用新凭据，包括已有分配的请求。`TurnServer::drain()`（以及
+`draining()`）：新分配以 508 拒绝，已有分配继续中继、刷新、安装许可与绑定信道；`allocations()` 与 `Freed`
+事件表明何时已空。`TurnCore` 也有这四个方法。
+
 ### 新增：供嵌入 akio-turn 的服务器使用的钩子（akio-turn）
 
 akit 的 A257，用于其 TURN 角色（fit 的 `user_bandwidth`、其事件与指标，以及只能经由中继端口访问的自身地址）；

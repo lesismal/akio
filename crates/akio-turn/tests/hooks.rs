@@ -1,6 +1,6 @@
-//! What an embedding server sets and hears (akit's A256 and A257) over real `akio` sockets:
-//! the relay port range, the shared nonce secret, the stream message bound, `on_relay`,
-//! `on_event` and `holds_relay`.
+//! What an embedding server sets and hears (akit's A256-A258) over real `akio` sockets: the
+//! relay port range, the shared nonce secret, the stream message bound, `on_relay`,
+//! `on_event`, `holds_relay`, limits and credentials changed in place, and the drain.
 #![allow(missing_docs)]
 
 use std::collections::VecDeque;
@@ -407,6 +407,53 @@ fn e_traffic(datagrams: u64, bytes: u64) -> akio_turn::Traffic {
     t.datagrams = datagrams;
     t.bytes = bytes;
     t
+}
+
+/// Limits and credentials change on a running server, its allocations kept; a drain refuses
+/// new allocations while those held go on, until they are all gone.
+#[test]
+fn limits_auth_and_drain_in_place() {
+    let srv = serve(config());
+    let mut a = Client::udp(srv.udp, ("alice", "wonderland"));
+    let ra = a.allocate(false).unwrap();
+    let mut l = srv.turn.limits();
+    l.max_allocations = 1;
+    l.default_lifetime = Duration::from_secs(120);
+    srv.turn.set_limits(l);
+    let mut b = Client::udp(srv.udp, ("bob", "builder"));
+    assert_eq!(b.allocate(false), Err(508));
+    l.max_allocations = 2;
+    srv.turn.set_limits(l);
+    b.allocate(false).unwrap();
+    let r = a.request(Method::REFRESH, |x| x);
+    assert_eq!(
+        Message::parse(&r).unwrap().get_u32(attr::LIFETIME),
+        Some(120)
+    );
+
+    // New credentials: the old password is refused from the next request on.
+    srv.turn.set_auth(static_auth(
+        "akio",
+        [("alice", "looking-glass"), ("bob", "builder")],
+    ));
+    assert_eq!(a.code(Method::REFRESH, |x| x), Some(401));
+    a.key = long_term_key("alice", "akio", "looking-glass");
+    assert_eq!(a.code(Method::REFRESH, |x| x), None);
+
+    // The drain.
+    srv.turn.drain();
+    assert!(srv.turn.draining());
+    let mut c = Client::udp(srv.udp, ("bob", "builder"));
+    assert_eq!(c.allocate(false), Err(508));
+    let peer = sock();
+    let pa = peer.local_addr().unwrap();
+    assert_eq!(a.permit(pa), None);
+    a.send_to(pa, b"still relaying");
+    assert_eq!(recv(&peer), (b"still relaying".to_vec(), ra));
+    assert_eq!(srv.turn.allocations(), 2);
+    a.delete();
+    b.delete();
+    assert_eq!(srv.turn.allocations(), 0);
 }
 
 /// Servers sharing a nonce secret take each other's nonces.
