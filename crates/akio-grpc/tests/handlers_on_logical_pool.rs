@@ -244,13 +244,16 @@ fn an_open_calls_next_message_waits_for_a_full_pool() {
     // The call's job has returned once it answered; give it a moment to go idle.
     wait_for("an idle pool", &|| e.pool_stats().idle == 1);
 
-    // One call holds the only thread, the next fills the queue for new work.
-    let holds: Vec<_> = (0..2)
-        .map(|_| {
-            let c = c.clone();
-            thread::spawn(move || c.unary("/test.Pool/Hold", b"", CallOptions::default()))
-        })
-        .collect();
+    // One call holds the only thread, the next fills the queue for new work. The second goes
+    // once the first is on the thread: sent together, it could find the first still queued,
+    // the queue full, and be refused.
+    let hold = || {
+        let c = c.clone();
+        thread::spawn(move || c.unary("/test.Pool/Hold", b"", CallOptions::default()))
+    };
+    let mut holds = vec![hold()];
+    wait_for("the thread held", &|| holding.load(Ordering::SeqCst) == 1);
+    holds.push(hold());
     wait_for("a full pool", &|| {
         holding.load(Ordering::SeqCst) == 1 && e.pool_stats().queued == 1
     });

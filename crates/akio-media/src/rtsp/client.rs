@@ -3622,7 +3622,13 @@ mod tests {
             text.contains("Range: clock=20260101T000000.000Z-\r\n"),
             "{text}"
         );
-        assert!(srv.sessions().is_empty());
+        // The session leaves the list in the connection's `on_close`, on its I/O thread, which
+        // may run just after the client saw the end of the stream.
+        let end = Instant::now() + Duration::from_secs(5);
+        while !srv.sessions().is_empty() {
+            assert!(Instant::now() < end, "the session stayed listed");
+            std::thread::sleep(Duration::from_millis(2));
+        }
         stop.store(true, Ordering::Relaxed);
         e.shutdown();
     }
