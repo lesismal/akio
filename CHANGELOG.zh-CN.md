@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：HTTP/3 上传的 `finish` 不会被自己的响应判为失败；io_uring 上 `remove_listener` 返回时被移除的监听套接字已经关闭（akio-h3、akio-uring）
+
+`H3Upload::finish` 在发出 body 结尾之后，才去读请求是否已经失败。响应完整收到时会把上传标记为结束，
+负载高时这一步可能抢在读取之前：body 已完整发出、也得到了应答（`200`），`finish` 却返回 `false`。现在它
+返回的是本次调用是否结束了 body（请求在此之前已失败或已结束，或者发送已写入的数据时失败，才返回
+`false`）。
+
+在 io_uring 上，`Engine::remove_listener` 在各 I/O 线程取消 multishot accept 后就返回了，但内核在取消
+完成之前仍然持有这个套接字，并继续把连接排进队列：没有 `SO_REUSEPORT` shutdown 能立刻把它摘掉的套接字
+（例如 Unix 域监听），在返回之后仍可能接到一个连接，随后被重置。现在每个线程等它被取消的 accept 都完成后，
+才让移除返回（仍受同样的一秒上限约束）。
+
 ### 变更：压力监视线程改为每 500 ms 采样、间隔可设、可以关闭；线程池也可以手动采样（akio-pool、akio-core、akio）
 
 与 fib 的 taskpool（`SetAutoSample`、`SetSampleInterval`、`Sample`）对齐。监视线程现在每 500 ms

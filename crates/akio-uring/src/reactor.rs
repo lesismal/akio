@@ -947,6 +947,10 @@ pub(crate) struct Loop {
     retire_kill: Option<Instant>,
     /// After a failed accept (EMFILE...) do not re-arm before this instant.
     accept_retry_at: Option<Instant>,
+    /// Removals (`Cmd::StopListening`: the listener, or `None` for all) whose `done` waits for
+    /// the cancelled multishot accepts to complete: until then the kernel holds the sockets
+    /// open and still queues connections on them.
+    unlisted_waits: Vec<(Option<usize>, akio_core::CountdownToken)>,
     /// Every listener of the group was removed (`Cmd::StopListening` with no `lid`, see the
     /// epoll backend): with `unlisted_exit` the thread ends once nothing is left, and at
     /// `unlisted_kill` the connections still open are closed and the dials aborted. (One
@@ -1108,6 +1112,7 @@ impl Loop {
             retire_at: None,
             retire_kill: None,
             accept_retry_at: None,
+            unlisted_waits: Vec::new(),
             unlisted_exit: false,
             unlisted_kill: None,
             wake_buf: KernelBuf::new(8)?,
@@ -1494,6 +1499,7 @@ impl Loop {
                 self.listeners[pos].armed = false;
                 if self.listeners[pos].l.is_none() {
                     self.listeners.swap_remove(pos);
+                    self.release_unlisted();
                 }
             }
         }
@@ -2263,7 +2269,11 @@ impl Loop {
                         done,
                     } => {
                         self.stop_listening(lid, drain, exit);
-                        drop(done);
+                        // Shutting down: not waited for (nothing is cancelled).
+                        if let (Some(done), None) = (done, &self.draining) {
+                            self.unlisted_waits.push((lid, done));
+                            self.release_unlisted();
+                        }
                     }
                 }
             }
@@ -2389,6 +2399,20 @@ impl Loop {
             self.listeners.swap_remove(pos);
         }
         l
+    }
+
+    /// Lets `remove_listener` return for the removals whose sockets are all closed: no
+    /// cancelled accept holds one open any more.
+    fn release_unlisted(&mut self) {
+        if self.unlisted_waits.is_empty() {
+            return;
+        }
+        let listeners = &self.listeners;
+        self.unlisted_waits.retain(|(lid, _)| {
+            listeners
+                .iter()
+                .any(|l| lid.is_none_or(|x| l.sock.lid == x))
+        });
     }
 
     /// Whether listener `lid`'s sockets form a `SO_REUSEPORT` group (one per loop index).

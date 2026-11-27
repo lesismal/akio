@@ -540,21 +540,29 @@ impl UpState {
     }
 
     /// Sends what waits (as far as the send buffer takes it), then the end if finished.
-    fn flush(&self, u: &mut Up) {
-        let Some(id) = u.id else { return };
+    /// `false` if sending failed the upload.
+    fn flush(&self, u: &mut Up) -> bool {
+        let Some(id) = u.id else { return true };
         if !u.queued.is_empty() {
             let q = Bytes::from(std::mem::take(&mut u.queued));
             match self.c.send(id, q.clone()) {
                 Ok(()) => {}
                 // Again once the stream is writable (`on_stream_writable`).
-                Err(akio_quic::Error::Overloaded) => return u.queued = q.to_vec(),
-                Err(_) => return self.fail(),
+                Err(akio_quic::Error::Overloaded) => {
+                    u.queued = q.to_vec();
+                    return true;
+                }
+                Err(_) => {
+                    self.fail();
+                    return false;
+                }
             }
         }
         if u.finished && !u.ended {
             u.ended = true;
             let _ = self.c.finish(id);
         }
+        true
     }
 
     /// The stream became writable (the handler): flushes, or leaves it to the thread holding
@@ -615,18 +623,19 @@ impl H3Upload {
         ok
     }
 
-    /// Ends the body. `false` if the request already failed.
+    /// Ends the body. `false` if the request already failed (or was over), or sending what
+    /// was written failed it.
     pub fn finish(&self) -> bool {
         let mut u = self.up.lock();
         if self.up.failed() {
             return false;
         }
-        if !std::mem::replace(&mut u.finished, true) {
-            self.up.flush(&mut u);
-        }
+        // Whether this call ended the body: not read back from `failed` afterwards, which the
+        // response, complete once the end is out, may set (its request over) before we look.
+        let ok = std::mem::replace(&mut u.finished, true) || self.up.flush(&mut u);
         drop(u);
         self.up.released();
-        !self.up.failed()
+        ok
     }
 
     /// Bytes written but not yet sent, for pacing the writer.

@@ -669,6 +669,8 @@ enum Carry {
     TcpMux,
     /// UDP, RTCP from its own port to the server's RTCP port.
     Udp,
+    /// UDP, RTCP muxed on the RTP port.
+    UdpMux,
 }
 
 /// An NTP timestamp (32.32) of `t` after an arbitrary epoch.
@@ -712,7 +714,8 @@ fn record_with_reports(
     // Per track: UDP sockets (RTP, RTCP) and the server's ports.
     let mut udp = Vec::new();
     for i in 0..tracks.len() {
-        let transport = if carry == Carry::Udp {
+        let udp_carried = matches!(carry, Carry::Udp | Carry::UdpMux);
+        let transport = if udp_carried {
             let a = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             let b = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
             let t = format!(
@@ -736,7 +739,7 @@ fn record_with_reports(
             "",
         );
         assert_eq!(st, 200, "{head}");
-        if carry == Carry::Udp {
+        if udp_carried {
             let ports = head
                 .lines()
                 .find_map(|l| l.split("server_port=").nth(1))
@@ -771,9 +774,11 @@ fn record_with_reports(
     let send = |wire: &mut Vec<u8>, track: usize, rtcp: bool, data: &[u8]| match carry {
         Carry::Tcp => interleaved((2 * track + usize::from(rtcp)) as u8, data, wire),
         Carry::TcpMux => interleaved((2 * track) as u8, data, wire),
-        Carry::Udp => {
+        Carry::Udp | Carry::UdpMux => {
             let (a, b) = &udp[track];
-            (if rtcp { b } else { a }).send(data).unwrap();
+            (if rtcp && carry == Carry::Udp { b } else { a })
+                .send(data)
+                .unwrap();
             // Paced a little, so nothing is dropped on the way.
             std::thread::sleep(Duration::from_micros(200));
         }
@@ -839,8 +844,9 @@ fn record_with_reports(
 
 /// RECORD sessions line their tracks up by the publisher's RTCP sender reports, which put
 /// audio 500 ms after video while the packets arrive together: over TCP (RTCP channels and
-/// RTCP muxed on the RTP channels) and UDP (RTCP port), reports before the media (aligned
-/// from the first packet) and halfway (later packets move, times keep increasing). Reports
+/// RTCP muxed on the RTP channels) and UDP (RTCP muxed on the RTP port, and the RTCP port),
+/// reports before the media (aligned from the first packet) and halfway (later packets move,
+/// times keep increasing). Reports
 /// 60 s apart are ignored, and with `rtcp_sync` off the times follow the arrival.
 #[test]
 fn record_sessions_follow_sender_reports() {
@@ -848,7 +854,10 @@ fn record_sessions_follow_sender_reports() {
     let near = |got: akio_media::av::Time, want: akio_media::av::Time, what: &str| {
         assert!((got - want).abs() < ms(40), "{what}: {got} ns, want {want}");
     };
-    for carry in [Carry::Tcp, Carry::TcpMux, Carry::Udp] {
+    // Over UDP the server reads the RTP and RTCP ports on threads of their own, so reports sent
+    // to the RTCP port first may still be read after the first packets: sent before the media,
+    // they go muxed on the RTP port, read in order. The RTCP port is covered halfway.
+    for carry in [Carry::Tcp, Carry::TcpMux, Carry::UdpMux] {
         let (start, end, rising) = record_with_reports(RtspConfig::default(), carry, true, ms(500));
         near(start, ms(500), &format!("{carry:?} early, start"));
         near(end, ms(500), &format!("{carry:?} early, end"));

@@ -154,6 +154,16 @@ struct Frame {
     payload: Vec<u8>,
 }
 
+fn frame(ty: u8, flags: u8, sid: u32, payload: &[u8]) -> Vec<u8> {
+    let len = payload.len() as u32;
+    let mut b = len.to_be_bytes()[1..].to_vec();
+    b.push(ty);
+    b.push(flags);
+    b.extend_from_slice(&sid.to_be_bytes());
+    b.extend_from_slice(payload);
+    b
+}
+
 /// One HTTP/2 connection driven by hand.
 struct Peer {
     s: TcpStream,
@@ -186,13 +196,14 @@ impl Peer {
     }
 
     fn send(&mut self, ty: u8, flags: u8, sid: u32, payload: &[u8]) {
-        let len = payload.len() as u32;
-        let mut b = len.to_be_bytes()[1..].to_vec();
-        b.push(ty);
-        b.push(flags);
-        b.extend_from_slice(&sid.to_be_bytes());
-        b.extend_from_slice(payload);
-        self.s.write_all(&b).unwrap();
+        self.s.write_all(&frame(ty, flags, sid, payload)).unwrap();
+    }
+
+    /// Like [`send`](Self::send), for a frame the server may refuse from its header: it can
+    /// answer and close before the rest is written (`EPIPE`, `ECONNRESET`). What it answered
+    /// is read afterwards.
+    fn send_refused(&mut self, ty: u8, flags: u8, sid: u32, payload: &[u8]) {
+        let _ = self.s.write_all(&frame(ty, flags, sid, payload));
     }
 
     fn block(&mut self, headers: &[(&str, &str)]) -> Vec<u8> {
@@ -596,7 +607,7 @@ fn broken_header_blocks_are_connection_errors() {
     assert_eq!(p.goaway(), COMPRESSION);
     // A frame larger than our max frame size.
     let mut p = Peer::open(&e, &[]);
-    p.send(DATA, 0, 1, &vec![0; 20_000]);
+    p.send_refused(DATA, 0, 1, &vec![0; 20_000]);
     assert_eq!(p.goaway(), FRAME_SIZE);
     // An endless header block.
     let mut p = Peer::open(&e, &[]);

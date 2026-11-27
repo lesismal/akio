@@ -10,6 +10,21 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: an HTTP/3 upload's `finish` is not refused by its own response; a removed io_uring listener is closed when `remove_listener` returns (akio-h3, akio-uring)
+
+`H3Upload::finish` read back whether the request had failed after sending the end of the body.
+The response marks the upload over once it is complete, and on a loaded machine it could come
+before that read: `finish` returned `false` for a body sent whole and answered (`200`). It now
+returns whether this call ended the body (`false` when the request had failed or was over
+before it, or sending what was written failed it).
+
+On io_uring, `Engine::remove_listener` returned once each I/O thread had cancelled its
+multishot accept, but the kernel holds the socket open until the cancellation completes and
+queues connections on it meanwhile: a socket that no `SO_REUSEPORT` shutdown takes out at once
+(a Unix-domain listener, say) could still take a connection after the return, to be reset.
+Each thread now lets the removal return once its cancelled accepts have completed (within the
+same one-second bound).
+
 ### Changed: the pressure watcher samples every 500 ms, settable, and can be switched off; pools are sampled by hand too (akio-pool, akio-core, akio)
 
 Aligned with fib's taskpool (`SetAutoSample`, `SetSampleInterval`, `Sample`). The watcher now

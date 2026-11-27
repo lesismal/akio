@@ -254,11 +254,12 @@ fn request_bodies_written_as_produced_chunked_or_with_a_length() {
         String::from_utf8(r.body).unwrap(),
         format!("{},{},-", data.len(), hash(&data))
     );
-    // Too many bytes for the length: the write fails, and so does the request.
+    // Too many bytes for the length: the write fails, and so does the request. (A write
+    // after the length is whole could come after the response: the request is complete.)
     let req = ClientRequest::post(&url, Vec::new()).streamed(Some(10));
     let rx = streamed(&c, req, |body| {
-        body.write(b"0123456789").unwrap();
-        assert!(body.write(b"x").is_err());
+        body.write(b"01234").unwrap();
+        assert!(body.write(b"567890").is_err());
         assert!(body.finish().is_err());
     });
     assert!(wait(&rx).is_err());
