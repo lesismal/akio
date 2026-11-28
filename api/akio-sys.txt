@@ -393,6 +393,7 @@ pub fn akio_sys::parse_icmp_error(&[u8], bool) -> core::option::Option<akio_sys:
 pub fn akio_sys::path_mtu(core::net::socket_addr::SocketAddr) -> core::io::error::Result<u32>
 pub fn akio_sys::read_packet(std::os::fd::raw::RawFd, &mut [u8]) -> core::io::error::Result<core::ops::range::Range<usize>>
 pub fn akio_sys::recv_icmp(std::os::fd::raw::RawFd) -> core::io::error::Result<core::option::Option<akio_sys::IcmpReport>>
+pub fn akio_sys::reset_on_close(&std::net::tcp::TcpStream) -> core::io::error::Result<()>
 pub fn akio_sys::send_to_ecn(std::os::fd::raw::RawFd, &[u8], core::option::Option<&core::net::socket_addr::SocketAddr>, u8, bool) -> core::io::error::Result<usize>
 pub fn akio_sys::send_to_ip(std::os::fd::raw::RawFd, &[u8], core::option::Option<&core::net::socket_addr::SocketAddr>, u8, u8, bool) -> core::io::error::Result<usize>
 pub fn akio_sys::send_to_on(&std::net::udp::UdpSocket, &[u8], core::net::socket_addr::SocketAddr, u32) -> core::io::error::Result<usize>
