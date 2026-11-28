@@ -153,3 +153,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-187: What an SFU needs of akio-webrtc: RTP forwarding, a receive cap, consent timeouts](187-webrtc-sfu.md) (accepted 2026-11-27; akit A260, A261)
 - [ADR-188: A connection closed with input it did not deliver resets its peer, on io_uring as on epoll](188-close-resets-undelivered-input.md) (accepted 2026-11-28; akit A302)
 - [ADR-189: A WebSocket's late queue is counted by pacing and bounded by its connection](189-websocket-late-queue-pacing.md) (accepted 2026-11-28; akit A305)
+- [ADR-190: akio-buf's thread caches are bounded in bytes, so that work stealing does not multiply them](190-buffer-pool-bytes-per-thread.md) (accepted 2026-11-28; akit A303)

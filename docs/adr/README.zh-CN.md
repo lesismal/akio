@@ -153,3 +153,4 @@
 - [ADR-187：SFU 需要 akio-webrtc 提供的能力：RTP 转发、接收码率上限与 consent 超时](187-webrtc-sfu.zh-CN.md)（2026-11-27 采纳；akit A260、A261）
 - [ADR-188：关闭时仍有未交付输入的连接会重置对端，io_uring 与 epoll 一致](188-close-resets-undelivered-input.zh-CN.md)（2026-11-28 采纳；akit A302）
 - [ADR-189：WebSocket 的迟到队列计入节流，并以连接的上限为界](189-websocket-late-queue-pacing.zh-CN.md)（2026-11-28 采纳；akit A305）
+- [ADR-190：akio-buf 的线程缓存按字节限界，工作窃取不再使其成倍增长](190-buffer-pool-bytes-per-thread.zh-CN.md)（2026-11-28 采纳；akit A303）

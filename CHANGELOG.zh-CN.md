@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：工作窃取下流式中继的内存保持有界（akio-buf）
+
+akit 的 A303；ADR-190。在工作窃取下，akit-proxy 向慢速客户端中继的下载使进程常驻内存几乎上涨了
+搬运的数据量（64 MiB 中的 51–59 MiB）。原因不是联动背压：`hold_reads`、`queued_bytes` 和
+`on_drain` 跨工作线程生效，等待客户端的字节始终低于 128 KiB。内存在 akio-buf 的每线程缓存里：
+每个尺寸级别最多保留 64 个已释放的缓冲区（每线程约 21 MiB），中继发送恰好 64 KiB 的数据块时，
+由释放它的工作线程放回池中，每个工作线程都留下一份。现在每个线程每个尺寸级别最多保留 256 KiB
+（仍最多 64 个）：512 字节和 4 KiB 级别不变，更大的级别保留 16、4、1 个，每线程合计约 1 MiB。
+新测试 `akio/tests/relay_memory.rs` 在 16 个工作线程上的连接之间以联动背压中继 64 MiB，同时限制
+队列和常驻内存。无 API 变化。对 akit：`stream_download` 在工作窃取下通过，固定版本前移后即可去掉
+`akit_runtime::scheduled`（决策 91）。
+
 ### 修复：handler 运行期间其他线程向 WebSocket 发送的内容计入 `queued_bytes`，并以连接的上限为界（akio-ws、akio-core）
 
 akit 的 A305；ADR-189。在不压缩的 TCP 或 TLS 服务端 WebSocket 上，连接的 I/O 线程处于 handler 之中时

@@ -344,7 +344,8 @@ flowchart TD
 
 - `akio-buf` keeps a small **thread-local** cache of `Vec<u8>` per size class, so taking and
   returning a queue buffer takes no lock. Buffers freed on another thread join that thread's
-  (bounded) cache.
+  cache, which keeps at most 64 buffers and 256 KiB of a class (about 1 MiB per thread,
+  ADR-190: with work stealing every worker frees every connection's buffers).
 - Received data is borrowed, never copied by `akio` before your callback. Keeping it requires an
   explicit copy, which keeps every backend zero-copy on the read side (ADR-004).
 - Memory per connection is bounded by `max_queued_bytes` for queues and by protocol limits

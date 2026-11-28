@@ -10,6 +10,21 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a streamed relay's memory stays bounded under work stealing (akio-buf)
+
+akit's A303; ADR-190. Under work stealing, akit-proxy's download relayed to a slow client raised the
+process's resident memory by nearly what it moved (51-59 MiB of 64 MiB). Linked backpressure was
+not the cause: `hold_reads`, `queued_bytes` and `on_drain` take effect across workers, and the bytes
+waiting for the client stayed under 128 KiB. The memory was in akio-buf's per-thread caches, which
+kept up to 64 freed buffers of each size class (about 21 MiB per thread): a relay that sends exact
+64 KiB pieces had them pooled by whichever worker freed them, and every worker took a share. A
+thread now keeps at most 256 KiB of a size class (still at most 64 buffers): the 512-byte and 4 KiB
+classes are unchanged, the larger ones keep 16, 4 and 1 buffers, about 1 MiB per thread in all. New
+test `akio/tests/relay_memory.rs` relays 64 MiB between connections on 16 workers with linked
+backpressure and bounds both the queue and the resident memory. No API change. For akit:
+`stream_download` passes under work stealing, so `akit_runtime::scheduled` (decision 91) can go
+after the pin moves.
+
 ### Fixed: what other threads send to a WebSocket while its handler runs counts in `queued_bytes` and is bounded by the connection (akio-ws, akio-core)
 
 akit's A305; ADR-189. On a server WebSocket over TCP or TLS without compression, what other

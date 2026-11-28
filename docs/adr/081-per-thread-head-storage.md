@@ -100,7 +100,8 @@ body, and the benchmark's request. QUIC itself adds about 1.
 
 - Memory: each thread keeps at most two header storages of up to 4 KiB each, plus the
   1 KiB target. While a pipelined HTTP/1.1 head is queued, it sits in a 512-byte buffer (it
-  was sized exactly). The pool keeps at most 64 buffers per size class per thread.
+  was sized exactly). The pool keeps at most 64 buffers per size class per thread (and, since ADR-190, at most
+  256 KiB of a class).
 - A response sent from another thread (a detached request) is encoded in that thread's pool,
   or in a new buffer when the pool is empty. It goes back to the pool of the thread that
   writes it.
