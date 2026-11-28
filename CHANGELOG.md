@@ -10,6 +10,12 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a reason phrase for every registered status (akio-http)
+
+akit's A311. `reason` named only the statuses akio answered itself, so a handler's `412` went out as
+`412 Unknown` (and `428`, `422`, `416`, `507` the same). It now names every status IANA registers, in
+the words Go's `http.StatusText` uses; any other code is still `Unknown`.
+
 ### Fixed: a streamed relay's memory stays bounded under work stealing (akio-buf)
 
 akit's A303; ADR-190. Under work stealing, akit-proxy's download relayed to a slow client raised the
