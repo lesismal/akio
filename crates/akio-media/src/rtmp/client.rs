@@ -397,41 +397,10 @@ impl RtmpClient {
 
     /// Ends the client: a push sends `FCUnpublish` and `deleteStream`, a pull `deleteStream`,
     /// then the connection closes once that is sent. A pull's hub path is free again when this
-    /// returns. Never blocks; idempotent.
+    /// returns. Never blocks; idempotent. The engine's graceful shutdown ends a client the
+    /// same way.
     pub fn close(&self) {
-        let Some((conn, stream_id)) = self.shared.end(None) else {
-            return;
-        };
-        if let Some(c) = conn {
-            if let Some(sid) = stream_id {
-                let setup = &self.shared.setup;
-                let mut out = Vec::new();
-                if setup.push.is_some() {
-                    out.extend(command_bytes(
-                        setup.chunk_size(),
-                        0,
-                        &[
-                            Value::from("FCUnpublish"),
-                            Value::Number(0.0),
-                            Value::Null,
-                            Value::from(setup.url.stream.as_str()),
-                        ],
-                    ));
-                }
-                out.extend(command_bytes(
-                    setup.chunk_size(),
-                    0,
-                    &[
-                        Value::from("deleteStream"),
-                        Value::Number(0.0),
-                        Value::Null,
-                        Value::Number(f64::from(sid)),
-                    ],
-                ));
-                let _ = c.send_owned(out);
-            }
-            c.close_after_send();
-        }
+        self.shared.close();
     }
 }
 
@@ -700,6 +669,44 @@ impl Shared {
         Some(out)
     }
 
+    /// [`RtmpClient::close`]: ends the client, a stream it runs with `FCUnpublish` (push) and
+    /// `deleteStream`, and the connection closed once that is sent.
+    fn close(&self) {
+        let Some((conn, stream_id)) = self.end(None) else {
+            return;
+        };
+        if let Some(c) = conn {
+            if let Some(sid) = stream_id {
+                let setup = &self.setup;
+                let mut out = Vec::new();
+                if setup.push.is_some() {
+                    out.extend(command_bytes(
+                        setup.chunk_size(),
+                        0,
+                        &[
+                            Value::from("FCUnpublish"),
+                            Value::Number(0.0),
+                            Value::Null,
+                            Value::from(setup.url.stream.as_str()),
+                        ],
+                    ));
+                }
+                out.extend(command_bytes(
+                    setup.chunk_size(),
+                    0,
+                    &[
+                        Value::from("deleteStream"),
+                        Value::Number(0.0),
+                        Value::Null,
+                        Value::Number(f64::from(sid)),
+                    ],
+                ));
+                let _ = c.send_owned(out);
+            }
+            c.close_after_send();
+        }
+    }
+
     /// The connection of generation `epoch` failed with `err`: reconnect when the client does
     /// and `err` is worth it, else end the client (unless it already ended). `graceful` lets
     /// queued output leave first.
@@ -958,6 +965,21 @@ impl Acceptor for Dialer {
             );
         }
         Session::new(sh.clone(), publisher, Phase::Handshake, epoch)
+    }
+
+    // The engine is shutting down (follow-up of akit's A301): the client ends as
+    // `RtmpClient::close` would, a stream it runs with `deleteStream` (and `FCUnpublish` for a
+    // push), and does not reconnect. Without it the connection held `Engine::wait` until
+    // `shutdown_timeout`.
+    fn on_shutdown(&self, c: &Conn<Session>) {
+        let ours = {
+            let g = self.shared.lock();
+            self.shared.current(self.epoch) && g.conn.as_ref().is_some_and(|o| o.id() == c.id())
+        };
+        if ours {
+            self.shared.close();
+        }
+        c.close_after_send();
     }
 }
 
@@ -2225,6 +2247,74 @@ mod tests {
         assert!(hub.stream_info("p").is_none_or(|s| !s.reserved));
         while srv.next().is_some() {}
         e.shutdown();
+    }
+
+    /// An engine of its own whose shutdown would wait 20 s for connections left open.
+    fn patient_engine() -> Engine {
+        let e = Engine::builder()
+            .config({
+                let mut v = akio::Config::default();
+                v.shutdown_timeout = Duration::from_secs(20);
+                v
+            })
+            .client_threads(1)
+            .build()
+            .unwrap();
+        e.start().unwrap();
+        e
+    }
+
+    /// Follow-up of akit's A301: the engine's graceful shutdown ends a streaming pull as
+    /// [`RtmpClient::close`] would (`deleteStream`, then the connection closes once it is
+    /// sent), so `wait` does not sit out the shutdown timeout; the hub path is free again.
+    #[test]
+    fn engine_shutdown_ends_a_streaming_pull() {
+        let (l, url) = listener();
+        let hub = Hub::default();
+        let e = patient_engine();
+        let client = pull(&e, &url, &hub, "p", RtmpClientConfig::default()).unwrap();
+        let mut srv = Server::accept(&l);
+        serve_play(&mut srv, 4);
+        wait_for("streaming", || client.state() == ClientState::Streaming);
+        let t0 = Instant::now();
+        e.shutdown();
+        e.wait();
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+        assert!(client.is_closed());
+        assert_eq!(client.error(), None);
+        assert!(hub.stream_info("p").is_none_or(|s| !s.reserved));
+        // `deleteStream` for stream 1, then the end of the connection.
+        let mut deleted = false;
+        while let Some(m) = srv.next() {
+            if m.msg_type == chunk::COMMAND_AMF0 {
+                let v = amf::decode_all(&m.payload).unwrap();
+                if v[0].as_str() == Some("deleteStream") {
+                    assert_eq!(v[3].as_f64(), Some(1.0));
+                    deleted = true;
+                }
+            }
+        }
+        assert!(deleted);
+    }
+
+    /// A client still negotiating (no stream yet) closes at once at the engine's shutdown,
+    /// and does not dial again though it reconnects.
+    #[test]
+    fn engine_shutdown_ends_a_negotiating_push() {
+        let (l, url) = listener();
+        let hub = Hub::default();
+        let e = Arc::new(patient_engine());
+        let client = push(&e, &url, &hub, "src", reconnecting(&e, None)).unwrap();
+        let mut srv = Server::accept(&l);
+        srv.connect(0, |_| {});
+        wait_for("negotiating", || client.state() == ClientState::Negotiating);
+        let t0 = Instant::now();
+        e.shutdown();
+        e.wait();
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+        assert!(client.is_closed());
+        while srv.next().is_some() {}
+        assert_eq!(client.state(), ClientState::Closed);
     }
 
     /// Answers a pull's commands up to `NetStream.Play.Start` and sends the sample's first

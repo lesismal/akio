@@ -609,6 +609,17 @@ impl Acceptor for SrtServer {
             session: None,
         }
     }
+
+    // The engine is shutting down (follow-up of akit's A301): the peer's session sends
+    // SHUTDOWN, so the caller ends its side at once instead of at its peer idle timeout. The
+    // UDP loop runs the task before it closes the peers, and sends what it queued.
+    fn on_shutdown(&self, c: &AkioConn<SrtPeer>) {
+        let _ = c.run_on_loop(|h: &mut SrtPeer, _c| {
+            if let Some((s, _)) = &h.session {
+                s.close();
+            }
+        });
+    }
 }
 
 enum Accepted {
@@ -778,6 +789,16 @@ impl Acceptor for CallerAcceptor {
         }
         CallerPeer(Some(s))
     }
+
+    // The engine is shutting down (follow-up of akit's A301): SHUTDOWN to the listener, whose
+    // session then ends at once instead of at its peer idle timeout; the handler hears a local
+    // close.
+    fn on_shutdown(&self, _c: &AkioConn<CallerPeer>) {
+        let s = lock(&self.slot).clone();
+        if let Some(s) = s {
+            s.close();
+        }
+    }
 }
 
 fn dial_role(
@@ -902,6 +923,19 @@ impl Acceptor for RdvAcceptor {
         RdvPeer {
             from_peer,
             slot: self.slot.clone(),
+        }
+    }
+
+    // The engine is shutting down (follow-up of akit's A301): SHUTDOWN to the peer, which then
+    // ends its side at once instead of at its peer idle timeout. Only the peer's own address
+    // carries the session.
+    fn on_shutdown(&self, c: &AkioConn<RdvPeer>) {
+        if c.peer_addr() != self.remote {
+            return;
+        }
+        let s = lock(&self.slot).clone();
+        if let Some(s) = s {
+            s.close();
         }
     }
 }

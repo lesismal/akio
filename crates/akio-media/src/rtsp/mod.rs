@@ -496,6 +496,21 @@ impl Acceptor for RtspServer {
             playing: false,
         }
     }
+
+    // The engine is shutting down (follow-up of akit's A301): the session is torn down (a
+    // player stops, a recorded stream is unpublished) and the connection closes once what is
+    // queued for it is sent. Requests are answered as they arrive, so none is cut short.
+    // Without it a client's connection held `Engine::wait` until `shutdown_timeout`.
+    fn on_shutdown(&self, c: &Conn<RtspSession>) {
+        if c.run_on_loop(|h: &mut RtspSession, c| {
+            h.teardown();
+            c.close_after_send();
+        })
+        .is_err()
+        {
+            c.close();
+        }
+    }
 }
 
 fn random_u32() -> u32 {

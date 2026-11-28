@@ -219,6 +219,55 @@ fn loopback_push_and_pull_through_only_server() {
     }
 }
 
+/// Follow-up of akit's A301: the server engine's graceful shutdown ends its sessions, so
+/// `wait` does not sit out the 20 s shutdown timeout while a publisher and a player are
+/// connected (each would keep its connection open). The player hears `NetStream.Play.Stop`,
+/// the publisher's connection closes once what was queued for it is sent.
+#[test]
+fn server_engine_shutdown_ends_its_sessions() {
+    let hub_b = Hub::default();
+    let srv = Engine::builder()
+        .config({
+            let mut v = akio::Config::default();
+            v.shutdown_timeout = Duration::from_secs(20);
+            v
+        })
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .serve(RtmpServer::new(hub_b.clone(), RtmpConfig::default())),
+        )
+        .build()
+        .unwrap();
+    srv.start().unwrap();
+    let addr = srv.local_addrs()[0];
+    let e = client_engine();
+    let hub_a = Hub::default();
+    let hub_c = Hub::default();
+    let url = format!("rtmp://{addr}/live/s");
+    let pusher = client::push(&e, &url, &hub_a, "src", RtmpClientConfig::default()).unwrap();
+    wait_for("push subscribed", 10, || {
+        streaming(&pusher) && hub_a.stream_info("src").is_some_and(|s| s.subscribers == 1)
+    });
+    let _source = publish_all(&hub_a, "src", H264);
+    wait_for("published on B", 10, || {
+        hub_b.stream_info("live/s").is_some_and(|s| s.publishing)
+    });
+    let puller = client::pull(&e, &url, &hub_c, "pulled", RtmpClientConfig::default()).unwrap();
+    wait_for("pull streaming", 10, || streaming(&puller));
+    let t0 = Instant::now();
+    srv.shutdown();
+    srv.wait();
+    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+    wait_for("both ended", 10, || {
+        puller.is_closed() && pusher.is_closed()
+    });
+    assert_eq!(
+        puller.error(),
+        Some(ClientError::Ended("NetStream.Play.Stop".into()))
+    );
+    assert!(hub_b.stream_info("live/s").is_none_or(|s| !s.publishing));
+}
+
 fn have(tool: &str) -> bool {
     Command::new(tool)
         .arg("-version")

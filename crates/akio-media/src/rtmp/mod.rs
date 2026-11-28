@@ -25,7 +25,14 @@ pub mod chunk;
 pub mod client;
 pub mod handshake;
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use akio::{Acceptor, Conn, Handler};
 
@@ -105,6 +112,8 @@ impl fmt::Debug for RtmpConfig {
 struct Inner {
     hub: Hub,
     cfg: RtmpConfig,
+    /// The engine is shutting down: players whose stream ends hear `NetStream.Play.Stop`.
+    stopping: AtomicBool,
 }
 
 /// The RTMP server: an [`Acceptor`] to serve on a TCP listener. Cheap to clone.
@@ -122,7 +131,11 @@ impl fmt::Debug for RtmpServer {
 impl RtmpServer {
     /// A server publishing into and playing from `hub`.
     pub fn new(hub: Hub, cfg: RtmpConfig) -> RtmpServer {
-        RtmpServer(Arc::new(Inner { hub, cfg }))
+        RtmpServer(Arc::new(Inner {
+            hub,
+            cfg,
+            stopping: AtomicBool::new(false),
+        }))
     }
 
     /// The hub.
@@ -157,6 +170,20 @@ impl Acceptor for RtmpServer {
             tc_url: String::new(),
             publish: None,
             play: None,
+            play_stream: 0,
+        }
+    }
+
+    // The engine is shutting down (follow-up of akit's A301): every session ends (see
+    // `RtmpSession::shutdown`). Without it a publisher's or a player's connection held
+    // `Engine::wait` until `shutdown_timeout`.
+    fn on_shutdown(&self, c: &Conn<RtmpSession>) {
+        // A player whose publisher's session ends first hears why from its egress.
+        self.0.stopping.store(true, Ordering::Release);
+        if c.run_on_loop(|h: &mut RtmpSession, c| h.shutdown(c))
+            .is_err()
+        {
+            c.close();
         }
     }
 }
@@ -187,6 +214,8 @@ pub struct RtmpSession {
     tc_url: String,
     publish: Option<Ingest>,
     play: Option<Subscription>,
+    /// The stream id `play` plays on.
+    play_stream: u32,
 }
 
 impl fmt::Debug for RtmpSession {
@@ -270,6 +299,22 @@ impl Handler for RtmpSession {
 }
 
 impl RtmpSession {
+    /// The engine is shutting down: a player hears Stream EOF and `NetStream.Play.Stop`, a
+    /// publisher's stream is unpublished (its players end as when it leaves), and the
+    /// connection closes once what is queued for it is sent.
+    fn shutdown(&mut self, c: &Conn<Self>) {
+        self.publish = None;
+        if self.play.take().is_some() {
+            // Not `send`: the egress may have ended the connection already (its stream's
+            // publisher went first), and a failed send must not cut what it queued.
+            let _ = c.send_owned(play_stopped(
+                self.srv.cfg.chunk_size as usize,
+                self.play_stream,
+            ));
+        }
+        c.close_after_send();
+    }
+
     fn send(&self, c: &Conn<Self>, m: &Message) {
         let mut out = Vec::with_capacity(m.payload.len() + 16);
         chunk::write_message(&mut out, m, self.srv.cfg.chunk_size as usize);
@@ -624,6 +669,7 @@ impl RtmpSession {
         );
         let cfg = &self.srv.cfg;
         let egress = Egress {
+            srv: self.srv.clone(),
             conn: c.clone(),
             stream_id,
             chunk_size: cfg.chunk_size as usize,
@@ -643,6 +689,7 @@ impl RtmpSession {
         match self.srv.hub.subscribe(&path, sink, opts) {
             Ok(sub) => {
                 self.play = Some(sub);
+                self.play_stream = stream_id;
                 self.watch.set_exempt(true);
             }
             Err(e) => {
@@ -659,8 +706,37 @@ impl RtmpSession {
     }
 }
 
+/// Stream EOF and `onStatus NetStream.Play.Stop` for a player's stream `sid`: the server is
+/// shutting down.
+fn play_stopped(chunk_size: usize, sid: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    chunk::write_message(&mut out, &chunk::user_control(1, sid), chunk_size);
+    chunk::write_message(
+        &mut out,
+        &Message::new(
+            3,
+            chunk::COMMAND_AMF0,
+            sid,
+            0,
+            amf::encode(&[
+                Value::from("onStatus"),
+                Value::Number(0.0),
+                Value::Null,
+                status(
+                    "status",
+                    "NetStream.Play.Stop",
+                    "the server is shutting down",
+                ),
+            ]),
+        ),
+        chunk_size,
+    );
+    out
+}
+
 /// A hub sink writing FLV tags as RTMP messages to one player.
 struct Egress {
+    srv: Arc<Inner>,
     conn: Conn<RtmpSession>,
     stream_id: u32,
     chunk_size: usize,
@@ -683,7 +759,8 @@ impl Egress {
             &Message::new(csid, msg_type, self.stream_id, ts, body),
             self.chunk_size,
         );
-        if self.conn.send_owned(out).is_err() {
+        // A connection ending after what was queued (the player's stream ended) keeps it.
+        if self.conn.send_owned(out).is_err() && !self.conn.inner().close_after_send_requested() {
             self.conn.close();
         }
     }
@@ -727,12 +804,17 @@ impl Sink for Egress {
     }
 
     fn on_close(&mut self, _err: HubError) {
-        let mut b = Vec::new();
-        chunk::write_message(
-            &mut b,
-            &chunk::user_control(1, self.stream_id),
-            self.chunk_size,
-        );
+        let b = if self.srv.stopping.load(Ordering::Acquire) {
+            play_stopped(self.chunk_size, self.stream_id)
+        } else {
+            let mut b = Vec::new();
+            chunk::write_message(
+                &mut b,
+                &chunk::user_control(1, self.stream_id),
+                self.chunk_size,
+            );
+            b
+        };
         let _ = self.conn.send_owned(b);
         self.conn.close_after_send();
     }

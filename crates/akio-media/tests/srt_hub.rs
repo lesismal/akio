@@ -263,3 +263,88 @@ fn max_conns_has_a_safe_default_and_rejects_over_it() {
     e.shutdown();
     e.wait();
 }
+
+/// A configuration whose peer would wait 30 s before taking a silent session as gone.
+fn patient() -> Config {
+    let mut c = Config::default().stream_id("#!::r=live/q,m=publish");
+    c.peer_idle_timeout = Duration::from_secs(30);
+    c
+}
+
+fn udp_client_engine() -> Arc<Engine> {
+    let e = Engine::builder().udp_client_threads(1).build().unwrap();
+    e.start().unwrap();
+    Arc::new(e)
+}
+
+/// Follow-up of akit's A301: a caller's engine shutting down sends SHUTDOWN, so the server's
+/// session ends at once rather than at its 30 s peer idle timeout, and the caller's handler
+/// hears a local close (no error) rather than a transport error.
+#[test]
+fn a_callers_engine_shutdown_reaches_the_server() {
+    let hub = Hub::default();
+    let mut sc = SrtConfig::default();
+    sc.peer_idle_timeout = Duration::from_secs(30);
+    let (e_srv, srv) = engine(&hub, sc);
+    let addr = e_srv.local_addrs()[0];
+    let e = udp_client_engine();
+    let (c, _, closed) = collector();
+    let s = srt::dial(&e, addr, patient(), c).unwrap();
+    wait("connected", || s.is_connected() && srv.connections() == 1);
+    e.shutdown();
+    e.wait();
+    assert_eq!(closed.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    let t0 = Instant::now();
+    wait("the server's session ended", || srv.connections() == 0);
+    assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+}
+
+/// The server's engine shutting down sends SHUTDOWN to its callers: a caller hears
+/// `PeerClosed` at once rather than `PeerIdle` after its 30 s timeout.
+#[test]
+fn a_servers_engine_shutdown_reaches_its_callers() {
+    let hub = Hub::default();
+    let (e_srv, srv) = engine(&hub, SrtConfig::default());
+    let addr = e_srv.local_addrs()[0];
+    let e = udp_client_engine();
+    let (c, _, closed) = collector();
+    let s = srt::dial(&e, addr, patient(), c).unwrap();
+    wait("connected", || s.is_connected() && srv.connections() == 1);
+    e_srv.shutdown();
+    e_srv.wait();
+    assert_eq!(
+        closed.recv_timeout(Duration::from_secs(10)).unwrap(),
+        Some(SrtError::PeerClosed)
+    );
+    assert!(!s.is_connected());
+    e.shutdown();
+}
+
+/// A rendezvous side's engine shutting down sends SHUTDOWN: the other side hears
+/// `PeerClosed` at once rather than `PeerIdle` after its 30 s timeout.
+#[test]
+fn a_rendezvous_engine_shutdown_reaches_the_peer() {
+    let port = || {
+        std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+    };
+    let (a, b) = (port(), port());
+    let (e1, e2) = (udp_client_engine(), udp_client_engine());
+    let mut cfg = Config::default();
+    cfg.peer_idle_timeout = Duration::from_secs(30);
+    let (c1, _, closed1) = collector();
+    let (c2, _, closed2) = collector();
+    let s1 = srt::rendezvous(&e1, a, b, cfg.clone(), c1).unwrap();
+    let s2 = srt::rendezvous(&e2, b, a, cfg, c2).unwrap();
+    wait("rendezvous", || s1.is_connected() && s2.is_connected());
+    e1.shutdown();
+    e1.wait();
+    assert_eq!(closed1.recv_timeout(Duration::from_secs(5)).unwrap(), None);
+    assert_eq!(
+        closed2.recv_timeout(Duration::from_secs(10)).unwrap(),
+        Some(SrtError::PeerClosed)
+    );
+    e2.shutdown();
+}

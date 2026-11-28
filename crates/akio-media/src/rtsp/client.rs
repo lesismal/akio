@@ -1552,6 +1552,23 @@ impl Acceptor for ClientAcceptor {
         }
         ClientConn(self.0.clone())
     }
+
+    // The engine is shutting down (follow-up of akit's A301): the client ends as
+    // `RtspClient::close` would (TEARDOWN, then the connection closes once it is sent) and does
+    // not reconnect. Without it the connection held `Engine::wait` until `shutdown_timeout`.
+    fn on_shutdown(&self, _c: &Conn<ClientConn>) {
+        let client = self.0.client.upgrade().filter(|cl| {
+            lock(&cl.st)
+                .session
+                .as_ref()
+                .is_some_and(|s| Arc::ptr_eq(s, &self.0))
+        });
+        match client {
+            Some(cl) => cl.end(None),
+            // Not (or no longer) the client's session: only this one ends.
+            None => self.0.finish(None),
+        }
+    }
 }
 
 /// The handler of one UDP socket of a track.
@@ -2330,6 +2347,7 @@ impl RtspClient {
     /// connection, the UDP sockets and the hub side (a pulled stream is unpublished, a push
     /// unsubscribes); a pending reconnect is called off. A pull's hub path is free again when
     /// this returns. Idempotent; [`error`](Self::error) stays `None` if nothing failed first.
+    /// The engine's graceful shutdown ends a client the same way.
     pub fn close(&self) {
         self.0.end(None);
     }
@@ -3457,6 +3475,120 @@ mod tests {
         let addr = e.local_addrs()[0];
         let stop = feed_sample(&hub, "src");
         (hub, srv, e, addr, stop)
+    }
+
+    /// An engine of its own whose shutdown would wait 20 s for connections left open.
+    fn patient_engine(listen: Option<super::super::RtspServer>) -> Arc<Engine> {
+        let mut b = Engine::builder()
+            .config({
+                let mut v = akio::Config::default();
+                v.shutdown_timeout = Duration::from_secs(20);
+                v
+            })
+            .client_threads(1)
+            .udp_client_threads(1);
+        if let Some(srv) = listen {
+            b = b.listen(akio::Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(srv));
+        }
+        let e = Arc::new(b.build().unwrap());
+        e.start().unwrap();
+        e
+    }
+
+    /// Follow-up of akit's A301: the engine's graceful shutdown ends its clients as
+    /// [`RtspClient::close`] would (TEARDOWN, then the connection closes), so `wait` does not
+    /// sit out the 20 s shutdown timeout; a pull's hub path is free again, and the server's
+    /// sessions are gone.
+    #[test]
+    fn engine_shutdown_ends_its_clients() {
+        let (hub, srv, e_srv, addr, stop) = served();
+        let e = patient_engine(None);
+        let pulled = pull(
+            &e,
+            &format!("rtsp://{addr}/src"),
+            &hub,
+            "pulled",
+            RtspClientConfig::default(),
+        )
+        .unwrap();
+        let pushed = push(
+            &e,
+            &format!("rtsp://{addr}/pushed"),
+            &hub,
+            "src",
+            RtspClientConfig {
+                reconnect: Some(Reconnect::new(&e).initial_delay(Duration::from_millis(20))),
+                ..RtspClientConfig::default()
+            },
+        )
+        .unwrap();
+        wait_until("both live", 10, || {
+            packets_after(&hub, "pulled") > 5 && packets_after(&hub, "pushed") > 5
+        });
+        assert_eq!(srv.sessions().len(), 2);
+        let t0 = Instant::now();
+        e.shutdown();
+        e.wait();
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+        assert!(pulled.is_closed() && pushed.is_closed());
+        assert_eq!((pulled.error(), pushed.error()), (None, None));
+        assert!(
+            hub.reserve("pulled", PeerInfo::default()).is_ok(),
+            "path released"
+        );
+        wait_until("server sessions gone", 10, || srv.sessions().is_empty());
+        stop.store(true, Ordering::Relaxed);
+        e_srv.shutdown();
+    }
+
+    /// The server engine's graceful shutdown ends its sessions (a player's and a recorder's,
+    /// and a connection without a session): `wait` does not sit out the 20 s shutdown
+    /// timeout, the recorded path is unpublished, and the clients hear the connection close.
+    #[test]
+    fn server_engine_shutdown_ends_its_sessions() {
+        let hub = Hub::default();
+        let srv = super::super::RtspServer::new(hub.clone(), super::super::RtspConfig::default());
+        let e_srv = patient_engine(Some(srv.clone()));
+        let addr = e_srv.local_addrs()[0];
+        let stop = feed_sample(&hub, "src");
+        let e = engine();
+        let local = Hub::default();
+        let local_stop = feed_sample(&local, "local");
+        let pulled = pull(
+            &e,
+            &format!("rtsp://{addr}/src"),
+            &local,
+            "pulled",
+            RtspClientConfig::default(),
+        )
+        .unwrap();
+        let pushed = push(
+            &e,
+            &format!("rtsp://{addr}/pushed"),
+            &local,
+            "local",
+            RtspClientConfig::default(),
+        )
+        .unwrap();
+        // A connection that never asks anything.
+        let idle = std::net::TcpStream::connect(addr).unwrap();
+        wait_until("both live", 10, || {
+            packets_after(&local, "pulled") > 5 && packets_after(&hub, "pushed") > 5
+        });
+        let t0 = Instant::now();
+        e_srv.shutdown();
+        e_srv.wait();
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+        wait_until("clients ended", 10, || {
+            pulled.is_closed() && pushed.is_closed()
+        });
+        assert_eq!(pulled.error(), Some(ClientError::Closed));
+        assert!(hub.stream_info("pushed").is_none_or(|i| !i.publishing));
+        assert!(srv.sessions().is_empty());
+        drop(idle);
+        stop.store(true, Ordering::Relaxed);
+        local_stop.store(true, Ordering::Relaxed);
+        e.shutdown();
     }
 
     /// A server moves its sessions with `REDIRECT`: a reconnecting pull and push (TCP and

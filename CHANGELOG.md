@@ -60,6 +60,24 @@ HTTP/2 or HTTP/3 stream ends its response when its upstream closes, so the proxy
 goes away with its last stream (HTTP/1.1 `CONNECT` tunnels already ended with the HTTP
 connection). The client's `UdpAssociation` closes (`is_open` turns `false`); one still being
 negotiated fails with `ConnectionAborted`. No API change.
+### Fixed: RTSP, RTMP and SRT sessions end at the engine's graceful shutdown (akio-media)
+
+A follow-up of akit's A301. The RTSP and RTMP clients and servers had no `on_shutdown`, so a
+session left open (an `RtspClient` or `RtmpClient` pulling or pushing, a client connected to
+`RtspServer` or `RtmpServer`) held `Engine::wait` until `Config::shutdown_timeout` and was then
+forced closed. Now, at `Engine::shutdown`: an `RtspClient` ends as `RtspClient::close` would
+(TEARDOWN, then the connection closes once it is sent; a pull's hub path is free again; no
+reconnect), and so does an `RtmpClient` as `RtmpClient::close` would (`FCUnpublish` for a push
+and `deleteStream` for a stream it runs); `RtspServer` tears its sessions down (a player stops,
+a recorded stream is unpublished) and `RtmpServer` ends its publishers' streams and tells its
+players `NetStream.Play.Stop` after Stream EOF, each connection closing once what was queued
+for it is sent. Requests are answered as they arrive, so none is cut short. Their `error()`
+stays `None` for a client the shutdown ended, as after `close`. SRT, over UDP, never held
+`Engine::wait`, but its sessions ended without a word, so the peer only noticed at its peer
+idle timeout: a caller (`srt::dial`, `push`, `pull`), a rendezvous side and `SrtServer`'s
+sessions now send SHUTDOWN at the engine's shutdown, the peer hears `SrtError::PeerClosed` at
+once, and the local handler's `on_close` gets `None` rather than a transport error. No API
+change.
 
 ### Fixed: an `H2Client` connection ends at the engine's graceful shutdown (akio-http)
 

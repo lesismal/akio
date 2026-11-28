@@ -48,6 +48,19 @@ akit A301 的后续。`Socks` 会话、`Socks` 与 `connect_proxy` 隧道的上�
 `CONNECT` 在上游关闭时结束响应，代理的连接随最后一个流离开（HTTP/1.1 的 `CONNECT` 隧道此前已随 HTTP 连接
 结束）。客户端的 `UdpAssociation` 关闭（`is_open` 变为 `false`）；仍在协商的关联以 `ConnectionAborted`
 失败。API 不变。
+### 修复：引擎优雅关闭时 RTSP、RTMP 与 SRT 会话随之结束（akio-media）
+
+akit 的 A301 的后续。RTSP 与 RTMP 的客户端和服务器没有 `on_shutdown`，因此仍打开的会话（正在拉流或推流的
+`RtspClient`、`RtmpClient`，连接到 `RtspServer`、`RtmpServer` 的客户端）会让 `Engine::wait` 一直等到
+`Config::shutdown_timeout`，之后才被强制关闭。现在 `Engine::shutdown` 时：`RtspClient` 像
+`RtspClient::close` 那样结束（发送 TEARDOWN，发出后关闭连接；拉流的 hub 路径随即释放；不再重连），
+`RtmpClient` 也像 `RtmpClient::close` 那样结束（推流发送 `FCUnpublish`，正在进行的流发送 `deleteStream`）；
+`RtspServer` 拆除其会话（播放者停止，录制的流取消发布），`RtmpServer` 结束其发布者的流，并在 Stream EOF
+之后告诉播放者 `NetStream.Play.Stop`；每个连接在排队的数据发出后关闭。请求到达即应答，不会有请求被打断。
+被关闭结束的客户端的 `error()` 与 `close` 之后一样保持 `None`。基于 UDP 的 SRT 从不阻塞 `Engine::wait`，
+但其会话结束时不通知对端，对端要等到自己的 peer idle 超时才发现：现在呼叫方（`srt::dial`、`push`、`pull`）、
+rendezvous 一方以及 `SrtServer` 的会话在引擎关闭时发送 SHUTDOWN，对端立即得到 `SrtError::PeerClosed`，
+本地 handler 的 `on_close` 得到 `None` 而不是传输错误。API 不变。
 
 ### 修复：引擎优雅关闭时 `H2Client` 的连接随之结束（akio-http）
 
