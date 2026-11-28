@@ -506,6 +506,18 @@ impl Acceptor for ControlAcceptor {
             reader: FrameReader::new(),
         }
     }
+
+    // The engine shuts down (a follow-up of akit's A301): the allocation is deleted as by
+    // `TcpAllocation::close` (a Refresh with lifetime 0; one not made yet just ends) and the
+    // control connection closes once the server answered, so an allocation kept open does not
+    // hold `Engine::wait` until `shutdown_timeout`. Its data connections end with it on the
+    // server, and get their own acceptor's `on_shutdown` meanwhile.
+    fn on_shutdown(&self, c: &Conn<Control>) {
+        match self.0.upgrade() {
+            Some(s) => TcpAllocation(s).close(),
+            None => c.close(),
+        }
+    }
 }
 
 /// The control connection of a [`TcpAllocation`].

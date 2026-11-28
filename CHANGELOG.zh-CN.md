@@ -30,6 +30,14 @@ akit 的 A301 的后续。arpc 的两个 acceptor 都没有 `on_shutdown`，因�
 以 `CallError::Closed` 失败，`notify` 返回 `false`，对端的新调用以 `SERVER_BUSY` 应答（notify 被丢弃），
 `Peer::is_connected` 变为 `false`，客户端不再重连；没有进行中的调用时连接立即关闭。打开的流不会拖住
 关闭：连接关闭时它们以 `StreamEvent::Eof` 结束。API 不变。
+### 修复：引擎优雅关闭时 `TcpAllocation` 随之结束（akio-turn）
+
+akit A301 的后续。由引擎驱动的 TCP 分配（`client::TcpAllocation`，明文或 TLS）的控制连接在
+`Engine::shutdown` 时保持打开，因此保持着的分配会让 `Engine::wait` 一直等到 `Config::shutdown_timeout`，
+之后才被强制关闭，服务器只能自己发现。现在引擎关闭时，分配像 `TcpAllocation::close` 那样被删除（lifetime
+为 0 的 Refresh；尚未建立的直接结束），事件回调收到 `AllocationEvent::Closed`，控制连接在服务器应答后关闭；
+数据连接在服务器上随分配结束，期间收到其自身 acceptor 的 `on_shutdown`。API 不变。
+
 ### 修复：引擎优雅关闭时 SOCKS 会话、CONNECT 隧道与 UDP 关联随之结束（akio-socks）
 
 akit A301 的后续。`Socks` 会话、`Socks` 与 `connect_proxy` 隧道的上游连接，以及客户端

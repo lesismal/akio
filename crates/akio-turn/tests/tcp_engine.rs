@@ -404,3 +404,40 @@ fn connect_timeout_is_not_the_engines() {
     );
     wait_for("no connection", || srv.turn.stats().tcp_connections == 0);
 }
+
+/// The engine's graceful shutdown ends an allocation (a follow-up of akit's A301): the client
+/// deletes it (a Refresh with lifetime 0) and closes its control connection, so an allocation
+/// kept open does not hold `Engine::wait` until a long `shutdown_timeout`. The server is on an
+/// engine of its own, so only the client can end it.
+#[test]
+fn an_allocation_ends_at_its_engines_shutdown() {
+    let srv = server(Config::default(), |_| {});
+    for (addr, t) in [(srv.tcp, ServerTransport::Tcp), (srv.tls, tls_transport())] {
+        let engine = Arc::new(
+            Engine::builder()
+                .config({
+                    let mut v = Config::default();
+                    v.shutdown_timeout = Duration::from_secs(20);
+                    v
+                })
+                .client_threads(1)
+                .build()
+                .unwrap(),
+        );
+        engine.start().unwrap();
+        let (alloc, events) = open(&engine, addr, "wonderland", t);
+        allocated(&events);
+        wait_for("the allocation", || srv.turn.stats().allocations == 1);
+
+        let t0 = Instant::now();
+        engine.shutdown();
+        engine.wait();
+        assert!(t0.elapsed() < WAIT, "engine wait took {:?}", t0.elapsed());
+        match events.recv_timeout(WAIT).expect("no close") {
+            AllocationEvent::Closed => {}
+            e => panic!("{e:?}"),
+        }
+        assert_eq!(alloc.state(), ClientState::Closed);
+        wait_for("no allocation", || srv.turn.stats().allocations == 0);
+    }
+}

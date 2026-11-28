@@ -35,6 +35,17 @@ calls fail with `CallError::Closed` unsent, `notify` returns `false`, the other 
 are answered with `SERVER_BUSY` (notifies dropped), `Peer::is_connected` turns `false` and a
 client stops reconnecting; the connection closes at once when no call is in flight. Open streams
 do not hold it: they end with `StreamEvent::Eof` when it closes. No API change.
+### Fixed: a `TcpAllocation` ends at the engine's graceful shutdown (akio-turn)
+
+A follow-up of akit's A301. The control connection of an engine-driven TCP allocation
+(`client::TcpAllocation`, plain or TLS) stayed open through `Engine::shutdown`, so an
+allocation kept open held `Engine::wait` until `Config::shutdown_timeout` and was then forced
+closed, leaving the server to find out. At the engine's shutdown the allocation is now deleted
+as by `TcpAllocation::close` (a Refresh with lifetime 0; one not made yet just ends), its event
+callback gets `AllocationEvent::Closed`, and the control connection closes once the server
+answered; the data connections end with the allocation on the server and get their own
+acceptor's `on_shutdown` meanwhile. No API change.
+
 ### Fixed: SOCKS sessions, CONNECT tunnels and UDP associations end at the engine's graceful shutdown (akio-socks)
 
 A follow-up of akit's A301. `Socks` sessions, the upstream connections of `Socks` and
