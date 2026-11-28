@@ -3,13 +3,13 @@
 //! timeout, and the client's requests fail with a reason saying so.
 #![allow(missing_docs)]
 
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use akio::{Config, Engine, Listener};
 use akio_h3::{H3Client, H3ClientOptions, H3Config, H3Error};
 use akio_http::message::{Headers, Method};
-use akio_http::{Context, Router, Streaming};
+use akio_http::{Context, Router};
 
 /// Well under the 30 s QUIC idle timeout, after which the server would end the connection
 /// anyway.
@@ -25,14 +25,14 @@ fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
 
 #[test]
 fn a_clients_engine_shutdown_closes_its_connection_at_once() {
+    // `/hang` is never answered: its responder is kept (and the test told) until the end.
+    let (htx, hrx) = mpsc::channel();
+    let htx = Mutex::new(htx);
     let app = Router::new()
         .get("/", |ctx: &mut Context| ctx.text(200, "hello h3"))
-        // Never answered: a request in flight for as long as the connection lasts.
-        .route(
-            Method::Post,
-            "/hang",
-            Streaming(|ctx: &mut Context| ctx.on_body(|_ctx, _ev| {})),
-        );
+        .post("/hang", move |ctx: &mut Context| {
+            let _ = htx.lock().unwrap().send(ctx.detach());
+        });
     let ck = akio_x509::generate_simple_self_signed(["localhost"]).unwrap();
     let cert = akio::tls::Certificate::from_der(ck.0.as_der().to_vec());
     let key = akio::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
@@ -70,6 +70,9 @@ fn a_clients_engine_shutdown_closes_its_connection_at_once() {
             let _ = tx.send(r);
         },
     );
+    // The request reached the server, which holds it.
+    let held = hrx.recv_timeout(T).unwrap();
+    assert!(held.is_some());
     assert!(rx.try_recv().is_err());
     assert_eq!(server.connections(), 1);
 
@@ -85,6 +88,7 @@ fn a_clients_engine_shutdown_closes_its_connection_at_once() {
     wait_until("the server's connection closed", || {
         server.connections() == 0
     });
+    drop(held);
     se.shutdown();
     se.wait();
 }
