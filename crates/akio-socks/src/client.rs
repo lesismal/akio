@@ -937,6 +937,25 @@ impl Acceptor for ControlAcceptor {
             watch: Watch::start(c.inner(), &slot, self.timeout, None, None),
         }
     }
+
+    // The engine shuts down (a follow-up of akit's A301): the association ends, its control
+    // connection with it, so it does not hold `Engine::wait` until `shutdown_timeout`; one
+    // still being negotiated fails.
+    fn on_shutdown(&self, c: &Conn<Control>) {
+        let ok = c.run_on_loop(|h: &mut Control, c| {
+            if h.err.is_none() && !h.hs.is_done() {
+                h.err = Some(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "the engine is shutting down",
+                ));
+            }
+            h.assoc.close();
+            c.close();
+        });
+        if ok.is_err() {
+            self.assoc.close();
+        }
+    }
 }
 
 /// The TCP control connection of a UDP association.

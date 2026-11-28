@@ -30,6 +30,16 @@ akit 的 A301 的后续。arpc 的两个 acceptor 都没有 `on_shutdown`，因�
 以 `CallError::Closed` 失败，`notify` 返回 `false`，对端的新调用以 `SERVER_BUSY` 应答（notify 被丢弃），
 `Peer::is_connected` 变为 `false`，客户端不再重连；没有进行中的调用时连接立即关闭。打开的流不会拖住
 关闭：连接关闭时它们以 `StreamEvent::Eof` 结束。API 不变。
+### 修复：引擎优雅关闭时 SOCKS 会话、CONNECT 隧道与 UDP 关联随之结束（akio-socks）
+
+akit A301 的后续。`Socks` 会话、`Socks` 与 `connect_proxy` 隧道的上游连接，以及客户端
+`SocksClient::udp_associate` 的控制连接都没有 `on_shutdown`，因此任何一个保持打开（空闲隧道、仍在协商的
+客户端、等待连接的 BIND、UDP 关联）都会让 `Engine::wait` 一直等到 `Config::shutdown_timeout`，之后才被
+强制关闭。现在引擎关闭时：仍在协商的会话被关闭（拒绝）；隧道在已转发的数据写到两侧之后结束（先结束的一侧
+在把它转发的数据写完后关闭另一侧）；等待连接的 BIND 和 UDP 关联随其控制连接结束；HTTP/2 或 HTTP/3 流上的
+`CONNECT` 在上游关闭时结束响应，代理的连接随最后一个流离开（HTTP/1.1 的 `CONNECT` 隧道此前已随 HTTP 连接
+结束）。客户端的 `UdpAssociation` 关闭（`is_open` 变为 `false`）；仍在协商的关联以 `ConnectionAborted`
+失败。API 不变。
 
 ### 修复：引擎优雅关闭时 `H2Client` 的连接随之结束（akio-http）
 

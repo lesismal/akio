@@ -35,6 +35,20 @@ calls fail with `CallError::Closed` unsent, `notify` returns `false`, the other 
 are answered with `SERVER_BUSY` (notifies dropped), `Peer::is_connected` turns `false` and a
 client stops reconnecting; the connection closes at once when no call is in flight. Open streams
 do not hold it: they end with `StreamEvent::Eof` when it closes. No API change.
+### Fixed: SOCKS sessions, CONNECT tunnels and UDP associations end at the engine's graceful shutdown (akio-socks)
+
+A follow-up of akit's A301. `Socks` sessions, the upstream connections of `Socks` and
+`connect_proxy` tunnels, and the client's `SocksClient::udp_associate` control connection had
+no `on_shutdown`, so any of them left open (an idle tunnel, a client still negotiating, a BIND
+waiting for its connection, a UDP association) held `Engine::wait` until
+`Config::shutdown_timeout` and was then forced closed. At the engine's shutdown now: a session
+still negotiating is closed (refused); a tunnel ends once what was already relayed is written
+to each side (the side that ends closes the other after what it relayed there); a BIND waiting
+for its connection and a UDP association end with their control connection; a `CONNECT` on an
+HTTP/2 or HTTP/3 stream ends its response when its upstream closes, so the proxy's connection
+goes away with its last stream (HTTP/1.1 `CONNECT` tunnels already ended with the HTTP
+connection). The client's `UdpAssociation` closes (`is_open` turns `false`); one still being
+negotiated fails with `ConnectionAborted`. No API change.
 
 ### Fixed: an `H2Client` connection ends at the engine's graceful shutdown (akio-http)
 

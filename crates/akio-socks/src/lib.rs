@@ -415,6 +415,13 @@ impl Acceptor for UpstreamAcceptor {
         up(c.inner());
         handler
     }
+
+    // The engine shuts down (a follow-up of akit's A301): the tunnel ends once what was
+    // relayed to the upstream is written; its close closes the client after what it relayed
+    // back.
+    fn on_shutdown(&self, c: &Conn<Upstream>) {
+        c.close_after_send();
+    }
 }
 
 /// What one session needs to dial its upstream.
@@ -866,6 +873,15 @@ impl Acceptor for Socks {
             bind_cancel: None,
             splice: SpliceCtl::new(self.cfg.sockmap.as_ref()),
         }
+    }
+
+    // The engine shuts down (a follow-up of akit's A301): a session still negotiating is
+    // refused (its connection closed), a tunnel ends once what was relayed to the client is
+    // written (its close closes the upstream after what it relayed there), a BIND waiting for
+    // its connection and a UDP association end with the control connection. Without it an
+    // open session held `Engine::wait` until `shutdown_timeout`.
+    fn on_shutdown(&self, c: &Conn<SocksSession>) {
+        c.close_after_send();
     }
 
     fn transport(&self) -> Option<Box<dyn akio::Transport>> {
@@ -1951,6 +1967,13 @@ impl Acceptor for StreamUpAcceptor {
         up(c.inner());
         handler
     }
+
+    // The engine shuts down (a follow-up of akit's A301): the upstream is closed once what
+    // was relayed to it is written, which ends the stream's response; the HTTP/2 or HTTP/3
+    // connection then goes away with its last stream.
+    fn on_shutdown(&self, c: &Conn<StreamUpstream>) {
+        c.close_after_send();
+    }
 }
 
 fn dial_stream(
@@ -1979,6 +2002,9 @@ impl Acceptor for ArcAcceptor {
     type Handler = StreamUpstream;
     fn on_open(&self, c: &Conn<StreamUpstream>) -> StreamUpstream {
         self.0.on_open(c)
+    }
+    fn on_shutdown(&self, c: &Conn<StreamUpstream>) {
+        self.0.on_shutdown(c);
     }
 }
 
