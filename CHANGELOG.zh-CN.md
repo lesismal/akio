@@ -10,6 +10,16 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：引擎优雅关闭时 arpc 连接随之结束（akio-arpc）
+
+akit 的 A301 的后续。arpc 的两个 acceptor 都没有 `on_shutdown`，因此已连接的客户端（`dial_blocking`、
+`Pool` 的连接）会让所在引擎的 `Engine::wait`、服务端的连接会让服务端引擎的 `Engine::wait` 一直等到
+`Config::shutdown_timeout`，之后连接被强制关闭，进行中的调用随之中断。现在两者都在连接的工作完成后
+结束它：已发出的调用等待应答，正在处理的调用会被应答（包括 detach 出的 `Responder`）；新调用不发送，
+以 `CallError::Closed` 失败，`notify` 返回 `false`，对端的新调用以 `SERVER_BUSY` 应答（notify 被丢弃），
+`Peer::is_connected` 变为 `false`，客户端不再重连；没有进行中的调用时连接立即关闭。打开的流不会拖住
+关闭：连接关闭时它们以 `StreamEvent::Eof` 结束。API 不变。
+
 ### 修复：引擎优雅关闭时 `H2Client` 的连接随之结束（akio-http）
 
 akit 的 A301。HTTP/1 客户端在 `Engine::shutdown` 时关闭其空闲连接，而 `H2Client` 的连接（来自

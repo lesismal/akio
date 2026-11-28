@@ -29,6 +29,13 @@
 //! engine.run().unwrap();
 //! ```
 //!
+//! The engine's graceful shutdown ([`Engine::shutdown`]) ends every connection, client and
+//! server alike, once its work is done: calls already sent wait for their answers and calls
+//! being served are answered, while new calls fail with [`CallError::Closed`] unsent, the
+//! peer's new calls are answered with [`SERVER_BUSY`], and a client stops reconnecting; the
+//! connection closes at once when nothing is in flight. Streams do not hold it: they end
+//! ([`StreamEvent::Eof`]) when it closes.
+//!
 //! Guide: [arpc](https://lesismal.github.io/akio/en/protocols/arpc.html)
 //! (中文: [arpc](https://lesismal.github.io/akio/zh-CN/protocols/arpc.html)).
 #![warn(clippy::unwrap_used)]
@@ -71,7 +78,8 @@ use crate::{
 /// Error text of a call to a method the peer does not serve (the same as Go's).
 pub const METHOD_NOT_FOUND: &str = "method not found";
 
-/// Error text of a call that found the logical pool full ([`Routes::handlers_on_logical_pool`]).
+/// Error text of a call that found the logical pool full ([`Routes::handlers_on_logical_pool`]),
+/// or that came while the engine shuts down.
 pub const SERVER_BUSY: &str = "server busy";
 
 /// Default most streams the peer may have open on one connection
@@ -453,6 +461,11 @@ struct PeerInner {
     /// For clients: how to reconnect.
     redial: Option<Redial>,
     stopped: AtomicBool,
+    /// The engine is shutting down: no new calls, and the connection closes once `pending`
+    /// and `serving` are both empty.
+    draining: AtomicBool,
+    /// The peer's calls being served: answered neither yet nor dropped unanswered.
+    serving: AtomicUsize,
     /// Whether a connection is attached (read without the lock by pools).
     connected: AtomicBool,
     /// Ping interval of a client with a heartbeat.
@@ -488,6 +501,8 @@ impl PeerInner {
             streams: Mutex::new(Streams::default()),
             redial,
             stopped: AtomicBool::new(false),
+            draining: AtomicBool::new(false),
+            serving: AtomicUsize::new(0),
             heartbeat,
             last_rx: AtomicU64::new(now_ms()),
             last_ping: AtomicU64::new(0),
@@ -548,9 +563,9 @@ impl Peer {
         }
     }
 
-    /// Whether the connection is up.
+    /// Whether the connection is up (and takes calls: not while the engine shuts down).
     pub fn is_connected(&self) -> bool {
-        self.conn().is_some_and(|c| c.is_open())
+        !self.0.draining.load(Ordering::SeqCst) && self.conn().is_some_and(|c| c.is_open())
     }
 
     /// The peer's address.
@@ -610,6 +625,12 @@ impl Peer {
             .and_then(|t| Instant::now().checked_add(t));
         {
             let mut pending = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
+            if self.0.draining.load(Ordering::SeqCst) {
+                // The engine shuts down: never sent.
+                drop(pending);
+                done(Err(CallError::Closed));
+                return;
+            }
             if pending.len() >= self.0.routes.max_pending {
                 drop(pending);
                 done(Err(CallError::Overloaded));
@@ -664,13 +685,16 @@ impl Peer {
         CallFuture(shared)
     }
 
-    /// Sends a one-way notify. `false` if the connection is down.
+    /// Sends a one-way notify. `false` if the connection is down (or the engine shuts down).
     pub fn notify(&self, method: &str, payload: &[u8]) -> bool {
         self.notify_with(method, payload, &Values::new())
     }
 
     /// [`notify`](Self::notify) with values for the coders.
     pub fn notify_with(&self, method: &str, payload: &[u8], values: &Values) -> bool {
+        if self.0.draining.load(Ordering::SeqCst) {
+            return false;
+        }
         let seq = self.0.seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.send(
             self.0
@@ -723,6 +747,32 @@ impl Peer {
         }
     }
 
+    /// The engine is shutting down (a follow-up of akit's A301): no more calls or
+    /// reconnecting, and the connection closed once the calls in flight both ways are over
+    /// (at once when there are none).
+    fn shut_down(&self) {
+        self.0.stopped.store(true, Ordering::Release);
+        {
+            // Under the calls' lock: a call either is refused or counts as pending here.
+            let _g = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
+            self.0.draining.store(true, Ordering::SeqCst);
+        }
+        self.close_if_drained();
+    }
+
+    /// While the engine shuts down: closes the connection once no call is in flight, after
+    /// what was queued (the last answers) is written.
+    fn close_if_drained(&self) {
+        if self.0.draining.load(Ordering::SeqCst)
+            && self.0.pending_len.load(Ordering::Acquire) == 0
+            && self.0.serving.load(Ordering::SeqCst) == 0
+        {
+            if let Some(c) = self.conn() {
+                c.close_after_send();
+            }
+        }
+    }
+
     fn take_pending(&self, seq: u64) -> Option<PendingCall> {
         let mut g = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
         let e = g.remove(&seq);
@@ -736,6 +786,7 @@ impl Peer {
                 t.cancel();
             }
             (c.done)(r);
+            self.close_if_drained();
         }
     }
 
@@ -749,6 +800,7 @@ impl Peer {
                 let done = c.done;
                 deadline::hand_off(move || done(Err(CallError::Timeout)));
             }
+            self.close_if_drained();
         }
     }
 
@@ -788,13 +840,22 @@ impl Peer {
             }
             Cmd::Pong => {}
             Cmd::Request | Cmd::Notify => {
+                let request = m.cmd == Cmd::Request;
                 let mut ctx = Context {
                     peer: self.clone(),
                     conn: conn.clone(),
                     msg: m,
                     responded: false,
                     values,
+                    serving: None,
                 };
+                if self.0.draining.load(Ordering::SeqCst) {
+                    // The engine shuts down: new calls are refused, notifies dropped.
+                    return ctx.error(SERVER_BUSY);
+                }
+                if request {
+                    ctx.serving = Some(Serving::new(self));
+                }
                 if !self.0.routes.handlers_on_logical_pool {
                     return serve(&self.0.routes, &mut ctx);
                 }
@@ -974,6 +1035,27 @@ pub struct Context {
     msg: Message,
     responded: bool,
     values: Values,
+    /// Counts the request as being served until it is answered (or dropped unanswered).
+    serving: Option<Serving>,
+}
+
+/// A request being served: counted in [`PeerInner::serving`] while it lives, so the engine's
+/// shutdown closes the connection only once its answer is queued.
+#[derive(Debug)]
+struct Serving(Peer);
+
+impl Serving {
+    fn new(peer: &Peer) -> Serving {
+        peer.0.serving.fetch_add(1, Ordering::SeqCst);
+        Serving(peer.clone())
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.0.0.serving.fetch_sub(1, Ordering::SeqCst);
+        self.0.close_if_drained();
+    }
 }
 
 impl Context {
@@ -1039,6 +1121,7 @@ impl Context {
             &self.values,
         );
         let _ = self.conn.send_owned(frame);
+        self.serving = None;
     }
 
     /// Takes over the answer, to send it later from any thread.
@@ -1050,6 +1133,7 @@ impl Context {
             async_flag: self.msg.async_flag,
             request: self.msg.cmd == Cmd::Request && !self.responded,
             values: self.values.clone(),
+            serving: self.serving.take(),
         };
         self.responded = true;
         r
@@ -1135,6 +1219,7 @@ pub struct Responder {
     async_flag: bool,
     request: bool,
     values: Values,
+    serving: Option<Serving>,
 }
 
 impl Responder {
@@ -1162,6 +1247,7 @@ impl Responder {
             &self.values,
         );
         self.peer.send(frame);
+        drop(self.serving);
     }
 }
 
@@ -1348,6 +1434,13 @@ impl Acceptor for Attach {
             ),
         }
     }
+
+    // A graceful engine shutdown (a follow-up of akit's A301): no new calls, no reconnecting,
+    // and the connection closed once the calls in flight are over. Without it a connected
+    // client held `Engine::wait` until `shutdown_timeout`.
+    fn on_shutdown(&self, _c: &Conn<ArpcConn>) {
+        self.peer.shut_down();
+    }
 }
 
 /// Connects to an arpc server and keeps reconnecting (every second) until [`Peer::close`].
@@ -1493,6 +1586,22 @@ impl Acceptor for Server {
             },
             id: c.id(),
             peers: self.peers.clone(),
+        }
+    }
+
+    // A graceful engine shutdown (a follow-up of akit's A301): the client's calls in flight
+    // are answered, its new ones refused ([`SERVER_BUSY`]), and the connection closed once
+    // none is left; without it a connected client held `Engine::wait` until the timeout.
+    fn on_shutdown(&self, c: &Conn<ServerConn>) {
+        let peer = self
+            .peers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&c.id())
+            .cloned();
+        match peer {
+            Some(p) => p.shut_down(),
+            None => c.close(),
         }
     }
 }

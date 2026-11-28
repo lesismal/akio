@@ -10,6 +10,18 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: arpc connections end at the engine's graceful shutdown (akio-arpc)
+
+A follow-up of akit's A301. Neither arpc acceptor had `on_shutdown`, so a connected client
+(`dial_blocking`, a `Pool`'s connections) held its engine's `Engine::wait`, and a server's
+connection held the server's, until `Config::shutdown_timeout`, and was then forced closed with
+its calls cut off. Both now end a connection once its work is done: calls already sent wait for
+their answers and calls being served are answered (a detached `Responder` included), while new
+calls fail with `CallError::Closed` unsent, `notify` returns `false`, the other side's new calls
+are answered with `SERVER_BUSY` (notifies dropped), `Peer::is_connected` turns `false` and a
+client stops reconnecting; the connection closes at once when no call is in flight. Open streams
+do not hold it: they end with `StreamEvent::Eof` when it closes. No API change.
+
 ### Fixed: an `H2Client` connection ends at the engine's graceful shutdown (akio-http)
 
 akit's A301. The HTTP/1 client closes its idle connections at `Engine::shutdown`, but an

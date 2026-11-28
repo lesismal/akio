@@ -44,6 +44,13 @@ one shared encoded frame; `peers()` lists them.
 `akio_arpc::dial_blocking(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
 and then **keeps reconnecting** every second until `Peer::close()`.
 
+The engine's graceful shutdown (`Engine::shutdown`) ends every arpc connection, client and server
+alike, once its work is done: calls already sent wait for their answers and calls being served are
+answered, while new calls fail with `CallError::Closed` unsent (`notify` returns `false`), the
+other side's new calls are answered with `SERVER_BUSY`, `is_connected()` turns `false` and a
+client stops reconnecting. The connection closes at once when nothing is in flight; open streams
+end (`StreamEvent::Eof`) when it closes.
+
 `Peer` (cloneable, any thread):
 
 | Method | Meaning |

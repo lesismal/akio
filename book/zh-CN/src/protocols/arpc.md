@@ -43,6 +43,11 @@ handler 在 I/O 线程上执行，不能阻塞。
 `akio_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
 **自动重连**，直到调用 `Peer::close()`。
 
+引擎的优雅关闭（`Engine::shutdown`）会在 arpc 连接（客户端和服务端都一样）的工作完成后结束它：已发出的
+调用等待应答，正在处理的调用会被应答；新调用不发送，以 `CallError::Closed` 失败（`notify` 返回
+`false`），对端的新调用以 `SERVER_BUSY` 应答，`is_connected()` 变为 `false`，客户端不再重连。没有进行中
+的调用时连接立即关闭；打开的流在连接关闭时结束（`StreamEvent::Eof`）。
+
 `Peer`（可克隆，可在任何线程使用）：
 
 | 方法 | 含义 |
