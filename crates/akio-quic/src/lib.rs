@@ -191,6 +191,13 @@ pub trait QuicHandler: Send + 'static {
     /// of the peer (ADR-155). Finish what is in flight, take nothing new and close: akio-h3
     /// sends `GOAWAY`. Called at most once. The default does nothing: the connection ends with
     /// the socket's drain deadline or its idle timeout.
+    ///
+    /// Client: the engine shuts down (a follow-up of akit's A301). Its UDP socket closes right
+    /// after this returns (the engine gives datagram sockets no drain time), so nothing in
+    /// flight can finish: close the connection ([`Connection::close`]) for the server to hear
+    /// of it at once (akio-h3's client sends `GOAWAY` and `H3_NO_ERROR`). What is sent from here
+    /// goes out before the socket closes. The default does nothing: the connection fails here
+    /// when its socket closes, and the server's ends with its idle timeout.
     fn on_shutdown(&mut self, _c: &Connection) {}
     /// [`Connection::notify`] was called: the handler looks at what other threads left for it
     /// (akio-h3: the WebSocket streams aborted from them). After the events queued before the
@@ -294,7 +301,8 @@ impl Connection {
         }))
     }
 
-    /// Server: the peer's socket goes away; the handler hears of it (`on_shutdown`) once.
+    /// Server: the peer's socket goes away; client: the engine shuts down. The handler hears of
+    /// it (`on_shutdown`) once, from this call (or once the current delivery is over).
     fn shut_down(&self) {
         if !self.0.shut.swap(true, Ordering::AcqRel) {
             self.0.shutdown.store(true, Ordering::Release);
@@ -1480,6 +1488,16 @@ struct ClientAcceptor(Arc<Ep>);
 /// Opens the socket of the path a client migration probes.
 struct ProbeAcceptor(Arc<Ep>);
 
+/// A client's socket at the engine's shutdown (a follow-up of akit's A301): every connection of
+/// the endpoint hears of it ([`QuicHandler::on_shutdown`]) while the socket can still carry
+/// what it sends (its `CONNECTION_CLOSE`), which the I/O loop writes before closing it.
+fn client_shutdown(ep: &Ep) {
+    let conns: Vec<Connection> = lock(&ep.conns).values().cloned().collect();
+    for q in conns {
+        q.shut_down();
+    }
+}
+
 impl Acceptor for ProbeAcceptor {
     type Handler = Udp;
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
@@ -1491,6 +1509,10 @@ impl Acceptor for ProbeAcceptor {
         *lock(&self.0.probe) = Some(c.clone());
         drop(backlog);
         Udp::new(self.0.clone(), true)
+    }
+
+    fn on_shutdown(&self, _c: &Conn<Udp>) {
+        client_shutdown(&self.0);
     }
 }
 
@@ -1509,6 +1531,10 @@ impl Acceptor for ClientAcceptor {
         lock(&self.0.socks).insert(peer, c.clone());
         drop(backlog);
         Udp::new(self.0.clone(), true)
+    }
+
+    fn on_shutdown(&self, _c: &Conn<Udp>) {
+        client_shutdown(&self.0);
     }
 }
 

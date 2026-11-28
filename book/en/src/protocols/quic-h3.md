@@ -211,6 +211,13 @@ stream and fails it with
 `H3Error::Timeout` (that callback runs on a timer thread). It also takes the QPACK settings
 (below).
 
+The engine's graceful shutdown (`Engine::shutdown`) closes an `H3Client`'s connection with
+`H3_NO_ERROR`, so the server hears of it at once rather than at its idle timeout. The engine
+gives UDP sockets no drain time, so nothing in flight finishes: requests fail, and new ones are
+refused, with `H3Error::Closed("the engine is shutting down")`, and WebSockets end as on a lost
+connection. A raw `akio-quic` client hears of it in `QuicHandler::on_shutdown`, while its socket
+can still carry a `CONNECTION_CLOSE` (`Connection::close`).
+
 ### Streamed request bodies
 
 A service whose `body_mode` is `BodyMode::Stream` (wrap it in `Streaming`) is called at the

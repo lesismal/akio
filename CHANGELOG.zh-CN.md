@@ -10,6 +10,17 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：引擎优雅关闭时 QUIC 或 HTTP/3 客户端的连接随之关闭（akio-quic、akio-h3）
+
+akit 的 A301 的后续。客户端的 QUIC 连接（`akio_quic::dial`、`H3Client`）不会得知 `Engine::shutdown`：
+它的 UDP socket 直接被关闭，请求以“timed out”失败，服务器要等到空闲超时（默认 30 s）才得知，期间一直
+保留连接状态。（它从未拖住 `Engine::wait`：引擎不给 UDP socket 排空时间。）现在客户端连接的
+`QuicHandler::on_shutdown` 会在引擎关闭时运行（与服务器端已有的一致），此时 socket 仍能发出它所发送的
+内容；`H3Client` 借此让请求（排队的、进行中的、流式的、上传）失败、拒绝新请求，原因都是
+`H3Error::Closed("the engine is shutting down")`，WebSocket 像连接丢失那样结束，并以 `H3_NO_ERROR`
+关闭连接，服务器因此立即得知。不发送 `GOAWAY`：客户端的 `GOAWAY` 只限制推送，而它从不允许推送。API
+不变；`QuicHandler::on_shutdown` 的约定现在也涵盖客户端（默认实现仍然什么也不做）。
+
 ### 修复：引擎优雅关闭时 arpc 连接随之结束（akio-arpc）
 
 akit 的 A301 的后续。arpc 的两个 acceptor 都没有 `on_shutdown`，因此已连接的客户端（`dial_blocking`、

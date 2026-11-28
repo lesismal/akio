@@ -10,6 +10,20 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a QUIC or HTTP/3 client connection is closed at the engine's graceful shutdown (akio-quic, akio-h3)
+
+A follow-up of akit's A301. A client's QUIC connection (`akio_quic::dial`, `H3Client`) was not
+told of `Engine::shutdown`: its UDP socket closed under it, its requests failed with "timed out",
+and the server only learnt of it at its idle timeout (30 s by default), keeping the connection's
+state until then. (It never held `Engine::wait`: the engine gives UDP sockets no drain time.)
+Now a client connection's `QuicHandler::on_shutdown` runs at the engine's shutdown, as a
+server's already did, while the socket can still carry what it sends; `H3Client` uses it to fail
+its requests (queued, in flight, streamed, uploads) and refuse new ones with
+`H3Error::Closed("the engine is shutting down")`, end its WebSockets as on a lost connection, and
+close the connection with `H3_NO_ERROR`, so the server hears of it at once. It sends no
+`GOAWAY`: a client's only limits pushes, which it never allows. No API change; the contract of
+`QuicHandler::on_shutdown` now covers clients (its default still does nothing).
+
 ### Fixed: arpc connections end at the engine's graceful shutdown (akio-arpc)
 
 A follow-up of akit's A301. Neither arpc acceptor had `on_shutdown`, so a connected client

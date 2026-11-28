@@ -181,6 +181,12 @@ akio-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 上传没有超时）会重置 stream 并以 `H3Error::Timeout` 使其失败（这个回调在定时器线程上运行）。
 它也接受 QPACK 设置（见下文）。
 
+引擎的优雅关闭（`Engine::shutdown`）会以 `H3_NO_ERROR` 关闭 `H3Client` 的连接，服务器因此立即得知，
+而不是等到它的空闲超时。引擎不给 UDP socket 排空时间，所以进行中的工作不会完成：请求失败、新请求被拒，
+都是 `H3Error::Closed("the engine is shutting down")`，WebSocket 像连接丢失那样结束。直接使用
+`akio-quic` 的客户端在 `QuicHandler::on_shutdown` 中得知此事，此时其 socket 仍能发出 `CONNECTION_CLOSE`
+（`Connection::close`）。
+
 ### 流式请求 body
 
 `body_mode` 为 `BodyMode::Stream` 的 service（用 `Streaming` 包装）会在请求的第一批 body 字节

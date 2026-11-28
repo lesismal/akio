@@ -4,6 +4,11 @@
 //!
 //! Responses are bounded by [`H3ClientOptions`]: body (8 MiB), field sections (64 KiB,
 //! advertised as `SETTINGS_MAX_FIELD_SECTION_SIZE`) and a total request timeout (30 s).
+//!
+//! The engine's graceful shutdown (`akio::Engine::shutdown`) closes the connection with
+//! `H3_NO_ERROR`, so the server hears of it at once. The engine gives the client's UDP socket
+//! no drain time, so nothing in flight finishes: requests fail, and new ones are refused, with
+//! [`H3Error::Closed`], and WebSockets end as on a lost connection.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -1384,7 +1389,8 @@ fn cancel_expired(peer: &mut Peer, st: &mut State) {
 impl ClientConn {
     fn fail_all(&mut self, why: String) {
         let mut st = self.sh.lock();
-        st.closed = Some(why.clone());
+        // The first reason stays (the engine's shutdown, before the close it causes).
+        st.closed.get_or_insert_with(|| why.clone());
         let mut kinds: Vec<Kind> = st.queue.drain(..).map(|j| j.kind).collect();
         kinds.extend(st.ws_wait.drain(..).map(|j| j.kind));
         st.deadlines.clear();
@@ -2045,7 +2051,21 @@ impl QuicHandler for ClientConn {
     fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {
         self.fail_all(reason.to_string());
     }
+
+    // The engine shuts down (a follow-up of akit's A301): its UDP socket closes as soon as this
+    // returns, so nothing in flight can finish. Requests (queued, in flight, streamed, uploads)
+    // fail and new ones are refused, with `H3Error::Closed`; WebSockets end as on a lost
+    // connection; and CONNECTION_CLOSE(H3_NO_ERROR) tells the server at once, which otherwise
+    // learnt of it only at its idle timeout. No GOAWAY: a client's names the pushes it takes,
+    // and this one never allows any (no MAX_PUSH_ID).
+    fn on_shutdown(&mut self, c: &Connection) {
+        self.fail_all(SHUTTING_DOWN.to_owned());
+        c.close(code::NO_ERROR, b"");
+    }
 }
+
+/// Why requests fail once the engine shuts down.
+const SHUTTING_DOWN: &str = "the engine is shutting down";
 
 impl ClientConn {
     /// The server's SETTINGS arrived: WebSockets waiting for them go (or fail).
