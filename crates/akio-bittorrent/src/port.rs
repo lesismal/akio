@@ -541,6 +541,32 @@ impl Acceptor for PortAcceptor {
             id: c.id(),
         }
     }
+
+    /// The engine shuts down gracefully (a follow-up of akit's A301): the UDP listener does not
+    /// wait for its peers, so the uTP streams with this one cannot finish what they have in
+    /// flight. Each ends with a RESET, sent before the socket goes, so the peer's stream ends
+    /// at once rather than when its retransmissions give up, and its handler hears `on_close`
+    /// (`ConnectionAborted`) as for [`UtpStream::abort`].
+    fn on_shutdown(&self, c: &Conn<PortPeer>) {
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let peer = canonical(c.peer_addr());
+        let ids: Vec<u16> = lock(&inner.state)
+            .utp
+            .keys()
+            .filter(|(p, _)| *p == peer)
+            .map(|&(_, id)| id)
+            .collect();
+        for id in ids {
+            UtpStream {
+                inner: self.inner.clone(),
+                peer,
+                id,
+            }
+            .abort();
+        }
+    }
 }
 
 impl Handler for PortPeer {

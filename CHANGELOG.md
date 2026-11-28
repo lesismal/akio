@@ -78,6 +78,19 @@ idle timeout: a caller (`srt::dial`, `push`, `pull`), a rendezvous side and `Srt
 sessions now send SHUTDOWN at the engine's shutdown, the peer hears `SrtError::PeerClosed` at
 once, and the local handler's `on_close` gets `None` rather than a transport error. No API
 change.
+### Fixed: BitTorrent peer connections end at the engine's graceful shutdown (akio-bittorrent)
+
+A follow-up of akit's A301. The client's TCP peer connections (accepted and dialed) had no
+`on_shutdown`, so one still in its handshake (MSE or the BitTorrent handshake: no torrent's
+yet, so `Client::close`'s pause did not reach it) held `Engine::wait`, and so `Client::close`,
+until `Config::shutdown_timeout` (10 s), and every peer connection did when the engine was shut
+down directly (`Client::engine().shutdown()`). Each now closes at the engine's shutdown once
+what is queued (a block being sent) is written; the peer wire protocol has no goodbye, requests
+not started are dropped and new sends are refused, and the connection leaves its torrent as on
+any close. A `UdpPort`'s uTP streams, which the UDP listener cannot keep past the shutdown, now
+end with a RESET sent before the socket goes: the remote stream ends at once rather than when
+its retransmissions give up, and the local handler hears `on_close` (`ConnectionAborted`), as
+for `UtpStream::abort`. No API change.
 
 ### Fixed: an `H2Client` connection ends at the engine's graceful shutdown (akio-http)
 

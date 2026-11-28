@@ -61,6 +61,16 @@ akit 的 A301 的后续。RTSP 与 RTMP 的客户端和服务器没有 `on_shutd
 但其会话结束时不通知对端，对端要等到自己的 peer idle 超时才发现：现在呼叫方（`srt::dial`、`push`、`pull`）、
 rendezvous 一方以及 `SrtServer` 的会话在引擎关闭时发送 SHUTDOWN，对端立即得到 `SrtError::PeerClosed`，
 本地 handler 的 `on_close` 得到 `None` 而不是传输错误。API 不变。
+### 修复：引擎优雅关闭时 BitTorrent 的 peer 连接随之结束（akio-bittorrent）
+
+akit A301 的后续。客户端的 TCP peer 连接（接受的和拨出的）没有 `on_shutdown`，因此仍在握手中的连接
+（MSE 或 BitTorrent 握手：尚未归属任何 torrent，`Client::close` 的暂停够不到它）会让 `Engine::wait`
+乃至 `Client::close` 一直等到 `Config::shutdown_timeout`（10 秒）；直接关闭引擎
+（`Client::engine().shutdown()`）时，每个 peer 连接都会如此。现在引擎关闭时，每个连接在已排队的数据
+（正在发送的块）写出后关闭；peer wire 协议没有告别消息，尚未开始的请求被丢弃，新的发送被拒绝，连接像
+任何关闭一样离开其 torrent。`UdpPort` 的 uTP 流无法在 UDP listener 关闭后继续，现在会在 socket 关闭前
+发送 RESET 结束：对端的流立即结束，而不必等到其重传放弃；本地 handler 收到 `on_close`
+（`ConnectionAborted`），与 `UtpStream::abort` 一致。API 不变。
 
 ### 修复：引擎优雅关闭时 `H2Client` 的连接随之结束（akio-http）
 

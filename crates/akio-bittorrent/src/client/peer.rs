@@ -334,6 +334,19 @@ impl Acceptor for TcpAcceptor {
         s.start(Link::Tcp(c.inner().clone()));
         TcpPeer { s }
     }
+
+    fn on_shutdown(&self, c: &Conn<TcpPeer>) {
+        shutdown(c);
+    }
+}
+
+/// The engine shuts down gracefully (a follow-up of akit's A301): the peer wire protocol has no
+/// goodbye, so the connection closes once what is queued (a block being sent) is written; it
+/// leaves its torrent then, as on any close, and new sends are refused. Without it a
+/// connection still in its handshake (no torrent's to close) held `Engine::wait`, and so
+/// `Client::close`, until the shutdown timeout.
+fn shutdown(c: &Conn<TcpPeer>) {
+    c.close_after_send();
 }
 
 impl Handler for TcpPeer {
@@ -362,6 +375,10 @@ impl Acceptor for DialAcceptor {
         );
         s.start(Link::Tcp(c.inner().clone()));
         TcpPeer { s }
+    }
+
+    fn on_shutdown(&self, c: &Conn<TcpPeer>) {
+        shutdown(c);
     }
 }
 

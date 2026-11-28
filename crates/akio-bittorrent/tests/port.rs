@@ -199,3 +199,42 @@ fn utp_inbound_table_is_capped() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(b.utp_connections(), 6);
 }
+
+/// The engine's graceful shutdown ends the port's uTP streams with a RESET (a follow-up of
+/// akit's A301): the remote's stream ends at once rather than when its retransmissions give
+/// up, and the local handler hears `on_close` too.
+#[test]
+fn utp_streams_end_at_the_engine_shutdown() {
+    let (a, ea, _) = port();
+    let (b, _eb, baddr) = port();
+    let (btx, brx) = mpsc::channel();
+    b.on_accept(move |_s| {
+        Some(Box::new(Sink {
+            got: Arc::default(),
+            done: btx.clone(),
+            want: 5,
+            echo: true,
+        }))
+    });
+    let (atx, arx) = mpsc::channel();
+    let s = a.connect(
+        baddr,
+        Sink {
+            got: Arc::default(),
+            done: atx,
+            want: 5,
+            echo: false,
+        },
+    );
+    assert_eq!(arx.recv_timeout(Duration::from_secs(5)).unwrap(), "connect");
+    assert_eq!(brx.recv_timeout(Duration::from_secs(5)).unwrap(), "connect");
+    s.write(b"hello").unwrap();
+    assert_eq!(arx.recv_timeout(Duration::from_secs(5)).unwrap(), "all");
+    ea.shutdown();
+    ea.wait();
+    assert_eq!(arx.recv_timeout(Duration::from_secs(1)).unwrap(), "error");
+    // Well before B's retransmissions or keepalives would notice.
+    assert_eq!(brx.recv_timeout(Duration::from_secs(3)).unwrap(), "all");
+    assert_eq!(brx.recv_timeout(Duration::from_secs(3)).unwrap(), "error");
+    assert_eq!(b.utp_connections(), 0);
+}
