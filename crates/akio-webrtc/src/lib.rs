@@ -1526,6 +1526,40 @@ impl Hub {
             p.close();
         }
     }
+
+    /// Closes every peer, deletes the TURN allocations, ends ICE-TCP and mDNS and closes the
+    /// sockets ([`Endpoint::close`]).
+    fn close(&self) {
+        self.close_all();
+        let relays = self.with_relays(std::mem::take);
+        for r in relays {
+            r.close();
+        }
+        if let Some(t) = self.tcp.get() {
+            t.close();
+        }
+        if let Some(m) = self.mdns.get() {
+            m.close();
+        }
+        if let Some(b) = self.binding() {
+            b.close();
+        }
+        if let Some(b) = self.rtcp.get() {
+            b.close();
+        }
+    }
+}
+
+/// The engine shuts down gracefully (a follow-up of akit's A301): the endpoint or server of
+/// `hub` closes as [`Endpoint::close`] does, so its peers' remotes hear the SCTP ABORT and the
+/// DTLS `close_notify` at once (rather than at their consent timeout), its TURN allocations are
+/// deleted, mDNS names get their goodbyes, and its TCP connections (ICE-TCP, TURN over TCP or
+/// TLS) close once those are written instead of holding `Engine::wait` until the shutdown
+/// timeout. Called by each of its connections' acceptors; once is enough.
+pub(crate) fn engine_shutdown(hub: &Weak<Hub>) {
+    if let Some(h) = hub.upgrade() {
+        h.close();
+    }
 }
 
 /// The UDP connection handler under an [`RtcServer`] or [`Endpoint`] (internal).
@@ -1787,7 +1821,7 @@ impl Acceptor for RtcServer {
     }
 
     fn on_shutdown(&self, _c: &Conn<RtcUdp>) {
-        self.0.close_all();
+        self.0.close();
     }
 }
 
@@ -1812,6 +1846,10 @@ impl Acceptor for RtcRtcp {
             hub: self.0.clone(),
             rtcp: true,
         }
+    }
+
+    fn on_shutdown(&self, _c: &Conn<RtcUdp>) {
+        engine_shutdown(&self.0);
     }
 }
 
@@ -1839,6 +1877,10 @@ impl Acceptor for BoundAcceptor {
             hub: self.0.clone(),
             rtcp: false,
         }
+    }
+
+    fn on_shutdown(&self, _c: &Conn<RtcUdp>) {
+        engine_shutdown(&self.0);
     }
 }
 
@@ -2514,24 +2556,9 @@ impl Endpoint {
         lock(&self.0.peers).len()
     }
 
-    /// Closes every peer, deletes the TURN allocations and closes the socket.
+    /// Closes every peer, deletes the TURN allocations and closes the socket. The engine's
+    /// graceful shutdown ([`Engine::shutdown`]) does the same.
     pub fn close(&self) {
-        self.0.close_all();
-        let relays = self.0.with_relays(std::mem::take);
-        for r in relays {
-            r.close();
-        }
-        if let Some(t) = self.0.tcp.get() {
-            t.close();
-        }
-        if let Some(m) = self.0.mdns.get() {
-            m.close();
-        }
-        if let Some(b) = self.binding() {
-            b.close();
-        }
-        if let Some(b) = self.0.rtcp.get() {
-            b.close();
-        }
+        self.0.close();
     }
 }

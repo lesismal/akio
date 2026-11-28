@@ -338,19 +338,28 @@ impl TcpSide {
             });
             v
         };
+        // After what the peer sent last (its SCTP ABORT and DTLS close_notify).
         for c in conns {
-            c.close();
+            c.close_after_send();
         }
     }
 
     /// Stops accepting and dialing, and closes every connection.
     pub(crate) fn close(&self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(&bound) = self.bound.get() {
-            wake(bound);
-        }
-        if let Some(&(_, bound)) = self.so.get() {
-            wake(bound);
+        // The accept threads are woken from a thread of their own: this may run on an I/O
+        // thread (the engine's shutdown), where even a loopback connect must not block.
+        let bound: Vec<SocketAddr> = self
+            .bound
+            .get()
+            .copied()
+            .into_iter()
+            .chain(self.so.get().map(|&(_, b)| b))
+            .collect();
+        if !bound.is_empty() {
+            let _ = std::thread::Builder::new()
+                .name("akio-webrtc-tcp-wake".into())
+                .spawn(move || bound.into_iter().for_each(wake));
         }
         let conns: Vec<Conn<IceTcp>> = {
             let mut cs = lock(&self.conns);
@@ -363,7 +372,7 @@ impl TcpSide {
             v
         };
         for c in conns {
-            c.close();
+            c.close_after_send();
         }
     }
 
@@ -515,6 +524,18 @@ impl Acceptor for RtcTcp {
         }
         .on_open(c)
     }
+
+    fn on_shutdown(&self, _c: &Conn<IceTcp>) {
+        shutdown(&self.0);
+    }
+}
+
+/// The engine shuts down: the endpoint or server closes ([`crate::engine_shutdown`]), and
+/// with it this connection, once its peer's goodbye is written.
+fn shutdown(side: &Weak<TcpSide>) {
+    if let Some(s) = side.upgrade() {
+        crate::engine_shutdown(&s.hub);
+    }
 }
 
 struct TcpAcceptor {
@@ -566,6 +587,10 @@ impl Acceptor for TcpAcceptor {
             local,
             _guard: guard,
         }
+    }
+
+    fn on_shutdown(&self, _c: &Conn<IceTcp>) {
+        shutdown(&self.side);
     }
 }
 

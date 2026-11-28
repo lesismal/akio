@@ -147,6 +147,8 @@ pub(crate) enum Deferred {
     Icmp(SocketAddr, SocketAddr, u8, u8),
     /// Close this connection (outside the lock: closing may call back).
     Close(Conn<TurnConn>),
+    /// Close this connection once what is queued (the allocation's deletion) is written.
+    Finish(Conn<TurnConn>),
 }
 
 struct State {
@@ -444,7 +446,8 @@ impl Relay {
             st.retry_at = None;
             st.waiter = None;
             if let Link::Open(c) = mem::replace(&mut st.link, Link::None) {
-                st.deferred.push(Deferred::Close(c));
+                // After the Refresh (lifetime 0) and the DTLS close_notify just queued.
+                st.deferred.push(Deferred::Finish(c));
             }
             st.generation += 1;
         });
@@ -694,6 +697,7 @@ impl Relay {
             match d {
                 Deferred::Dial(g) => self.dial_now(g),
                 Deferred::Close(c) => c.close(),
+                Deferred::Finish(c) => c.close_after_send(),
                 Deferred::Lost(old) => {
                     if let Some(h) = self.hub.upgrade() {
                         h.relay_lost(old);
@@ -801,6 +805,15 @@ impl Acceptor for TurnDial {
             relay: self.relay.clone(),
             generation: self.generation,
             reader: FrameReader::new(),
+        }
+    }
+
+    /// The engine shuts down: the endpoint closes ([`crate::engine_shutdown`]), deleting this
+    /// allocation, and the connection closes once that is written.
+    fn on_shutdown(&self, c: &Conn<TurnConn>) {
+        match self.relay.upgrade() {
+            Some(r) => crate::engine_shutdown(&r.hub),
+            None => c.close(),
         }
     }
 }

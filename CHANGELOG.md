@@ -35,6 +35,7 @@ calls fail with `CallError::Closed` unsent, `notify` returns `false`, the other 
 are answered with `SERVER_BUSY` (notifies dropped), `Peer::is_connected` turns `false` and a
 client stops reconnecting; the connection closes at once when no call is in flight. Open streams
 do not hold it: they end with `StreamEvent::Eof` when it closes. No API change.
+
 ### Fixed: a `TcpAllocation` ends at the engine's graceful shutdown (akio-turn)
 
 A follow-up of akit's A301. The control connection of an engine-driven TCP allocation
@@ -60,6 +61,7 @@ HTTP/2 or HTTP/3 stream ends its response when its upstream closes, so the proxy
 goes away with its last stream (HTTP/1.1 `CONNECT` tunnels already ended with the HTTP
 connection). The client's `UdpAssociation` closes (`is_open` turns `false`); one still being
 negotiated fails with `ConnectionAborted`. No API change.
+
 ### Fixed: RTSP, RTMP and SRT sessions end at the engine's graceful shutdown (akio-media)
 
 A follow-up of akit's A301. The RTSP and RTMP clients and servers had no `on_shutdown`, so a
@@ -78,6 +80,22 @@ idle timeout: a caller (`srt::dial`, `push`, `pull`), a rendezvous side and `Srt
 sessions now send SHUTDOWN at the engine's shutdown, the peer hears `SrtError::PeerClosed` at
 once, and the local handler's `on_close` gets `None` rather than a transport error. No API
 change.
+
+### Fixed: WebRTC endpoints and servers close at the engine's graceful shutdown (akio-webrtc)
+
+A follow-up of akit's A301. An `Endpoint` did nothing at `Engine::shutdown`: its peers' remotes
+heard nothing until their consent timeout, and its TCP connections (ICE-TCP from `dial_tcp`,
+`listen_tcp` and `listen_tcp_so`; a TURN allocation over TCP or TLS) held `Engine::wait` until
+`Config::shutdown_timeout`. An `RtcServer` closed its peers only from its UDP connections, so a
+server whose peers came over ICE-TCP (`RtcServer::tcp`) only held `wait` the same way. Every
+acceptor of an endpoint or server (its sockets, ICE-TCP, TURN connections, the RTCP listener)
+now closes it at the shutdown as `Endpoint::close` does: each peer sends its SCTP ABORT and
+DTLS `close_notify` (the remote's peer closes at once) and hears `on_close`, TURN allocations
+are deleted, ICE-TCP stops accepting and dialing, mDNS names get their goodbyes (RFC 6762
+§10.1), and the TCP connections close once that is written. ICE-TCP connections and TURN
+control connections closed by `Peer::close` or `Endpoint::close` now also close after what
+was queued (the peer's goodbye, the allocation's deletion) instead of dropping it. No API change.
+
 ### Fixed: BitTorrent peer connections end at the engine's graceful shutdown (akio-bittorrent)
 
 A follow-up of akit's A301. The client's TCP peer connections (accepted and dialed) had no

@@ -30,6 +30,7 @@ akit 的 A301 的后续。arpc 的两个 acceptor 都没有 `on_shutdown`，因�
 以 `CallError::Closed` 失败，`notify` 返回 `false`，对端的新调用以 `SERVER_BUSY` 应答（notify 被丢弃），
 `Peer::is_connected` 变为 `false`，客户端不再重连；没有进行中的调用时连接立即关闭。打开的流不会拖住
 关闭：连接关闭时它们以 `StreamEvent::Eof` 结束。API 不变。
+
 ### 修复：引擎优雅关闭时 `TcpAllocation` 随之结束（akio-turn）
 
 akit A301 的后续。由引擎驱动的 TCP 分配（`client::TcpAllocation`，明文或 TLS）的控制连接在
@@ -48,6 +49,7 @@ akit A301 的后续。`Socks` 会话、`Socks` 与 `connect_proxy` 隧道的上�
 `CONNECT` 在上游关闭时结束响应，代理的连接随最后一个流离开（HTTP/1.1 的 `CONNECT` 隧道此前已随 HTTP 连接
 结束）。客户端的 `UdpAssociation` 关闭（`is_open` 变为 `false`）；仍在协商的关联以 `ConnectionAborted`
 失败。API 不变。
+
 ### 修复：引擎优雅关闭时 RTSP、RTMP 与 SRT 会话随之结束（akio-media）
 
 akit 的 A301 的后续。RTSP 与 RTMP 的客户端和服务器没有 `on_shutdown`，因此仍打开的会话（正在拉流或推流的
@@ -61,6 +63,19 @@ akit 的 A301 的后续。RTSP 与 RTMP 的客户端和服务器没有 `on_shutd
 但其会话结束时不通知对端，对端要等到自己的 peer idle 超时才发现：现在呼叫方（`srt::dial`、`push`、`pull`）、
 rendezvous 一方以及 `SrtServer` 的会话在引擎关闭时发送 SHUTDOWN，对端立即得到 `SrtError::PeerClosed`，
 本地 handler 的 `on_close` 得到 `None` 而不是传输错误。API 不变。
+
+### 修复：引擎优雅关闭时 WebRTC 的 endpoint 和 server 随之关闭（akio-webrtc）
+
+akit A301 的后续。`Endpoint` 在 `Engine::shutdown` 时什么也不做：其 peer 的对端在 consent 超时之前
+收不到任何消息，其 TCP 连接（`dial_tcp`、`listen_tcp`、`listen_tcp_so` 的 ICE-TCP；基于 TCP 或 TLS
+的 TURN allocation）会让 `Engine::wait` 一直等到 `Config::shutdown_timeout`。`RtcServer` 只从其 UDP
+连接关闭 peer，因此 peer 只经 ICE-TCP（`RtcServer::tcp`）连入的 server 同样会拖住 `wait`。现在
+endpoint 或 server 的每个 acceptor（其 socket、ICE-TCP、TURN 连接、RTCP listener）都会在关闭时像
+`Endpoint::close` 那样关闭它：每个 peer 发送 SCTP ABORT 和 DTLS `close_notify`（对端的 peer 立即关闭）
+并收到 `on_close`，TURN allocation 被删除，ICE-TCP 停止接受和拨号，mDNS 名称发出 goodbye（RFC 6762
+§10.1），TCP 连接在这些写出后关闭。由 `Peer::close` 或 `Endpoint::close` 关闭的 ICE-TCP 连接和 TURN
+控制连接现在也会在已排队的数据（peer 的告别、allocation 的删除）写出后关闭，而不是将其丢弃。API 不变。
+
 ### 修复：引擎优雅关闭时 BitTorrent 的 peer 连接随之结束（akio-bittorrent）
 
 akit A301 的后续。客户端的 TCP peer 连接（接受的和拨出的）没有 `on_shutdown`，因此仍在握手中的连接

@@ -549,6 +549,26 @@ fn names_are_probed_announced_and_withdrawn() {
     e.shutdown();
 }
 
+/// The engine's graceful shutdown says goodbye for the endpoint's names too, as closing the
+/// endpoint does (a follow-up of akit's A301).
+#[test]
+fn names_are_withdrawn_at_the_engine_shutdown() {
+    let Some((raw, _ifs)) = raw_v6() else { return };
+    let e = engine();
+    let Some(ep) = concealing_v6(&e) else { return };
+    let name = offered_name(&ep);
+    let announced = recv_v6_within(&raw, Duration::from_secs(4), |_src, m| {
+        (seen(&name, &m) == Some(Seen::Announcement)).then_some(())
+    });
+    assert!(announced.is_some(), "{name} not announced");
+    e.shutdown();
+    e.wait();
+    let bye = recv_v6_within(&raw, Duration::from_secs(3), |_src, m| {
+        (seen(&name, &m) == Some(Seen::Goodbye)).then_some(())
+    });
+    assert!(bye.is_some(), "no goodbye for {name}");
+}
+
 /// Another host answering our name with another address takes it: the endpoint stops
 /// answering it and conceals its address under a new name.
 #[test]

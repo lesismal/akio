@@ -197,6 +197,14 @@ impl Acceptor for MdnsAcceptor {
     fn on_open(&self, _c: &Conn<MdnsUdp>) -> MdnsUdp {
         MdnsUdp(self.0.clone(), self.1)
     }
+
+    /// The engine shuts down (a follow-up of akit's A301): our names get their goodbyes
+    /// (RFC 6762 §10.1) before the sockets go, as when the endpoint closes.
+    fn on_shutdown(&self, _c: &Conn<MdnsUdp>) {
+        if let Some(m) = self.0.upgrade() {
+            m.close();
+        }
+    }
 }
 
 /// An mDNS socket's handler (and whether it is the IPv6 one).
