@@ -10,6 +10,18 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：io_uring 上关闭时仍有未交付输入的连接会重置对端，与 epoll 一致（akio-uring、akio-sys）
+
+akit 的 A302；ADR-188。对端仍在写入（上传、FastCGI 应用正在流式发送响应）时对 TCP 连接调用
+`Conn::close`，在 io_uring 上有时会让对端阻塞到内核的 FIN-WAIT-2 超时（`tcp_fin_timeout`，60 秒），
+而 epoll 会立即重置对端。在关闭的 `shutdown` 之后才进入内核的 multishot recv（同一轮循环内恢复读取并
+关闭连接，或者 recv 推迟执行）会取走套接字已排队的数据，于是最终关闭时没有未读数据，只发 FIN 而不发
+重置；Linux 对 `SHUT_RD` 之后的读取不发窗口更新，面对零窗口的对端永远得不到通知。现在，从未交给 handler
+的输入（读取暂停时暂存的、关闭之后读到的、或仍在进行的 recv 取走的；后者会让套接字保持打开直到 recv
+结束）会让套接字以 `SO_LINGER` 0 关闭：对端在 FIN 之后被重置，io_uring 与 epoll 一致。读完对端全部数据
+的连接仍然只以 FIN 结束。`Conn::close` 的文档写明了各平台上对端看到的情况（macOS 重置对端的下一个报文段）。
+akio-sys 新增 `reset_on_close(&TcpStream)`。akit 无需改动。
+
 ### 修复：引擎优雅关闭时 QUIC 或 HTTP/3 客户端的连接随之关闭（akio-quic、akio-h3）
 
 akit 的 A301 的后续。客户端的 QUIC 连接（`akio_quic::dial`、`H3Client`）不会得知 `Engine::shutdown`：

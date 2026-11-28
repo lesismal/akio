@@ -58,8 +58,8 @@ pub use net::listen_backlog;
 pub use net::{
     RecvInfo, accept_stream, connect_nonblocking, connect_nonblocking_from,
     connect_unix_nonblocking, dont_fragment, enable_recv_interface, listen, listen_udp,
-    listen_unix, multicast_hops_v6, path_mtu, sendfile, set_backlog, set_dont_fragment,
-    set_multicast_hops_v6, set_unicast_hops_v6, stop_listening, unicast_hops_v6,
+    listen_unix, multicast_hops_v6, path_mtu, reset_on_close, sendfile, set_backlog,
+    set_dont_fragment, set_multicast_hops_v6, set_unicast_hops_v6, stop_listening, unicast_hops_v6,
 };
 pub use poller::{Event, Poller, Registry};
 #[doc(hidden)]

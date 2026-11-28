@@ -66,7 +66,7 @@ Listener::tcp(addr).serve(fn_acceptor(|_c: &Conn<Echo>| Echo))
 | `send_shared(SharedBuf)` | 同上，使用引用计数缓冲区：广播只编码一次。 |
 | `send_segments(Vec<u8>, size)` | UDP：一次发多个数据报（Linux 上尽量用 GSO / `sendmmsg`）；TCP 上等同 `send_owned`。 |
 | `cork()` / `flush()` | 合并写直到 `flush`（回调内自动如此）。 |
-| `close()` | 立即关闭，丢弃未发送的数据。 |
+| `close()` | 立即关闭，丢弃未发送的数据。TCP 对端收到 FIN；若它发来的输入有从未交给 handler 的，随后收到重置（ADR-188），epoll 与 io_uring 一致。 |
 | `close_after_send()` | 排队的数据写完后关闭；之后的发送失败。 |
 | `hold_reads(bool)` | 暂停 / 恢复读取对端数据。 |
 | `on_drain(f)` | 发送队列清空（或连接关闭）时调用 `f`。 |

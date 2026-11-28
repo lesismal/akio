@@ -69,7 +69,7 @@ the wrapper.)
 | `send_shared(SharedBuf)` | Same with a reference-counted buffer: encode a broadcast once. |
 | `send_segments(Vec<u8>, size)` | UDP: several datagrams at once (GSO / `sendmmsg` where Linux allows); TCP: `send_owned`. |
 | `cork()` / `flush()` | Coalesce writes until `flush` (inside callbacks this is automatic). |
-| `close()` | Close now, discarding unsent data. |
+| `close()` | Close now, discarding unsent data. A TCP peer gets a FIN, then a reset if it sent input the handler was never given (ADR-188), on epoll and io_uring alike. |
 | `close_after_send()` | Close once everything queued is written; later sends fail. |
 | `hold_reads(bool)` | Pause / resume reading from the peer. |
 | `on_drain(f)` | Call `f` once the send queue is empty (or the connection closed). |

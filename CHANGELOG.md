@@ -10,6 +10,22 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: a connection closed on io_uring with input it did not deliver resets its peer, as on epoll (akio-uring, akio-sys)
+
+akit's A302; ADR-188. `Conn::close` on a TCP connection whose peer was still writing (an upload,
+a FastCGI application streaming its response) sometimes left the peer blocked for the kernel's
+FIN-WAIT-2 timeout (`tcp_fin_timeout`, 60 s) on io_uring, where epoll resets it at once. A
+multishot recv that reached the kernel after the close's `shutdown` (reads resumed and the
+connection closed in the same round of the loop, or a recv run late) took what the socket had
+queued, so the final close found nothing unread and sent a FIN instead of a reset; Linux sends no
+window update for a read after `SHUT_RD`, so a peer facing a zero window was never told. Now input
+the handler was never given (held while reads were paused, read after the close, or taken by a recv
+still in flight, which keeps the socket open until it ends) closes the socket with `SO_LINGER` 0:
+the peer is reset after the FIN, on io_uring as on epoll. A connection that read everything its
+peer sent still ends with a FIN alone. `Conn::close`'s documentation states what the peer sees on
+each platform (macOS resets the peer's next segment). akio-sys adds `reset_on_close(&TcpStream)`.
+No change for akit.
+
 ### Fixed: a QUIC or HTTP/3 client connection is closed at the engine's graceful shutdown (akio-quic, akio-h3)
 
 A follow-up of akit's A301. A client's QUIC connection (`akio_quic::dial`, `H3Client`) was not

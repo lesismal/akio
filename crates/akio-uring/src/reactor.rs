@@ -81,6 +81,17 @@ struct Orphan {
     _msg: Option<Box<SendMsg>>,
 }
 
+/// A closed connection whose multishot recv is still in flight (`Loop::reads_ending`): its
+/// socket stays open until the recv's final completion, so that if the recv took input after
+/// the close (the shutdown does not stop it taking what the socket had queued, and after
+/// `SHUT_RD` Linux opens no window for what it takes), the close still resets the peer, as
+/// closing a socket with that input unread does (akit's A302).
+struct ReadsEnding {
+    inner: Arc<ConnInner>,
+    /// Input arrived that the handler was never given: reset at the close.
+    dropped: bool,
+}
+
 /// The recv operation kind for buffer group `bgid`.
 fn recv_op(bgid: u16) -> u64 {
     if bgid == 0 { OP_RECV } else { OP_RECV1 }
@@ -834,6 +845,9 @@ struct LoopConn {
     poll_armed: bool,
     /// Reads paused by backpressure.
     bp: bool,
+    /// Input arrived after the handler closed the connection (before `finalize`): never
+    /// delivered, so the close resets the peer.
+    dropped_in: bool,
     /// Peer sent EOF; we are only draining output.
     eof: bool,
     /// Input that arrived while reads were paused (backpressure, `hold_reads`): a multishot recv
@@ -988,6 +1002,8 @@ pub(crate) struct Loop {
     rs: RingSend,
     /// Ring sends of closed connections, by connection id, until their completions.
     orphans: akio_core::IdMap<Orphan>,
+    /// Closed connections whose multishot recv has not ended yet, by connection id.
+    reads_ending: akio_core::IdMap<ReadsEnding>,
     /// Connections whose described ring send is not submitted yet: submitted together right
     /// before the loop enters the kernel (`submit_sends`), each described again then, so that
     /// everything the batch queued for a connection leaves in one send.
@@ -1131,6 +1147,7 @@ impl Loop {
             ring_sends: ring_sends(),
             rs: RingSend::default(),
             orphans: akio_core::IdMap::default(),
+            reads_ending: akio_core::IdMap::default(),
             unsent: Vec::new(),
         })
     }
@@ -1639,6 +1656,9 @@ impl Loop {
             }
             if res > 0 {
                 let n = res as usize;
+                if !lc.inner.is_open() {
+                    lc.dropped_in = true;
+                }
                 if let Some(bid) = bid {
                     if !lc.eof && !lc.held_eof && lc.inner.is_open() {
                         let g = if self.bufs.bgid == bgid {
@@ -1726,6 +1746,17 @@ impl Loop {
                 done = Done::Err(io::Error::from_raw_os_error(-res));
             }
             // ENOBUFS/ECANCELED/EINTR end the multishot; `refresh` re-arms it if still wanted.
+        } else if let Some(r) = self.reads_ending.get_mut(&id) {
+            // The connection closed while this recv was in flight: what it takes now, the
+            // handler never sees.
+            r.dropped |= res > 0;
+            if !more {
+                if let Some(r) = self.reads_ending.remove(&id) {
+                    if r.dropped {
+                        let _ = akio_sys::reset_on_close(r.inner.stream());
+                    }
+                }
+            }
         }
         self.submit_send(id);
         if let Some(bid) = bid {
@@ -1866,6 +1897,7 @@ impl Loop {
                 cancel_sent: false,
                 poll_armed: false,
                 bp: false,
+                dropped_in: false,
                 eof: false,
                 held_in: Vec::new(),
                 held_eof: false,
@@ -2195,6 +2227,27 @@ impl Loop {
                     _msg: lc.send_msg.take(),
                 },
             );
+        }
+        // Input the handler was never given resets the peer, as epoll's close of a socket with
+        // that input unread does (akit's A302). A recv in flight may still take some after the
+        // shutdown: the socket stays open until it ends (`on_recv`), the cancel making sure it
+        // does.
+        let dropped = lc.dropped_in || !lc.held_in.is_empty();
+        if lc.recv_armed {
+            if !lc.cancel_sent {
+                self.push(
+                    Sqe::async_cancel(ud(id, recv_op(lc.recv_bgid))).user_data(ud(id, OP_OTHER)),
+                );
+            }
+            self.reads_ending.insert(
+                id,
+                ReadsEnding {
+                    inner: lc.inner.clone(),
+                    dropped,
+                },
+            );
+        } else if dropped {
+            let _ = akio_sys::reset_on_close(lc.inner.stream());
         }
         self.graveyard.push(lc.inner.clone());
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);

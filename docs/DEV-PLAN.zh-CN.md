@@ -424,6 +424,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 | TURN 中继 | akio-turn（ADR-083、ADR-091） | 是（`turn-relay-bench`） | 是（按客户端分片分配，3.7x；`028d61d2`） | 没有与 coturn 的吞吐对比。 |
 | 媒体服务器（RTMP、RTSP、HLS、hub） | akio-media | 部分（`bench_segmenting`，各 ADR 的接入 A/B） | 部分（2026-11-21/22 的 `perf(media)`） | 没有与参考服务器对比（SRS、mediamtx）。 |
 | BitTorrent | akio-bittorrent | 部分（`bt-bench` A/B：回环 2,180 MiB/s） | 部分（SHA-1 分片哈希） | 没有与其他客户端对比。 |
+| io_uring 上关闭时仍有未交付输入则重置对端 | akio-uring、akio-sys（ADR-188，akit A302） | 否 | 否 | 在 io_uring 上与 main 同次 A/B：TCP 接入速率（连接、一次 echo、关闭）与 HTTP/1.1 短连接，现在每次关闭都会为已就绪的 recv 多提交一个取消请求，并把套接字放进一个表直到该 recv 结束；keep-alive 与 pipelined plaintext 不变（正在关闭的连接每个完成事件多一次标志检查）。 |
 | 就地修改运行中 TURN 服务器的设置，以及排空 | akio-turn（ADR-186，akit A258） | 否 | 否 | 与 main 同次 A/B：`turn-relay-bench` 的分配与刷新速率（每个请求现在为其限制读取十个 relaxed 原子变量，并在所有 I/O 线程都会获取的读锁下克隆凭据的 `Arc`）；每秒中继的数据报数（不受影响：每个数据报不读取任何限制）。 |
 | 供嵌入 akio-turn 的服务器使用的钩子 | akio-turn（ADR-186，akit A257） | 否 | 否 | 与 main 同次 A/B：`turn-relay-bench` 双向每秒中继的数据报数，不设钩子（每个数据报多读一个 `Option`、多两个计数、多一次分配查找）、设置始终返回 true 的 `on_relay`、设置 `on_event`（每次分配与刷新一个事件）；10 万个分配时 `stats()` 的耗时（它现在遍历分配以统计许可与信道）。 |
 | TURN 中继端口范围、nonce 密钥与流消息上限 | akio-turn（ADR-186，akit A256） | 否 | 否 | 与 main 同次 A/B：`turn-relay-bench` 的分配速率，范围几乎被其他套接字占满时（每个被占端口一次绑定）与不设范围时（预期不变：每次绑定多读一个 `Option`）；设置上限后流客户端的中继吞吐（每条消息一次比较）。 |

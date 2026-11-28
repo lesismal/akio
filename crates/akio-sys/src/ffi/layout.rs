@@ -49,6 +49,7 @@ fn common_layouts() {
     same_layout!(super::in_addr, libc::in_addr, s_addr);
     same_layout!(super::in6_addr, libc::in6_addr, s6_addr);
     same_layout!(super::timespec, libc::timespec, tv_sec, tv_nsec);
+    same_layout!(super::linger, libc::linger, l_onoff, l_linger);
     same_layout!(
         super::sockaddr_in,
         libc::sockaddr_in,
@@ -134,6 +135,7 @@ fn common_constants() {
         SOL_SOCKET,
         SO_REUSEADDR,
         SO_REUSEPORT,
+        SO_LINGER,
         IPPROTO_IPV6,
         IPV6_V6ONLY,
         IPV6_MULTICAST_HOPS,

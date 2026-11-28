@@ -81,6 +81,14 @@ pub struct timespec {
     pub tv_nsec: c_long,
 }
 
+/// `struct linger` (`SO_LINGER`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct linger {
+    pub l_onoff: c_int,
+    pub l_linger: c_int,
+}
+
 /// `struct sockaddr` (only ever used behind a pointer).
 #[repr(C)]
 #[derive(Debug)]

@@ -72,6 +72,7 @@ pub const SOCK_NONBLOCK: c_int = O_NONBLOCK;
 pub const SOCK_CLOEXEC: c_int = O_CLOEXEC;
 pub const SOL_SOCKET: c_int = 1;
 pub const SO_REUSEADDR: c_int = 2;
+pub const SO_LINGER: c_int = 13;
 pub const SO_RCVBUF: c_int = 8;
 pub const SO_REUSEPORT: c_int = 15;
 pub const SHUT_RD: c_int = 0;

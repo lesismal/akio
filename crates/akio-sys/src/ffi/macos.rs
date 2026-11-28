@@ -47,6 +47,7 @@ pub const SOCK_STREAM: c_int = 1;
 pub const SOCK_DGRAM: c_int = 2;
 pub const SOL_SOCKET: c_int = 0xffff;
 pub const SO_REUSEADDR: c_int = 0x0004;
+pub const SO_LINGER: c_int = 0x0080;
 pub const SO_REUSEPORT: c_int = 0x0200;
 pub const SHUT_RD: c_int = 0;
 pub const IPPROTO_IP: c_int = 0;

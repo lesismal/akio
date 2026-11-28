@@ -3394,6 +3394,14 @@ impl<H> Conn<H> {
     }
 
     /// Closes the connection, discarding unsent data. `on_close` runs on the I/O thread.
+    ///
+    /// What the peer sees (TCP): a FIN, and then a reset if it sent input the handler was never
+    /// given, still waiting in the kernel, read but held, or arriving after the close, as
+    /// closing a socket with input unread does on Linux (ADR-188). A peer still writing (an
+    /// upload, a response being streamed to us) thus learns at once, on epoll and io_uring
+    /// alike; on macOS the kernel resets it at its next segment. The reset goes out when the
+    /// socket's descriptor is released: at the close, or once the last handle is dropped. A
+    /// connection that read everything its peer sent ends with the FIN alone.
     pub fn close(&self) {
         self.inner.close();
     }

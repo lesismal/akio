@@ -176,6 +176,30 @@ pub fn stop_listening(listener: &TcpListener) -> io::Result<()> {
     cvt(unsafe { ffi::shutdown(raw, ffi::SHUT_RD) }).map(drop)
 }
 
+/// Makes the close of `stream` reset the connection instead of ending it with a FIN:
+/// `SO_LINGER` on with a zero timeout, so the kernel sends an RST and drops what is still
+/// unsent when the socket's last descriptor (or other reference) goes. For a connection given
+/// up with input it never read, as closing a socket with input still queued does on Linux
+/// (akit's A302). On a Unix-domain socket the option is accepted and has no effect.
+pub fn reset_on_close(stream: &TcpStream) -> io::Result<()> {
+    let raw = std::os::fd::AsRawFd::as_raw_fd(stream);
+    let v = ffi::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    // SAFETY: `v` outlives the call and the length matches its type.
+    cvt(unsafe {
+        ffi::setsockopt(
+            raw,
+            ffi::SOL_SOCKET,
+            ffi::SO_LINGER,
+            (&raw const v).cast::<ffi::c_void>(),
+            size_of::<ffi::linger>() as ffi::socklen_t,
+        )
+    })
+    .map(drop)
+}
+
 /// The accept-queue limit the kernel applies to a listening socket (Linux: `tcpi_sacked` of
 /// `TCP_INFO`, which holds `sk_max_ack_backlog` for listeners). For tests.
 #[cfg(target_os = "linux")]
