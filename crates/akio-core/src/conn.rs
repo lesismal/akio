@@ -2306,11 +2306,29 @@ impl ConnInner {
     }
 
     pub fn send(&self, data: &[u8]) -> Result<()> {
+        self.send_bounded(data, true)
+    }
+
+    /// Sends bytes the caller already counted against the queue's bound (`max_queued_bytes`)
+    /// when it accepted them: refused only once the connection is closed or closing, never with
+    /// `Overloaded`. akio-ws sends a plain session's batch and late queue with it (akit A305),
+    /// whose messages were refused or accepted against [`send_room`](Self::send_room) as they
+    /// were sent; a transport's framing may take the queue a little past the bound.
+    pub fn send_admitted(&self, data: &[u8]) -> Result<()> {
+        self.send_bounded(data, false)
+    }
+
+    #[inline]
+    fn send_bounded(&self, data: &[u8], bounded: bool) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
         let mut w = self.lock();
-        self.check_sendable(&w, data.len())?;
+        if bounded {
+            self.check_sendable(&w, data.len())?;
+        } else if !self.is_open() || w.close_after_send {
+            return Err(Error::Closed);
+        }
         let sealed = match self.seal(&mut w, data) {
             Ok(s) => s,
             Err(e) => {

@@ -8,6 +8,7 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
 };
@@ -71,6 +72,10 @@ fn app(dir: &std::path::Path) -> Router {
         })
         .get("/ws", |ctx: &mut Context| {
             ctx.upgrade_websocket(Echo, &WsOptions::default());
+        })
+        .get("/ws-hold", |ctx: &mut Context| {
+            let hold = HOLD.lock().unwrap().clone().unwrap();
+            ctx.upgrade_websocket(HoldRead(hold), &WsOptions::default());
         })
         .get(
             "/s/*path",
@@ -406,4 +411,71 @@ fn websocket_upgrade_over_tls() {
     let (op, payload) = read_frame(&mut c);
     assert_eq!(op, 8);
     assert_eq!(&payload[..2], &1000u16.to_be_bytes());
+}
+
+/// `/ws-hold`'s sessions hand their sender over on "go", inside the read, and hold the read
+/// until resumed (the test that set the channels).
+type Hold = (mpsc::Sender<WsSender>, Arc<Mutex<mpsc::Receiver<()>>>);
+static HOLD: Mutex<Option<Hold>> = Mutex::new(None);
+
+struct HoldRead(Hold);
+
+impl WsHandler for HoldRead {
+    fn on_message(&mut self, ws: &WsSender, msg: Message) {
+        if matches!(msg, Message::Text(ref t) if t == "go") {
+            self.0.0.send(ws.clone()).unwrap();
+            // A test that failed dropped the other end: the read ends then too.
+            let _ = self.0.1.lock().unwrap().recv();
+        }
+    }
+}
+
+#[test]
+fn late_sends_over_tls_fill_the_connections_queue_and_all_arrive() {
+    // akit A305 over TLS: what another thread sends while the session's I/O thread is inside a
+    // read counts in queued_bytes and is refused near the connection's max_queued_bytes, not at
+    // a bound of its own; everything accepted arrives, though sealing it takes a little more.
+    const MAX: usize = 4 << 20;
+    const LEN: usize = 30_000; // a 4-byte header
+    let s = start("ws-hold");
+    // Declared after the server, so that a failed assertion drops `resume` (ending the held
+    // read) before the server's shutdown waits for it.
+    let (go, went) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
+    *HOLD.lock().unwrap() = Some((go, Arc::new(Mutex::new(resumed))));
+    let mut c = Conn::open(&s);
+    c.write(
+        b"GET /ws-hold HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    );
+    assert_eq!(c.read_head().0, 101);
+    c.write(&masked_frame(1, b"go"));
+    let ws = went.recv_timeout(Duration::from_secs(5)).unwrap();
+    ws.set_max_queued_bytes(Some(MAX)).unwrap();
+    let base = ws.queued_bytes();
+    let mut body = pattern(LEN);
+    let mut n = 0u32;
+    let refused = loop {
+        body[..4].copy_from_slice(&n.to_be_bytes());
+        match ws.send_binary(&body) {
+            Ok(()) => n += 1,
+            Err(e) => break e,
+        }
+    };
+    assert!(matches!(refused, akio::Error::Overloaded), "{refused:?}");
+    let late = n as usize * (LEN + 4);
+    assert_eq!(ws.queued_bytes(), base + late);
+    assert!(
+        base + late + (LEN + 14) + (64 << 10) > MAX,
+        "refused at {late} bytes"
+    );
+    resume.send(()).unwrap();
+    for i in 0..n {
+        let (op, got) = read_frame(&mut c);
+        assert_eq!(op, 2);
+        assert_eq!(got[..4], i.to_be_bytes(), "message {i} of {n}");
+        assert!(got[4..] == body[4..], "message {i} corrupted");
+    }
+    c.write(&masked_frame(8, &1000u16.to_be_bytes()));
+    assert_eq!(read_frame(&mut c).0, 8);
 }

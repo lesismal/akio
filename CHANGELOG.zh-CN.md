@@ -10,6 +10,21 @@ akio 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 修复：handler 运行期间其他线程向 WebSocket 发送的内容计入 `queued_bytes`，并以连接的上限为界（akio-ws、akio-core）
+
+akit 的 A305；ADR-189。在不压缩的 TCP 或 TLS 服务端 WebSocket 上，连接的 I/O 线程处于 handler 之中时
+其他线程发送的内容在迟到队列中等待 handler 返回，以免超过 handler 已发送的内容。这个队列对节流不可见：
+`WsSender::queued_bytes` 与 `on_drain` 只看连接的队列（此时常常为空），按它们节流的生产者从不暂停；
+超过固定的 4 MiB 后发送以 `Overloaded` 失败，而 `queued_bytes` 读数为 0，远低于连接的
+`max_queued_bytes`；之后如果连接拒绝这些迟到字节，发送时返回 `Ok` 的消息会被悄悄丢弃（handler 中
+发起的关闭也会把关闭帧放在它们前面）。现在迟到字节计入 `queued_bytes`（在 handler 中询问时还包括它在
+这次读取中发送的内容）；`on_drain` 等待它们写完；上限是连接的：迟到字节、handler 的批次（至多预留
+64 KiB）与连接的队列之和不超过 `max_queued_bytes`，超过时发送以 `Overloaded` 被拒绝，与连接自身的拒绝
+一致；所有被接受的内容都会发出（隐藏的 `ConnInner::send_admitted`，只会被已在关闭的连接拒绝），handler
+中发起的关闭会先发出迟到字节。压缩、客户端、HTTP/2 与 HTTP/3 上的 WebSocket 会话没有迟到队列。akit 的
+加密 console WebSocket 不再遇到被拒绝的发送：`large_transfers_both_ways` 六份同时运行、每种后端 240 次，
+之前失败 16 次（epoll）与 24 次（io_uring），之后为 0；akit 无需改动。
+
 ### 修复：io_uring 上关闭时仍有未交付输入的连接会重置对端，与 epoll 一致（akio-uring、akio-sys）
 
 akit 的 A302；ADR-188。对端仍在写入（上传、FastCGI 应用正在流式发送响应）时对 TCP 连接调用

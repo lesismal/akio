@@ -132,6 +132,10 @@ A relay or a tunnel whose messages come from, or go to, other connections links 
 backpressure (rule 8) through the `WsSender`, from any thread:
 
 - `queued_bytes()`: what waits to go out; past a high water, hold what feeds this WebSocket.
+  Over TCP or TLS without compression, what other threads send while the connection's I/O
+  thread is inside the handler waits for the handler to return (so it cannot overtake what the
+  handler sent); it counts here, `on_drain` waits for it, and a send is refused with
+  `Overloaded` only where the connection's `max_queued_bytes` is (ADR-189).
 - `on_drain(f)`: `f` runs once that queue is empty again (at once if it is), or when the
   connection closes; the last waiter set wins. Over HTTP/3 it runs once the QUIC stream's send
   buffer has room, as for a streamed response.

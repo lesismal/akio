@@ -10,6 +10,26 @@ All notable changes to `akio` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed: what other threads send to a WebSocket while its handler runs counts in `queued_bytes` and is bounded by the connection (akio-ws, akio-core)
+
+akit's A305; ADR-189. On a server WebSocket over TCP or TLS without compression, what other
+threads send while the connection's I/O thread is inside the handler waits in a late queue until
+the handler returns, so that it cannot overtake what the handler sent. That queue was invisible to
+pacing: `WsSender::queued_bytes` and `on_drain` saw the connection's queue alone (often empty
+meanwhile), so a producer paced on them never held; past a fixed 4 MiB a send failed with
+`Overloaded` while `queued_bytes` read 0, far below the connection's `max_queued_bytes`; and if the
+connection then refused the late bytes, messages whose sends had returned `Ok` were dropped without
+a word (and a close from inside the handler put its close frame before them). Now the late bytes
+count in `queued_bytes` (with, asked from inside the handler, what it sent in that read);
+`on_drain` waits for them to be written; the bound is the connection's: the late bytes, the
+handler's batch (at most 64 KiB reserved) and the connection's queue stay within
+`max_queued_bytes`, and a send past it is refused with `Overloaded` as the connection itself refuses
+one; everything accepted is sent (`ConnInner::send_admitted`, hidden, refused only by a connection
+already closing), and a close from inside the handler sends the late bytes first. Compressed,
+client, HTTP/2 and HTTP/3 WebSocket sessions had no late queue. akit's sealed console WebSocket
+no longer meets a refused send: `large_transfers_both_ways`, six copies at once, 240 runs per
+backend, failed 16 (epoll) and 24 (io_uring) times before and none after; akit needs no change.
+
 ### Fixed: a connection closed on io_uring with input it did not deliver resets its peer, as on epoll (akio-uring, akio-sys)
 
 akit's A302; ADR-188. `Conn::close` on a TCP connection whose peer was still writing (an upload,

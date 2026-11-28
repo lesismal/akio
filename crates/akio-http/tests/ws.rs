@@ -5,7 +5,11 @@
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -845,7 +849,7 @@ impl WsHandler for Relay {
         ws.send_text("A").unwrap();
         let other = ws.clone();
         let close = t == "close";
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let r = if close {
                 other.close(1000, "from another thread");
@@ -884,4 +888,226 @@ fn another_threads_send_caused_by_the_handler_never_overtakes_it() {
     assert_eq!(close_code(&f), 1000);
     expect_eof(&mut s);
     stop(&e);
+}
+
+// ---- akit A305: other threads' sends while the session's I/O thread is inside a read ---------
+
+/// On "go" (and "go-close"), inside its read: hands its sender to the test and holds the read
+/// until the test resumes it ("go-close" then closes from inside the read). Answers "fin" with
+/// "fin".
+#[derive(Clone)]
+struct HoldRead {
+    go: mpsc::Sender<WsSender>,
+    resume: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl WsHandler for HoldRead {
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        match msg {
+            MessageRef::Text(t @ ("go" | "go-close")) => {
+                self.go.send(ws.clone()).unwrap();
+                // A test that failed dropped the other end: the read ends then too.
+                let _ = self.resume.lock().unwrap().recv();
+                if t == "go-close" {
+                    ws.close(1000, "bye");
+                }
+            }
+            MessageRef::Text("fin") => {
+                let _ = ws.send_text("fin");
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A server whose sessions are [`HoldRead`]: their senders arrive on the receiver, and the
+/// sender resumes a held read.
+fn hold_read_server() -> (Engine, mpsc::Receiver<WsSender>, mpsc::Sender<()>) {
+    let (go, went) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
+    let h = HoldRead {
+        go,
+        resume: Arc::new(Mutex::new(resumed)),
+    };
+    let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
+        ctx.upgrade_websocket(h.clone(), &WsOptions::default());
+    }));
+    (e, went, resume)
+}
+
+/// Sends numbered binary messages of `len` bytes until one is refused; returns how many were
+/// accepted and the refusal.
+fn send_until_refused(ws: &WsSender, len: usize) -> (u32, akio::Error) {
+    let mut body = vec![7u8; len];
+    let mut n = 0u32;
+    loop {
+        body[..4].copy_from_slice(&n.to_be_bytes());
+        match ws.send_binary(&body) {
+            Ok(()) => n += 1,
+            Err(e) => return (n, e),
+        }
+        assert!(n < 100_000, "never refused");
+    }
+}
+
+/// Reads `n` numbered binary messages of `len` bytes, in order.
+fn recv_numbered(s: &mut TcpStream, n: u32, len: usize) {
+    for i in 0..n {
+        let f = recv(s);
+        assert_eq!(f.opcode, 2, "message {i}");
+        assert_eq!(f.payload.len(), len, "message {i}");
+        assert_eq!(f.payload[..4], i.to_be_bytes(), "message {i} of {n}");
+    }
+}
+
+#[test]
+fn late_sends_count_in_queued_bytes_and_are_bounded_by_the_connections_queue() {
+    // akit A305: while the session's I/O thread is inside a read, another thread's sends wait
+    // for it to end. They count in queued_bytes, on_drain waits for them to be written, they
+    // are refused where the connection's max_queued_bytes is (not at a bound of their own),
+    // and every accepted one arrives.
+    const MAX: usize = 8 << 20;
+    const LEN: usize = 60_000; // a 4-byte header
+    let (e, went, resume) = hold_read_server();
+    let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+    send(&mut s, 1, true, b"go");
+    let ws = went.recv_timeout(Duration::from_secs(5)).unwrap();
+    ws.set_max_queued_bytes(Some(MAX)).unwrap();
+    let base = ws.queued_bytes();
+    let (n, refused) = send_until_refused(&ws, LEN);
+    assert!(matches!(refused, akio::Error::Overloaded), "{refused:?}");
+    let late = n as usize * (LEN + 4);
+    assert_eq!(ws.queued_bytes(), base + late, "the late bytes count");
+    // Refused only near the connection's bound: what was accepted, the next message and the
+    // handler's batch (at most 64 KiB reserved) would pass it.
+    assert!(late > 4 << 20, "refused at {late} bytes");
+    assert!(
+        base + late + (LEN + 14) + (64 << 10) > MAX,
+        "refused at {late} bytes"
+    );
+    assert!(base + late <= MAX);
+    let (drained, on_drain) = mpsc::channel();
+    ws.on_drain(move || drained.send(()).unwrap());
+    assert!(
+        on_drain.try_recv().is_err(),
+        "on_drain ran while the late bytes were held"
+    );
+    resume.send(()).unwrap();
+    recv_numbered(&mut s, n, LEN);
+    on_drain.recv_timeout(Duration::from_secs(5)).unwrap();
+    send(&mut s, 1, true, b"fin");
+    assert_eq!(recv(&mut s).payload, b"fin");
+    assert_eq!(ws.queued_bytes(), 0);
+    stop(&e);
+}
+
+#[test]
+fn late_sends_go_before_a_close_from_inside_the_read() {
+    // akit A305: a close from inside the read first sends what other threads sent meanwhile;
+    // nothing accepted is dropped behind the close frame, and later sends are refused.
+    let (e, went, resume) = hold_read_server();
+    let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+    send(&mut s, 1, true, b"go-close");
+    let ws = went.recv_timeout(Duration::from_secs(5)).unwrap();
+    let mut body = vec![1u8; 1000];
+    for i in 0..100u32 {
+        body[..4].copy_from_slice(&i.to_be_bytes());
+        ws.send_binary(&body).unwrap();
+    }
+    assert!(ws.queued_bytes() >= 100 * 1000);
+    resume.send(()).unwrap();
+    recv_numbered(&mut s, 100, 1000);
+    assert_eq!(close_code(&recv(&mut s)), 1000);
+    expect_eof(&mut s);
+    assert!(matches!(ws.send_binary(b"x"), Err(akio::Error::Closed)));
+    stop(&e);
+}
+
+/// Hands its sender over on open; echoes text.
+struct OpenEcho(mpsc::Sender<WsSender>);
+
+impl WsHandler for OpenEcho {
+    fn on_open(&mut self, ws: &WsSender) {
+        self.0.send(ws.clone()).unwrap();
+    }
+    fn on_message_ref(&mut self, ws: &WsSender, msg: MessageRef<'_>) {
+        if let MessageRef::Text(t) = msg {
+            let _ = ws.send_text(t);
+        }
+    }
+}
+
+#[test]
+fn a_sender_paced_on_queued_bytes_is_never_refused_while_the_handler_reads() {
+    // akit A305 under load: another thread streams to the session, paced on queued_bytes and
+    // on_drain, while the client keeps the session's I/O thread busy reading its messages and
+    // echoing them. With a bound of 1 MiB and a high water of 256 KiB no send is refused, and
+    // every message arrives, in order.
+    const N: u32 = 2000;
+    const LEN: usize = 16 << 10;
+    const HIGH: usize = 256 << 10;
+    let (opened, open) = mpsc::channel();
+    let e = start(Router::new().get("/ws", move |ctx: &mut Context| {
+        ctx.upgrade_websocket(OpenEcho(opened.clone()), &WsOptions::default());
+    }));
+    let (mut s, _) = ws_connect(e.local_addrs()[0], "");
+    let ws = open.recv_timeout(Duration::from_secs(5)).unwrap();
+    ws.set_max_queued_bytes(Some(1 << 20)).unwrap();
+    let producer = thread::spawn(move || {
+        let mut body = vec![3u8; LEN];
+        for i in 0..N {
+            while ws.queued_bytes() > HIGH {
+                let (drained, on_drain) = mpsc::channel();
+                ws.on_drain(move || {
+                    let _ = drained.send(());
+                });
+                on_drain.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            body[..4].copy_from_slice(&i.to_be_bytes());
+            if let Err(e) = ws.send_binary(&body) {
+                let queued = ws.queued_bytes();
+                // Ends the client's reads too.
+                ws.abort();
+                panic!("message {i} refused at {queued} queued: {e:?}");
+            }
+        }
+    });
+    let stop_writing = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let mut w = s.try_clone().unwrap();
+        let stop_writing = stop_writing.clone();
+        thread::spawn(move || {
+            // Many small messages per write, so that the server's reads are long ones.
+            let mut burst = Vec::new();
+            for _ in 0..200 {
+                burst.extend(frame_bytes(1, true, false, &[b'x'; 64]));
+            }
+            while !stop_writing.load(Ordering::Relaxed) {
+                if w.write_all(&burst).is_err() {
+                    break;
+                }
+            }
+        })
+    };
+    let mut next = 0u32;
+    let began = Instant::now();
+    while next < N {
+        // The echoes keep coming when the last messages were lost: a bound, not a wait.
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "messages lost: {next} of {N} arrived"
+        );
+        let f = recv(&mut s);
+        if f.opcode == 2 {
+            assert_eq!(f.payload.len(), LEN);
+            assert_eq!(f.payload[..4], next.to_be_bytes(), "a message was lost");
+            next += 1;
+        }
+    }
+    stop_writing.store(true, Ordering::Relaxed);
+    producer.join().unwrap();
+    // The writer may be held by the server's backpressure: ending the connection frees it.
+    stop(&e);
+    drop(s);
+    writer.join().unwrap();
 }

@@ -114,7 +114,10 @@ extended CONNECT，`ctx.req().protocol` 为 `Some("websocket")`。`H2Config::ena
 
 消息来自其他连接或要写往其他连接的中继或隧道，通过 `WsSender` 在任意线程上联动它们的背压（规则 8）：
 
-- `queued_bytes()`：等待发出的字节；超过高水位时，暂停向这个 WebSocket 供数据的一方。
+- `queued_bytes()`：等待发出的字节；超过高水位时，暂停向这个 WebSocket 供数据的一方。在不压缩的
+  TCP 或 TLS 上，连接的 I/O 线程处于 handler 之中时其他线程发送的内容要等 handler 返回才发出（以免
+  超过 handler 已发送的内容）；这些字节计入这里，`on_drain` 会等待它们，发送只在达到连接的
+  `max_queued_bytes` 时才以 `Overloaded` 被拒绝（ADR-189）。
 - `on_drain(f)`：这个队列重新变空时（已经为空则立即）或连接关闭时运行 `f`；以最后设置的为准。在
   HTTP/3 上，与流式响应一样，在 QUIC 流的发送缓冲区有空间时运行。
 - `hold_reads(true)` / `hold_reads(false)`：停止和恢复读取对端，使得在这个 WebSocket 交付的内容无法
