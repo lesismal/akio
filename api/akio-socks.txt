@@ -165,6 +165,7 @@ pub fn akio_socks::Socks::udp_idle_timeout(self, core::time::Duration) -> akio_s
 impl akio_core::handler::Acceptor for akio_socks::Socks
 pub type akio_socks::Socks::Handler = akio_socks::SocksSession
 pub fn akio_socks::Socks::on_open(&self, &akio_core::conn::Conn<akio_socks::SocksSession>) -> akio_socks::SocksSession
+pub fn akio_socks::Socks::on_shutdown(&self, &akio_core::conn::Conn<akio_socks::SocksSession>)
 pub fn akio_socks::Socks::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn akio_core::conn::Transport>>
 impl core::fmt::Debug for akio_socks::Socks
 pub fn akio_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result

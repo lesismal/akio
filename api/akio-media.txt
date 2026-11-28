@@ -1973,6 +1973,7 @@ pub fn akio_media::rtmp::RtmpServer::new(akio_media::hub::Hub, akio_media::rtmp:
 impl akio_core::handler::Acceptor for akio_media::rtmp::RtmpServer
 pub type akio_media::rtmp::RtmpServer::Handler = akio_media::rtmp::RtmpSession
 pub fn akio_media::rtmp::RtmpServer::on_open(&self, &akio_core::conn::Conn<akio_media::rtmp::RtmpSession>) -> akio_media::rtmp::RtmpSession
+pub fn akio_media::rtmp::RtmpServer::on_shutdown(&self, &akio_core::conn::Conn<akio_media::rtmp::RtmpSession>)
 impl core::clone::Clone for akio_media::rtmp::RtmpServer
 pub fn akio_media::rtmp::RtmpServer::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::rtmp::RtmpServer
@@ -2626,6 +2627,7 @@ pub fn akio_media::rtsp::RtspServer::sessions(&self) -> alloc::vec::Vec<akio_med
 impl akio_core::handler::Acceptor for akio_media::rtsp::RtspServer
 pub type akio_media::rtsp::RtspServer::Handler = akio_media::rtsp::RtspSession
 pub fn akio_media::rtsp::RtspServer::on_open(&self, &akio_core::conn::Conn<akio_media::rtsp::RtspSession>) -> akio_media::rtsp::RtspSession
+pub fn akio_media::rtsp::RtspServer::on_shutdown(&self, &akio_core::conn::Conn<akio_media::rtsp::RtspSession>)
 impl core::clone::Clone for akio_media::rtsp::RtspServer
 pub fn akio_media::rtsp::RtspServer::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::rtsp::RtspServer
@@ -3044,6 +3046,7 @@ pub fn akio_media::srt::SrtServer::new(akio_media::hub::Hub, akio_media::srt::Sr
 impl akio_core::handler::Acceptor for akio_media::srt::SrtServer
 pub type akio_media::srt::SrtServer::Handler = akio_media::srt::SrtPeer
 pub fn akio_media::srt::SrtServer::on_open(&self, &akio_core::conn::Conn<akio_media::srt::SrtPeer>) -> akio_media::srt::SrtPeer
+pub fn akio_media::srt::SrtServer::on_shutdown(&self, &akio_core::conn::Conn<akio_media::srt::SrtPeer>)
 impl core::clone::Clone for akio_media::srt::SrtServer
 pub fn akio_media::srt::SrtServer::clone(&self) -> Self
 impl core::fmt::Debug for akio_media::srt::SrtServer

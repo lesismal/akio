@@ -371,6 +371,7 @@ pub fn akio_arpc::Server::peers(&self) -> alloc::vec::Vec<akio_arpc::Peer>
 impl akio_core::handler::Acceptor for akio_arpc::Server
 pub type akio_arpc::Server::Handler = akio_arpc::ServerConn
 pub fn akio_arpc::Server::on_open(&self, &akio_core::conn::Conn<akio_arpc::ServerConn>) -> akio_arpc::ServerConn
+pub fn akio_arpc::Server::on_shutdown(&self, &akio_core::conn::Conn<akio_arpc::ServerConn>)
 impl core::clone::Clone for akio_arpc::Server
 pub fn akio_arpc::Server::clone(&self) -> Self
 impl core::fmt::Debug for akio_arpc::Server

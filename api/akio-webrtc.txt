@@ -765,6 +765,7 @@ pub struct akio_webrtc::RtcRtcp(_)
 impl akio_core::handler::Acceptor for akio_webrtc::RtcRtcp
 pub type akio_webrtc::RtcRtcp::Handler = RtcUdp
 pub fn akio_webrtc::RtcRtcp::on_open(&self, &akio_core::conn::Conn<RtcUdp>) -> RtcUdp
+pub fn akio_webrtc::RtcRtcp::on_shutdown(&self, &akio_core::conn::Conn<RtcUdp>)
 impl core::clone::Clone for akio_webrtc::RtcRtcp
 pub fn akio_webrtc::RtcRtcp::clone(&self) -> Self
 impl core::fmt::Debug for akio_webrtc::RtcRtcp
@@ -809,6 +810,7 @@ pub struct akio_webrtc::RtcTcp(_)
 impl akio_core::handler::Acceptor for akio_webrtc::RtcTcp
 pub type akio_webrtc::RtcTcp::Handler = IceTcp
 pub fn akio_webrtc::RtcTcp::on_open(&self, &akio_core::conn::Conn<IceTcp>) -> IceTcp
+pub fn akio_webrtc::RtcTcp::on_shutdown(&self, &akio_core::conn::Conn<IceTcp>)
 impl core::clone::Clone for akio_webrtc::RtcTcp
 pub fn akio_webrtc::RtcTcp::clone(&self) -> Self
 impl core::fmt::Debug for akio_webrtc::RtcTcp

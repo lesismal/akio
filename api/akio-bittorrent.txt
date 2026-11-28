@@ -1116,6 +1116,7 @@ pub struct akio_bittorrent::port::PortAcceptor
 impl akio_core::handler::Acceptor for akio_bittorrent::port::PortAcceptor
 pub type akio_bittorrent::port::PortAcceptor::Handler = akio_bittorrent::port::PortPeer
 pub fn akio_bittorrent::port::PortAcceptor::on_open(&self, &akio_core::conn::Conn<akio_bittorrent::port::PortPeer>) -> akio_bittorrent::port::PortPeer
+pub fn akio_bittorrent::port::PortAcceptor::on_shutdown(&self, &akio_core::conn::Conn<akio_bittorrent::port::PortPeer>)
 impl core::clone::Clone for akio_bittorrent::port::PortAcceptor
 pub fn akio_bittorrent::port::PortAcceptor::clone(&self) -> Self
 impl core::fmt::Debug for akio_bittorrent::port::PortAcceptor
